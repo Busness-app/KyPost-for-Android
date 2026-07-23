@@ -112,3 +112,27 @@ Task 4 (final sweep): complete - zero remaining llama references, gradle build/t
 - Task 3: complete (commits 3e772eb..8177c07 across two commits, review clean, no findings — implementer's first commit (1c99d05) left an unreverted android:exported=false->true change on KeywordSettingsActivity in AndroidManifest.xml as an adb-testing artifact; controller caught it via SendMessage back to the same implementer, which added a corrective second commit (8177c07) restoring exported=false; reviewer independently confirmed via `git diff 3e772eb 8177c07 -- AndroidManifest.xml` that the net change across both commits is exactly zero.)
 
 ## ALL 3 TASKS COMPLETE - dispatching final whole-branch review
+
+## Final Whole-Branch Review
+
+Ready to merge: With fixes. Reviewer (opus) confirmed all binding Global
+Constraints met (verbatim warning copy, unconditional visibility,
+COLOR_WARNING_ACTION_* mirrors COLOR_DANGER_ACTION_* alpha bytes exactly),
+independently re-verified both process incidents left zero net trace
+(AndroidManifest.xml diff over the whole branch range is empty; AppTheme.kt
+Task 1 content present/coherent despite the cherry-pick), and confirmed
+FLAG_SECURE and the credential-gate toggle's actual behavior are untouched
+(purely additive explanatory text). One Important finding: addViewSpaced
+(AppTheme.kt) hardcoded WRAP_CONTENT width, silently shrinking every
+Switch/Button/CheckBox/TextView from the vertical LinearLayout's original
+MATCH_PARENT default — ragged switch-thumb alignment and shrunk checkbox
+touch targets. Fixed as commit c091db6 (one-line change, WRAP_CONTENT ->
+MATCH_PARENT on the width param only), controller-verified via diff
+(touches exactly that one line), build clean, existing test suite still
+2/2 passing. Two Minor findings left as-is per reviewer's own read: the
+4dp switch-to-intro-text gap (spec said 6-8dp; plan's literal task code
+said 4dp — a plan-authoring inconsistency, not an implementer defect, and
+reviewer called it "within reasonable judgment"), and applyWarningCalloutTheme's
+unused context param (mirrors pre-existing applyDangerButtonTheme convention).
+
+## ALL 3 TASKS + FINAL REVIEW FIX COMPLETE ✅
