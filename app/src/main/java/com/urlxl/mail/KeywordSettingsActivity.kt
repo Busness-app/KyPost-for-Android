@@ -20,7 +20,7 @@ class KeywordSettingsActivity : AppCompatActivity() {
         val scrollView = ScrollView(this)
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(24, 24, 24, 24)
+            setPadding(dpToPx(20), dpToPx(20), dpToPx(20), dpToPx(20))
         }
 
         applyTopInsetWithHeader(this, scrollView)
@@ -28,9 +28,8 @@ class KeywordSettingsActivity : AppCompatActivity() {
         val intro = TextView(this).apply {
             text = getString(R.string.keyword_settings_intro)
             textSize = 14f
-            setPadding(0, 0, 0, 16)
         }
-        container.addView(intro)
+        container.addViewSpaced(intro, bottomDp = 16)
 
         val allKeywords = keywordSettings.getAllKeywords().sorted()
         if (allKeywords.isEmpty()) {
@@ -39,7 +38,7 @@ class KeywordSettingsActivity : AppCompatActivity() {
                 textSize = 14f
             }
             applyEmptyStateBackground(this, emptyView)
-            container.addView(emptyView)
+            container.addViewSpaced(emptyView, bottomDp = 12)
         } else {
             allKeywords.forEach { keyword ->
                 val checkbox = CheckBox(this).apply {
@@ -50,7 +49,7 @@ class KeywordSettingsActivity : AppCompatActivity() {
                         keywordSettings.setKeywordVisible(keyword, isChecked)
                     }
                 }
-                container.addView(checkbox)
+                container.addViewSpaced(checkbox, bottomDp = 12)
             }
         }
 

@@ -85,3 +85,54 @@ Task 4 (final sweep): complete - zero remaining llama references, gradle build/t
 ## FINAL WHOLE-BRANCH REVIEW: Ready to merge/close out - no issues found
 
 ## ALL TASKS COMPLETE (kypost-android llama naming cleanup) ✅
+
+# Security/Keyword Spacing + Push Data-Leak Warning Progress
+
+**Plan:** docs/superpowers/plans/2026-07-22-security-keyword-spacing-push-warning.md
+**Base commit:** aa4d3f2 (includes the plan-doc commit itself)
+**Start date:** 2026-07-22
+
+## Tasks
+
+- [x] Task 1: dp-scaling + warning-callout helpers in AppTheme.kt
+- [x] Task 2: Space out SecuritySettingsActivity + add push data-leak warning
+- [x] Task 3: Space out KeywordSettingsActivity
+
+## Notes
+
+- Worktree created via `EnterWorktree` (branch `worktree-security-keyword-spacing`, based on local `main`).
+- `app/google-services.json` is gitignored and wasn't present in the fresh worktree; copied over manually from the primary checkout before running the baseline build.
+- Baseline `./gradlew :app:testDebugUnitTest` passed clean before Task 1 was dispatched.
+
+## Completed
+
+- Task 1: complete (commits 4a019d1..883ffbb, review clean, no findings — reviewer noted the unused `context` param in `applyWarningCalloutTheme` mirrors the pre-existing convention in `applyDangerButtonTheme`, not a new defect).
+  Note: implementer initially committed this work directly onto local `main` in the primary checkout instead of the worktree; controller caught it, cherry-picked the commit onto this branch (883ffbb), and reset `main` back to aa4d3f2 before dispatching the review.
+- Task 2: complete (commits 5fef640..0013e0a, review clean, no findings — reviewer independently confirmed FLAG_SECURE and AndroidManifest.xml unchanged after implementer's temporary on-device verification workaround, and verified the implementer's self-caught fix for a brief error: SecuritySettingsActivity is in subpackage com.urlxl.mail.security, so explicit imports of dpToPx/addViewSpaced/applyWarningCalloutTheme were needed, unlike Task 1 which is same-package).
+- Task 3: complete (commits 3e772eb..8177c07 across two commits, review clean, no findings — implementer's first commit (1c99d05) left an unreverted android:exported=false->true change on KeywordSettingsActivity in AndroidManifest.xml as an adb-testing artifact; controller caught it via SendMessage back to the same implementer, which added a corrective second commit (8177c07) restoring exported=false; reviewer independently confirmed via `git diff 3e772eb 8177c07 -- AndroidManifest.xml` that the net change across both commits is exactly zero.)
+
+## ALL 3 TASKS COMPLETE - dispatching final whole-branch review
+
+## Final Whole-Branch Review
+
+Ready to merge: With fixes. Reviewer (opus) confirmed all binding Global
+Constraints met (verbatim warning copy, unconditional visibility,
+COLOR_WARNING_ACTION_* mirrors COLOR_DANGER_ACTION_* alpha bytes exactly),
+independently re-verified both process incidents left zero net trace
+(AndroidManifest.xml diff over the whole branch range is empty; AppTheme.kt
+Task 1 content present/coherent despite the cherry-pick), and confirmed
+FLAG_SECURE and the credential-gate toggle's actual behavior are untouched
+(purely additive explanatory text). One Important finding: addViewSpaced
+(AppTheme.kt) hardcoded WRAP_CONTENT width, silently shrinking every
+Switch/Button/CheckBox/TextView from the vertical LinearLayout's original
+MATCH_PARENT default — ragged switch-thumb alignment and shrunk checkbox
+touch targets. Fixed as commit c091db6 (one-line change, WRAP_CONTENT ->
+MATCH_PARENT on the width param only), controller-verified via diff
+(touches exactly that one line), build clean, existing test suite still
+2/2 passing. Two Minor findings left as-is per reviewer's own read: the
+4dp switch-to-intro-text gap (spec said 6-8dp; plan's literal task code
+said 4dp — a plan-authoring inconsistency, not an implementer defect, and
+reviewer called it "within reasonable judgment"), and applyWarningCalloutTheme's
+unused context param (mirrors pre-existing applyDangerButtonTheme convention).
+
+## ALL 3 TASKS + FINAL REVIEW FIX COMPLETE ✅

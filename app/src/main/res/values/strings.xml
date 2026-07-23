@@ -270,6 +270,7 @@
     <string name="security_hostile_location_requires_lock">Requires Require Unlock to Open.</string>
     <string name="security_credential_gate_title">Require unlock to receive push/MFA</string>
     <string name="security_credential_gate_intro">Off by default. When on, new-mail push notifications and MFA approval requests only arrive after you\'ve opened the app and unlocked it.</string>
+    <string name="security_credential_gate_leak_warning">Push always sends the sender and subject through Google/UnifiedPush relay servers, even with this on. For zero leakage, ask your server admin to switch this device to Pull mode instead.</string>
     <string name="security_credential_gate_warning_title">This disables background notifications while locked</string>
     <string name="security_credential_gate_warning_body">While this is on, you will not receive new-mail push notifications or MFA approval requests until you open the app and enter your PIN. Turn this on only if you understand that tradeoff.</string>
     <string name="security_credential_gate_warning_confirm">Turn on anyway</string>
