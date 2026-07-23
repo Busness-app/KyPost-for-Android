@@ -14,6 +14,7 @@ import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
@@ -62,6 +63,9 @@ const val COLOR_DANGER_ACTION_BORDER = "#66FFB4AB" // rgba(255,180,171,.4)
 const val COLOR_DANGER_ACTION_FILL = "#1FFFB4AB" // rgba(255,180,171,.12)
 const val COLOR_DANGER_ACTION_TEXT = "#ffd8d3"
 const val COLOR_WARNING = "#ffd64d"
+const val COLOR_WARNING_ACTION_BORDER = "#66FFD64D" // rgba(255,214,77,.4)
+const val COLOR_WARNING_ACTION_FILL = "#1FFFD64D" // rgba(255,214,77,.12)
+const val COLOR_WARNING_ACTION_TEXT = "#fff0b8"
 const val COLOR_SUCCESS_BORDER = "#7bbf7b"
 const val COLOR_SUCCESS_TEXT = "#a5dca5"
 
@@ -209,6 +213,15 @@ fun applyDangerButtonTheme(context: Context, button: Button) {
     button.backgroundTintList = null
     button.background = dangerButtonBackground()
     button.setTextColor(Color.parseColor(COLOR_DANGER_ACTION_TEXT))
+}
+
+/** Stroke + 12%-fill warning panel for non-interactive informational callouts — same stroke+fill
+ *  shape as [applyDangerButtonTheme] (STYLE_GUIDE.md §4's danger-button pattern), but with the
+ *  fixed warning yellow (STYLE_GUIDE.md §1) and applied to a TextView since callouts aren't
+ *  buttons. Caller sets its own padding/margins; this only sets background + text color. */
+fun applyWarningCalloutTheme(context: Context, textView: TextView) {
+    textView.background = warningCalloutBackground()
+    textView.setTextColor(Color.parseColor(COLOR_WARNING_ACTION_TEXT))
 }
 
 /** Success/"added" state for the address-book picker's TO/CC/BCC action chips — mirrors
@@ -537,6 +550,29 @@ private fun applyThemeToViewTree(view: View, palette: ThemePalette) {
 
 private val density: Float get() = android.content.res.Resources.getSystem().displayMetrics.density
 
+/** Pure dp->px math, factored out of [dpToPx] so it's unit-testable without the Android
+ *  framework (this project has no Robolectric setup) — [dpToPx] is the entry point every caller
+ *  should use directly. */
+internal fun scalePxByDensity(value: Int, density: Float): Int = (value * density).toInt()
+
+/** Converts a dp value to raw device pixels using the system-wide [density] snapshot — for raw
+ *  View APIs (setPadding, LayoutParams margins) that take pixels, not dp. */
+fun dpToPx(value: Int): Int = scalePxByDensity(value, density)
+
+/** Adds [view] with vertical breathing room ([topDp]/[bottomDp], converted via [dpToPx]) instead
+ *  of the zero-margin default plain `addView(view)` produces — the Security/Keyword settings
+ *  screens build their layout by hand and need real gaps between sibling controls. */
+fun LinearLayout.addViewSpaced(view: View, topDp: Int = 0, bottomDp: Int = 0) {
+    val params = LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams.WRAP_CONTENT,
+        LinearLayout.LayoutParams.WRAP_CONTENT,
+    ).apply {
+        topMargin = dpToPx(topDp)
+        bottomMargin = dpToPx(bottomDp)
+    }
+    addView(view, params)
+}
+
 private fun panelBackground(context: Context, palette: ThemePalette): GradientDrawable {
     return GradientDrawable().apply {
         shape = GradientDrawable.RECTANGLE
@@ -586,6 +622,15 @@ private fun dangerButtonBackground(): GradientDrawable {
         cornerRadius = 10f * density
         setColor(Color.parseColor(COLOR_DANGER_ACTION_FILL))
         setStroke((1 * density).toInt(), Color.parseColor(COLOR_DANGER_ACTION_BORDER))
+    }
+}
+
+private fun warningCalloutBackground(): GradientDrawable {
+    return GradientDrawable().apply {
+        shape = GradientDrawable.RECTANGLE
+        cornerRadius = 10f * density
+        setColor(Color.parseColor(COLOR_WARNING_ACTION_FILL))
+        setStroke((1 * density).toInt(), Color.parseColor(COLOR_WARNING_ACTION_BORDER))
     }
 }
 
