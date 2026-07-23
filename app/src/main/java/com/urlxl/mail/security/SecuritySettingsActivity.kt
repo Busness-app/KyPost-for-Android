@@ -13,8 +13,11 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.urlxl.mail.R
+import com.urlxl.mail.addViewSpaced
 import com.urlxl.mail.applyThemeToActivity
 import com.urlxl.mail.applyTopInsetWithHeader
+import com.urlxl.mail.applyWarningCalloutTheme
+import com.urlxl.mail.dpToPx
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -45,7 +48,7 @@ class SecuritySettingsActivity : AppCompatActivity() {
         val scrollView = ScrollView(this)
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(24, 24, 24, 24)
+            setPadding(dpToPx(20), dpToPx(20), dpToPx(20), dpToPx(20))
         }
         applyTopInsetWithHeader(this, scrollView)
 
@@ -53,13 +56,13 @@ class SecuritySettingsActivity : AppCompatActivity() {
             text = getString(R.string.security_require_unlock_title)
             isChecked = appLockStore.isLockEnabled()
         }
-        container.addView(lockSwitch)
-        container.addView(
+        container.addViewSpaced(lockSwitch, bottomDp = 4)
+        container.addViewSpaced(
             TextView(this).apply {
                 text = getString(R.string.security_require_unlock_intro)
                 textSize = 13f
-                setPadding(0, 4, 0, 16)
             },
+            bottomDp = 20,
         )
 
         // "A 'Change PIN' action appears once enabled" (spec) — only ever visible while lock is
@@ -70,14 +73,14 @@ class SecuritySettingsActivity : AppCompatActivity() {
             visibility = if (appLockStore.isLockEnabled()) View.VISIBLE else View.GONE
             setOnClickListener { promptChangePin() }
         }
-        container.addView(changePinButton)
+        container.addViewSpaced(changePinButton, bottomDp = 16)
 
         biometricSwitch = Switch(this).apply {
             text = getString(R.string.security_use_biometric_title)
             isChecked = appLockStore.isBiometricEnabled()
             isEnabled = appLockStore.isLockEnabled()
         }
-        container.addView(biometricSwitch)
+        container.addViewSpaced(biometricSwitch, bottomDp = 20)
 
         val hostileLocationSettings = HostileLocationSettings(this)
         hostileLocationSwitch = Switch(this).apply {
@@ -85,7 +88,7 @@ class SecuritySettingsActivity : AppCompatActivity() {
             isChecked = hostileLocationSettings.isEnabled()
             isEnabled = appLockStore.isLockEnabled()
         }
-        container.addView(hostileLocationSwitch)
+        container.addViewSpaced(hostileLocationSwitch, bottomDp = 4)
         hostileLocationIntro = TextView(this).apply {
             text = if (appLockStore.isLockEnabled()) {
                 getString(R.string.security_hostile_location_intro)
@@ -93,9 +96,8 @@ class SecuritySettingsActivity : AppCompatActivity() {
                 getString(R.string.security_hostile_location_requires_lock)
             }
             textSize = 13f
-            setPadding(0, 4, 0, 16)
         }
-        container.addView(hostileLocationIntro)
+        container.addViewSpaced(hostileLocationIntro, bottomDp = 20)
         hostileLocationSwitch.setOnCheckedChangeListener { _, checked ->
             lifecycleScope.launch {
                 // Both directions need a fresh on-disk kypost_mail.db afterward: enabling must not
@@ -114,13 +116,25 @@ class SecuritySettingsActivity : AppCompatActivity() {
             isChecked = appLockStore.isCredentialPinGateEnabled()
             isEnabled = appLockStore.isLockEnabled()
         }
-        container.addView(credentialGateSwitch)
-        container.addView(
+        container.addViewSpaced(credentialGateSwitch, bottomDp = 4)
+        container.addViewSpaced(
             TextView(this).apply {
                 text = getString(R.string.security_credential_gate_intro)
                 textSize = 13f
-                setPadding(0, 4, 0, 16)
             },
+            bottomDp = 8,
+        )
+        // Always visible regardless of credentialGateSwitch's state: the push-relay exposure
+        // this describes exists on every push delivery, on or off — this toggle only ever
+        // controlled whether content is withheld while locked, not whether the relay sees it.
+        container.addViewSpaced(
+            TextView(this).apply {
+                text = getString(R.string.security_credential_gate_leak_warning)
+                textSize = 13f
+                setPadding(dpToPx(12), dpToPx(10), dpToPx(12), dpToPx(10))
+                applyWarningCalloutTheme(this@SecuritySettingsActivity, this)
+            },
+            bottomDp = 16,
         )
         credentialGateSwitch.setOnCheckedChangeListener { _, checked ->
             if (suppressCredentialGateListener) return@setOnCheckedChangeListener
