@@ -94,7 +94,7 @@ Task 4 (final sweep): complete - zero remaining llama references, gradle build/t
 
 ## Tasks
 
-- [ ] Task 1: dp-scaling + warning-callout helpers in AppTheme.kt
+- [x] Task 1: dp-scaling + warning-callout helpers in AppTheme.kt
 - [ ] Task 2: Space out SecuritySettingsActivity + add push data-leak warning
 - [ ] Task 3: Space out KeywordSettingsActivity
 
@@ -103,3 +103,8 @@ Task 4 (final sweep): complete - zero remaining llama references, gradle build/t
 - Worktree created via `EnterWorktree` (branch `worktree-security-keyword-spacing`, based on local `main`).
 - `app/google-services.json` is gitignored and wasn't present in the fresh worktree; copied over manually from the primary checkout before running the baseline build.
 - Baseline `./gradlew :app:testDebugUnitTest` passed clean before Task 1 was dispatched.
+
+## Completed
+
+- Task 1: complete (commits 4a019d1..883ffbb, review clean, no findings — reviewer noted the unused `context` param in `applyWarningCalloutTheme` mirrors the pre-existing convention in `applyDangerButtonTheme`, not a new defect).
+  Note: implementer initially committed this work directly onto local `main` in the primary checkout instead of the worktree; controller caught it, cherry-picked the commit onto this branch (883ffbb), and reset `main` back to aa4d3f2 before dispatching the review.
