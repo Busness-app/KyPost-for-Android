@@ -95,7 +95,7 @@ Task 4 (final sweep): complete - zero remaining llama references, gradle build/t
 ## Tasks
 
 - [x] Task 1: dp-scaling + warning-callout helpers in AppTheme.kt
-- [ ] Task 2: Space out SecuritySettingsActivity + add push data-leak warning
+- [x] Task 2: Space out SecuritySettingsActivity + add push data-leak warning
 - [ ] Task 3: Space out KeywordSettingsActivity
 
 ## Notes
@@ -108,3 +108,4 @@ Task 4 (final sweep): complete - zero remaining llama references, gradle build/t
 
 - Task 1: complete (commits 4a019d1..883ffbb, review clean, no findings — reviewer noted the unused `context` param in `applyWarningCalloutTheme` mirrors the pre-existing convention in `applyDangerButtonTheme`, not a new defect).
   Note: implementer initially committed this work directly onto local `main` in the primary checkout instead of the worktree; controller caught it, cherry-picked the commit onto this branch (883ffbb), and reset `main` back to aa4d3f2 before dispatching the review.
+- Task 2: complete (commits 5fef640..0013e0a, review clean, no findings — reviewer independently confirmed FLAG_SECURE and AndroidManifest.xml unchanged after implementer's temporary on-device verification workaround, and verified the implementer's self-caught fix for a brief error: SecuritySettingsActivity is in subpackage com.urlxl.mail.security, so explicit imports of dpToPx/addViewSpaced/applyWarningCalloutTheme were needed, unlike Task 1 which is same-package).
