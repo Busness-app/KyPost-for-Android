@@ -96,7 +96,7 @@ Task 4 (final sweep): complete - zero remaining llama references, gradle build/t
 
 - [x] Task 1: dp-scaling + warning-callout helpers in AppTheme.kt
 - [x] Task 2: Space out SecuritySettingsActivity + add push data-leak warning
-- [ ] Task 3: Space out KeywordSettingsActivity
+- [x] Task 3: Space out KeywordSettingsActivity
 
 ## Notes
 
@@ -109,3 +109,6 @@ Task 4 (final sweep): complete - zero remaining llama references, gradle build/t
 - Task 1: complete (commits 4a019d1..883ffbb, review clean, no findings — reviewer noted the unused `context` param in `applyWarningCalloutTheme` mirrors the pre-existing convention in `applyDangerButtonTheme`, not a new defect).
   Note: implementer initially committed this work directly onto local `main` in the primary checkout instead of the worktree; controller caught it, cherry-picked the commit onto this branch (883ffbb), and reset `main` back to aa4d3f2 before dispatching the review.
 - Task 2: complete (commits 5fef640..0013e0a, review clean, no findings — reviewer independently confirmed FLAG_SECURE and AndroidManifest.xml unchanged after implementer's temporary on-device verification workaround, and verified the implementer's self-caught fix for a brief error: SecuritySettingsActivity is in subpackage com.urlxl.mail.security, so explicit imports of dpToPx/addViewSpaced/applyWarningCalloutTheme were needed, unlike Task 1 which is same-package).
+- Task 3: complete (commits 3e772eb..8177c07 across two commits, review clean, no findings — implementer's first commit (1c99d05) left an unreverted android:exported=false->true change on KeywordSettingsActivity in AndroidManifest.xml as an adb-testing artifact; controller caught it via SendMessage back to the same implementer, which added a corrective second commit (8177c07) restoring exported=false; reviewer independently confirmed via `git diff 3e772eb 8177c07 -- AndroidManifest.xml` that the net change across both commits is exactly zero.)
+
+## ALL 3 TASKS COMPLETE - dispatching final whole-branch review
