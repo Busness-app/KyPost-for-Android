@@ -85,3 +85,21 @@ Task 4 (final sweep): complete - zero remaining llama references, gradle build/t
 ## FINAL WHOLE-BRANCH REVIEW: Ready to merge/close out - no issues found
 
 ## ALL TASKS COMPLETE (kypost-android llama naming cleanup) ✅
+
+# Security/Keyword Spacing + Push Data-Leak Warning Progress
+
+**Plan:** docs/superpowers/plans/2026-07-22-security-keyword-spacing-push-warning.md
+**Base commit:** aa4d3f2 (includes the plan-doc commit itself)
+**Start date:** 2026-07-22
+
+## Tasks
+
+- [ ] Task 1: dp-scaling + warning-callout helpers in AppTheme.kt
+- [ ] Task 2: Space out SecuritySettingsActivity + add push data-leak warning
+- [ ] Task 3: Space out KeywordSettingsActivity
+
+## Notes
+
+- Worktree created via `EnterWorktree` (branch `worktree-security-keyword-spacing`, based on local `main`).
+- `app/google-services.json` is gitignored and wasn't present in the fresh worktree; copied over manually from the primary checkout before running the baseline build.
+- Baseline `./gradlew :app:testDebugUnitTest` passed clean before Task 1 was dispatched.
