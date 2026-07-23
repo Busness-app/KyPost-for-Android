@@ -564,7 +564,7 @@ fun dpToPx(value: Int): Int = scalePxByDensity(value, density)
  *  screens build their layout by hand and need real gaps between sibling controls. */
 fun LinearLayout.addViewSpaced(view: View, topDp: Int = 0, bottomDp: Int = 0) {
     val params = LinearLayout.LayoutParams(
-        LinearLayout.LayoutParams.WRAP_CONTENT,
+        LinearLayout.LayoutParams.MATCH_PARENT,
         LinearLayout.LayoutParams.WRAP_CONTENT,
     ).apply {
         topMargin = dpToPx(topDp)
