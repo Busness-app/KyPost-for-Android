@@ -25,4 +25,13 @@ data class EmailEntity(
     val atUtc: String? = null,
     val hasAttachments: Boolean = false,
     val sourceMode: String,
+    // Persisted because the inbox list renders from this cache: without them a
+    // client-protected message would come back from Room indistinguishable from
+    // one with a genuinely empty body. The server keeps these flags across
+    // delta "updated" entries, so caching them does not go stale.
+    val pgpEncrypted: Boolean = false,
+    val pgpSigned: Boolean = false,
+    val pgpVerified: Boolean = false,
+    val pgpSignerFingerprint: String = "",
+    val pgpDecryptError: String = "",
 )

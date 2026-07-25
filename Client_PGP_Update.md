@@ -46,7 +46,9 @@ described below.
 
 ### `GET /api/pgp/qr/token`
 
-**Authentication:** Session cookie (via the app's login session).
+**Authentication:** `X-Kypost-Device-Id` / `X-Kypost-Device-Secret` pairing headers, the same
+credential every other relay call uses. (An earlier revision of this document said "session cookie";
+that was never how the app called it — there is no mobile login.)
 
 **TTL:** 2 minutes.
 
@@ -61,7 +63,8 @@ described below.
 
 **Response on error:**
 - **400 Bad Request:** The caller has no PGP identity configured yet (generate or import one first).
-- **401 Unauthorized:** Session cookie missing or expired.
+- **401 Unauthorized:** Device pairing headers missing, unknown, or revoked.
+- **429 Too Many Requests:** Per-device lockout after repeated bad credentials; honour `Retry-After`.
 - **503 Service Unavailable:** The server's pairing subsystem isn't configured (a persistent ops
   issue, not something a client-side retry will resolve — surface this distinctly from a transient
   failure).
@@ -144,6 +147,40 @@ A screen with a QR/barcode scanner that:
    - If the sync `PUT /api/contacts/...` call fails, display a sync error (reuse the same UX
      pattern as the existing contact sync).
 
+## Protection modes (separate from the QR flow above)
+
+An account's own PGP key is held one of two ways, recorded server-side as `pgpKeyProtection`. This
+is chosen by the user when the key is created, on the web Security page, and it decides whether the
+mobile app can read their encrypted mail at all.
+
+| | `server` | `client` (default) |
+|---|---|---|
+| Server can read the account's mail | Yes | No |
+| Readable in this app | Yes | No |
+
+**The app never holds a private key in either mode.** The phone pairs by QR and never learns the
+account password that a `client` key's envelope is sealed under, so unwrapping on device is not
+possible without introducing account-password entry on mobile — a decision deliberately not taken.
+See the server repo's `docs/E2E_PGP.md` "Mobile plan" for the reasoning and the alternatives that
+were rejected.
+
+What the app does instead, per message, from the inbox row's PGP fields:
+
+| row state | meaning | app behaviour |
+|---|---|---|
+| `pgpEncrypted` false | no OpenPGP content | render normally |
+| `pgpEncrypted`, `pgpDecryptError` empty, no body | `client` mode | explain, and offer **Open in webmail** |
+| `pgpEncrypted`, `pgpDecryptError` set | server tried and failed | show that error |
+| `pgpEncrypted` with a body | `server` mode decrypted it | render, and say the server decrypted it |
+
+The webmail link is `{serverUrl}/read?mailbox=<mailbox>&message=<messageId>` — the same route a web
+push click uses, so no server change backs it. Omit `mailbox` for INBOX. Launch it as a normal
+https view intent so an installed PWA or the user's browser handles it with the session it already
+has; do not render it in an in-app WebView.
+
+`POST /api/mail/send` returns **409** with `clientSideNeeded: true` if a `client`-mode account asks
+the server to sign or encrypt. That is "not available on mobile", not a transient failure.
+
 ## Explicitly Deferred
 
 The following aspects are **not** specified by this document and are left to whoever implements
@@ -167,7 +204,7 @@ this feature:
 
 Once implemented, test the following:
 
-- [ ] Call `GET /api/pgp/qr/token` with a valid session cookie; confirm the response includes a
+- [ ] Call `GET /api/pgp/qr/token` with valid device pairing headers; confirm the response includes a
       valid, unique token and an HTTPS URL.
 - [ ] Call `GET /api/pgp/qr/key?t=<token>` unauthenticated; confirm it returns the user's public
       key, fingerprint, and name.

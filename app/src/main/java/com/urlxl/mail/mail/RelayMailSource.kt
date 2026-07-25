@@ -18,6 +18,28 @@ private val JSON_MEDIA_TYPE = "application/json".toMediaType()
 private const val NOT_CONFIGURED_PREFIX = "imap configuration is required"
 private const val FULL_RESYNC_SINCE = "0"
 private const val CHANGE_TYPE_UPDATED = "updated"
+private const val HEADER_RETRY_AFTER = "Retry-After"
+
+/** Matches the JSON field the backend sets alongside its 409 on /api/mail/send, not the prose
+ *  of the error message — the message is user-facing copy and may be reworded, the field is the
+ *  contract. */
+private const val CLIENT_SIDE_NEEDED_MARKER = "clientSideNeeded"
+
+/** Named rather than a 5-tuple because [downloadAttachment] destructures it positionally and a
+ *  Triple-of-Pairs made the call site unreadable once Retry-After joined it. */
+private data class DownloadResponse(
+    val code: Int,
+    val bytes: ByteArray,
+    val name: String,
+    val contentType: String,
+    val retryAfter: String?,
+)
+
+/** Retry-After is seconds or an HTTP date (RFC 9110); this server sends seconds
+ *  (wkd_ratelimit.go, device_auth.go). A date form, a negative value, or garbage all yield null,
+ *  which callers render as a generic "try again later" — never as "retry now". */
+internal fun parseRetryAfterSeconds(header: String?): Long? =
+    header?.trim()?.toLongOrNull()?.takeIf { it >= 0 }
 
 /**
  * Talks to the six relay endpoints in Mobile_Mail_Relay.md. Blocking by design to match
@@ -234,22 +256,36 @@ class RelayMailSource(
         // Binary response: read bytes and metadata headers inside the use block, not execute()'s
         // string() path.
         val result = effectiveCallFactory().executeSync(request) { response ->
-            Triple(response.code, response.body?.bytes() ?: ByteArray(0), filenameFromDisposition(response.header("Content-Disposition")) to (response.header("Content-Type") ?: "application/octet-stream"))
+            DownloadResponse(
+                code = response.code,
+                bytes = response.body?.bytes() ?: ByteArray(0),
+                name = filenameFromDisposition(response.header("Content-Disposition")),
+                contentType = response.header("Content-Type") ?: "application/octet-stream",
+                retryAfter = response.header(HEADER_RETRY_AFTER),
+            )
         }
         val downloadException = result.exceptionOrNull()
         if (downloadException is javax.net.ssl.SSLPeerUnverifiedException) {
             return MailOutcome.CertificateMismatch(downloadException.message ?: "Certificate pin mismatch")
         }
-        val (code, bytes, meta) = result.getOrNull()
+        val (code, bytes, name, contentType, retryAfter) = result.getOrNull()
             ?: return MailOutcome.UpstreamFailure(downloadException?.message ?: "Network error")
+        if (code == 429) return rateLimited(bytes.toString(Charsets.UTF_8), retryAfter)
         if (code != 200) return mapErrorCode(code, bytes.toString(Charsets.UTF_8))
-        val (name, contentType) = meta
         return MailOutcome.Success(DownloadedAttachment(name = name.ifBlank { "attachment" }, mimeType = contentType.substringBefore(';').trim(), bytes = bytes))
     }
+
+    private fun <T> rateLimited(rawBody: String, retryAfter: String?): MailOutcome<T> =
+        MailOutcome.RateLimited(
+            message = rawBody.ifBlank { "Too many requests" },
+            retryAfterSeconds = parseRetryAfterSeconds(retryAfter),
+        )
 
     private fun mutationOutcome(code: Int, rawBody: String): MailOutcome<Unit> =
         if (code == 200) MailOutcome.Success(Unit) else mapErrorCode(code, rawBody)
 
+    // 429 is deliberately absent here: it needs the Retry-After header, which this signature
+    // can't see, so it is short-circuited in [execute] and [downloadAttachment] instead.
     private fun <T> mapErrorCode(code: Int, rawBody: String): MailOutcome<T> = when (code) {
         400 -> if (rawBody.contains(NOT_CONFIGURED_PREFIX, ignoreCase = true)) {
             MailOutcome.NotConfigured(rawBody)
@@ -257,19 +293,30 @@ class RelayMailSource(
             MailOutcome.BadRequest(rawBody.ifBlank { "Malformed request" })
         }
         401 -> MailOutcome.Unauthorized("Bad secret or unknown device")
+        // Only /api/mail/send returns 409 among the endpoints this app calls, and only for a
+        // client-protected account that asked the server to sign or encrypt. Gate on the
+        // marker anyway so a future 409 elsewhere doesn't inherit PGP wording.
+        409 -> if (rawBody.contains(CLIENT_SIDE_NEEDED_MARKER, ignoreCase = true)) {
+            MailOutcome.ClientSideNeeded(rawBody)
+        } else {
+            MailOutcome.BadRequest(rawBody.ifBlank { "Conflicting request" })
+        }
         502 -> MailOutcome.UpstreamFailure("Upstream IMAP/SMTP failure")
         503 -> MailOutcome.ServiceUnavailable(rawBody.ifBlank { "Mail relay is temporarily unavailable" })
         else -> MailOutcome.UpstreamFailure("Mail relay request failed ($code)")
     }
 
     private fun <T> execute(request: Request, onResponse: (code: Int, body: String) -> MailOutcome<T>): MailOutcome<T> {
-        val result = effectiveCallFactory().executeSync(request) { response -> response.code to response.body?.string().orEmpty() }
+        val result = effectiveCallFactory().executeSync(request) { response ->
+            Triple(response.code, response.body?.string().orEmpty(), response.header(HEADER_RETRY_AFTER))
+        }
         val exception = result.exceptionOrNull()
         if (exception is javax.net.ssl.SSLPeerUnverifiedException) {
             return MailOutcome.CertificateMismatch(exception.message ?: "Certificate pin mismatch")
         }
-        val (code, body) = result.getOrNull()
+        val (code, body, retryAfter) = result.getOrNull()
             ?: return MailOutcome.UpstreamFailure(exception?.message ?: "Network error")
+        if (code == 429) return rateLimited(body, retryAfter)
         return onResponse(code, body)
     }
 
@@ -326,5 +373,10 @@ private fun RelayEmailDto.toUiEmail(tab: String): Email {
         atUtc = atUtc,
         hasAttachments = hasAttachments,
         sourceMode = "relay",
+        pgpEncrypted = pgpEncrypted,
+        pgpSigned = pgpSigned,
+        pgpVerified = pgpVerified,
+        pgpSignerFingerprint = pgpSignerFingerprint,
+        pgpDecryptError = pgpDecryptError,
     )
 }

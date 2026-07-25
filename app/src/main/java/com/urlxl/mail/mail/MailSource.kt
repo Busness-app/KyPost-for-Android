@@ -24,6 +24,18 @@ sealed class MailOutcome<out T> {
      *  cert rotation on the user's own server, or an active MITM; either way, do not silently
      *  fall back to trusting it. */
     data class CertificateMismatch(val message: String) : MailOutcome<Nothing>()
+
+    /** Relay 409 on /api/mail/send with `clientSideNeeded` — the account's PGP key is
+     *  end-to-end protected, so the server refuses to sign or encrypt on its behalf rather
+     *  than silently sending in the clear. This app holds no private key, so the only ways
+     *  forward are sending unencrypted or using webmail. Distinct from [BadRequest] because
+     *  nothing about the request was malformed. */
+    data class ClientSideNeeded(val message: String) : MailOutcome<Nothing>()
+
+    /** Relay 429 with Retry-After — the server's per-device lockout after repeated bad
+     *  credentials. [retryAfterSeconds] is null when the header was absent or unparseable;
+     *  callers should still back off rather than retrying immediately. */
+    data class RateLimited(val message: String, val retryAfterSeconds: Long?) : MailOutcome<Nothing>()
 }
 
 /** Wording tailored per failure kind, per Mobile_Mail_Relay.md's error table — never auto-clears
@@ -36,6 +48,18 @@ fun MailOutcome<*>.userFacingMessage(): String? = when (this) {
     is MailOutcome.UpstreamFailure -> "Couldn't reach the mail server: $message"
     is MailOutcome.BadRequest -> message
     is MailOutcome.CertificateMismatch -> "This server's certificate has changed since pairing — clear pairing and re-pair in Settings if you expect this (e.g. you rotated your server's certificate)"
+    is MailOutcome.ClientSideNeeded -> "This account's PGP key is end-to-end protected, so signing and encryption aren't available on mobile. Send without them, or use webmail."
+    is MailOutcome.RateLimited -> retryAfterSeconds
+        ?.let { "Too many failed attempts — try again in ${formatRetryAfter(it)}" }
+        ?: "Too many failed attempts — try again later"
+}
+
+/** Whole minutes once past a minute, because a Retry-After of 900 read as "900 seconds" is
+ *  not something a user can act on. */
+internal fun formatRetryAfter(seconds: Long): String = when {
+    seconds < 60 -> "$seconds seconds"
+    seconds < 120 -> "a minute"
+    else -> "${seconds / 60} minutes"
 }
 
 data class MailFetchResult(

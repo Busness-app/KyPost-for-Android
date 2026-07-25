@@ -44,6 +44,19 @@ data class RelayEmailDto(
     // Only present when the parent response has "delta": true — "new" or "updated"
     // (Mobile_Mail_Relay.md Part 5, delta/cursor sync v2).
     val changeType: String? = null,
+    // PGP state, all `omitempty` server-side (backend inboxEmail), so the defaults
+    // below are the contract for a message with no OpenPGP content at all.
+    //
+    // pgpEncrypted with an EMPTY pgpDecryptError means the account is
+    // client-protected: the server deliberately did not decrypt, there is no body
+    // to render, and only the browser holds the key. A NON-empty pgpDecryptError
+    // means the server tried and failed — a different condition with a real error
+    // to show. See PgpMessageState.
+    val pgpEncrypted: Boolean = false,
+    val pgpSigned: Boolean = false,
+    val pgpVerified: Boolean = false,
+    val pgpSignerFingerprint: String = "",
+    val pgpDecryptError: String = "",
 )
 
 @Serializable

@@ -271,6 +271,8 @@ class InboxActivity : AppCompatActivity() {
         intent.putExtra("email_preview", email.preview)
         intent.putExtra("email_folder", currentFolder)
         intent.putExtra("email_has_attachments", email.hasAttachments)
+        intent.putExtra("email_pgp_encrypted", email.pgpEncrypted)
+        intent.putExtra("email_pgp_decrypt_error", email.pgpDecryptError)
         emailDetailLauncher.launch(intent)
     }
 

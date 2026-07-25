@@ -59,6 +59,13 @@
     <string name="email_attachments">Attachments</string>
     <string name="email_images_blocked_message">Images are blocked to protect your privacy.</string>
     <string name="email_show_images_button">Show images</string>
+    <string name="email_pgp_client_protected">This message is end-to-end encrypted. Only your browser holds the key, so it can\'t be read here.</string>
+    <string name="email_pgp_open_webmail_button">Open in webmail</string>
+    <string name="email_pgp_decrypt_failed">This message is encrypted and couldn\'t be decrypted: %1$s</string>
+    <string name="email_pgp_decrypted_by_server">This message was encrypted. The server decrypted it to show it here.</string>
+    <string name="email_pgp_no_webmail">Couldn\'t work out this server\'s web address — open this message in your browser.</string>
+    <string name="email_row_pgp_locked_description">Encrypted, can\'t be read in this app: %1$s</string>
+    <string name="email_row_pgp_failed_description">Encrypted, couldn\'t be decrypted: %1$s</string>
     <string name="attachment_downloading">Downloading %1$s…</string>
     <string name="attachment_opening">Opening %1$s…</string>
     <string name="attachment_saved">Saved %1$s to Downloads</string>

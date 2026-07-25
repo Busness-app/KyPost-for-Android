@@ -16,7 +16,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         GroupEntity::class,
         GroupLinkEntity::class,
     ],
-    version = 7,
+    version = 8,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -90,6 +90,19 @@ abstract class AppDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE `contacts` ADD COLUMN `pgpKeyFingerprint` TEXT")
                 db.execSQL("ALTER TABLE `contacts` ADD COLUMN `pgpKeyNeedsReverification` INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        // Defaults match a message with no OpenPGP content, which is what every
+        // already-cached row is as far as this app has ever known — so existing
+        // rows land in exactly the state they were already being rendered in.
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `emails` ADD COLUMN `pgpEncrypted` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `emails` ADD COLUMN `pgpSigned` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `emails` ADD COLUMN `pgpVerified` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `emails` ADD COLUMN `pgpSignerFingerprint` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `emails` ADD COLUMN `pgpDecryptError` TEXT NOT NULL DEFAULT ''")
             }
         }
     }

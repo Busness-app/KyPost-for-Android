@@ -22,6 +22,10 @@ import com.urlxl.mail.mail.MailOutcome
 import com.urlxl.mail.mail.MailRepository
 import com.urlxl.mail.mail.MailRuntime
 import com.urlxl.mail.mail.userFacingMessage
+import com.urlxl.mail.pgp.PgpMessageState
+import com.urlxl.mail.pgp.pgpMessageStateOf
+import com.urlxl.mail.pgp.webmailMessageUrl
+import com.urlxl.mail.push.PushRuntime
 import java.util.concurrent.Executors
 
 class EmailDetailActivity : AppCompatActivity() {
@@ -33,6 +37,9 @@ class EmailDetailActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private lateinit var imagesBlockedBar: View
     private lateinit var btnShowImages: Button
+    private lateinit var pgpBar: View
+    private lateinit var pgpText: TextView
+    private lateinit var btnOpenInWebmail: Button
     private var lastAppliedThemeName: String = ""
     private var lastRenderedHtml: String? = null
 
@@ -55,6 +62,8 @@ class EmailDetailActivity : AppCompatActivity() {
         val emailSender = intent.getStringExtra("email_sender") ?: "Unknown sender"
         val emailPreview = intent.getStringExtra("email_preview") ?: "No content"
         val hasAttachments = intent.getBooleanExtra("email_has_attachments", false)
+        val pgpEncrypted = intent.getBooleanExtra("email_pgp_encrypted", false)
+        val pgpDecryptError = intent.getStringExtra("email_pgp_decrypt_error").orEmpty()
 
         setTitle(R.string.email_title)
 
@@ -64,6 +73,9 @@ class EmailDetailActivity : AppCompatActivity() {
         divider = findViewById(R.id.emailDivider)
         imagesBlockedBar = findViewById(R.id.emailImagesBlockedBar)
         btnShowImages = findViewById(R.id.btnShowImages)
+        pgpBar = findViewById(R.id.emailPgpBar)
+        pgpText = findViewById(R.id.emailPgpText)
+        btnOpenInWebmail = findViewById(R.id.btnOpenInWebmail)
         val loading = findViewById<ProgressBar>(R.id.emailBodyLoading)
 
         subjectView.text = emailSubject
@@ -150,23 +162,85 @@ class EmailDetailActivity : AppCompatActivity() {
         ioExecutor.execute {
             val outcome = mailRepository.fetchBody(emailId, emailFolder)
             val content = (outcome as? MailOutcome.Success)?.value
-            val bodyToRender = content?.html?.takeIf { it.isNotBlank() } ?: TextUtils.htmlEncode(emailPreview)
+            val pgpState = pgpMessageStateOf(pgpEncrypted, pgpDecryptError, content?.html)
+            // A client-protected message has no body to fall back to, and emailPreview is the
+            // placeholder subject line — rendering it would look like the message content.
+            val bodyToRender = when (pgpState) {
+                PgpMessageState.CLIENT_PROTECTED, PgpMessageState.DECRYPT_FAILED -> ""
+                else -> content?.html?.takeIf { it.isNotBlank() } ?: TextUtils.htmlEncode(emailPreview)
+            }
             val hasRemoteImages = REMOTE_IMAGE_PATTERN.containsMatchIn(bodyToRender)
             val palette = getStoredThemePalette(this)
             val monoFontFace = ibmPlexMonoFontFaceCss(this)
 
             val htmlContent = buildEmailBodyHtml(bodyToRender, palette, monoFontFace, isDark = isDarkPalette(palette))
+            // Resolved here rather than in renderPgpBar: pairingForAuthenticatedCall reads the
+            // Keystore-backed EncryptedSharedPreferences, which is disk I/O and does not belong
+            // on the main thread. Only needed for the one state that offers the button.
+            val webmailUrl = if (pgpState == PgpMessageState.CLIENT_PROTECTED) {
+                PushRuntime.graph(this).repository.pairingForAuthenticatedCall()?.serverUrl
+                    ?.let { webmailMessageUrl(it, emailFolder, emailId) }
+            } else {
+                null
+            }
 
             runOnUiThread {
                 lastRenderedHtml = htmlContent
                 webView.loadDataWithBaseURL(null, htmlContent, "text/html", "utf-8", null)
                 loading.visibility = android.view.View.GONE
                 imagesBlockedBar.visibility = if (hasRemoteImages) View.VISIBLE else View.GONE
+                renderPgpBar(pgpState, pgpDecryptError, webmailUrl)
                 if (content != null) {
                     toRecipients = content.toAddresses
                     ccRecipients = content.ccAddresses
                 }
             }
+        }
+    }
+
+    /**
+     * The only screen that tells the user what happened to an encrypted message. Silence here is
+     * what the old build did, and it read as "this email is blank".
+     */
+    private fun renderPgpBar(
+        state: PgpMessageState,
+        pgpDecryptError: String,
+        webmailUrl: String?,
+    ) {
+        if (state == PgpMessageState.NONE) {
+            pgpBar.visibility = View.GONE
+            return
+        }
+        pgpBar.visibility = View.VISIBLE
+        btnOpenInWebmail.visibility = View.GONE
+
+        when (state) {
+            PgpMessageState.DECRYPT_FAILED ->
+                pgpText.text = getString(R.string.email_pgp_decrypt_failed, pgpDecryptError)
+            PgpMessageState.DECRYPTED_BY_SERVER ->
+                pgpText.text = getString(R.string.email_pgp_decrypted_by_server)
+            PgpMessageState.CLIENT_PROTECTED -> {
+                if (webmailUrl == null) {
+                    pgpText.text = getString(R.string.email_pgp_client_protected) +
+                        "\n" + getString(R.string.email_pgp_no_webmail)
+                } else {
+                    pgpText.text = getString(R.string.email_pgp_client_protected)
+                    btnOpenInWebmail.visibility = View.VISIBLE
+                    // Handed to the system, so an installed PWA or the user's browser opens it
+                    // with the session it already has — deliberately not an in-app WebView,
+                    // which shares no session and would put an account-password field inside
+                    // this app.
+                    btnOpenInWebmail.setOnClickListener {
+                        val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(webmailUrl))
+                        if (intent.resolveActivity(packageManager) != null) {
+                            startActivity(intent)
+                        } else {
+                            Toast.makeText(this, R.string.email_pgp_no_webmail, Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            }
+            PgpMessageState.NONE -> Unit
         }
     }
 

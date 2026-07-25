@@ -22,6 +22,11 @@ fun EmailEntity.toUiEmail(): Email = Email(
     atUtc = atUtc,
     hasAttachments = hasAttachments,
     sourceMode = sourceMode,
+    pgpEncrypted = pgpEncrypted,
+    pgpSigned = pgpSigned,
+    pgpVerified = pgpVerified,
+    pgpSignerFingerprint = pgpSignerFingerprint,
+    pgpDecryptError = pgpDecryptError,
 )
 
 fun Email.toEntity(folder: String, sourceMode: String): EmailEntity = EmailEntity(
@@ -40,4 +45,9 @@ fun Email.toEntity(folder: String, sourceMode: String): EmailEntity = EmailEntit
     atUtc = atUtc,
     hasAttachments = hasAttachments,
     sourceMode = sourceMode,
+    pgpEncrypted = pgpEncrypted,
+    pgpSigned = pgpSigned,
+    pgpVerified = pgpVerified,
+    pgpSignerFingerprint = pgpSignerFingerprint,
+    pgpDecryptError = pgpDecryptError,
 )

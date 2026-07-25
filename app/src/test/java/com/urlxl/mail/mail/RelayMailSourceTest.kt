@@ -366,4 +366,141 @@ class RelayMailSourceTest {
 
         assertTrue(outcome is MailOutcome.CertificateMismatch)
     }
+
+    /** The backend returns this when a client-protected account asks the server to sign or
+     *  encrypt. Before this mapping it fell through to "Mail relay request failed (409)". */
+    @Test
+    fun send409WithClientSideNeeded_mapsToClientSideNeeded() {
+        val body = """{"error":"this account's PGP key is end-to-end protected, so the server cannot sign or encrypt on your behalf","clientSideNeeded":true}"""
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = FakeCallFactory { request -> jsonResponse(request, body, code = 409) },
+        )
+
+        val outcome = source.sendMail(MailDraft(to = "a@example.com", subject = "s", body = "b"))
+
+        assertTrue("expected ClientSideNeeded, got $outcome", outcome is MailOutcome.ClientSideNeeded)
+    }
+
+    /** A 409 without the marker must not inherit PGP wording — nothing else this app calls
+     *  returns 409 today, but the mapping shouldn't assume that forever. */
+    @Test
+    fun send409WithoutMarker_staysBadRequest() {
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = FakeCallFactory { request -> jsonResponse(request, """{"error":"conflict"}""", code = 409) },
+        )
+
+        val outcome = source.sendMail(MailDraft(to = "a@example.com", subject = "s", body = "b"))
+
+        assertTrue("expected BadRequest, got $outcome", outcome is MailOutcome.BadRequest)
+    }
+
+    @Test
+    fun rateLimit429_carriesRetryAfterSeconds() {
+        val callFactory = FakeCallFactory { request ->
+            Response.Builder()
+                .request(request)
+                .protocol(Protocol.HTTP_1_1)
+                .code(429)
+                .message("Too Many Requests")
+                .header("Retry-After", "120")
+                .body("too many requests".toResponseBody("text/plain".toMediaType()))
+                .build()
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = callFactory,
+        )
+
+        val outcome = source.fetchInbox("INBOX", 50)
+
+        assertTrue("expected RateLimited, got $outcome", outcome is MailOutcome.RateLimited)
+        assertEquals(120L, (outcome as MailOutcome.RateLimited).retryAfterSeconds)
+    }
+
+    /** A missing or non-numeric Retry-After must not be reported as "retry now" — null means the
+     *  caller renders a generic "try again later". */
+    @Test
+    fun rateLimit429_withoutUsableRetryAfter_hasNullDelay() {
+        val callFactory = FakeCallFactory { request ->
+            Response.Builder()
+                .request(request)
+                .protocol(Protocol.HTTP_1_1)
+                .code(429)
+                .message("Too Many Requests")
+                .header("Retry-After", "Wed, 21 Oct 2026 07:28:00 GMT")
+                .body("too many requests".toResponseBody("text/plain".toMediaType()))
+                .build()
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = callFactory,
+        )
+
+        val outcome = source.fetchInbox("INBOX", 50)
+
+        assertTrue("expected RateLimited, got $outcome", outcome is MailOutcome.RateLimited)
+        assertNull((outcome as MailOutcome.RateLimited).retryAfterSeconds)
+    }
+
+    @Test
+    fun rateLimit429_onDownloadAttachment_alsoMapsToRateLimited() {
+        val callFactory = FakeCallFactory { request ->
+            Response.Builder()
+                .request(request)
+                .protocol(Protocol.HTTP_1_1)
+                .code(429)
+                .message("Too Many Requests")
+                .header("Retry-After", "30")
+                .body("too many requests".toResponseBody("text/plain".toMediaType()))
+                .build()
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = callFactory,
+        )
+
+        val outcome = source.downloadAttachment("m1", "INBOX", 0)
+
+        assertTrue("expected RateLimited, got $outcome", outcome is MailOutcome.RateLimited)
+        assertEquals(30L, (outcome as MailOutcome.RateLimited).retryAfterSeconds)
+    }
+
+    @Test
+    fun inboxResponse_carriesPgpFieldsThroughToUiEmail() {
+        val body = """
+            {"tabs":["Inbox"],"byTab":{"Inbox":[
+              {"messageId":"1","sender":"a@example.com","subject":"[Encrypted] Email Sent by KyPost",
+               "pgpEncrypted":true,"pgpSigned":true,"pgpVerified":true,"pgpSignerFingerprint":"ABCD"},
+              {"messageId":"2","sender":"b@example.com","subject":"plain"}
+            ]},"cursor":"7"}
+        """.trimIndent()
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = FakeCallFactory { request -> jsonResponse(request, body) },
+        )
+
+        val outcome = source.fetchInbox("INBOX", 50)
+
+        assertTrue("expected Success, got $outcome", outcome is MailOutcome.Success)
+        val messages = (outcome as MailOutcome.Success).value.messages
+        val encrypted = messages.first { it.id == "1" }
+        assertTrue(encrypted.pgpEncrypted)
+        assertTrue(encrypted.pgpSigned)
+        assertTrue(encrypted.pgpVerified)
+        assertEquals("ABCD", encrypted.pgpSignerFingerprint)
+        assertEquals("", encrypted.pgpDecryptError)
+        // Absent fields are omitempty server-side, so their defaults are the contract for
+        // ordinary mail — not an unknown state.
+        val plain = messages.first { it.id == "2" }
+        assertEquals(false, plain.pgpEncrypted)
+        assertEquals("", plain.pgpSignerFingerprint)
+    }
 }

@@ -110,6 +110,33 @@ class MigrationTest {
         }
     }
 
+    @Test
+    fun migrate7To8_addsPgpColumns_andDefaultsExistingRowToNoPgp() {
+        helper.createDatabase(TEST_DB, 7).apply {
+            execSQL(
+                "INSERT INTO emails (messageId, folder, sender, subject, sourceMode) " +
+                    "VALUES ('42', 'INBOX', 'a@example.com', 'Hello', 'relay')",
+            )
+            close()
+        }
+
+        val migrated = helper.runMigrationsAndValidate(TEST_DB, 8, true, AppDatabase.MIGRATION_7_8)
+
+        migrated.query("SELECT * FROM emails WHERE messageId = '42'").use { cursor ->
+            assertEquals(1, cursor.count)
+            assertEquals(true, cursor.moveToFirst())
+            assertEquals("Hello", cursor.getString(cursor.getColumnIndexOrThrow("subject")))
+            // An already-cached row must land as "no OpenPGP content", which is
+            // the only state this app has ever rendered it in — not as encrypted,
+            // which would hide a body the user could previously read.
+            assertEquals(0, cursor.getInt(cursor.getColumnIndexOrThrow("pgpEncrypted")))
+            assertEquals(0, cursor.getInt(cursor.getColumnIndexOrThrow("pgpSigned")))
+            assertEquals(0, cursor.getInt(cursor.getColumnIndexOrThrow("pgpVerified")))
+            assertEquals("", cursor.getString(cursor.getColumnIndexOrThrow("pgpSignerFingerprint")))
+            assertEquals("", cursor.getString(cursor.getColumnIndexOrThrow("pgpDecryptError")))
+        }
+    }
+
     private companion object {
         const val TEST_DB = "migration-test"
     }

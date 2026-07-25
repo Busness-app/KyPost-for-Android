@@ -39,6 +39,33 @@ Owns production Android app code and resources.
   picks the active source, writes results into the Room cache (`data/AppDatabase`,
   `EmailDao.replaceFolderSnapshot`), and is what `InboxActivity`/`EmailDetailActivity`/
   `ComposeActivity` call — none of them instantiate `MailGateway` directly anymore.
+- PGP state on relay inbox rows: `pgpEncrypted`, `pgpSigned`, `pgpVerified`, `pgpSignerFingerprint`,
+  `pgpDecryptError`. All are `omitempty` server-side, so the Kotlin defaults (false/"") are the
+  contract for a message with no OpenPGP content, not an unknown state. `pgp.PgpMessageState` is the
+  single place the rule lives: `pgpEncrypted` with an EMPTY `pgpDecryptError` means the account's key
+  is end-to-end protected — the server holds no key, there is no body, and **this app cannot decrypt
+  it**; a NON-empty `pgpDecryptError` means the server tried and failed, which is a different state
+  with a real error to show; `pgpEncrypted` with a body means the server decrypted it, which
+  `EmailDetailActivity` surfaces rather than rendering silently, because the user should be able to
+  tell the server read their mail. Deliberately no on-device private key: the phone pairs by QR and
+  never learns the account password that the wrapped key envelope is sealed under (see the server
+  repo's `docs/E2E_PGP.md` "Mobile plan"). Do not add one without revisiting that decision.
+  `pgpRowMarker` marks inbox rows for the two states that yield nothing readable (🔒 client-protected,
+  ⚠ decrypt failed) and deliberately leaves server-decrypted rows unmarked — those open normally, so
+  a marker would sit on most rows of a server-mode mailbox carrying nothing actionable. `EmailAdapter`
+  also sets a spelled-out `contentDescription` for those two, because screen readers announce emoji
+  inconsistently.
+- Client-protected messages offer "Open in webmail" via `pgp.webmailMessageUrl`, which builds
+  `{serverUrl}/read?mailbox=&message=` — the same route a web push click uses, so no server change
+  backs it. INBOX is sent as an absent `mailbox` param, matching the links the web app builds for
+  itself. It is launched as an `ACTION_VIEW` intent so an installed PWA or the user's browser handles
+  it, with the session it already has; **never** an in-app WebView, which would share no session and
+  would put an account-password field inside this app.
+- `MailOutcome.ClientSideNeeded` is relay 409 carrying `clientSideNeeded` on `/api/mail/send` — a
+  client-protected account asked the server to sign or encrypt and it refused rather than silently
+  sending in the clear. `MailOutcome.RateLimited` is relay 429 with `Retry-After` (the per-device
+  lockout); it is mapped in `RelayMailSource.execute`/`downloadAttachment` rather than `mapErrorCode`,
+  which cannot see response headers.
 - Inbox tabs: Manual IMAP mode derives them from IMAP user flags (keywords) attached to messages,
   unchanged (`KeywordTabs`). Relay mode's tabs come from the server's `tabs`/`label` response fields
   instead — the two are genuinely different concepts, not unified into one function.
@@ -92,6 +119,11 @@ Owns production Android app code and resources.
 - Add or update unit tests for contact-sync reconciliation/delta-merge logic and relay response
   mapping (HTTP status → `MailOutcome`/`ContactSyncOutcome`, and the `to`/`cc`/`bcc`
   comma-string-not-array request shape) under `app/src/test/`.
+- Keep the PGP banner rule and the webmail URL as pure functions (`pgp/PgpMessageState.kt`,
+  `pgp/WebmailDeepLink.kt`) with JVM unit tests, rather than deriving either inside an Activity —
+  the Activity only picks views. Room schema changes need a matching `MigrationTest` case in
+  `app/src/androidTest/`; migrations may set SQLite column defaults without the entity declaring
+  `@ColumnInfo(defaultValue=…)`, since Room only validates a default when the entity side has one.
 
 # Child DOX Index
 

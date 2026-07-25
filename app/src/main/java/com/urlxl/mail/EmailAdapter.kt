@@ -9,6 +9,9 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.cardview.widget.CardView
 import androidx.recyclerview.widget.RecyclerView
+import com.urlxl.mail.pgp.PgpMessageState
+import com.urlxl.mail.pgp.pgpMessageStateOf
+import com.urlxl.mail.pgp.pgpRowMarker
 
 class EmailAdapter(
     private var emails: List<Email>,
@@ -23,7 +26,20 @@ class EmailAdapter(
         private val senderTextView: TextView = view.findViewById(R.id.textViewSender)
 
         fun bind(email: Email, palette: ThemePalette) {
-            subjectTextView.text = if (email.hasAttachments) "📎 ${email.subject}" else email.subject
+            // A message this app can't render is worth knowing before tapping it — otherwise the
+            // only signal is opening it and finding nothing there.
+            val pgpState = pgpMessageStateOf(email.pgpEncrypted, email.pgpDecryptError, email.body)
+            val markers = listOfNotNull(pgpRowMarker(pgpState), if (email.hasAttachments) "📎" else null)
+            subjectTextView.text = (markers + email.subject).joinToString(" ")
+            // The markers are emoji, which screen readers announce inconsistently or not at all,
+            // so spell the state out instead of relying on them being read.
+            subjectTextView.contentDescription = when (pgpState) {
+                PgpMessageState.CLIENT_PROTECTED ->
+                    itemView.context.getString(R.string.email_row_pgp_locked_description, email.subject)
+                PgpMessageState.DECRYPT_FAILED ->
+                    itemView.context.getString(R.string.email_row_pgp_failed_description, email.subject)
+                else -> null
+            }
             senderTextView.text = email.sender
 
             val panel = Color.parseColor(palette.panel)

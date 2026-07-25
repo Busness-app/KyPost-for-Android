@@ -16,4 +16,12 @@ data class Email(
     val atUtc: String? = null,
     val hasAttachments: Boolean = false,
     val sourceMode: String = "relay",
+    // PGP state carried through from the relay; see RelayEmailDto for the
+    // encrypted-vs-failed-decrypt distinction and PgpMessageState for how it is
+    // turned into something to render.
+    val pgpEncrypted: Boolean = false,
+    val pgpSigned: Boolean = false,
+    val pgpVerified: Boolean = false,
+    val pgpSignerFingerprint: String = "",
+    val pgpDecryptError: String = "",
 )
