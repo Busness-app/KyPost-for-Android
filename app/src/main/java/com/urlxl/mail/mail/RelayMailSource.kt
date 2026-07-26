@@ -297,15 +297,26 @@ class RelayMailSource(
             MailOutcome.BadRequest(rawBody.ifBlank { "Malformed request" })
         }
         401 -> MailOutcome.Unauthorized("Bad secret or unknown device")
-        // Only /api/mail/send returns 409 among the endpoints this app calls, and only for a
-        // client-protected account that asked the server to sign or encrypt. Gate on the
-        // marker anyway so a future 409 elsewhere doesn't inherit PGP wording.
-        409 -> if (rawBody.contains(CLIENT_SIDE_NEEDED_MARKER, ignoreCase = true)) {
-            MailOutcome.ClientSideNeeded(rawBody)
-        } else {
-            MailOutcome.BadRequest(rawBody.ifBlank { "Conflicting request" })
+        // Two PGP refusals share this status. clientSideNeeded is checked first to match the
+        // server's own precedence: a client-custody account cannot encrypt server-side at all, so
+        // its keyless recipients are beside the point and a pickup dialog would be nonsense.
+        409 -> when {
+            rawBody.contains(CLIENT_SIDE_NEEDED_MARKER, ignoreCase = true) ->
+                MailOutcome.ClientSideNeeded(rawBody)
+            else -> {
+                val parsed = runCatching { json.decodeFromString<RelayPickupFallbackDto>(rawBody) }.getOrNull()
+                if (parsed != null && parsed.keylessRecipients.isNotEmpty()) {
+                    MailOutcome.PickupFallbackNeeded(parsed.keylessRecipients, parsed.error)
+                } else {
+                    // Deliberately not rawBody: an unrecognized 409 body is JSON, and raw JSON in
+                    // a toast is worse than a generic sentence.
+                    MailOutcome.BadRequest("Conflicting request")
+                }
+            }
         }
-        502 -> MailOutcome.UpstreamFailure("Upstream IMAP/SMTP failure")
+        // Plain text, and it distinguishes "SMTP failed" from "every pickup link failed to
+        // deliver; nothing was sent" — a distinction a fixed string throws away.
+        502 -> MailOutcome.UpstreamFailure(rawBody.ifBlank { "Upstream IMAP/SMTP failure" })
         503 -> MailOutcome.ServiceUnavailable(rawBody.ifBlank { "Mail relay is temporarily unavailable" })
         else -> MailOutcome.UpstreamFailure("Mail relay request failed ($code)")
     }

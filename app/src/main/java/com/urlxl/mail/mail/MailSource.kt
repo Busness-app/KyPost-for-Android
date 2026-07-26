@@ -32,6 +32,16 @@ sealed class MailOutcome<out T> {
      *  nothing about the request was malformed. */
     data class ClientSideNeeded(val message: String) : MailOutcome<Nothing>()
 
+    /** Relay 409 on /api/mail/send carrying `keylessRecipients` — one or more recipients have no
+     *  usable PGP key, and the server refused rather than quietly falling back to a one-time link
+     *  that stores this message's plaintext on the server for seven days. **Nothing was
+     *  delivered:** the refusal happens before any SMTP, so re-sending the same draft with
+     *  [MailDraft.allowPickupFallback] once the user has confirmed is safe and cannot duplicate. */
+    data class PickupFallbackNeeded(
+        val keylessRecipients: List<String>,
+        val message: String,
+    ) : MailOutcome<Nothing>()
+
     /** Relay 429 with Retry-After — the server's per-device lockout after repeated bad
      *  credentials. [retryAfterSeconds] is null when the header was absent or unparseable;
      *  callers should still back off rather than retrying immediately. */
@@ -49,6 +59,8 @@ fun MailOutcome<*>.userFacingMessage(): String? = when (this) {
     is MailOutcome.BadRequest -> message
     is MailOutcome.CertificateMismatch -> "This server's certificate has changed since pairing — clear pairing and re-pair in Settings if you expect this (e.g. you rotated your server's certificate)"
     is MailOutcome.ClientSideNeeded -> "This account's PGP key is end-to-end protected, so signing and encryption aren't available on mobile. Send without them, or use webmail."
+    is MailOutcome.PickupFallbackNeeded ->
+        "No PGP key on file for ${keylessRecipients.joinToString(", ")} — nothing was sent."
     is MailOutcome.RateLimited -> retryAfterSeconds
         ?.let { "Too many failed attempts — try again in ${formatRetryAfter(it)}" }
         ?: "Too many failed attempts — try again later"

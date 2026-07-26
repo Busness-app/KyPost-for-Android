@@ -130,5 +130,6 @@ private fun <T> MailOutcome<T>.toUnitOutcome(): MailOutcome<Unit> = when (this) 
     is MailOutcome.BadRequest -> this
     is MailOutcome.CertificateMismatch -> this
     is MailOutcome.ClientSideNeeded -> this
+    is MailOutcome.PickupFallbackNeeded -> this
     is MailOutcome.RateLimited -> this
 }

@@ -3,6 +3,7 @@ package com.urlxl.mail.mail
 import com.urlxl.mail.HEADER_DEVICE_ID
 import com.urlxl.mail.HEADER_DEVICE_SECRET
 import com.urlxl.mail.push.PairingData
+import kotlinx.serialization.json.Json
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
@@ -409,6 +410,155 @@ class RelayMailSourceTest {
         val outcome = source.sendMail(MailDraft(to = "a@example.com", subject = "s", body = "b"))
 
         assertTrue("expected BadRequest, got $outcome", outcome is MailOutcome.BadRequest)
+    }
+
+    /** The keyless-recipient refusal. Nothing was delivered — the 409 happens before any SMTP —
+     *  so re-sending with allowPickupFallback cannot duplicate the message. */
+    @Test
+    fun send409WithKeylessRecipients_mapsToPickupFallbackNeeded() {
+        val body = """{"error":"some recipients have no usable PGP key","keylessRecipients":["carol@example.com"],"pickupFallbackAvailable":true}"""
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = FakeCallFactory { request -> jsonResponse(request, body, code = 409) },
+        )
+
+        val outcome = source.sendMail(
+            MailDraft(to = "carol@example.com", subject = "s", body = "b", encrypt = true),
+        )
+
+        assertTrue("expected PickupFallbackNeeded, got $outcome", outcome is MailOutcome.PickupFallbackNeeded)
+        assertEquals(
+            listOf("carol@example.com"),
+            (outcome as MailOutcome.PickupFallbackNeeded).keylessRecipients,
+        )
+    }
+
+    /** Both refusals are 409 and are told apart by which field is present. A client-custody
+     *  account must keep resolving to ClientSideNeeded — offering it a pickup-link dialog would
+     *  answer a question it never got to ask, and no re-send from this device can fix it. */
+    @Test
+    fun send409WithBothMarkers_prefersClientSideNeeded() {
+        val body = """{"error":"e2e","clientSideNeeded":true,"keylessRecipients":["carol@example.com"]}"""
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = FakeCallFactory { request -> jsonResponse(request, body, code = 409) },
+        )
+
+        val outcome = source.sendMail(
+            MailDraft(to = "carol@example.com", subject = "s", body = "b", encrypt = true),
+        )
+
+        assertTrue("expected ClientSideNeeded, got $outcome", outcome is MailOutcome.ClientSideNeeded)
+    }
+
+    /** An unrecognized 409 must not become a pickup prompt, and must not show the user raw JSON. */
+    @Test
+    fun send409WithNeitherField_isGenericBadRequest() {
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = FakeCallFactory { request -> jsonResponse(request, """{"error":"conflict"}""", code = 409) },
+        )
+
+        val outcome = source.sendMail(MailDraft(to = "a@example.com", subject = "s", body = "b"))
+
+        assertTrue("expected BadRequest, got $outcome", outcome is MailOutcome.BadRequest)
+        assertTrue(
+            "raw JSON must not reach the user: $outcome",
+            !(outcome as MailOutcome.BadRequest).message.contains("{"),
+        )
+    }
+
+    /** A 409 whose keylessRecipients is present but empty carries no addresses to name in the
+     *  dialog, so it cannot drive the confirmation flow. */
+    @Test
+    fun send409WithEmptyKeylessList_isGenericBadRequest() {
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = FakeCallFactory {
+                request -> jsonResponse(request, """{"error":"x","keylessRecipients":[]}""", code = 409)
+            },
+        )
+
+        val outcome = source.sendMail(
+            MailDraft(to = "a@example.com", subject = "s", body = "b", encrypt = true),
+        )
+
+        assertTrue("expected BadRequest, got $outcome", outcome is MailOutcome.BadRequest)
+    }
+
+    /** 502 bodies are plain text and say which of two things happened — SMTP failed, or every
+     *  pickup link failed to deliver. Both mean nothing was sent, and the second is invisible
+     *  under a fixed "Upstream IMAP/SMTP failure" string. */
+    @Test
+    fun send502_carriesTheServersPlainTextReason() {
+        val reason = "failed to deliver a pickup link to any recipient; nothing was sent"
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = FakeCallFactory { request -> jsonResponse(request, reason, code = 502) },
+        )
+
+        val outcome = source.sendMail(
+            MailDraft(to = "a@example.com", subject = "s", body = "b", encrypt = true),
+        )
+
+        assertEquals(reason, (outcome as MailOutcome.UpstreamFailure).message)
+    }
+
+    /** The confirmed re-send must differ from the refused attempt in exactly one field. The
+     *  Activity achieves this by holding the same MailDraft and calling .copy() (Task 8); this
+     *  pins the wire-level property that makes it safe — a rebuilt message could differ subtly,
+     *  and the recipients who *do* have keys would get something other than what was refused. */
+    @Test
+    fun resendWithFallback_differsOnlyInAllowPickupFallback() {
+        val callFactory = BodyRecordingCallFactory { request ->
+            jsonResponse(request, """{"ok":true,"sentSaved":true,"warning":""}""")
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = callFactory,
+        )
+        val draft = MailDraft(
+            to = "carol@example.com", cc = "bob@example.com", subject = "hi", body = "<p>hello</p>",
+            mode = "html", encrypt = true, sign = true,
+        )
+
+        source.sendMail(draft)
+        source.sendMail(draft.copy(allowPickupFallback = true))
+
+        // Compared structurally, not as strings: kotlinx.serialization's encodeDefaults is false,
+        // so the refused attempt omits allowPickupFallback entirely rather than sending false.
+        val wireJson = Json { ignoreUnknownKeys = true }
+        val first = wireJson.decodeFromString<RelayMailRequestDto>(callFactory.bodies[0])
+        val second = wireJson.decodeFromString<RelayMailRequestDto>(callFactory.bodies[1])
+        assertEquals(false, first.allowPickupFallback)
+        assertEquals(true, second.allowPickupFallback)
+        assertEquals(first, second.copy(allowPickupFallback = false))
+    }
+
+    /** A 200 with a non-empty warning is a success with a notice — the message was sent. It must
+     *  never map to a failure, which would invite a retry that duplicates the message. */
+    @Test
+    fun send200WithWarning_isSuccessCarryingTheWarning() {
+        val body = """{"ok":true,"sentSaved":false,"warning":"failed to deliver a pickup link to 1 of 3 recipient(s)"}"""
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = FakeCallFactory { request -> jsonResponse(request, body) },
+        )
+
+        val outcome = source.sendMail(
+            MailDraft(to = "a@example.com", subject = "s", body = "b", encrypt = true),
+        )
+
+        val sent = (outcome as MailOutcome.Success).value
+        assertEquals("failed to deliver a pickup link to 1 of 3 recipient(s)", sent.warning)
+        assertEquals(false, sent.sentSaved)
     }
 
     @Test

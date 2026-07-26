@@ -144,3 +144,13 @@ data class RelayAttachmentListResponseDto(
 
 @Serializable
 data class RelaySendResponseDto(val ok: Boolean = false, val sentSaved: Boolean = false, val warning: String = "")
+
+/** The 409 body /api/mail/send returns when recipients have no usable PGP key. Both PGP refusals
+ *  are 409 and are told apart by which field is present, never by status or error prose — the
+ *  prose is user-facing copy and may be reworded. */
+@Serializable
+data class RelayPickupFallbackDto(
+    val error: String = "",
+    val keylessRecipients: List<String> = emptyList(),
+    val pickupFallbackAvailable: Boolean = false,
+)
