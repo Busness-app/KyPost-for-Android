@@ -3,6 +3,7 @@ package com.urlxl.mail.pgp
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 private const val INBOX = "INBOX"
+private const val DRAFTS = "Drafts"
 
 /**
  * Builds the webmail URL that opens one specific message.
@@ -32,4 +33,20 @@ fun webmailMessageUrl(serverUrl: String, mailbox: String, messageId: String): St
         .addQueryParameter("message", messageId)
         .build()
         .toString()
+}
+
+/**
+ * The webmail URL that opens the Drafts mailbox, used after handing a client-custody composition
+ * off to the browser.
+ *
+ * It targets the mailbox rather than one specific draft because `POST /api/mail/draft` answers with
+ * a bare `{ok: true}` and no UID — there is nothing to deep-link to. The draft the user just saved
+ * is the newest one there.
+ *
+ * Unlike INBOX in [webmailMessageUrl], Drafts is passed explicitly: an absent mailbox means INBOX
+ * to the web app's read page.
+ */
+fun webmailDraftsUrl(serverUrl: String): String? {
+    val base = "${serverUrl.trimEnd('/')}/read".toHttpUrlOrNull() ?: return null
+    return base.newBuilder().addQueryParameter("mailbox", DRAFTS).build().toString()
 }

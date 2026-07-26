@@ -62,4 +62,27 @@ class WebmailDeepLinkTest {
         assertNull(webmailMessageUrl("", "INBOX", "42"))
         assertNull(webmailMessageUrl("https://mail.example.com", "INBOX", ""))
     }
+
+    @Test
+    fun draftsUrl_pointsAtTheDraftsMailbox() {
+        assertEquals(
+            "https://relay.example.com/read?mailbox=Drafts",
+            webmailDraftsUrl("https://relay.example.com"),
+        )
+    }
+
+    @Test
+    fun draftsUrl_toleratesATrailingSlash() {
+        assertEquals(
+            "https://relay.example.com/read?mailbox=Drafts",
+            webmailDraftsUrl("https://relay.example.com/"),
+        )
+    }
+
+    /** Same contract as webmailMessageUrl: an unusable server URL renders as no button rather
+     *  than a dead one. */
+    @Test
+    fun draftsUrl_isNullForAnUnusableServerUrl() {
+        assertNull(webmailDraftsUrl("not a url"))
+    }
 }
