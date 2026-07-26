@@ -1,0 +1,227 @@
+package com.urlxl.mail
+
+import com.urlxl.mail.pgp.PgpBootstrapClient
+import com.urlxl.mail.pgp.PgpComposeState
+import com.urlxl.mail.pgp.RecipientKeyClient
+import com.urlxl.mail.push.PairingData
+import kotlinx.coroutines.runBlocking
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.Protocol
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
+import okio.Timeout
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+import org.junit.Before
+import org.junit.Test
+import java.io.IOException
+
+/** Fakes OkHttp's [Call.Factory]; mirrors ContactSyncClientTest's hand-rolled-fake style (no
+ *  mocking framework, no MockWebServer dependency in this repo). */
+private class FakeCallFactory(private val responder: (Request) -> Response) : Call.Factory {
+    val requests = mutableListOf<Request>()
+
+    override fun newCall(request: Request): Call {
+        requests.add(request)
+        return FakeCall(request, responder(request))
+    }
+}
+
+private class ThrowingCallFactory(private val exception: Exception) : Call.Factory {
+    override fun newCall(request: Request): Call = ThrowingCall(request, exception)
+}
+
+private class FakeCall(private val req: Request, private val response: Response) : Call {
+    private var executed = false
+    private var canceled = false
+    override fun request(): Request = req
+    override fun execute(): Response {
+        executed = true
+        return response
+    }
+    override fun enqueue(responseCallback: Callback) = responseCallback.onResponse(this, response)
+    override fun cancel() { canceled = true }
+    override fun isExecuted(): Boolean = executed
+    override fun isCanceled(): Boolean = canceled
+    override fun timeout(): Timeout = Timeout.NONE
+    override fun clone(): Call = FakeCall(req, response)
+}
+
+private class ThrowingCall(private val req: Request, private val exception: Exception) : Call {
+    override fun request(): Request = req
+    override fun execute(): Response = throw exception
+    override fun enqueue(responseCallback: Callback) = responseCallback.onFailure(this, IOException(exception))
+    override fun cancel() {}
+    override fun isExecuted(): Boolean = false
+    override fun isCanceled(): Boolean = false
+    override fun timeout(): Timeout = Timeout.NONE
+    override fun clone(): Call = ThrowingCall(req, exception)
+}
+
+private fun response(request: Request, body: String, code: Int, message: String = "OK"): Response = Response.Builder()
+    .request(request)
+    .protocol(Protocol.HTTP_1_1)
+    .code(code)
+    .message(message)
+    .body(body.toResponseBody("application/json".toMediaType()))
+    .build()
+
+private fun testPairing(deviceId: String = "d", deviceSecret: String = "s") = PairingData(
+    subscriberId = "sub-1",
+    serverUrl = "https://relay.example.com",
+    registrationUrl = "",
+    pairingToken = "",
+    deviceId = deviceId,
+    deviceSecret = deviceSecret,
+    pairedAtEpochMs = 0L,
+)
+
+class ComposePgpControllerTest {
+
+    /** The bootstrap cache is process-scoped, so it has to be cleared between tests. */
+    @Before
+    fun clearCache() = ComposePgpController.resetSessionCache()
+
+    // ---- splitAddresses ----
+
+    @Test
+    fun splitAddresses_flattensTheThreeCommaJoinedFields() {
+        assertEquals(
+            listOf("a@example.com", "b@example.com", "c@example.com"),
+            splitAddresses("a@example.com, b@example.com", "", "c@example.com"),
+        )
+    }
+
+    /** The same address in To and CC is one recipient to check, and duplicate names in the
+     *  confirmation dialog would read as two different people. */
+    @Test
+    fun splitAddresses_deduplicatesCaseInsensitively() {
+        assertEquals(
+            listOf("a@example.com"),
+            splitAddresses("a@example.com", "A@Example.com", ""),
+        )
+    }
+
+    @Test
+    fun splitAddresses_dropsBlanksAndTrimsWhitespace() {
+        assertEquals(listOf("a@example.com"), splitAddresses(" a@example.com , , ", "", ""))
+    }
+
+    // ---- composeState ----
+
+    @Test
+    fun composeState_mapsBootstrapThroughPgpComposeStateOf() = runBlocking {
+        val controller = controllerWith(bootstrapBody = """{"hasIdentity":true,"protection":"server"}""")
+
+        assertEquals(
+            PgpComposeState(canEncrypt = true, canSign = true, handoffToWebmail = false),
+            controller.composeState(),
+        )
+    }
+
+    /** Not paired is not "no identity": there is no account to ask about, so nothing is offered. */
+    @Test
+    fun composeState_withoutPairing_hidesEverything() = runBlocking {
+        val controller = ComposePgpController(
+            pairingProvider = { null },
+            bootstrapClient = PgpBootstrapClient(callFactory = FakeCallFactory { request -> response(request, "{}", 200) }),
+            recipientKeyClient = RecipientKeyClient(callFactory = FakeCallFactory { request -> response(request, "{}", 200) }),
+        )
+
+        assertEquals(
+            PgpComposeState(canEncrypt = false, canSign = false, handoffToWebmail = false),
+            controller.composeState(),
+        )
+    }
+
+    @Test
+    fun composeState_cachesASuccessForTheProcess() = runBlocking {
+        var calls = 0
+        val callFactory = FakeCallFactory { request ->
+            calls++
+            response(request, """{"hasIdentity":true,"protection":"server"}""", 200)
+        }
+        val controller = ComposePgpController(
+            pairingProvider = { testPairing() },
+            bootstrapClient = PgpBootstrapClient(callFactory = callFactory),
+            recipientKeyClient = RecipientKeyClient(callFactory = callFactory),
+        )
+
+        controller.composeState()
+        controller.composeState()
+
+        assertEquals(1, calls)
+    }
+
+    /** A failure must not be cached: one flaky request would otherwise disable encryption for the
+     *  rest of the session. */
+    @Test
+    fun composeState_doesNotCacheAFailure() = runBlocking {
+        var calls = 0
+        val callFactory = FakeCallFactory { request ->
+            calls++
+            response(request, "unavailable", 503)
+        }
+        val controller = ComposePgpController(
+            pairingProvider = { testPairing() },
+            bootstrapClient = PgpBootstrapClient(callFactory = callFactory),
+            recipientKeyClient = RecipientKeyClient(callFactory = callFactory),
+        )
+
+        controller.composeState()
+        controller.composeState()
+
+        assertEquals(2, calls)
+    }
+
+    // ---- keylessRecipients ----
+
+    @Test
+    fun keylessRecipients_returnsTheAddressesWithNoKeyOnFile() = runBlocking {
+        val body = """{"results":[
+            {"address":"a@example.com","hasKey":true,"revoked":false,"expired":false,"tier":"contact-verified"},
+            {"address":"b@example.com","hasKey":false,"revoked":false,"expired":false,"tier":"none"}
+        ]}"""
+        val controller = controllerWith(recipientBody = body)
+
+        assertEquals(
+            listOf("b@example.com"),
+            controller.keylessRecipients(listOf("a@example.com", "b@example.com")),
+        )
+    }
+
+    /** A failed preflight yields no warning rather than a false one. The 409 is the real gate, so
+     *  a failed lookup can never be the reason the fallback gets used. */
+    @Test
+    fun keylessRecipients_isEmptyOnFailure() = runBlocking {
+        val controller = controllerWith(recipientStatus = 500, recipientBody = "boom")
+
+        assertTrue(controller.keylessRecipients(listOf("a@example.com")).isEmpty())
+    }
+
+    @Test
+    fun keylessRecipients_withoutPairing_isEmpty() = runBlocking {
+        val controller = ComposePgpController(
+            pairingProvider = { null },
+            bootstrapClient = PgpBootstrapClient(callFactory = FakeCallFactory { request -> response(request, "{}", 200) }),
+            recipientKeyClient = RecipientKeyClient(callFactory = FakeCallFactory { request -> response(request, "{}", 200) }),
+        )
+
+        assertTrue(controller.keylessRecipients(listOf("a@example.com")).isEmpty())
+    }
+
+    private fun controllerWith(
+        bootstrapBody: String = """{"hasIdentity":true,"protection":"server"}""",
+        recipientBody: String = """{"results":[]}""",
+        recipientStatus: Int = 200,
+    ) = ComposePgpController(
+        pairingProvider = { testPairing() },
+        bootstrapClient = PgpBootstrapClient(callFactory = FakeCallFactory { request -> response(request, bootstrapBody, 200) }),
+        recipientKeyClient = RecipientKeyClient(
+            callFactory = FakeCallFactory { request -> response(request, recipientBody, recipientStatus) },
+        ),
+    )
+}
