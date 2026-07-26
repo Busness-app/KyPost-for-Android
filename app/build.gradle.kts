@@ -7,6 +7,10 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+/** Only fail the build on a missing keystore when a release variant is actually being assembled —
+ *  a debug build has no business tripping over release signing configuration. */
+val isBuildingRelease = gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) }
+
 val keystorePropertiesFile = rootProject.file("keystore.properties")
 val keystoreProperties = Properties().apply {
     if (keystorePropertiesFile.exists()) {
@@ -45,11 +49,25 @@ android {
 
     buildTypes {
         release {
+            // R8 was disabled outright, shipping a security-sensitive binary with every class,
+            // method and field name intact and no shrinking. Rules live in proguard-rules.pro.
             optimization {
-                enable = false
+                enable = true
             }
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
             if (keystorePropertiesFile.exists()) {
                 signingConfig = signingConfigs.getByName("release")
+            } else if (isBuildingRelease) {
+                // Previously this branch was simply absent, so a missing keystore.properties made
+                // the release build fall through to the debug signing key — silently, with a
+                // green build. An APK signed with the public debug key must never be produced by
+                // accident.
+                throw GradleException(
+                    "keystore.properties is missing: a release build must not fall back to the debug signing key.",
+                )
             }
         }
     }
