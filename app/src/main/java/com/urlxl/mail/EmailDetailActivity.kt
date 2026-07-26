@@ -22,6 +22,7 @@ import com.urlxl.mail.mail.AttachmentInfo
 import com.urlxl.mail.mail.MailOutcome
 import com.urlxl.mail.mail.MailRepository
 import com.urlxl.mail.mail.MailRuntime
+import com.urlxl.mail.mail.addressFromHeader
 import com.urlxl.mail.mail.userFacingMessage
 import com.urlxl.mail.pgp.PgpMessageState
 import com.urlxl.mail.pgp.pgpMessageStateOf
@@ -469,9 +470,10 @@ class EmailDetailActivity : LockedActivity() {
         return if (subject.trim().startsWith(prefix, ignoreCase = true)) subject else "$prefix $subject"
     }
 
-    private fun extractAddress(raw: String): String {
-        return Regex("<([^>]+)>").find(raw)?.groupValues?.get(1) ?: raw
-    }
+    // Delegates to mail/AddressText.kt so the rule is unit-tested and stays
+    // identical to the webmail and Linux clients -- see AddressTextTest for why
+    // a display name must never win over the real angle-addr.
+    private fun extractAddress(raw: String): String = addressFromHeader(raw)
 
     override fun onDestroy() {
         super.onDestroy()
