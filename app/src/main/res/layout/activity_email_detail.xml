@@ -117,6 +117,23 @@
             android:background="#cccccc"
             android:layout_marginBottom="12dp" />
 
+        <!--
+            Anti-phishing warning, above the PGP bar because it is the more
+            urgent thing to read: PGP describes how a message was protected,
+            this says the message is trying to take over the device. A bare
+            TextView rather than a LinearLayout — unlike the PGP and
+            images-blocked bars there is no action button, because the
+            dangerous links are already refused by SAFE_LINK_SCHEMES.
+        -->
+        <TextView
+            android:id="@+id/emailPhishingBar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp"
+            android:textSize="13sp"
+            android:text="@string/email_phishing_warning"
+            android:visibility="gone" />
+
         <LinearLayout
             android:id="@+id/emailPgpBar"
             android:layout_width="match_parent"

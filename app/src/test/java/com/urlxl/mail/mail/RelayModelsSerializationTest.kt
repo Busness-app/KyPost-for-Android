@@ -50,6 +50,40 @@ class RelayModelsSerializationTest {
     }
 
     @Test
+    // The server sends the message's real IMAP keywords, including the $Phishing
+    // flag the anti-phishing warning bar reads. This DTO ignored the field
+    // entirely, so keywords were synthesised from `label` alone and a
+    // server-set keyword could never reach the UI.
+    fun relayInboxResponseDto_decodesKeywordsArray() {
+        val jsonText = """
+            {
+              "tabs": ["Work"],
+              "byTab": {
+                "Work": [{"messageId": "m1", "sender": "a@example.com", "subject": "S", "label": "Work",
+                          "keywords": ["Work", "${'$'}Phishing"], "status": "unread"}]
+              }
+            }
+        """.trimIndent()
+
+        val parsed = json.decodeFromString<RelayInboxResponseDto>(jsonText)
+
+        assertEquals(listOf("Work", "${'$'}Phishing"), parsed.byTab["Work"]?.first()?.keywords)
+    }
+
+    @Test
+    // omitempty server-side, so an absent key must decode to an empty list
+    // rather than failing the whole response.
+    fun relayInboxResponseDto_absentKeywordsDecodesEmpty() {
+        val jsonText = """
+            {"tabs": ["Work"], "byTab": {"Work": [{"messageId": "m1", "subject": "S", "status": "unread"}]}}
+        """.trimIndent()
+
+        val parsed = json.decodeFromString<RelayInboxResponseDto>(jsonText)
+
+        assertTrue(parsed.byTab["Work"]?.first()?.keywords?.isEmpty() == true)
+    }
+
+    @Test
     fun relayInboxResponseDto_decodesDeltaShape_newUpdatedAndRemoved() {
         val jsonText = """
             {

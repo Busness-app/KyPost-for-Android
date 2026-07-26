@@ -22,6 +22,7 @@ import com.urlxl.mail.mail.AttachmentInfo
 import com.urlxl.mail.mail.MailOutcome
 import com.urlxl.mail.mail.MailRepository
 import com.urlxl.mail.mail.MailRuntime
+import com.urlxl.mail.mail.addressFromHeader
 import com.urlxl.mail.mail.userFacingMessage
 import com.urlxl.mail.pgp.PgpMessageState
 import com.urlxl.mail.pgp.pgpMessageStateOf
@@ -39,6 +40,7 @@ class EmailDetailActivity : LockedActivity() {
     private lateinit var webView: WebView
     private lateinit var imagesBlockedBar: View
     private lateinit var btnShowImages: Button
+    private lateinit var phishingBar: TextView
     private lateinit var pgpBar: View
     private lateinit var pgpText: TextView
     private lateinit var btnOpenInWebmail: Button
@@ -65,6 +67,7 @@ class EmailDetailActivity : LockedActivity() {
         val hasAttachments = intent.getBooleanExtra("email_has_attachments", false)
         val pgpEncrypted = intent.getBooleanExtra("email_pgp_encrypted", false)
         val pgpDecryptError = intent.getStringExtra("email_pgp_decrypt_error").orEmpty()
+        val phishingFlagged = intent.getBooleanExtra("email_suspicious", false)
 
         setTitle(R.string.email_title)
 
@@ -74,6 +77,11 @@ class EmailDetailActivity : LockedActivity() {
         divider = findViewById(R.id.emailDivider)
         imagesBlockedBar = findViewById(R.id.emailImagesBlockedBar)
         btnShowImages = findViewById(R.id.btnShowImages)
+        phishingBar = findViewById(R.id.emailPhishingBar)
+        // Advisory only: the links this warns about are already refused by
+        // SAFE_LINK_SCHEMES in shouldOverrideUrlLoading, whether or not the
+        // server ever flagged the message.
+        phishingBar.visibility = if (phishingFlagged) View.VISIBLE else View.GONE
         pgpBar = findViewById(R.id.emailPgpBar)
         pgpText = findViewById(R.id.emailPgpText)
         btnOpenInWebmail = findViewById(R.id.btnOpenInWebmail)
@@ -414,6 +422,9 @@ class EmailDetailActivity : LockedActivity() {
         val palette = getStoredThemePalette(this)
         divider.setBackgroundColor(Color.parseColor(palette.line))
         webView.setBackgroundColor(Color.parseColor(palette.bg))
+        // Same warning-callout treatment ComposeActivity's keyless-recipient
+        // notice uses, so a security warning looks the same everywhere.
+        applyWarningCalloutTheme(this, phishingBar)
         actionButtons.forEach { applyIconButtonTheme(this, it) }
     }
 
@@ -459,9 +470,10 @@ class EmailDetailActivity : LockedActivity() {
         return if (subject.trim().startsWith(prefix, ignoreCase = true)) subject else "$prefix $subject"
     }
 
-    private fun extractAddress(raw: String): String {
-        return Regex("<([^>]+)>").find(raw)?.groupValues?.get(1) ?: raw
-    }
+    // Delegates to mail/AddressText.kt so the rule is unit-tested and stays
+    // identical to the webmail and Linux clients -- see AddressTextTest for why
+    // a display name must never win over the real angle-addr.
+    private fun extractAddress(raw: String): String = addressFromHeader(raw)
 
     override fun onDestroy() {
         super.onDestroy()
