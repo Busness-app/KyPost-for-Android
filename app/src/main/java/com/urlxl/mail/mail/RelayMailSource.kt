@@ -397,7 +397,12 @@ private fun RelayEmailDto.toUiEmail(tab: String): Email {
         subject = subject,
         sender = sender,
         preview = body.orEmpty().take(140),
-        keywords = if (emailLabel.isNotBlank()) setOf(emailLabel) else emptySet(),
+        // Union of the wire keywords and the tab-derived label, not a
+        // replacement: the label is what the keyword tabs filter on
+        // (KeywordTabs), while the wire list is what carries server-set
+        // keywords like the $Phishing anti-phishing flag. Dropping either
+        // breaks one of the two.
+        keywords = (keywords + emailLabel).filter { it.isNotBlank() }.toSet(),
         sentTo = sentTo,
         cc = cc,
         bcc = bcc,

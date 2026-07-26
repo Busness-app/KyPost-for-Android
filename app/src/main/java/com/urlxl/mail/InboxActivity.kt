@@ -27,6 +27,7 @@ import com.urlxl.mail.mail.MailFetchResult
 import com.urlxl.mail.mail.MailOutcome
 import com.urlxl.mail.mail.MailRepository
 import com.urlxl.mail.mail.MailRuntime
+import com.urlxl.mail.mail.isFlaggedPhishing
 import com.urlxl.mail.mail.userFacingMessage
 import com.urlxl.mail.pgp.PgpKeyActivity
 import com.urlxl.mail.push.PushNotificationDispatcher
@@ -272,6 +273,10 @@ class InboxActivity : LockedActivity() {
         intent.putExtra("email_has_attachments", email.hasAttachments)
         intent.putExtra("email_pgp_encrypted", email.pgpEncrypted)
         intent.putExtra("email_pgp_decrypt_error", email.pgpDecryptError)
+        // The $Phishing IMAP keyword the server sets on mail that impersonates
+        // KyPost. See mail/PhishingFlag.kt for why the match is
+        // case-insensitive.
+        intent.putExtra("email_suspicious", isFlaggedPhishing(email.keywords))
         emailDetailLauncher.launch(intent)
     }
 

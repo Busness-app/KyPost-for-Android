@@ -36,6 +36,11 @@ data class RelayEmailDto(
     // empty one, so callers know not to overwrite/clear a locally cached body.
     val body: String? = null,
     val label: String = "",
+    // The message's real IMAP keywords. `omitempty` server-side, so an absent
+    // key means none. Previously ignored entirely, which meant Email.keywords
+    // was synthesised from `label` alone and a keyword the server actually set
+    // — notably the $Phishing anti-phishing flag — could never reach the UI.
+    val keywords: List<String> = emptyList(),
     val status: String = "unread",
     val atUtc: String? = null,
     // Warm-path hint for the inbox paperclip badge; false when the server

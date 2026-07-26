@@ -60,6 +60,9 @@
     <string name="email_images_blocked_message">Images are blocked to protect your privacy.</string>
     <string name="email_show_images_button">Show images</string>
     <string name="email_link_blocked_scheme">This link uses a scheme KyPost won\'t open from an email.</string>
+    <!-- Shown when the server flagged a message with the $Phishing IMAP keyword. Wording
+         matches the webmail and Linux clients. -->
+    <string name="email_phishing_warning">This message impersonates KyPost. Links to KyPost app addresses have been blocked. KyPost will never ask you to confirm a pairing request by email — never approve one you did not start yourself, on this device.</string>
     <string name="email_pgp_client_protected">This message is end-to-end encrypted. Only your browser holds the key, so it can\'t be read here.</string>
     <string name="email_pgp_open_webmail_button">Open in webmail</string>
     <string name="email_pgp_decrypt_failed">This message is encrypted and couldn\'t be decrypted: %1$s</string>
