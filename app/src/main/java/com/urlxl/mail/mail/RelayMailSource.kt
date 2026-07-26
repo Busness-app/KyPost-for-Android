@@ -205,7 +205,7 @@ class RelayMailSource(
     override fun sendMail(draft: MailDraft): MailOutcome<MailSendOutcome> {
         val pairing = pairingProvider() ?: return MailOutcome.Unauthorized("Device is not paired")
         val base = baseUrl(pairing, "/api/mail/send") ?: return MailOutcome.BadRequest("Server URL is not valid")
-        val body = json.encodeToString(draft.toWireDto())
+        val body = json.encodeToString(draft.toSendWireDto())
         val request = Request.Builder().url(base).post(body.toRequestBody(JSON_MEDIA_TYPE))
             .authed(pairing)
             .build()
@@ -373,6 +373,11 @@ private fun MailDraft.toWireDto(): RelayMailRequestDto =
         mode = mode,
         attachments = attachments.map { RelayAttachmentDto(name = it.name, mimeType = it.mimeType, dataBase64 = it.dataBase64) },
     )
+
+/** Send-only mapping. [toWireDto] stays flagless because /api/mail/draft ignores these fields —
+ *  see [MailDraft.allowPickupFallback]. */
+private fun MailDraft.toSendWireDto(): RelayMailRequestDto =
+    toWireDto().copy(sign = sign, encrypt = encrypt, allowPickupFallback = allowPickupFallback)
 
 private fun RelayEmailDto.toUiEmail(tab: String): Email {
     val emailLabel = label.ifBlank { tab }

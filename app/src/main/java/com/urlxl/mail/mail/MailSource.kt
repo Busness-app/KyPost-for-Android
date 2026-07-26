@@ -86,6 +86,16 @@ data class MailDraft(
     val body: String,
     val mode: String = "plain",
     val attachments: List<OutgoingAttachment> = emptyList(),
+    /** Server-side PGP signing. Requires the account to have a PGP identity; the relay answers
+     *  400 (plain text) if asked to sign without one. */
+    val sign: Boolean = false,
+    /** Server-side PGP encryption. */
+    val encrypt: Boolean = false,
+    /** Opt in to the one-time pickup link for recipients with no usable key. Meaningful only when
+     *  [encrypt] is true, and only ever set after the user confirmed the dialog naming them: the
+     *  fallback stores this message's plaintext on the server, unencrypted, for up to seven days.
+     *  Per-message by design — never persisted as a preference. */
+    val allowPickupFallback: Boolean = false,
 )
 
 /** An attachment the user picked to send: raw base64 payload plus display metadata. */

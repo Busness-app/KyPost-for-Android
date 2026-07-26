@@ -112,6 +112,11 @@ data class RelayMailRequestDto(
     val body: String,
     val mode: String = "plain",
     val attachments: List<RelayAttachmentDto> = emptyList(),
+    /** Only /api/mail/send reads these three; /api/mail/draft ignores them, which is why
+     *  [com.urlxl.mail.mail.MailDraft] maps to this DTO through two different functions. */
+    val sign: Boolean = false,
+    val encrypt: Boolean = false,
+    val allowPickupFallback: Boolean = false,
 )
 
 /** Outgoing attachment wire shape accepted by /api/mail/send and /api/mail/draft. */

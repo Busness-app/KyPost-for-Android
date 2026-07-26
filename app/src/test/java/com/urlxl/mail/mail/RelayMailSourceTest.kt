@@ -58,6 +58,19 @@ private class FakeCallFactory(private val responder: (Request) -> Response) : Ca
     }
 }
 
+/** Records request bodies as well as requests — [FakeCallFactory] keeps only the latter, and the
+ *  PGP send flags are body fields. Mirrors MfaResponseClientTest's body-capturing fake. */
+private class BodyRecordingCallFactory(private val responder: (Request) -> Response) : Call.Factory {
+    val bodies = mutableListOf<String>()
+
+    override fun newCall(request: Request): Call {
+        val buffer = okio.Buffer()
+        request.body?.writeTo(buffer)
+        bodies.add(buffer.readUtf8())
+        return FakeCall(request, responder(request))
+    }
+}
+
 /** A [Call.Factory] whose call always fails with [exception] — used to verify RelayMailSource's
  *  exception-to-[MailOutcome] mapping (e.g. a TLS pin mismatch) without a real network/TLS stack. */
 private class ThrowingCallFactory(private val exception: Throwable) : Call.Factory {
@@ -502,5 +515,52 @@ class RelayMailSourceTest {
         val plain = messages.first { it.id == "2" }
         assertEquals(false, plain.pgpEncrypted)
         assertEquals("", plain.pgpSignerFingerprint)
+    }
+
+    @Test
+    fun sendMail_putsPgpFlagsOnTheWire() {
+        val callFactory = BodyRecordingCallFactory { request ->
+            jsonResponse(request, """{"ok":true,"sentSaved":true,"warning":""}""")
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = callFactory,
+        )
+
+        source.sendMail(
+            MailDraft(
+                to = "bob@example.com", subject = "hi", body = "hello",
+                sign = true, encrypt = true, allowPickupFallback = true,
+            ),
+        )
+
+        val sent = callFactory.bodies.single()
+        assertTrue("expected sign in $sent", sent.contains("\"sign\":true"))
+        assertTrue("expected encrypt in $sent", sent.contains("\"encrypt\":true"))
+        assertTrue("expected allowPickupFallback in $sent", sent.contains("\"allowPickupFallback\":true"))
+    }
+
+    /** Drafts carry no crypto semantics — the server's draft handler ignores these fields — so
+     *  sending them would claim a choice the user did not make at draft-save time. The webmail
+     *  handoff saves a draft from a composition whose Encrypt toggle was on, so this is a live
+     *  path, not a hypothetical. */
+    @Test
+    fun saveDraft_omitsPgpFlags() {
+        val callFactory = BodyRecordingCallFactory { request -> jsonResponse(request, """{"ok":true}""") }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = callFactory,
+        )
+
+        source.saveDraft(
+            MailDraft(to = "bob@example.com", subject = "hi", body = "hello", encrypt = true, sign = true),
+        )
+
+        val sent = callFactory.bodies.single()
+        assertTrue("expected no encrypt in $sent", !sent.contains("encrypt"))
+        assertTrue("expected no sign in $sent", !sent.contains("\"sign\""))
+        assertTrue("expected no allowPickupFallback in $sent", !sent.contains("allowPickupFallback"))
     }
 }
