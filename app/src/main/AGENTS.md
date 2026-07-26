@@ -67,6 +67,18 @@ Owns production Android app code and resources.
   sending in the clear. `MailOutcome.RateLimited` is relay 429 with `Retry-After` (the per-device
   lockout); it is mapped in `RelayMailSource.execute`/`downloadAttachment` rather than `mapErrorCode`,
   which cannot see response headers.
+- Encrypted send: `MailDraft.sign`/`encrypt`/`allowPickupFallback` reach `/api/mail/send` through
+  `toSendWireDto()`, deliberately *not* the shared `toWireDto()` — `/api/mail/draft` ignores them,
+  so the draft path stays flagless. `/api/mail/send` has **two** 409s, told apart by which JSON
+  field is present, never by status or error prose: `clientSideNeeded` (the account's key is
+  client-custody; no re-send helps, hand off to webmail) and `keylessRecipients` (nothing was
+  delivered; re-sending the *same* draft with `allowPickupFallback = true` is safe and cannot
+  duplicate). Only those two 409s and the 200 are JSON — every other status returns plain text, so
+  no decoder runs over it. The recipient preflight is `POST /api/pgp/recipients/check`, never
+  `/resolve` (which 409s for every non-client-custody account); it reads contacts only, so
+  `hasKey: false` is a lower bound and must never be worded as a promise. The pickup fallback
+  stores the message's plaintext on the server for seven days, which is why its confirmation copy
+  is fixed in `strings.xml` and is per-message — never a remembered preference.
 - Inbox tabs: Manual IMAP mode derives them from IMAP user flags (keywords) attached to messages,
   unchanged (`KeywordTabs`). Relay mode's tabs come from the server's `tabs`/`label` response fields
   instead — the two are genuinely different concepts, not unified into one function.
