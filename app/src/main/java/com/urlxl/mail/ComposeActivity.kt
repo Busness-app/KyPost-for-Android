@@ -1,5 +1,6 @@
 package com.urlxl.mail
 
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
@@ -71,6 +72,10 @@ class ComposeActivity : LockedActivity() {
      *  with only allowPickupFallback flipped. Re-exporting the editor HTML or re-encoding the
      *  attachments could produce a subtly different message. */
     private var sentDraft: MailDraft? = null
+
+    /** The currently shown pickup-fallback/webmail-handoff dialog, if any — dismissed in
+     *  [onDestroy] so it does not outlive the Activity's window. */
+    private var activeDialog: AlertDialog? = null
 
     private val pickAttachments = registerForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments(),
@@ -406,6 +411,13 @@ class ComposeActivity : LockedActivity() {
         ioExecutor.execute {
             val outcome = MailRuntime.graph(this).repository.send(draft)
             runOnUiThread {
+                // The round trip above can outlive the Activity: LockedActivity.onStart finishes
+                // this screen outright if the app lock engages while a send is in flight, and
+                // Activity.runOnUiThread still runs its Runnable after finish(). Building an
+                // AlertDialog on a finishing/destroyed Activity throws BadTokenException (or, on a
+                // merely-finishing one, succeeds and leaks the window) — bail before either dialog
+                // branch runs.
+                if (isFinishing || isDestroyed) return@runOnUiThread
                 when (outcome) {
                     is MailOutcome.Success -> {
                         val warning = outcome.value.warning
@@ -441,7 +453,7 @@ class ComposeActivity : LockedActivity() {
      */
     private fun confirmPickupFallback(keylessRecipients: List<String>) {
         val draft = sentDraft ?: return
-        AlertDialog.Builder(this)
+        activeDialog = AlertDialog.Builder(this)
             .setTitle(R.string.compose_pickup_dialog_title)
             .setMessage(getString(R.string.compose_pickup_dialog_body, keylessRecipients.joinToString(", ")))
             .setNegativeButton(android.R.string.cancel, null)
@@ -462,10 +474,16 @@ class ComposeActivity : LockedActivity() {
      * The draft save has to succeed first — opening a browser onto a draft that is not there loses
      * the user's message. The draft is saved without the PGP flags, since [MailDraft]'s sign/encrypt
      * only apply to /api/mail/send, not the plain /api/mail/draft endpoint.
+     *
+     * Always built from the *current* fields, never from [sentDraft]: unlike the post-409 re-send
+     * (where byte-identity with what the relay already evaluated is the whole point), a failed send
+     * can leave [sentDraft] holding a stale, pre-edit message. Reusing it here would park that stale
+     * draft on the server and silently discard whatever the user typed afterward — see the fix-round
+     * report for the traced scenario.
      */
     private fun handOffToWebmail() {
         bodyEditor.exportHtml { html ->
-            val draft = sentDraft ?: MailDraft(
+            val draft = MailDraft(
                 to = toInput.commaJoinedRecipients(),
                 cc = ccInput.commaJoinedRecipients(),
                 bcc = bccInput.commaJoinedRecipients(),
@@ -479,6 +497,9 @@ class ComposeActivity : LockedActivity() {
                 val serverUrl = PushRuntime.graph(this).repository.pairingForAuthenticatedCall()?.serverUrl
                 val url = serverUrl?.let { webmailDraftsUrl(it) }
                 runOnUiThread {
+                    // See dispatchSend's identical guard: this callback can also fire after the
+                    // Activity has finished (app lock) or been destroyed.
+                    if (isFinishing || isDestroyed) return@runOnUiThread
                     when {
                         saved !is MailOutcome.Success -> Toast.makeText(
                             this,
@@ -494,18 +515,23 @@ class ComposeActivity : LockedActivity() {
     }
 
     private fun showHandoffDialog(url: String) {
-        AlertDialog.Builder(this)
+        activeDialog = AlertDialog.Builder(this)
             .setTitle(R.string.compose_handoff_dialog_title)
             .setMessage(R.string.compose_handoff_dialog_body)
             .setNegativeButton(android.R.string.cancel, null)
             .setPositiveButton(R.string.compose_handoff_dialog_confirm) { _, _ ->
-                // Same guarded launch as EmailDetailActivity's "Open in webmail" button.
+                // Guarded, but not via resolveActivity: minSdk 31 plus no <queries> manifest entry
+                // means package-visibility filtering applies to this implicit https intent on every
+                // supported device, so resolveActivity can return null even though a browser (which
+                // always answers ACTION_VIEW for http/https) is present — a false negative that would
+                // stall the only path client-custody accounts have to finish sending. Attempt the
+                // launch and catch the (rarer, genuine) no-handler case instead.
                 val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-                if (intent.resolveActivity(packageManager) != null) {
+                try {
                     startActivity(intent)
                     finish()
-                } else {
-                    Toast.makeText(this, R.string.compose_handoff_no_webmail, Toast.LENGTH_LONG).show()
+                } catch (e: ActivityNotFoundException) {
+                    Toast.makeText(this, R.string.compose_handoff_no_handler, Toast.LENGTH_LONG).show()
                 }
             }
             .show()
@@ -514,6 +540,8 @@ class ComposeActivity : LockedActivity() {
     override fun onDestroy() {
         super.onDestroy()
         ioExecutor.shutdownNow()
+        // Dismiss rather than leave a shown AlertDialog referencing a destroyed Activity's window.
+        activeDialog?.dismiss()
     }
 
     companion object {
