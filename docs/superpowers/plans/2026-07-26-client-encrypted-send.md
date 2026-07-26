@@ -1668,10 +1668,18 @@ Replace the body of `sendEmail` (`:311`). The `MailDraft` is built once and stor
      * The draft save has to succeed first — opening a browser onto a draft that is not there loses
      * the user's message. The draft is saved without the PGP flags, which [MailDraft] handles by
      * mapping to the wire through a flagless function for /api/mail/draft.
+     *
+     * Always built from the *current* fields, never from `sentDraft` — that field only exists to
+     * make the post-409 re-send byte-identical to the attempt the relay already evaluated. Reusing
+     * it here for a *different* purpose is the bug: `sentDraft` is null until a send has actually
+     * been attempted, and once a send has failed and the user edits the composition afterward,
+     * it holds a stale, pre-edit message. `sentDraft ?: MailDraft(current fields)` would park that
+     * stale draft on the server whenever a prior attempt exists, silently discarding whatever the
+     * user typed since, and finish() the Activity before they could notice.
      */
     private fun handOffToWebmail() {
         bodyEditor.exportHtml { html ->
-            val draft = sentDraft ?: MailDraft(
+            val draft = MailDraft(
                 to = toInput.commaJoinedRecipients(),
                 cc = ccInput.commaJoinedRecipients(),
                 bcc = bccInput.commaJoinedRecipients(),
