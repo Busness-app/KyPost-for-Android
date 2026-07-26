@@ -11,6 +11,11 @@ sealed class UnlockAttemptResult {
     object Success : UnlockAttemptResult()
     data class Rejected(val delayMillis: Long) : UnlockAttemptResult()
     object Wiped : UnlockAttemptResult()
+
+    /** The wipe threshold was reached and the wipe ran, but at least one step failed — so local
+     *  data may still be on disk. Distinct from [Wiped] because the UI must not tell the user
+     *  their data is gone when it might not be; see [WipeResult]. */
+    data class WipeFailed(val failedSteps: List<String>) : UnlockAttemptResult()
 }
 
 /**
@@ -30,7 +35,7 @@ class AppLockManager(
     // Injected so credential-key derivation is exercisable off-device; the default needs a real
     // AndroidKeyStore. See [CredentialPepper].
     private val pepper: CredentialPepper = KeystoreCredentialPepper,
-    private val onWipe: suspend () -> Unit,
+    private val onWipe: suspend () -> WipeResult,
 ) {
     private val _locked = MutableStateFlow(state.isLockEnabled())
     val locked: StateFlow<Boolean> = _locked.asStateFlow()
@@ -75,8 +80,10 @@ class AppLockManager(
 
         val attempts = state.incrementFailedAttempts()
         if (LockoutPolicy.shouldWipe(attempts)) {
-            onWipe()
-            return@withContext UnlockAttemptResult.Wiped
+            return@withContext when (val wipe = onWipe()) {
+                is WipeResult.Complete -> UnlockAttemptResult.Wiped
+                is WipeResult.Incomplete -> UnlockAttemptResult.WipeFailed(wipe.failedSteps)
+            }
         }
         val delay = LockoutPolicy.delayMillisFor(attempts)
         if (delay > 0) state.setLockout(elapsedRealtimeMs() + delay, delay)
@@ -127,8 +134,10 @@ class AppLockManager(
 
         val attempts = state.incrementFailedAttempts()
         if (LockoutPolicy.shouldWipe(attempts)) {
-            onWipe()
-            return@withContext UnlockAttemptResult.Wiped
+            return@withContext when (val wipe = onWipe()) {
+                is WipeResult.Complete -> UnlockAttemptResult.Wiped
+                is WipeResult.Incomplete -> UnlockAttemptResult.WipeFailed(wipe.failedSteps)
+            }
         }
         val delay = LockoutPolicy.delayMillisFor(attempts)
         if (delay > 0) state.setLockout(elapsedRealtimeMs() + delay, delay)

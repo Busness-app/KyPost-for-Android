@@ -9,7 +9,6 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.urlxl.mail.ScopedValue
 import com.urlxl.mail.security.AppLockStore
-import com.urlxl.mail.security.HostileLocationSettings
 import com.urlxl.mail.security.SecurityRuntime
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -36,6 +35,8 @@ private val KEY_UNIFIEDPUSH_AUTH = stringPreferencesKey("unifiedpush_auth")
 
 private const val HISTORY_LIMIT = 30
 
+private const val TAG = "PushRepository"
+
 class PushRepository(
     private val context: Context,
     // Injected rather than constructed here: this store owns a StateFlow of the current pairing,
@@ -44,7 +45,7 @@ class PushRepository(
     private val securePairingStore: SecurePairingStore = SecurePairingStore(context),
 ) {
     private val json = Json { ignoreUnknownKeys = true }
-    private val hostileLocationSettings = HostileLocationSettings(context)
+    private val hostileLocationSettings = SecurityRuntime.graph(context).hostileLocationSettings
     private val pullCursorValue = ScopedValue(
         dataStore = context.pushDataStore,
         scopeKey = KEY_PULL_CURSOR_SUB,
@@ -108,9 +109,10 @@ class PushRepository(
      * [SecurePairingStore.needsCredentialRewrap] true so the next PIN unlock restores it.
      */
     suspend fun savePairing(pairing: PairingData) {
-        val gateEnabled = AppLockStore(context).isCredentialPinGateEnabled()
-        val credentialKeys = SecurityRuntime.graph(context).appLockManager.cachedCredentialKeys()
-        val credentialSalt = if (credentialKeys != null) AppLockStore(context).credentialSalt() else null
+        val securityGraph = SecurityRuntime.graph(context)
+        val gateEnabled = securityGraph.appLockStore.isCredentialPinGateEnabled()
+        val credentialKeys = securityGraph.appLockManager.cachedCredentialKeys()
+        val credentialSalt = if (credentialKeys != null) securityGraph.appLockStore.credentialSalt() else null
         when {
             gateEnabled && credentialKeys != null && credentialSalt != null ->
                 securePairingStore.savePairing(pairing, credentialKeys, credentialSalt)
@@ -142,17 +144,25 @@ class PushRepository(
             db.groupDao().clearAll()
             db.groupLinkDao().clearAll()
             db.deviceContactLinkDao().deleteAll()
+        }.onFailure {
+            // This one silently swallowed the exact failure the function's own KDoc describes:
+            // a purge that does not happen leaves the previous account's cached mail readable and
+            // its queued contact changes ready to flush to whatever server is paired next.
+            android.util.Log.e(TAG, "Failed to purge account-scoped tables", it)
         }
         // Device-contact sync gates only on its own toggle and Hostile Location Protection, never
         // on having a pairing, so it has to be switched off explicitly here.
         runCatching { com.urlxl.mail.contacts.device.DeviceContactSyncSettings(context).setEnabled(false) }
+            .onFailure { android.util.Log.e(TAG, "Failed to disable device contact sync", it) }
         runCatching { context.deleteSharedPreferences(com.urlxl.mail.KeywordSettings.PREFS_NAME) }
+            .onFailure { android.util.Log.e(TAG, "Failed to delete keyword settings", it) }
         // ComposePgpController's bootstrap cache is process-static and keyed on nothing but
         // "the last account we asked" — without this, pairing a server-custody account right
         // after unpairing a client-custody one would keep hiding the Encrypt/Sign chips (or the
         // reverse: offering them where they must not appear) for the rest of the process, since
         // no code path here restarts the process.
         runCatching { com.urlxl.mail.ComposePgpController.resetSessionCache() }
+            .onFailure { android.util.Log.e(TAG, "Failed to reset the PGP compose cache", it) }
     }
 
     suspend fun clearPairing() {
@@ -276,7 +286,9 @@ class PushRepository(
 
     private fun decodeHistory(value: String?): List<PushPayload> {
         if (value.isNullOrBlank()) return emptyList()
-        return runCatching { json.decodeFromString<List<PushPayload>>(value) }.getOrDefault(emptyList())
+        return runCatching { json.decodeFromString<List<PushPayload>>(value) }
+            .onFailure { android.util.Log.w(TAG, "Dropping unreadable push history", it) }
+            .getOrDefault(emptyList())
     }
 }
 

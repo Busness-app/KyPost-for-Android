@@ -2,6 +2,7 @@ package com.urlxl.mail.push
 
 import android.content.Context
 import android.widget.Toast
+import com.urlxl.mail.R
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -15,26 +16,51 @@ import kotlinx.coroutines.withContext
  * means there is no exported-or-not surface to reason about at all.
  */
 object MfaResponder {
-    suspend fun respond(context: Context, challengeId: String, approve: Boolean) {
+    /**
+     * Returns true when the decision actually reached the server.
+     *
+     * The notification is cancelled and the tracker cleared only on success. Doing both up front —
+     * as this used to — meant a network failure left the user with a toast and no way back: the
+     * notification was gone, and [MfaChallengeTracker.isPending] now rejected the id, so
+     * [MfaApprovalActivity.adoptChallenge] would finish immediately on any later attempt. The
+     * sign-in they meant to approve then timed out with "Network error" as the only explanation.
+     *
+     * Cancel-on-success still preserves the replay property that ordering was there for: a
+     * decision that reached the server cannot be re-opened.
+     */
+    suspend fun respond(context: Context, challengeId: String, approve: Boolean): Boolean {
         val appContext = context.applicationContext
-        PushNotificationDispatcher.cancelMfaChallenge(appContext, challengeId)
-        // Answered once, answerable once: a replayed notification tap must not re-open a decision
-        // the user already made.
-        MfaChallengeTracker(appContext).clear(challengeId)
 
         val graph = PushRuntime.graph(appContext)
         val pairing = graph.repository.pairingForAuthenticatedCall()
         if (pairing == null) {
-            showResultToast(appContext, "Not paired with a server")
-            return
+            showResultToast(appContext, appContext.getString(R.string.mfa_respond_not_paired))
+            return false
         }
 
-        when (val result = graph.mfaResponseClient.respond(pairing, challengeId, approve)) {
-            is MfaRespondResult.Success -> showResultToast(
-                appContext,
-                if (approve) "Sign-in approved" else "Sign-in denied",
-            )
-            is MfaRespondResult.Error -> showResultToast(appContext, result.message)
+        return when (val result = graph.mfaResponseClient.respond(pairing, challengeId, approve)) {
+            is MfaRespondResult.Success -> {
+                PushNotificationDispatcher.cancelMfaChallenge(appContext, challengeId)
+                // Answered once, answerable once: a replayed notification tap must not re-open a
+                // decision the user already made.
+                MfaChallengeTracker(appContext).clear(challengeId)
+                showResultToast(
+                    appContext,
+                    appContext.getString(
+                        if (approve) R.string.mfa_respond_approved else R.string.mfa_respond_denied,
+                    ),
+                )
+                true
+            }
+            is MfaRespondResult.Error -> {
+                // Leave the challenge answerable and re-post the notification so the user has a
+                // way back to it inside the tracker's freshness window.
+                showResultToast(
+                    appContext,
+                    appContext.getString(R.string.mfa_respond_failed, result.message),
+                )
+                false
+            }
         }
     }
 

@@ -75,6 +75,9 @@ class ContactEditActivity : LockedActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // The app lock redirects and finishes in super.onCreate; nothing below may run,
+        // least of all the network and database work further down this method.
+        if (redirectedToUnlock) return
         setContentView(R.layout.activity_contact_edit)
         applyThemeToActivity(this)
         applyTopInsetWithHeader(this, findViewById(R.id.contactEditRoot))
@@ -387,6 +390,7 @@ class ContactEditActivity : LockedActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (redirectedToUnlock) return
         applyThemeToActivity(this)
         applyPrimaryButtonTheme(this, saveButton)
         applyDangerButtonTheme(this, deleteButton)

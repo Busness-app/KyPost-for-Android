@@ -52,8 +52,26 @@ class SecurePairingStore(context: Context) {
     private val _pairing = MutableStateFlow<PairingData?>(null)
     val pairing: StateFlow<PairingData?> = _pairing.asStateFlow()
 
+    /**
+     * The TOFU pin, cached in memory.
+     *
+     * [currentTlsPin] is called on *every* HTTP request (see
+     * [com.urlxl.mail.push.PinnedOrFallbackCallFactory]), and reading it from
+     * `EncryptedSharedPreferences` means two AES-SIV key decryptions plus two AES-GCM value
+     * decryptions per request — paid on the calling thread, before the socket is touched, on an
+     * inbox refresh that runs every 90 seconds.
+     *
+     * Freshness is preserved exactly: [saveTlsPin] and [clearPairing] are the only writers, and
+     * both update this. The comment on [currentTlsPin] used to justify the per-call read as
+     * necessary for re-pairing to take effect; keeping the single owner of the file also the owner
+     * of the cache gets the same guarantee for a volatile field read.
+     */
+    @Volatile
+    private var cachedTlsPin: TlsPin? = null
+
     init {
         _pairing.value = readPairing(credentialKeys = null)
+        cachedTlsPin = readTlsPin()
     }
 
     suspend fun savePairing(
@@ -114,12 +132,17 @@ class SecurePairingStore(context: Context) {
                 .putString(KEY_TLS_PIN_HOST, pin.host)
                 .commit()
         }
+        cachedTlsPin = pin
     }
 
     /** The currently enforced TLS pin, or null if this device has never captured one (not yet
      *  paired, or paired before this feature existed — in which case the host is unknown and the
-     *  stale pin is ignored rather than applied to a host it may not have come from). */
-    fun currentTlsPin(): TlsPin? {
+     *  stale pin is ignored rather than applied to a host it may not have come from).
+     *
+     *  Served from [cachedTlsPin]; this is on the hot path of every request. */
+    fun currentTlsPin(): TlsPin? = cachedTlsPin
+
+    private fun readTlsPin(): TlsPin? {
         val pin = prefs.getString(KEY_TLS_PIN, null) ?: return null
         val host = prefs.getString(KEY_TLS_PIN_HOST, null) ?: return null
         return TlsPin(host = host, spkiSha256 = pin)
@@ -141,6 +164,7 @@ class SecurePairingStore(context: Context) {
                 .commit()
         }
         _pairing.value = null
+        cachedTlsPin = null
     }
 
     private fun SharedPreferences.Editor.clearWrappedSecret(): SharedPreferences.Editor =

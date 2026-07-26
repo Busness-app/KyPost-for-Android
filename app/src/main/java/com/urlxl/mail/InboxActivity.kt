@@ -96,6 +96,9 @@ class InboxActivity : LockedActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // The app lock redirects and finishes in super.onCreate; nothing below may run,
+        // least of all the network and database work further down this method.
+        if (redirectedToUnlock) return
         setContentView(R.layout.activity_inbox)
         applyThemeToActivity(this)
         lastAppliedThemeName = getStoredThemeName(this)
@@ -146,12 +149,14 @@ class InboxActivity : LockedActivity() {
 
     override fun onStart() {
         super.onStart()
+        if (redirectedToUnlock) return
         refreshInbox()
         scheduleNextRefresh()
     }
 
     override fun onResume() {
         super.onResume()
+        if (redirectedToUnlock) return
 
         val currentTheme = getStoredThemeName(this)
         if (currentTheme != lastAppliedThemeName) {
@@ -168,12 +173,15 @@ class InboxActivity : LockedActivity() {
 
     override fun onStop() {
         super.onStop()
+        if (redirectedToUnlock) return
         mainHandler.removeCallbacks(refreshRunnable)
         mainHandler.removeCallbacks(pendingMessagePollRunnable)
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        // No redirectedToUnlock guard: ioExecutor is a property initializer, so it exists even
+        // when onCreate bailed, and skipping shutdown would leak its thread.
         ioExecutor.shutdownNow()
     }
 
@@ -240,6 +248,7 @@ class InboxActivity : LockedActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        if (redirectedToUnlock) return
         setIntent(intent)
         val msgId = intent.getStringExtra(PushNotificationDispatcher.EXTRA_MESSAGE_ID)
         if (msgId != null) {
@@ -459,6 +468,7 @@ class InboxActivity : LockedActivity() {
     }
 
     override fun onCreateOptionsMenu(menu: Menu?): Boolean {
+        if (redirectedToUnlock) return false
         menu?.add(0, MENU_PGP_KEY, 0, R.string.menu_pgp_key)
         menu?.add(0, MENU_KEYWORDS, 1, R.string.menu_keywords)
         menu?.add(0, MENU_THEMES, 2, R.string.menu_themes)
@@ -688,16 +698,18 @@ class InboxActivity : LockedActivity() {
                     ItemTouchHelper.LEFT -> {
                         allEmails = allEmails.filter { it.id != email.id }
                         renderFilteredEmails()
-                        MailBackgroundExecutor.submit {
-                            mailRepository.archive(email.id, currentFolder)
-                        }
+                        MailBackgroundExecutor.submitReporting(
+                            this@InboxActivity,
+                            getString(R.string.action_archive),
+                        ) { mailRepository.archive(email.id, currentFolder) }
                     }
                     ItemTouchHelper.RIGHT -> {
                         allEmails = allEmails.filter { it.id != email.id }
                         renderFilteredEmails()
-                        MailBackgroundExecutor.submit {
-                            mailRepository.delete(email.id, currentFolder)
-                        }
+                        MailBackgroundExecutor.submitReporting(
+                            this@InboxActivity,
+                            getString(R.string.action_delete),
+                        ) { mailRepository.delete(email.id, currentFolder) }
                     }
                 }
             }

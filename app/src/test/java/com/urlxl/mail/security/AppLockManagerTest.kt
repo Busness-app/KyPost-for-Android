@@ -60,6 +60,7 @@ private object TestPepper : CredentialPepper {
 class AppLockManagerTest {
     private lateinit var state: FakeAppLockState
     private var wipeCount = 0
+    private var wipeResult: WipeResult = WipeResult.Complete
     private var clock = 1_000L
     private lateinit var manager: AppLockManager
 
@@ -67,13 +68,14 @@ class AppLockManagerTest {
         state = withState,
         elapsedRealtimeMs = { clock },
         pepper = TestPepper,
-        onWipe = { wipeCount++ },
+        onWipe = { wipeCount++; wipeResult },
     )
 
     @Before
     fun setUp() {
         state = FakeAppLockState()
         wipeCount = 0
+        wipeResult = WipeResult.Complete
         clock = 1_000L
         manager = newManager()
     }
@@ -118,6 +120,23 @@ class AppLockManagerTest {
             clock += 60 * 60_000L
         }
         assertEquals(UnlockAttemptResult.Wiped, manager.attemptPin("000001"))
+        assertEquals(1, wipeCount)
+    }
+
+    /** A wipe that fails a step must not be reported as a completed wipe: the UI would otherwise
+     *  show the same clean first-run state while the cached mail is still on disk. */
+    @Test
+    fun attemptPin_reportsWipeFailed_whenTheWipeDidNotComplete() = runBlocking {
+        wipeResult = WipeResult.Incomplete(listOf("database"))
+        repeat(9) {
+            manager.attemptPin("000001")
+            clock += 60 * 60_000L
+        }
+
+        val result = manager.attemptPin("000001")
+
+        assertTrue("expected WipeFailed, got $result", result is UnlockAttemptResult.WipeFailed)
+        assertEquals(listOf("database"), (result as UnlockAttemptResult.WipeFailed).failedSteps)
         assertEquals(1, wipeCount)
     }
 

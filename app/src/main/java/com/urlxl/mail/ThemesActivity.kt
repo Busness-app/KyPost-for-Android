@@ -14,6 +14,9 @@ class ThemesActivity : LockedActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // The app lock redirects and finishes in super.onCreate; nothing below may run,
+        // least of all the network and database work further down this method.
+        if (redirectedToUnlock) return
         setContentView(R.layout.activity_themes)
         setTitle(R.string.themes_title)
         applyThemeToActivity(this)
@@ -75,6 +78,7 @@ class ThemesActivity : LockedActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (redirectedToUnlock) return
         applyThemeToActivity(this)
     }
 }

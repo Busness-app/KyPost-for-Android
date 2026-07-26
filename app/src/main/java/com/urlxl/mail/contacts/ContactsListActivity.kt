@@ -52,6 +52,9 @@ class ContactsListActivity : LockedActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // The app lock redirects and finishes in super.onCreate; nothing below may run,
+        // least of all the network and database work further down this method.
+        if (redirectedToUnlock) return
         try {
             pickMode = intent.getBooleanExtra(EXTRA_PICK_MODE, false)
             setContentView(R.layout.activity_contacts_list)
@@ -110,6 +113,7 @@ class ContactsListActivity : LockedActivity() {
 
     override fun onStart() {
         super.onStart()
+        if (redirectedToUnlock) return
         // Observer only lives while the Contacts UI is visible — registering it globally caused
         // sync feedback loops. syncNowAsync() no-ops internally when device sync is disabled.
         val graph = DeviceContactsRuntime.graph(this)
@@ -130,11 +134,13 @@ class ContactsListActivity : LockedActivity() {
 
     override fun onStop() {
         super.onStop()
+        if (redirectedToUnlock) return
         DeviceContactsRuntime.graph(this).observer.unregister()
     }
 
     override fun onResume() {
         super.onResume()
+        if (redirectedToUnlock) return
         applyThemeToActivity(this)
         applyEmptyStateBackground(this, emptyText)
         adapter.notifyDataSetChanged()
@@ -146,6 +152,7 @@ class ContactsListActivity : LockedActivity() {
     }
 
     override fun onCreateOptionsMenu(menu: Menu?): Boolean {
+        if (redirectedToUnlock) return false
         // Pick mode is a lightweight contact-selection surface for other flows (e.g. PGP QR key
         // exchange) — no dedupe/refresh/device-sync affordances there, just pick-or-back-out.
         if (pickMode) return false
@@ -156,6 +163,7 @@ class ContactsListActivity : LockedActivity() {
     }
 
     override fun onPrepareOptionsMenu(menu: Menu?): Boolean {
+        if (redirectedToUnlock) return false
         val deviceSyncItem = menu?.findItem(MENU_DEVICE_SYNC)
         if (deviceSyncItem != null) {
             try {

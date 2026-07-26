@@ -51,7 +51,7 @@ class UnlockActivity : AppCompatActivity() {
         submitButton = findViewById(R.id.unlockSubmitButton)
         submitButton.setOnClickListener { attemptUnlock() }
 
-        if (AppLockStore(this).isBiometricEnabled()) {
+        if (SecurityRuntime.graph(this).appLockStore.isBiometricEnabled()) {
             showBiometricPromptIfAvailable()
         }
     }
@@ -81,6 +81,14 @@ class UnlockActivity : AppCompatActivity() {
                     proceedIntoApp()
                 }
                 is UnlockAttemptResult.Wiped -> restartToFirstRun()
+                is UnlockAttemptResult.WipeFailed -> {
+                    // The wipe ran but did not finish, so local data may still be on disk. Say so
+                    // rather than showing the same clean first-run screen as a successful wipe —
+                    // and still relaunch, since SecurityWipe has left its in-progress marker set
+                    // and KyPostApp will retry the whole wipe on the next start.
+                    android.util.Log.e("UnlockActivity", "Wipe incomplete: ${result.failedSteps}")
+                    restartToFirstRun()
+                }
                 is UnlockAttemptResult.Rejected -> {
                     pinField.text.clear()
                     errorText.visibility = View.VISIBLE

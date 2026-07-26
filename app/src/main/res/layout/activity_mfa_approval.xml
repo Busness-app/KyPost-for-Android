@@ -1,43 +1,85 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:id="@+id/mfaApprovalRoot"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="24dp"
-    android:gravity="center">
+    android:layout_height="match_parent">
 
-    <TextView
-        android:id="@+id/mfaApprovalTitle"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="@string/mfa_approval_title"
-        android:textSize="20sp"
-        android:textStyle="bold"
-        android:layout_marginBottom="12dp" />
-
-    <TextView
-        android:id="@+id/mfaApprovalBody"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="@string/mfa_approval_body"
-        android:textSize="14sp"
-        android:gravity="center"
-        android:layout_marginBottom="24dp" />
-
-    <Button
-        android:id="@+id/btnMfaApprove"
+    <LinearLayout
+        android:id="@+id/mfaApprovalRoot"
         android:layout_width="match_parent"
-        android:layout_height="56dp"
-        android:layout_marginBottom="12dp"
-        android:text="@string/mfa_approval_approve"
-        android:textSize="16sp" />
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="24dp"
+        android:gravity="center_horizontal">
 
-    <Button
-        android:id="@+id/btnMfaDeny"
-        android:layout_width="match_parent"
-        android:layout_height="56dp"
-        android:text="@string/mfa_approval_deny"
-        android:textSize="16sp" />
+        <TextView
+            android:id="@+id/mfaApprovalTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/mfa_approval_title"
+            android:textSize="20sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="12dp" />
 
-</LinearLayout>
+        <TextView
+            android:id="@+id/mfaApprovalBody"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/mfa_approval_body"
+            android:textSize="14sp"
+            android:gravity="center"
+            android:layout_marginBottom="16dp" />
+
+        <!-- The sign-in's origin. Without this the user is asked to approve nothing in
+             particular, which is the whole mechanism an MFA-fatigue attack relies on. -->
+        <TextView
+            android:id="@+id/mfaApprovalContext"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="14sp"
+            android:lineSpacingExtra="4dp"
+            android:padding="12dp"
+            android:layout_marginBottom="20dp" />
+
+        <!-- Number matching. Shown instead of a bare Approve button whenever the server supplies
+             the digits it is simultaneously displaying in the browser. -->
+        <LinearLayout
+            android:id="@+id/mfaMatchGroup"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/mfaMatchPrompt"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/mfa_match_prompt"
+                android:textSize="14sp"
+                android:gravity="center"
+                android:layout_marginBottom="12dp" />
+
+            <LinearLayout
+                android:id="@+id/mfaMatchChoices"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginBottom="16dp" />
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/btnMfaApprove"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_marginBottom="12dp"
+            android:text="@string/mfa_approval_approve"
+            android:textSize="16sp" />
+
+        <Button
+            android:id="@+id/btnMfaDeny"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:text="@string/mfa_approval_deny"
+            android:textSize="16sp" />
+
+    </LinearLayout>
+</ScrollView>

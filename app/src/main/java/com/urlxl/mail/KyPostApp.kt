@@ -1,6 +1,7 @@
 package com.urlxl.mail
 
 import android.app.Application
+import android.os.SystemClock
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
@@ -8,6 +9,7 @@ import com.urlxl.mail.contacts.ContactsRuntime
 import com.urlxl.mail.contacts.device.DeviceContactsRuntime
 import com.urlxl.mail.push.PushNotificationDispatcher
 import com.urlxl.mail.push.PushRuntime
+import com.urlxl.mail.security.AppLockSettings
 import com.urlxl.mail.security.SecurityRuntime
 import com.urlxl.mail.security.SecurityWipe
 import kotlinx.coroutines.CoroutineScope
@@ -42,10 +44,11 @@ class KyPostApp : Application(), DefaultLifecycleObserver {
 
     override fun onStart(owner: LifecycleOwner) {
         // App moved to the foreground. The unlock screen is no longer launched from here: every
-        // gated Activity now redirects to it in its own onStart (see
+        // gated Activity now redirects to it in its own onCreate/onStart (see
         // com.urlxl.mail.security.LockedActivity), which is what makes the lock unbypassable
         // rather than a screen laid on top of a live app.
-        //
+        applyLockGrace()
+
         // Nothing below runs while locked. These are credential-bearing network syncs; kicking
         // them off behind the unlock screen both leaks activity and pointlessly fails whenever
         // the credential gate is on and the device secret is still wrapped.
@@ -59,7 +62,46 @@ class KyPostApp : Application(), DefaultLifecycleObserver {
             .onFailure { android.util.Log.e("KyPostApp", "Failed to sync contacts (device)", it) }
     }
 
+    /**
+     * When the app went to the background, on the monotonic timebase. Zero means "foreground, or
+     * the grace window has already been resolved".
+     */
+    private var backgroundedAtElapsedMs: Long = 0L
+
+    /**
+     * Locking is deferred by [AppLockSettings.graceMillis] rather than firing the instant the app
+     * loses the foreground.
+     *
+     * Every outbound intent this app makes leaves the process: the attachment picker, the
+     * attachment-viewer chooser, the QR scanner (a GMS process), the "Open in webmail" handoff.
+     * Each one stops the last Activity, which fired `lockNow()` immediately — and because
+     * [com.urlxl.mail.security.LockedActivity] *finishes* rather than layering, coming back
+     * destroyed the screen outright. Attaching a file to a message therefore deleted the message:
+     * recipients, subject, body and every attachment already picked, with no draft to recover.
+     *
+     * The grace window is the standard resolution (every banking app does this) and is
+     * user-configurable, defaulting to 30s — long enough for a file picker round trip, short
+     * enough that a pocketed phone re-locks.
+     */
     override fun onStop(owner: LifecycleOwner) {
-        SecurityRuntime.graph(this).appLockManager.lockNow()
+        val grace = AppLockSettings(this).graceMillis()
+        if (grace <= 0L) {
+            SecurityRuntime.graph(this).appLockManager.lockNow()
+            backgroundedAtElapsedMs = 0L
+            return
+        }
+        backgroundedAtElapsedMs = SystemClock.elapsedRealtime()
+    }
+
+    private fun applyLockGrace() {
+        val backgroundedAt = backgroundedAtElapsedMs
+        backgroundedAtElapsedMs = 0L
+        if (backgroundedAt == 0L) return
+        // elapsedRealtime, not wall clock: a wall-clock window is defeated by changing the device
+        // date, exactly as AppLockState.lockoutUntilElapsedMs already documents.
+        val away = SystemClock.elapsedRealtime() - backgroundedAt
+        if (away >= AppLockSettings(this).graceMillis()) {
+            SecurityRuntime.graph(this).appLockManager.lockNow()
+        }
     }
 }

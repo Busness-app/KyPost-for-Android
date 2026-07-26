@@ -24,11 +24,16 @@ data class PairingData(
  * one the confirmation dialog shows the user — and a different one in `reg` would POST the
  * subscriber ID, pairing token and FCM token to an attacker while displaying a trusted hostname.
  * The pull endpoint already had this check; the endpoint that carries the credential did not.
+ *
+ * Userinfo makes both sides fail closed. Two URLs can share a host and still not be the pair the
+ * user was shown — and this is also reached for pairings persisted by an older build, which is
+ * exactly where a userinfo URL saved before [pairingUrlHost] existed would still be sitting.
  */
 internal fun sameOrigin(candidate: String, reference: String): Boolean {
     val a = runCatching { URI(candidate) }.getOrNull() ?: return false
     val b = runCatching { URI(reference) }.getOrNull() ?: return false
     if (a.host.isNullOrBlank() || b.host.isNullOrBlank()) return false
+    if (a.rawUserInfo != null || b.rawUserInfo != null) return false
     return a.scheme.equals(b.scheme, ignoreCase = true) &&
         a.host.equals(b.host, ignoreCase = true) &&
         effectivePort(a) == effectivePort(b)
@@ -136,8 +141,29 @@ object NativePairingDeepLinkParser {
         return URLDecoder.decode(value, StandardCharsets.UTF_8.name())
     }
 
-    private fun isHttpsUrl(value: String): Boolean {
-        val parsed = runCatching { URI(value) }.getOrNull() ?: return false
-        return parsed.scheme.equals("https", ignoreCase = true) && !parsed.host.isNullOrBlank()
-    }
+    private fun isHttpsUrl(value: String): Boolean = pairingUrlHost(value) != null
+}
+
+/**
+ * The host a pairing URL will actually connect to, or null if the URL is not one this app may
+ * ever send credentials to.
+ *
+ * Userinfo is rejected outright, and this — not the raw string — is what the confirmation dialog
+ * must display. `https://mail.trusted-corp.com@evil.tld/` is a perfectly valid https URL whose
+ * host is `evil.tld`; every check here used to pass it (the scheme is https, `getHost()` is
+ * non-blank, and `sameOrigin` compared the same attacker host on both sides), while
+ * [com.urlxl.mail.push.PushPairingActivity] rendered the raw string in the "Pair with…" prompt.
+ * On a wrapped dialog that reads as the trusted host, so the user approved sending
+ * `X-Kypost-Device-Secret` to the attacker — and the TOFU pin then locked the attacker's
+ * certificate in. `kypost://native-pair` is a BROWSABLE deep link, so any web page could fire it.
+ *
+ * A path is still allowed — `reg` legitimately carries `/api/notifications/native/register`, and a
+ * self-hosted server may live under a sub-path — because a path cannot change which host the
+ * request reaches. Userinfo can, which is the whole bug.
+ */
+internal fun pairingUrlHost(value: String): String? {
+    val parsed = runCatching { URI(value) }.getOrNull() ?: return null
+    if (!parsed.scheme.equals("https", ignoreCase = true)) return null
+    if (parsed.rawUserInfo != null) return null
+    return parsed.host?.takeIf { it.isNotBlank() }
 }
