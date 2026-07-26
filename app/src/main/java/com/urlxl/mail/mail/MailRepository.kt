@@ -57,6 +57,10 @@ class MailRepository(
 
     fun send(draft: MailDraft): MailOutcome<MailSendOutcome> = relaySource.sendMail(draft)
 
+    /** Used by the client-custody webmail handoff: the composition is parked as a draft so the
+     *  browser has something to open. Drafts carry no crypto flags — see [MailDraft]. */
+    fun saveDraft(draft: MailDraft): MailOutcome<Unit> = relaySource.saveDraft(draft)
+
     fun listFolders(parent: String?): MailOutcome<FolderListResult> = relaySource.listFolders(parent)
 
     fun listAttachments(id: String, folder: String): MailOutcome<List<AttachmentInfo>> =

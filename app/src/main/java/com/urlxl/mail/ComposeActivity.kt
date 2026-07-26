@@ -1,5 +1,6 @@
 package com.urlxl.mail
 
+import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
@@ -8,6 +9,7 @@ import android.text.TextUtils
 import android.util.Base64
 import android.view.Menu
 import android.view.MenuItem
+import android.view.View
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.Toast
@@ -27,6 +29,9 @@ import com.urlxl.mail.mail.MailOutcome
 import com.urlxl.mail.mail.MailRuntime
 import com.urlxl.mail.mail.OutgoingAttachment
 import com.urlxl.mail.mail.userFacingMessage
+import com.urlxl.mail.pgp.PgpComposeState
+import com.urlxl.mail.pgp.webmailDraftsUrl
+import com.urlxl.mail.push.PushRuntime
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
@@ -52,9 +57,20 @@ class ComposeActivity : LockedActivity() {
     private lateinit var detailsDividers: List<android.view.View>
     private lateinit var messageDivider: android.view.View
     private lateinit var rootView: android.view.View
+    private lateinit var pgpChips: ChipGroup
+    private lateinit var encryptChip: Chip
+    private lateinit var signChip: Chip
+    private lateinit var webmailChip: Chip
+    private lateinit var keylessWarning: android.widget.TextView
+    private val pgpController by lazy { ComposePgpController.from(this) }
     private var sendMenuItem: MenuItem? = null
     private val ioExecutor = Executors.newSingleThreadExecutor()
     private val attachments = mutableListOf<OutgoingAttachment>()
+
+    /** The draft as it was actually sent, kept so the post-409 re-send reuses it byte-for-byte
+     *  with only allowPickupFallback flipped. Re-exporting the editor HTML or re-encoding the
+     *  attachments could produce a subtly different message. */
+    private var sentDraft: MailDraft? = null
 
     private val pickAttachments = registerForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments(),
@@ -87,6 +103,15 @@ class ComposeActivity : LockedActivity() {
             findViewById(R.id.composeDetailsDivider3),
         )
         messageDivider = findViewById(R.id.composeMessageDivider)
+
+        pgpChips = findViewById(R.id.composePgpChips)
+        encryptChip = findViewById(R.id.composeEncryptChip)
+        signChip = findViewById(R.id.composeSignChip)
+        webmailChip = findViewById(R.id.composeWebmailChip)
+        keylessWarning = findViewById(R.id.composeKeylessWarning)
+        applyWarningCalloutTheme(this, keylessWarning)
+
+        lifecycleScope.launch { applyPgpComposeState(pgpController.composeState()) }
 
         toInput = findViewById(R.id.composeToInput)
         ccInput = findViewById(R.id.composeCcInput)
@@ -182,7 +207,7 @@ class ComposeActivity : LockedActivity() {
     }
 
     private fun applyToolbarChipsTheme() {
-        listOf(boldChip, italicChip, underlineChip, linkChip, attachButton).forEach {
+        listOf(boldChip, italicChip, underlineChip, linkChip, attachButton, encryptChip, signChip, webmailChip).forEach {
             applyPillChipTheme(this, it)
         }
         // applyThemeToViewTree paints every ViewGroup (root included) flat `panel`-colored by
@@ -198,6 +223,45 @@ class ComposeActivity : LockedActivity() {
         val line = Color.parseColor(getStoredThemePalette(this).line)
         detailsDividers.forEach { it.setBackgroundColor(line) }
         messageDivider.setBackgroundColor(line)
+    }
+
+    /** Views only — the rule itself is [com.urlxl.mail.pgp.pgpComposeStateOf], unit-tested. */
+    private fun applyPgpComposeState(state: PgpComposeState) {
+        encryptChip.visibility = if (state.canEncrypt) View.VISIBLE else View.GONE
+        signChip.visibility = if (state.canSign) View.VISIBLE else View.GONE
+        webmailChip.visibility = if (state.handoffToWebmail) View.VISIBLE else View.GONE
+        pgpChips.visibility =
+            if (state.canEncrypt || state.canSign || state.handoffToWebmail) View.VISIBLE else View.GONE
+
+        encryptChip.setOnCheckedChangeListener { _, checked ->
+            if (checked) runPreflight() else hideKeylessWarning()
+        }
+        webmailChip.setOnClickListener { handOffToWebmail() }
+    }
+
+    /** Runs when Encrypt is switched on. Not debounced per keystroke: recipients are committed as
+     *  chips by RecipientInputView rather than typed continuously, so this fires on a settled
+     *  address list. */
+    private fun runPreflight() {
+        val addresses = splitAddresses(
+            toInput.commaJoinedRecipients(),
+            ccInput.commaJoinedRecipients(),
+            bccInput.commaJoinedRecipients(),
+        )
+        lifecycleScope.launch {
+            val keyless = pgpController.keylessRecipients(addresses)
+            if (keyless.isEmpty()) {
+                hideKeylessWarning()
+            } else {
+                keylessWarning.text =
+                    getString(R.string.compose_pgp_no_key_on_file, keyless.joinToString(", "))
+                keylessWarning.visibility = View.VISIBLE
+            }
+        }
+    }
+
+    private fun hideKeylessWarning() {
+        keylessWarning.visibility = View.GONE
     }
 
     /** Injects the active palette into the editor's WebView content so it doesn't render as a
@@ -323,28 +387,128 @@ class ComposeActivity : LockedActivity() {
         sendMenuItem?.isEnabled = false
 
         bodyEditor.exportHtml { html ->
-            ioExecutor.execute {
-                val outcome = MailRuntime.graph(this).repository.send(
-                    MailDraft(to = to, cc = cc, bcc = bcc, subject = subject, body = html, mode = "html", attachments = attachments.toList()),
-                )
-                runOnUiThread {
-                    when (outcome) {
-                        is MailOutcome.Success -> {
-                            val warning = outcome.value.warning
-                            // The send already succeeded even when sentSaved is false — surface the
-                            // warning as a non-blocking notice, not a failure.
-                            val message = warning.ifBlank { "Email sent successfully" }
-                            Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
-                            finish()
-                        }
-                        else -> {
-                            sendMenuItem?.isEnabled = true
-                            Toast.makeText(this, outcome.userFacingMessage(), Toast.LENGTH_LONG).show()
-                        }
+            val draft = MailDraft(
+                to = to, cc = cc, bcc = bcc, subject = subject, body = html, mode = "html",
+                attachments = attachments.toList(),
+                sign = signChip.isChecked && signChip.visibility == View.VISIBLE,
+                encrypt = encryptChip.isChecked && encryptChip.visibility == View.VISIBLE,
+                // Never on for a first attempt. Only the post-409 re-send sets it, and only after
+                // the user confirmed the dialog naming the addresses.
+                allowPickupFallback = false,
+            )
+            sentDraft = draft
+            dispatchSend(draft)
+        }
+    }
+
+    /** Shared by the first attempt and the confirmed re-send, so the re-send cannot drift. */
+    private fun dispatchSend(draft: MailDraft) {
+        ioExecutor.execute {
+            val outcome = MailRuntime.graph(this).repository.send(draft)
+            runOnUiThread {
+                when (outcome) {
+                    is MailOutcome.Success -> {
+                        val warning = outcome.value.warning
+                        // The send already succeeded even when sentSaved is false or a pickup link
+                        // failed — surface the warning as a notice, never as a failure, and never
+                        // offer a retry that would duplicate the message.
+                        Toast.makeText(this, warning.ifBlank { "Email sent successfully" }, Toast.LENGTH_SHORT).show()
+                        finish()
+                    }
+                    is MailOutcome.PickupFallbackNeeded -> {
+                        sendMenuItem?.isEnabled = true
+                        confirmPickupFallback(outcome.keylessRecipients)
+                    }
+                    is MailOutcome.ClientSideNeeded -> {
+                        sendMenuItem?.isEnabled = true
+                        handOffToWebmail()
+                    }
+                    else -> {
+                        sendMenuItem?.isEnabled = true
+                        Toast.makeText(this, outcome.userFacingMessage(), Toast.LENGTH_LONG).show()
                     }
                 }
             }
         }
+    }
+
+    /**
+     * Nothing was delivered when this fires — the relay refuses before any SMTP — so the re-send
+     * cannot duplicate the message.
+     *
+     * The copy is the spec's, verbatim, because it is what makes the opt-in meaningful. Cancel is
+     * the negative button and the dialog stays cancelable, so dismissing keeps the composition.
+     */
+    private fun confirmPickupFallback(keylessRecipients: List<String>) {
+        val draft = sentDraft ?: return
+        AlertDialog.Builder(this)
+            .setTitle(R.string.compose_pickup_dialog_title)
+            .setMessage(getString(R.string.compose_pickup_dialog_body, keylessRecipients.joinToString(", ")))
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.compose_pickup_dialog_confirm) { _, _ ->
+                sendMenuItem?.isEnabled = false
+                // The same draft, one flag flipped. Not rebuilt: no re-export of the editor HTML,
+                // no re-encoded attachments, no second preflight.
+                dispatchSend(draft.copy(allowPickupFallback = true))
+            }
+            .show()
+    }
+
+    /**
+     * Saves the composition as a draft and hands the Drafts URL to the **system**, so an installed
+     * PWA or the user's browser opens it with the session it already has. Never an in-app WebView:
+     * that shares no session and would put an account-password field inside this app.
+     *
+     * The draft save has to succeed first — opening a browser onto a draft that is not there loses
+     * the user's message. The draft is saved without the PGP flags, since [MailDraft]'s sign/encrypt
+     * only apply to /api/mail/send, not the plain /api/mail/draft endpoint.
+     */
+    private fun handOffToWebmail() {
+        bodyEditor.exportHtml { html ->
+            val draft = sentDraft ?: MailDraft(
+                to = toInput.commaJoinedRecipients(),
+                cc = ccInput.commaJoinedRecipients(),
+                bcc = bccInput.commaJoinedRecipients(),
+                subject = subjectField.text.toString().trim(),
+                body = html,
+                mode = "html",
+                attachments = attachments.toList(),
+            )
+            ioExecutor.execute {
+                val saved = MailRuntime.graph(this).repository.saveDraft(draft)
+                val serverUrl = PushRuntime.graph(this).repository.pairingForAuthenticatedCall()?.serverUrl
+                val url = serverUrl?.let { webmailDraftsUrl(it) }
+                runOnUiThread {
+                    when {
+                        saved !is MailOutcome.Success -> Toast.makeText(
+                            this,
+                            getString(R.string.compose_handoff_draft_failed, saved.userFacingMessage().orEmpty()),
+                            Toast.LENGTH_LONG,
+                        ).show()
+                        url == null -> Toast.makeText(this, R.string.compose_handoff_no_webmail, Toast.LENGTH_LONG).show()
+                        else -> showHandoffDialog(url)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun showHandoffDialog(url: String) {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.compose_handoff_dialog_title)
+            .setMessage(R.string.compose_handoff_dialog_body)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.compose_handoff_dialog_confirm) { _, _ ->
+                // Same guarded launch as EmailDetailActivity's "Open in webmail" button.
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                if (intent.resolveActivity(packageManager) != null) {
+                    startActivity(intent)
+                    finish()
+                } else {
+                    Toast.makeText(this, R.string.compose_handoff_no_webmail, Toast.LENGTH_LONG).show()
+                }
+            }
+            .show()
     }
 
     override fun onDestroy() {

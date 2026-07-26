@@ -152,6 +152,52 @@
 
         </LinearLayout>
 
+        <!-- PGP row: hidden entirely unless GET /api/pgp/bootstrap said this account has an identity.
+             Never shown optimistically — a toggle that 409s is worse than no toggle. -->
+        <com.google.android.material.chip.ChipGroup
+            android:id="@+id/composePgpChips"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:visibility="gone"
+            android:layout_marginBottom="12dp"
+            app:chipSpacingHorizontal="6dp">
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/composeEncryptChip"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:checkable="true"
+                android:visibility="gone"
+                android:text="@string/compose_pgp_encrypt" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/composeSignChip"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:checkable="true"
+                android:visibility="gone"
+                android:text="@string/compose_pgp_sign" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/composeWebmailChip"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:checkable="false"
+                android:visibility="gone"
+                android:text="@string/compose_pgp_webmail" />
+
+        </com.google.android.material.chip.ChipGroup>
+
+        <!-- "No key on file" notice. A warning callout, not an error: the send may still encrypt to
+             these addresses via key discovery. -->
+        <TextView
+            android:id="@+id/composeKeylessWarning"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:visibility="gone"
+            android:padding="12dp"
+            android:layout_marginBottom="12dp" />
+
         <View
             android:id="@+id/composeMessageDivider"
             android:layout_width="match_parent"

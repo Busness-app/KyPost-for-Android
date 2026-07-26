@@ -86,6 +86,22 @@
     <string name="recipient_duplicate_toast">%1$s is already added</string>
     <string name="recipient_invalid_email_toast">Enter a valid email address</string>
     <string name="compose_address_book_content_description">Open address book</string>
+    <string name="compose_pgp_encrypt">Encrypt</string>
+    <string name="compose_pgp_sign">Sign</string>
+    <string name="compose_pgp_webmail">Continue in webmail</string>
+    <!-- Trap 2: the preflight reads contacts only, while the send path also runs WKD/keyserver
+         discovery, so this must not promise that a link will be sent. -->
+    <string name="compose_pgp_no_key_on_file">No PGP key on file for %1$s. They may still be found by key lookup when you send.</string>
+    <!-- Spec § "Confirmation dialog copy": this wording carries the security property and is part
+         of the contract. Do not soften it, and do not summarize the addresses. -->
+    <string name="compose_pickup_dialog_title">Send an unencrypted link?</string>
+    <string name="compose_pickup_dialog_body">We don\'t have a PGP key for %1$s. They\'ll get an email with a one-time link instead.\n\nTo make that work, this message\'s contents are stored on your KyPost server — unencrypted — for up to 7 days or until the link is opened. Everyone else on this message still gets it encrypted.</string>
+    <string name="compose_pickup_dialog_confirm">Send link anyway</string>
+    <string name="compose_handoff_dialog_title">Finish this in webmail</string>
+    <string name="compose_handoff_dialog_body">This account\'s PGP key is held only by your browser, so neither this app nor your server can encrypt on your behalf. Your message has been saved as a draft — open webmail to finish sending it.</string>
+    <string name="compose_handoff_dialog_confirm">Open webmail</string>
+    <string name="compose_handoff_draft_failed">Couldn\'t save the draft, so webmail wouldn\'t have your message: %1$s</string>
+    <string name="compose_handoff_no_webmail">Couldn\'t work out this server\'s web address — open your drafts in your browser.</string>
     <string name="address_book_search_hint">Search contacts</string>
     <string name="address_book_action_to">TO</string>
     <string name="address_book_action_cc">CC</string>
