@@ -33,6 +33,7 @@ import com.urlxl.mail.mail.userFacingMessage
 import com.urlxl.mail.pgp.PgpComposeState
 import com.urlxl.mail.pgp.webmailDraftsUrl
 import com.urlxl.mail.push.PushRuntime
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
@@ -67,6 +68,11 @@ class ComposeActivity : LockedActivity() {
     private var sendMenuItem: MenuItem? = null
     private val ioExecutor = Executors.newSingleThreadExecutor()
     private val attachments = mutableListOf<OutgoingAttachment>()
+
+    /** The in-flight preflight check, if any. Cancelled whenever a newer one supersedes it (a
+     *  recipient change while Encrypt is checked) or Encrypt is switched off, so a late result
+     *  can never re-show the "no key on file" warning after the toggle has already gone off. */
+    private var preflightJob: Job? = null
 
     /** The draft as it was actually sent, kept so the post-409 re-send reuses it byte-for-byte
      *  with only allowPickupFallback flipped. Re-exporting the editor HTML or re-encoding the
@@ -132,6 +138,15 @@ class ComposeActivity : LockedActivity() {
         toInput.configure(searchContacts, onOpenAddressBook = ::openAddressBook)
         ccInput.configure(searchContacts)
         bccInput.configure(searchContacts)
+
+        // Re-run the preflight whenever the committed recipient set changes, but only while
+        // Encrypt is on — otherwise toggling Encrypt before any recipient is entered means
+        // splitAddresses() sees an empty list, the initial check short-circuits, and the warning
+        // never appears again no matter how many keyless addresses are added afterward.
+        val onRecipientsChanged = { if (encryptChip.isChecked) runPreflight() }
+        toInput.onRecipientsChanged = onRecipientsChanged
+        ccInput.onRecipientsChanged = onRecipientsChanged
+        bccInput.onRecipientsChanged = onRecipientsChanged
 
         subjectField.setText(intent.getStringExtra(EXTRA_SUBJECT).orEmpty())
         toInput.setInitialRecipients(intent.getStringExtra(EXTRA_TO).orEmpty())
@@ -239,21 +254,34 @@ class ComposeActivity : LockedActivity() {
             if (state.canEncrypt || state.canSign || state.handoffToWebmail) View.VISIBLE else View.GONE
 
         encryptChip.setOnCheckedChangeListener { _, checked ->
-            if (checked) runPreflight() else hideKeylessWarning()
+            if (checked) {
+                runPreflight()
+            } else {
+                // Cancel rather than let a stale result land after the toggle has gone off — a
+                // superseded preflight must never overwrite the newer (in this case: hidden) state.
+                preflightJob?.cancel()
+                hideKeylessWarning()
+            }
         }
         webmailChip.setOnClickListener { handOffToWebmail() }
     }
 
-    /** Runs when Encrypt is switched on. Not debounced per keystroke: recipients are committed as
-     *  chips by RecipientInputView rather than typed continuously, so this fires on a settled
-     *  address list. */
+    /** Runs when Encrypt is switched on, and again on every committed recipient change while it
+     *  stays on (see the onRecipientsChanged wiring in onCreate). Not debounced per keystroke:
+     *  recipients are committed as chips by RecipientInputView rather than typed continuously, so
+     *  this fires on a settled address list, never mid-keystroke.
+     *
+     *  Cancels any still-running preflight before starting a new one, so a recipient added a
+     *  moment after a slow check started can't have its result clobbered by the earlier one
+     *  landing late. */
     private fun runPreflight() {
         val addresses = splitAddresses(
             toInput.commaJoinedRecipients(),
             ccInput.commaJoinedRecipients(),
             bccInput.commaJoinedRecipients(),
         )
-        lifecycleScope.launch {
+        preflightJob?.cancel()
+        preflightJob = lifecycleScope.launch {
             val keyless = pgpController.keylessRecipients(addresses)
             if (keyless.isEmpty()) {
                 hideKeylessWarning()

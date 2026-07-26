@@ -147,6 +147,12 @@ class PushRepository(
         // on having a pairing, so it has to be switched off explicitly here.
         runCatching { com.urlxl.mail.contacts.device.DeviceContactSyncSettings(context).setEnabled(false) }
         runCatching { context.deleteSharedPreferences(com.urlxl.mail.KeywordSettings.PREFS_NAME) }
+        // ComposePgpController's bootstrap cache is process-static and keyed on nothing but
+        // "the last account we asked" — without this, pairing a server-custody account right
+        // after unpairing a client-custody one would keep hiding the Encrypt/Sign chips (or the
+        // reverse: offering them where they must not appear) for the rest of the process, since
+        // no code path here restarts the process.
+        runCatching { com.urlxl.mail.ComposePgpController.resetSessionCache() }
     }
 
     suspend fun clearPairing() {

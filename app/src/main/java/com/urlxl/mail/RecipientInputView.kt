@@ -42,6 +42,11 @@ class RecipientInputView @JvmOverloads constructor(
     private val chipGroup: ChipGroup
     private val recipients = mutableListOf<String>()
 
+    /** Fires after a recipient is actually added or removed — i.e. once per committed change to
+     *  [recipientEmails], never per keystroke. ComposeActivity uses this to re-run the encrypt
+     *  preflight when the committed address set changes while Encrypt is checked. */
+    var onRecipientsChanged: (() -> Unit)? = null
+
     init {
         orientation = VERTICAL
         LayoutInflater.from(context).inflate(R.layout.view_recipient_input, this, true)
@@ -111,6 +116,7 @@ class RecipientInputView @JvmOverloads constructor(
                 recipients.remove(email)
                 chipGroup.removeView(this)
                 chipGroup.visibility = if (chipGroup.childCount == 0) View.GONE else View.VISIBLE
+                onRecipientsChanged?.invoke()
             }
         }
         applyPillChipTheme(context, chip)
@@ -118,6 +124,7 @@ class RecipientInputView @JvmOverloads constructor(
         chipGroup.visibility = View.VISIBLE
         field.setText("")
         field.dismissDropDown()
+        onRecipientsChanged?.invoke()
         return true
     }
 

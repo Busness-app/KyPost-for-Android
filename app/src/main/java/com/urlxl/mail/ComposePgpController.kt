@@ -84,8 +84,13 @@ class ComposePgpController(
 
     companion object {
         /** Process-scoped, so a second compose in the same session costs no round trip. Not
-         *  persisted: custody mode is fixed at key creation, but a re-pair to a different account
-         *  restarts the process anyway (see AppRestart). */
+         *  persisted: custody mode is fixed at key creation. An account switch does **not**
+         *  restart the process — [com.urlxl.mail.push.PushRepository.unpairDevice] only clears
+         *  pairing and cancels the pull worker — so this cache is cleared explicitly by
+         *  [com.urlxl.mail.push.PushRepository.purgeAccountScopedData] on unpair via
+         *  [resetSessionCache]. Without that, a switch from a client-custody account to a
+         *  server-custody one would keep hiding the Encrypt/Sign chips for the rest of the
+         *  process. */
         @Volatile
         private var cachedState: PgpComposeState? = null
 
