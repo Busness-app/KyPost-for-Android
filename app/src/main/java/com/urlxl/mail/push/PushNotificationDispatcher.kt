@@ -25,6 +25,12 @@ object PushNotificationDispatcher {
     private const val MFA_ALERT_COOLDOWN_MS = 5 * 60 * 1000L
 
     const val EXTRA_MFA_CHALLENGE_ID = "challengeId"
+    const val EXTRA_MFA_IP = "mfaIpAddress"
+    const val EXTRA_MFA_LOCATION = "mfaApproxLocation"
+    const val EXTRA_MFA_USER_AGENT = "mfaUserAgent"
+    const val EXTRA_MFA_ISSUED_AT = "mfaIssuedAt"
+    const val EXTRA_MFA_MATCH_DIGITS = "mfaMatchDigits"
+    const val EXTRA_MFA_DECOY_DIGITS = "mfaDecoyDigits"
     const val EXTRA_MESSAGE_ID = "com.urlxl.mail.push.EXTRA_MESSAGE_ID"
     const val EXTRA_SENDER = "com.urlxl.mail.push.EXTRA_SENDER"
     const val EXTRA_SUBJECT = "com.urlxl.mail.push.EXTRA_SUBJECT"
@@ -84,9 +90,10 @@ object PushNotificationDispatcher {
             .putExtra(EXTRA_SENDER, payload.senderName)
             .putExtra(EXTRA_SUBJECT, payload.emailSubject)
 
+        val notificationId = stableNotificationId("mail-${payload.messageId}")
         val pendingIntent = PendingIntent.getActivity(
             context,
-            payload.messageId.hashCode(),
+            notificationId,
             launchIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -104,7 +111,7 @@ object PushNotificationDispatcher {
             .setContentIntent(pendingIntent)
         if (!locked) builder.setStyle(NotificationCompat.BigTextStyle().bigText(body))
 
-        postNotification(context, payload.messageId.hashCode(), builder.build())
+        postNotification(context, notificationId, builder.build())
     }
 
     /**
@@ -131,6 +138,15 @@ object PushNotificationDispatcher {
         val tapIntent = Intent(context, MfaApprovalActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             .putExtra(EXTRA_MFA_CHALLENGE_ID, payload.challengeId)
+            // The context the user needs to tell their own sign-in from an attacker's. Safe in
+            // Intent extras: MfaApprovalActivity is not exported, so only this app can supply
+            // them, and MfaChallengeTracker still gates on the id having really been pushed.
+            .putExtra(EXTRA_MFA_IP, payload.ipAddress)
+            .putExtra(EXTRA_MFA_LOCATION, payload.approxLocation)
+            .putExtra(EXTRA_MFA_USER_AGENT, payload.userAgent)
+            .putExtra(EXTRA_MFA_ISSUED_AT, payload.issuedAtEpochMs)
+            .putExtra(EXTRA_MFA_MATCH_DIGITS, payload.matchDigits)
+            .putExtra(EXTRA_MFA_DECOY_DIGITS, payload.decoyDigits.toTypedArray())
         val tapPendingIntent = PendingIntent.getActivity(
             context,
             notificationId,
@@ -183,7 +199,27 @@ object PushNotificationDispatcher {
             PackageManager.PERMISSION_GRANTED
     }
 
-    private fun mfaNotificationId(challengeId: String): Int = ("mfa-$challengeId").hashCode()
+    private fun mfaNotificationId(challengeId: String): Int = stableNotificationId("mfa-$challengeId")
+
+    /**
+     * A collision-resistant id derived from [key].
+     *
+     * `String.hashCode` was used for both the notification id and the PendingIntent request code.
+     * It is a 32-bit value designed for HashMap bucketing, not distinctness — and it is trivially
+     * collidable on purpose. Two colliding message ids meant the second notification *replaced*
+     * the first, and `FLAG_UPDATE_CURRENT` rewrote the first's extras to point at the second
+     * message, so tapping the survivor opened the wrong email.
+     *
+     * SHA-256 truncated to 31 bits keeps the value positive (some launchers dislike negative ids)
+     * and pushes the collision probability out past any plausible number of live notifications.
+     */
+    internal fun stableNotificationId(key: String): Int {
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(key.toByteArray())
+        return ((digest[0].toInt() and 0x7F) shl 24) or
+            ((digest[1].toInt() and 0xFF) shl 16) or
+            ((digest[2].toInt() and 0xFF) shl 8) or
+            (digest[3].toInt() and 0xFF)
+    }
 
     /** Tracks only whether the *sound* for an MFA notification was played recently. It no longer
      *  holds a notification id, so it can't cause one challenge's answer to dismiss another's. */

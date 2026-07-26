@@ -29,6 +29,32 @@ Owns the Android app module build, manifest, source sets, resources, and test ex
   `pt` params (`reg` optional). `hash` is no longer part of the contract — the per-device secret
   is issued only via the registration response, never carried in the pairing QR/deep-link. The
   legacy `novu-pair` scheme is removed entirely.
+- Any URL this app will send pairing credentials to must pass `pairingUrlHost()`
+  (`push/PairingModels.kt`): https, non-blank host, and **no userinfo**. The pairing confirmation
+  dialog renders that parsed host, never the raw `srv` string — a raw URL in a trust prompt is a
+  phishing surface (`https://trusted.example@evil.tld` reads as the trusted host on a wrapped
+  dialog), and `kypost://native-pair` is BROWSABLE so any web page can fire it.
+- Every response body is bounded by `BodySizeLimitInterceptor` in `pairingHttpClient()`
+  (`PairingAuthHeaders.kt`). Add new HTTP clients through that factory rather than bounding reads
+  per call site; endpoints that read raw bytes (attachment download) still apply their own tighter
+  cap on top.
+- `SecurityWipe.wipeAndResetApp` destroys local plaintext **before** any network call, records a
+  durable `wipe_in_progress` marker so an interrupted wipe resumes at next launch
+  (`enforceTripwire` checks it first), and returns `WipeResult` — never report a wipe as complete
+  without checking it.
+- `LockedActivity` redirects in `onCreate` (not only `onStart`), so every subclass must
+  `if (redirectedToUnlock) return` immediately after `super.onCreate(...)` **and** in every other
+  lifecycle callback that touches a `lateinit` view. `onDestroy` is the exception: property
+  initializers such as `ioExecutor` exist regardless and still need tearing down.
+- The app lock re-engages after `AppLockSettings.graceMillis()` in the background (default 30s,
+  user-configurable in Security settings), not instantly — locking on every background transition
+  destroyed the compose screen whenever the file picker, QR scanner or webmail handoff was used.
+  `ComposeDraftCache` is the in-memory backstop; it is deliberately never written to disk so
+  Hostile Location Protection needs no special case.
+- MFA approval (`push/MfaApprovalActivity`) must show the sign-in's context (IP, location, user
+  agent, time) and, whenever the server supplies `matchDigits`, require a number match instead of
+  a bare Approve button. A contentless approval prompt is what MFA-fatigue attacks harvest. All
+  context fields are optional on the wire so an un-upgraded server still works.
 - Unpairing (`PushHomeViewModel.unpairDevice()`) calls `POST
   /api/notifications/native/deregister` with the device's own credentials before clearing local
   state; the local clear (and periodic pull-worker cancellation) happens unconditionally even if

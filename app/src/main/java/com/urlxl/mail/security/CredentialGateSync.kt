@@ -25,7 +25,7 @@ import kotlinx.coroutines.withContext
  */
 suspend fun rewrapPairingIfNeeded(context: Context, appLockManager: AppLockManager) {
     withContext(NonCancellable) {
-        val appLockStore = AppLockStore(context)
+        val appLockStore = SecurityRuntime.graph(context).appLockStore
         if (!appLockStore.isCredentialPinGateEnabled()) return@withContext
 
         val securePairingStore = PushRuntime.graph(context).securePairingStore

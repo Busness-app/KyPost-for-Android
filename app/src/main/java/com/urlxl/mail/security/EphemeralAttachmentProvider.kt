@@ -79,10 +79,16 @@ object EphemeralAttachmentBytes {
         val cutoff = nowMillis - ATTACHMENT_TTL_MILLIS
         val expired = pending.entries.filter { it.value.registeredAtMillis < cutoff }
         expired.forEach { entry ->
-            pending.remove(entry.key)
+            // The removal's own return value decides ownership of the bytes, rather than zeroing
+            // the array this iteration happened to see. `take()` can win the race between the
+            // filter above and this line — a user tapping an attachment moments before its TTL —
+            // and the old code then zeroed a buffer the provider's writer thread was already
+            // streaming to a viewer app. The viewer received a file that trailed off into zeros,
+            // with no error anywhere.
+            val removed = pending.remove(entry.key) ?: return@forEach
             // Overwrite rather than waiting for GC: until the collector runs (and possibly after,
             // if the buffer was promoted) this plaintext is readable in a heap dump.
-            Arrays.fill(entry.value.bytes, 0)
+            Arrays.fill(removed.bytes, 0)
         }
     }
 

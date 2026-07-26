@@ -79,6 +79,10 @@ class ComposeActivity : LockedActivity() {
      *  attachments could produce a subtly different message. */
     private var sentDraft: MailDraft? = null
 
+    /** Set once the relay confirms delivery, so [onStop] does not re-cache a message that has
+     *  already been sent — which would otherwise reappear as a "restored draft" next time. */
+    private var sendSucceeded = false
+
     /** The currently shown pickup-fallback/webmail-handoff dialog, if any — dismissed in
      *  [onDestroy] so it does not outlive the Activity's window. */
     private var activeDialog: AlertDialog? = null
@@ -89,6 +93,9 @@ class ComposeActivity : LockedActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // The app lock redirects and finishes in super.onCreate; nothing below may run,
+        // least of all the network and database work further down this method.
+        if (redirectedToUnlock) return
         setContentView(R.layout.activity_compose)
         applyThemeToActivity(this)
 
@@ -148,10 +155,38 @@ class ComposeActivity : LockedActivity() {
         ccInput.onRecipientsChanged = onRecipientsChanged
         bccInput.onRecipientsChanged = onRecipientsChanged
 
-        subjectField.setText(intent.getStringExtra(EXTRA_SUBJECT).orEmpty())
-        toInput.setInitialRecipients(intent.getStringExtra(EXTRA_TO).orEmpty())
-        val prefillBody = intent.getStringExtra(EXTRA_BODY).orEmpty()
-        bodyEditor.setHtml(plainTextToHtml(prefillBody))
+        // A draft the app lock destroyed on a previous entry wins over the intent's prefill: the
+        // user typed it, and it is strictly newer than whatever Reply/Forward put there.
+        val restored = ComposeDraftCache.take()
+        if (restored != null) {
+            subjectField.setText(restored.subject)
+            toInput.setInitialRecipients(restored.to)
+            ccInput.setInitialRecipients(restored.cc)
+            bccInput.setInitialRecipients(restored.bcc)
+            attachments.addAll(restored.attachments)
+            renderAttachmentChips()
+            bodyEditor.setHtml(restored.bodyHtml)
+            // The restored draft already carries its own attachments; a handoff left over from an
+            // abandoned forward must not be merged into it.
+            ForwardAttachmentHandoff.clear()
+            Toast.makeText(this, R.string.compose_draft_restored, Toast.LENGTH_SHORT).show()
+        } else {
+            subjectField.setText(intent.getStringExtra(EXTRA_SUBJECT).orEmpty())
+            toInput.setInitialRecipients(intent.getStringExtra(EXTRA_TO).orEmpty())
+            // EXTRA_BODY_HTML carries a real HTML quote (Reply/Forward of an HTML message);
+            // EXTRA_BODY is plain text and still has to be escaped before it reaches the editor.
+            val prefillHtml = intent.getStringExtra(EXTRA_BODY_HTML).orEmpty()
+            bodyEditor.setHtml(
+                prefillHtml.ifBlank { plainTextToHtml(intent.getStringExtra(EXTRA_BODY).orEmpty()) },
+            )
+            // A forward's attachments, handed over out-of-band because they are far too large for
+            // an Intent extra — see [ForwardAttachmentHandoff].
+            val forwarded = ForwardAttachmentHandoff.take()
+            if (forwarded.isNotEmpty()) {
+                attachments.addAll(forwarded)
+                renderAttachmentChips()
+            }
+        }
 
         boldChip.setOnClickListener { bodyEditor.toggleBold() }
         italicChip.setOnClickListener { bodyEditor.toggleItalic() }
@@ -182,6 +217,7 @@ class ComposeActivity : LockedActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (redirectedToUnlock) return
         applyThemeToActivity(this)
         applyToolbarChipsTheme()
         applySendMenuItemTheme()
@@ -192,6 +228,7 @@ class ComposeActivity : LockedActivity() {
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
+        if (redirectedToUnlock) return false
         val item = menu.add(0, MENU_SEND, 0, R.string.compose_send)
         item.setIcon(R.drawable.ic_send)
         item.setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
@@ -463,6 +500,8 @@ class ComposeActivity : LockedActivity() {
                         val message = warning.ifBlank { getString(R.string.compose_send_success) }
                         val length = if (warning.isBlank()) Toast.LENGTH_SHORT else Toast.LENGTH_LONG
                         Toast.makeText(this, message, length).show()
+                        sendSucceeded = true
+                        ComposeDraftCache.clear()
                         finish()
                     }
                     is MailOutcome.PickupFallbackNeeded -> {
@@ -593,8 +632,49 @@ class ComposeActivity : LockedActivity() {
             .show()
     }
 
+    /**
+     * Stashes the composition so the app lock cannot discard it.
+     *
+     * `onStop` (not `onDestroy`) because [bodyEditor]'s HTML export is asynchronous and needs a
+     * live WebView to answer: the Activity is still fully alive here, and the lock's `finish()`
+     * does not land until the following `onStart`.
+     *
+     * Only when the screen is going away for a reason the user did not choose. Pressing Back is a
+     * deliberate discard, and resurrecting a message someone threw away is its own bug.
+     */
+    override fun onStop() {
+        super.onStop()
+        // onCreate bailed before assigning any view: there is no composition to stash, and
+        // touching the lateinit fields below would throw.
+        if (redirectedToUnlock) return
+        if (isFinishing) {
+            ComposeDraftCache.clear()
+            return
+        }
+        if (sendSucceeded) return
+        val to = toInput.commaJoinedRecipients()
+        val cc = ccInput.commaJoinedRecipients()
+        val bcc = bccInput.commaJoinedRecipients()
+        val subject = subjectField.text.toString()
+        val currentAttachments = attachments.toList()
+        bodyEditor.exportHtml { html ->
+            ComposeDraftCache.save(
+                CachedDraft(
+                    to = to,
+                    cc = cc,
+                    bcc = bcc,
+                    subject = subject,
+                    bodyHtml = html,
+                    attachments = currentAttachments,
+                ),
+            )
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
+        // No redirectedToUnlock guard: ioExecutor is a property initializer, so it exists even
+        // when onCreate bailed, and skipping shutdown would leak its thread.
         ioExecutor.shutdownNow()
         // Dismiss rather than leave a shown AlertDialog referencing a destroyed Activity's window.
         activeDialog?.dismiss()
@@ -604,6 +684,10 @@ class ComposeActivity : LockedActivity() {
         const val EXTRA_TO = "compose_to"
         const val EXTRA_SUBJECT = "compose_subject"
         const val EXTRA_BODY = "compose_body"
+
+        /** A ready-made HTML quote, for Reply/Forward of an HTML message. Kept separate from
+         *  [EXTRA_BODY] because that one is plain text and gets html-escaped on the way in. */
+        const val EXTRA_BODY_HTML = "compose_body_html"
 
         // Mirror of the backend maxMailAttachmentBytes (25 MB total decoded).
         private const val MAX_ATTACHMENT_BYTES = 25L * 1024 * 1024

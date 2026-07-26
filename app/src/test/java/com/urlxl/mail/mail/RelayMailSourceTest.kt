@@ -3,6 +3,7 @@ package com.urlxl.mail.mail
 import com.urlxl.mail.HEADER_DEVICE_ID
 import com.urlxl.mail.HEADER_DEVICE_SECRET
 import com.urlxl.mail.push.PairingData
+import com.urlxl.mail.testing.streamingResponse
 import kotlinx.serialization.json.Json
 import okhttp3.Call
 import okhttp3.Callback
@@ -350,6 +351,43 @@ class RelayMailSourceTest {
         assertEquals("secret-1", sentRequest.header(HEADER_DEVICE_SECRET))
         assertNull(sentRequest.url.queryParameter("sub"))
         assertNull(sentRequest.url.queryParameter("hash"))
+    }
+
+    /**
+     * The bytes must survive a body that only yields one okio segment per read, which is what a
+     * real socket does. `readBounded` called `read` once and discarded the returned count, so every
+     * attachment over 8 KiB arrived truncated and was still reported as Success. The existing
+     * download tests all used `Buffer`-backed fixtures, whose `read` has no segment limit, so none
+     * of them could fail. See [streamingResponse].
+     */
+    @Test
+    fun downloadAttachment_readsBodiesLargerThanOneOkioSegment() {
+        // Deliberately not a round multiple of 8192, so a truncation to any segment boundary shows.
+        val payload = ByteArray(200_000) { (it % 251).toByte() }
+        val callFactory = FakeCallFactory { request ->
+            streamingResponse(
+                request,
+                payload,
+                contentType = "application/pdf",
+                headers = mapOf(
+                    "Content-Disposition" to "attachment; filename=\"big.pdf\"",
+                    "Content-Type" to "application/pdf",
+                ),
+            )
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = callFactory,
+        )
+
+        val outcome = source.downloadAttachment("m1", "INBOX", 0)
+
+        assertTrue("expected Success, got $outcome", outcome is MailOutcome.Success)
+        val downloaded = (outcome as MailOutcome.Success).value
+        assertEquals(payload.size, downloaded.bytes.size)
+        assertTrue("attachment bytes were altered in transit", payload.contentEquals(downloaded.bytes))
+        assertEquals("big.pdf", downloaded.name)
     }
 
     @Test

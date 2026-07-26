@@ -6,9 +6,11 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.Response
+import okhttp3.ResponseBody.Companion.asResponseBody
 import okhttp3.ResponseBody.Companion.toResponseBody
 import okio.Buffer
 import okio.Timeout
+import okio.buffer
 import java.io.IOException
 
 /**
@@ -95,3 +97,42 @@ internal fun response(request: Request, body: String, code: Int, message: String
         .message(message)
         .body(body.toResponseBody("application/json".toMediaType()))
         .build()
+
+/**
+ * A response whose body has the same read semantics as a real socket, for anything that reads bytes
+ * rather than calling `.string()`.
+ *
+ * [response] above builds its body with `String.toResponseBody`, which is `Buffer`-backed — and
+ * `Buffer.read(sink, byteCount)` copies `min(byteCount, size)` from itself in one call, with no
+ * segment limit. A real network body is a `RealBufferedSource`, whose `read` fills at most one
+ * 8 KiB segment per call and returns that. Code that calls `read` once and ignores the return value
+ * therefore passes against [response] and silently truncates in production — which is exactly what
+ * `RelayMailSource.readBounded` did to every attachment over 8 KiB.
+ *
+ * Wrapping a plain [okio.Source] in `okio.buffer` reproduces the real semantics, so a test written
+ * against this fake fails when the loop is missing.
+ */
+internal fun streamingResponse(
+    request: Request,
+    bytes: ByteArray,
+    code: Int = 200,
+    contentType: String = "application/octet-stream",
+    headers: Map<String, String> = emptyMap(),
+): Response {
+    val backing = Buffer().write(bytes)
+    val rawSource = object : okio.Source {
+        override fun read(sink: Buffer, byteCount: Long): Long = backing.read(sink, byteCount)
+        override fun timeout(): Timeout = Timeout.NONE
+        override fun close() = backing.clear()
+    }
+    val builder = Response.Builder()
+        .request(request)
+        .protocol(Protocol.HTTP_1_1)
+        .code(code)
+        .message("OK")
+        .body(
+            rawSource.buffer().asResponseBody(contentType.toMediaType(), bytes.size.toLong()),
+        )
+    headers.forEach { (name, value) -> builder.header(name, value) }
+    return builder.build()
+}

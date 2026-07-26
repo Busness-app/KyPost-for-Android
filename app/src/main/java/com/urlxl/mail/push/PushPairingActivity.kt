@@ -92,6 +92,9 @@ class PushPairingActivity : LockedActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // The app lock redirects and finishes in super.onCreate; nothing below may run,
+        // least of all the network and database work further down this method.
+        if (redirectedToUnlock) return
         setContentView(R.layout.activity_push_pairing)
         setTitle(R.string.push_pairing_title)
 
@@ -122,6 +125,7 @@ class PushPairingActivity : LockedActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (redirectedToUnlock) return
         applyThemeToActivity(this)
         applyPrimaryButtonTheme(this, btnResyncToken)
         applyDangerButtonTheme(this, btnUnpairDevice)
@@ -135,6 +139,7 @@ class PushPairingActivity : LockedActivity() {
 
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
+        if (redirectedToUnlock) return
         consumeDeepLink(intent)
     }
 
@@ -278,9 +283,18 @@ class PushPairingActivity : LockedActivity() {
     private fun confirmAndApplyPairing(pairing: PairingData) {
         val alreadyPaired = viewModel.uiState.value.pairing != null
         val messageRes = if (alreadyPaired) R.string.pairing_confirm_replace_message else R.string.pairing_confirm_message
+        // The parsed host, never the raw `srv` string. A raw URL in a trust prompt is a phishing
+        // surface: `https://mail.trusted-corp.com@evil.tld/` reads as the trusted host on a
+        // wrapped dialog while every request goes to evil.tld. pairingUrlHost() also refuses such
+        // a URL outright now, so this is the second of two gates, not the only one.
+        val shownHost = pairingUrlHost(pairing.serverUrl)
+        if (shownHost == null) {
+            Toast.makeText(this, R.string.pairing_confirm_bad_url, Toast.LENGTH_LONG).show()
+            return
+        }
         AlertDialog.Builder(this)
             .setTitle(R.string.pairing_confirm_title)
-            .setMessage(getString(messageRes, pairing.serverUrl))
+            .setMessage(getString(messageRes, shownHost))
             .setPositiveButton(R.string.pairing_confirm_positive) { _, _ -> viewModel.applyPairing(pairing) }
             .setNegativeButton(R.string.cancel, null)
             .show()

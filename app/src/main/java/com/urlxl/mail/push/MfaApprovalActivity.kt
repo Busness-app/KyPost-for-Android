@@ -2,8 +2,11 @@ package com.urlxl.mail.push
 
 import android.content.Intent
 import android.os.Bundle
+import android.view.View
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.biometric.BiometricManager
@@ -33,9 +36,16 @@ import kotlinx.coroutines.launch
 class MfaApprovalActivity : AppCompatActivity() {
     private lateinit var approveButton: Button
     private lateinit var denyButton: Button
+    private lateinit var contextText: TextView
+    private lateinit var matchGroup: View
+    private lateinit var matchChoices: LinearLayout
     private var challengeId: String = ""
     private var resolveJob: Job? = null
     private var authenticated = false
+
+    /** The digits the server is showing in the browser, or blank when this server does not
+     *  support number matching (in which case the plain Approve button is used). */
+    private var matchDigits: String = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -44,10 +54,13 @@ class MfaApprovalActivity : AppCompatActivity() {
 
         approveButton = findViewById(R.id.btnMfaApprove)
         denyButton = findViewById(R.id.btnMfaDeny)
+        contextText = findViewById(R.id.mfaApprovalContext)
+        matchGroup = findViewById(R.id.mfaMatchGroup)
+        matchChoices = findViewById(R.id.mfaMatchChoices)
         approveButton.setOnClickListener { resolve(approve = true) }
         denyButton.setOnClickListener { resolve(approve = false) }
 
-        if (!adoptChallenge(intent.getStringExtra(PushNotificationDispatcher.EXTRA_MFA_CHALLENGE_ID).orEmpty())) return
+        if (!adoptChallenge(intent)) return
         requireAuthentication()
     }
 
@@ -61,27 +74,118 @@ class MfaApprovalActivity : AppCompatActivity() {
         resolveJob?.cancel()
         resolveJob = null
 
-        if (!adoptChallenge(intent.getStringExtra(PushNotificationDispatcher.EXTRA_MFA_CHALLENGE_ID).orEmpty())) return
+        if (!adoptChallenge(intent)) return
         // Re-authenticate per challenge: the previous approval's authentication was consent for
         // that decision, not a session that later challenges can ride on.
         authenticated = false
         requireAuthentication()
     }
 
-    /** Returns false (and finishes) if [id] is blank or was never delivered by a real push. */
-    private fun adoptChallenge(id: String): Boolean {
+    /** Returns false (and finishes) if the challenge is blank or was never delivered by a real
+     *  push. Also renders the sign-in's context and sets up number matching. */
+    private fun adoptChallenge(source: Intent): Boolean {
+        val id = source.getStringExtra(PushNotificationDispatcher.EXTRA_MFA_CHALLENGE_ID).orEmpty()
         if (id.isBlank() || !MfaChallengeTracker(this).isPending(id)) {
             finish()
             return false
         }
         challengeId = id
+        renderContext(source)
+        setUpNumberMatching(source)
         setButtonsEnabled(false)
         return true
+    }
+
+    /**
+     * Shows where the sign-in came from.
+     *
+     * A user who cannot see the origin cannot tell their own login from an attacker's, which makes
+     * every other control on this screen ceremony. Where the server has not sent a field, say so
+     * explicitly — "Unknown" is information; a blank line reads as "nothing to worry about".
+     */
+    private fun renderContext(source: Intent) {
+        val unknown = getString(R.string.mfa_context_unknown)
+        val ip = source.getStringExtra(PushNotificationDispatcher.EXTRA_MFA_IP).orEmpty()
+        val location = source.getStringExtra(PushNotificationDispatcher.EXTRA_MFA_LOCATION).orEmpty()
+        val userAgent = source.getStringExtra(PushNotificationDispatcher.EXTRA_MFA_USER_AGENT).orEmpty()
+        val issuedAt = source.getLongExtra(PushNotificationDispatcher.EXTRA_MFA_ISSUED_AT, 0L)
+
+        val whenText = if (issuedAt > 0L) {
+            android.text.format.DateFormat.getTimeFormat(this).format(java.util.Date(issuedAt))
+        } else {
+            unknown
+        }
+        contextText.text = listOf(
+            getString(R.string.mfa_context_when, whenText),
+            getString(R.string.mfa_context_from, location.ifBlank { unknown }),
+            getString(R.string.mfa_context_ip, ip.ifBlank { unknown }),
+            getString(R.string.mfa_context_device, userAgent.ifBlank { unknown }),
+        ).joinToString("\n")
+        com.urlxl.mail.applyWarningCalloutTheme(this, contextText)
+    }
+
+    /**
+     * Replaces the bare Approve button with a three-way number match when the server supplies the
+     * digits it is simultaneously showing in the browser.
+     *
+     * A tap on "Approve" is exactly what an MFA-fatigue attack harvests. A choice between three
+     * numbers cannot be made correctly by someone who is not looking at the screen that started
+     * the sign-in. Falls back to the plain button when the server sends no digits, so an
+     * un-upgraded server keeps working.
+     */
+    private fun setUpNumberMatching(source: Intent) {
+        matchDigits = source.getStringExtra(PushNotificationDispatcher.EXTRA_MFA_MATCH_DIGITS).orEmpty()
+        val decoys = source.getStringArrayExtra(PushNotificationDispatcher.EXTRA_MFA_DECOY_DIGITS)
+            ?.toList()
+            .orEmpty()
+        val options = MfaNumberMatch.optionsFor(challengeId, matchDigits, decoys)
+
+        matchChoices.removeAllViews()
+        if (options == null) {
+            matchDigits = ""
+            matchGroup.visibility = View.GONE
+            approveButton.visibility = View.VISIBLE
+            return
+        }
+
+        matchGroup.visibility = View.VISIBLE
+        // The generic Approve button must not remain as a way around the match.
+        approveButton.visibility = View.GONE
+        options.forEach { value ->
+            val button = Button(this).apply {
+                text = value
+                textSize = 20f
+                isEnabled = false
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    .apply { marginEnd = (8 * resources.displayMetrics.density).toInt() }
+                setOnClickListener { onMatchChosen(value) }
+            }
+            matchChoices.addView(button)
+        }
+    }
+
+    /**
+     * A wrong number is treated as a denial, not a retry.
+     *
+     * Letting the user guess again turns a three-way match into a one-in-three chance for an
+     * attacker whose victim is tapping blind. The sign-in this challenge belongs to is refused.
+     */
+    private fun onMatchChosen(chosen: String) {
+        if (!authenticated) return
+        if (chosen == matchDigits) {
+            resolve(approve = true)
+            return
+        }
+        Toast.makeText(this, R.string.mfa_match_wrong, Toast.LENGTH_LONG).show()
+        resolve(approve = false)
     }
 
     private fun setButtonsEnabled(enabled: Boolean) {
         approveButton.isEnabled = enabled
         denyButton.isEnabled = enabled
+        for (i in 0 until matchChoices.childCount) {
+            matchChoices.getChildAt(i).isEnabled = enabled
+        }
     }
 
     /**
@@ -101,7 +205,7 @@ class MfaApprovalActivity : AppCompatActivity() {
         val authenticators = BiometricManager.Authenticators.BIOMETRIC_STRONG or
             BiometricManager.Authenticators.DEVICE_CREDENTIAL
         if (BiometricManager.from(this).canAuthenticate(authenticators) != BiometricManager.BIOMETRIC_SUCCESS) {
-            if (AppLockStore(this).isLockEnabled()) {
+            if (SecurityRuntime.graph(this).appLockStore.isLockEnabled()) {
                 promptAppLockPin()
             } else {
                 authenticated = true
@@ -187,8 +291,16 @@ class MfaApprovalActivity : AppCompatActivity() {
         if (!authenticated) return
         setButtonsEnabled(false)
         resolveJob = lifecycleScope.launch {
-            MfaResponder.respond(applicationContext, challengeId, approve)
-            finish()
+            val delivered = MfaResponder.respond(applicationContext, challengeId, approve)
+            if (delivered) {
+                finish()
+            } else {
+                // The decision never reached the server, so the challenge is still open. Stay put
+                // and re-enable the buttons rather than finishing onto a toast the user cannot act
+                // on — MfaResponder deliberately leaves the tracker entry intact for this.
+                resolveJob = null
+                setButtonsEnabled(true)
+            }
         }
     }
 }

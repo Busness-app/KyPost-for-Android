@@ -47,11 +47,26 @@ class EmailDetailActivity : LockedActivity() {
     private var lastAppliedThemeName: String = ""
     private var lastRenderedHtml: String? = null
 
+    /** The message's real body, once the background fetch has answered. Reply/Forward quote this;
+     *  see [quoteForReply] for why the 140-character preview was never an acceptable substitute. */
+    private var fetchedBodyHtml: String? = null
+
+    /** Attachments downloaded on this screen, keyed by their listing index, so Forward can carry
+     *  them. Populated lazily — only what the user actually opened is here, which is the honest
+     *  limit of what this screen has without re-fetching every attachment on entry. */
+    private val downloadedAttachments = linkedMapOf<Int, com.urlxl.mail.mail.OutgoingAttachment>()
+
+    /** This message's attachment listing, once loaded — what Forward has to fetch. */
+    private var attachmentInfos: List<AttachmentInfo> = emptyList()
+
     private var toRecipients: List<String> = emptyList()
     private var ccRecipients: List<String> = emptyList()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // The app lock redirects and finishes in super.onCreate; nothing below may run,
+        // least of all the network and database work further down this method.
+        if (redirectedToUnlock) return
         setContentView(R.layout.activity_email_detail)
         applyThemeToActivity(this)
         lastAppliedThemeName = getStoredThemeName(this)
@@ -104,6 +119,8 @@ class EmailDetailActivity : LockedActivity() {
         )
         applyDetailChrome()
 
+        // markRead stays non-reporting on purpose: it is incidental to opening the message, and a
+        // toast about it would fire on top of the message the user just opened.
         MailBackgroundExecutor.submit { mailRepository.markRead(emailId, emailFolder) }
 
         actionArchive.setOnClickListener {
@@ -119,7 +136,7 @@ class EmailDetailActivity : LockedActivity() {
             openCompose(
                 to = extractAddress(emailSender),
                 subject = withPrefix(emailSubject, "Re:"),
-                body = quoteForReply(emailSender, emailPreview),
+                bodyHtml = quoteForReply(emailSender, emailPreview),
             )
         }
         actionReplyAll.setOnClickListener {
@@ -129,16 +146,11 @@ class EmailDetailActivity : LockedActivity() {
             openCompose(
                 to = recipients.joinToString(", "),
                 subject = withPrefix(emailSubject, "Re:"),
-                body = quoteForReply(emailSender, emailPreview),
+                bodyHtml = quoteForReply(emailSender, emailPreview),
             )
         }
         actionForward.setOnClickListener {
-            openCompose(
-                to = "",
-                subject = withPrefix(emailSubject, "Fwd:"),
-                body = "\n\n---------- Forwarded message ----------\n" +
-                    "From: $emailSender\nSubject: $emailSubject\n\n$emailPreview",
-            )
+            forwardMessage(emailId, emailFolder, emailSender, emailSubject, emailPreview)
         }
 
         if (hasAttachments) {
@@ -240,7 +252,10 @@ class EmailDetailActivity : LockedActivity() {
             }
 
             runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
                 lastRenderedHtml = htmlContent
+                // Not `bodyToRender`: that is blanked for the PGP states with nothing to show.
+                fetchedBodyHtml = content?.html
                 webView.loadDataWithBaseURL(null, htmlContent, "text/html", "utf-8", null)
                 loading.visibility = android.view.View.GONE
                 imagesBlockedBar.visibility = if (hasRemoteImages) View.VISIBLE else View.GONE
@@ -251,6 +266,76 @@ class EmailDetailActivity : LockedActivity() {
                 }
             }
         }
+    }
+
+    /**
+     * Opens the composer with the whole message: the real body, and every attachment.
+     *
+     * Forward used to send `emailPreview` — 140 characters of the sender's raw HTML — with no
+     * attachments at all, which meant the feature did not forward the message in any meaningful
+     * sense. Anything not already downloaded for this screen is fetched here first, because a
+     * forward without its attachments is a silent data-loss bug the user only discovers when the
+     * recipient asks where the file is.
+     */
+    private fun forwardMessage(
+        emailId: String,
+        emailFolder: String,
+        emailSender: String,
+        emailSubject: String,
+        emailPreview: String,
+    ) {
+        val missing = attachmentInfos.filter { it.index !in downloadedAttachments }
+        if (missing.isEmpty()) {
+            openCompose(
+                to = "",
+                subject = withPrefix(emailSubject, "Fwd:"),
+                bodyHtml = quoteForForward(emailSender, emailSubject, emailPreview),
+                attachments = orderedForwardAttachments(),
+            )
+            return
+        }
+
+        Toast.makeText(this, R.string.forward_fetching_attachments, Toast.LENGTH_SHORT).show()
+        ioExecutor.execute {
+            val fetched = missing.map { info ->
+                info.index to (mailRepository.downloadAttachment(emailId, emailFolder, info.index) as? MailOutcome.Success)?.value
+            }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                fetched.forEach { (index, downloaded) ->
+                    if (downloaded != null) rememberForForwarding(index, downloaded)
+                }
+                val failed = fetched.count { it.second == null }
+                if (failed > 0) {
+                    // Say so rather than quietly forwarding a message with attachments missing.
+                    Toast.makeText(
+                        this,
+                        getString(R.string.forward_attachments_failed, failed),
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+                openCompose(
+                    to = "",
+                    subject = withPrefix(emailSubject, "Fwd:"),
+                    bodyHtml = quoteForForward(emailSender, emailSubject, emailPreview),
+                    attachments = orderedForwardAttachments(),
+                )
+            }
+        }
+    }
+
+    /** Attachment order is the sender's, not the order the user happened to tap them in. */
+    private fun orderedForwardAttachments(): List<com.urlxl.mail.mail.OutgoingAttachment> =
+        attachmentInfos.mapNotNull { downloadedAttachments[it.index] }
+            .ifEmpty { downloadedAttachments.values.toList() }
+
+    private fun rememberForForwarding(index: Int, downloaded: com.urlxl.mail.mail.DownloadedAttachment) {
+        downloadedAttachments[index] = com.urlxl.mail.mail.OutgoingAttachment(
+            name = downloaded.name,
+            mimeType = downloaded.mimeType,
+            dataBase64 = android.util.Base64.encodeToString(downloaded.bytes, android.util.Base64.NO_WRAP),
+            size = downloaded.bytes.size,
+        )
     }
 
     /**
@@ -313,6 +398,7 @@ class EmailDetailActivity : LockedActivity() {
     }
 
     private fun renderAttachments(emailId: String, emailFolder: String, infos: List<AttachmentInfo>) {
+        attachmentInfos = infos
         val label = findViewById<TextView>(R.id.emailAttachmentsLabel)
         val chips = findViewById<ChipGroup>(R.id.emailAttachmentChips)
         chips.removeAllViews()
@@ -323,9 +409,12 @@ class EmailDetailActivity : LockedActivity() {
         }
         label.visibility = View.VISIBLE
         chips.visibility = View.VISIBLE
+        // Read once, not once per chip: this opens a SharedPreferences file, and it was inside
+        // the loop.
+        val protectionEnabled = com.urlxl.mail.security.SecurityRuntime
+            .graph(this).hostileLocationSettings.isEnabled()
         infos.forEach { info ->
             val chip = Chip(this).apply {
-                val protectionEnabled = com.urlxl.mail.security.HostileLocationSettings(this@EmailDetailActivity).isEnabled()
                 text = if (protectionEnabled) "👁 ${info.name}" else "📎 ${info.name}"
                 setOnClickListener { downloadAttachment(emailId, emailFolder, info) }
             }
@@ -335,7 +424,8 @@ class EmailDetailActivity : LockedActivity() {
     }
 
     private fun downloadAttachment(emailId: String, emailFolder: String, info: AttachmentInfo) {
-        val hostileLocationProtectionEnabled = com.urlxl.mail.security.HostileLocationSettings(this).isEnabled()
+        val hostileLocationProtectionEnabled = com.urlxl.mail.security.SecurityRuntime
+            .graph(this).hostileLocationSettings.isEnabled()
         val action = com.urlxl.mail.security.attachmentActionFor(hostileLocationProtectionEnabled)
         val loadingMessage = if (action == com.urlxl.mail.security.AttachmentAction.VIEW_EPHEMERAL) {
             getString(R.string.attachment_opening, info.name)
@@ -353,6 +443,7 @@ class EmailDetailActivity : LockedActivity() {
                     Toast.makeText(this, message, Toast.LENGTH_LONG).show()
                     return@runOnUiThread
                 }
+                rememberForForwarding(info.index, downloaded)
                 when (action) {
                     com.urlxl.mail.security.AttachmentAction.VIEW_EPHEMERAL -> viewAttachmentEphemerally(downloaded)
                     com.urlxl.mail.security.AttachmentAction.SAVE_TO_DOWNLOADS -> {
@@ -407,6 +498,7 @@ class EmailDetailActivity : LockedActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (redirectedToUnlock) return
 
         val currentTheme = getStoredThemeName(this)
         if (currentTheme != lastAppliedThemeName) {
@@ -428,9 +520,11 @@ class EmailDetailActivity : LockedActivity() {
         actionButtons.forEach { applyIconButtonTheme(this, it) }
     }
 
-    private fun runMailActionAndFinish(actionLabel: String, emailId: String, action: (MailRepository) -> Unit) {
+    private fun runMailActionAndFinish(actionLabel: String, emailId: String, action: (MailRepository) -> MailOutcome<Unit>) {
         Toast.makeText(this, actionLabel, Toast.LENGTH_SHORT).show()
-        MailBackgroundExecutor.submit { action(mailRepository) }
+        // Reporting, not fire-and-forget: the row is removed optimistically, so a failure the user
+        // never hears about reads as "it worked" until the message reappears on the next resync.
+        MailBackgroundExecutor.submitReporting(this, actionLabel) { action(mailRepository) }
         // Tell InboxActivity which row to drop immediately, mirroring its own swipe-to-archive/
         // delete optimistic removal. Without this, returning here re-triggers InboxActivity's
         // onStart refresh, which races the still-in-flight mutation above and can redraw the row
@@ -439,11 +533,21 @@ class EmailDetailActivity : LockedActivity() {
         finish()
     }
 
-    private fun openCompose(to: String, subject: String, body: String) {
+    private fun openCompose(
+        to: String,
+        subject: String,
+        bodyHtml: String,
+        attachments: List<com.urlxl.mail.mail.OutgoingAttachment> = emptyList(),
+    ) {
         val intent = Intent(this, ComposeActivity::class.java)
         intent.putExtra(ComposeActivity.EXTRA_TO, to)
         intent.putExtra(ComposeActivity.EXTRA_SUBJECT, subject)
-        intent.putExtra(ComposeActivity.EXTRA_BODY, body)
+        intent.putExtra(ComposeActivity.EXTRA_BODY_HTML, bodyHtml)
+        // Handed through the process-scoped cache rather than the Intent: a 25 MB base64 payload
+        // in an Intent extra is well past Binder's ~1 MB transaction limit and would throw
+        // TransactionTooLargeException. Both Activities are in this process, so a handoff object
+        // is both correct and cheaper than re-downloading.
+        if (attachments.isNotEmpty()) ForwardAttachmentHandoff.put(attachments)
         startActivity(intent)
     }
 
@@ -462,8 +566,33 @@ class EmailDetailActivity : LockedActivity() {
             .onFailure { Toast.makeText(this, R.string.email_link_no_handler, Toast.LENGTH_SHORT).show() }
     }
 
+    /**
+     * The quoted original, as HTML.
+     *
+     * This used to interpolate `emailPreview`, which is `body.take(140)` of the sender's **raw
+     * HTML** (see `RelayMailSource.toUiEmail`). Replying to any HTML message therefore quoted 140
+     * characters of markup — `<div dir="ltr"><div class="gmail_quote"><div dir="l` — and
+     * forwarding sent that instead of the message. The real body is already fetched by this
+     * screen's own body load; [fetchedBodyHtml] holds it.
+     *
+     * Falls back to the escaped preview only when the body genuinely is not available (an
+     * uncached message under Hostile Location Protection, or a client-protected one), which is the
+     * same condition the PGP bar already reports to the user.
+     */
     private fun quoteForReply(sender: String, preview: String): String {
-        return "\n\n$sender wrote:\n$preview"
+        val quoted = fetchedBodyHtml?.takeIf { it.isNotBlank() } ?: TextUtils.htmlEncode(preview)
+        return "<br><br><div>${TextUtils.htmlEncode(sender)} wrote:</div>" +
+            "<blockquote style=\"margin:0 0 0 0.8ex;border-left:1px solid #ccc;padding-left:1ex\">" +
+            quoted +
+            "</blockquote>"
+    }
+
+    private fun quoteForForward(sender: String, subject: String, preview: String): String {
+        val quoted = fetchedBodyHtml?.takeIf { it.isNotBlank() } ?: TextUtils.htmlEncode(preview)
+        return "<br><br><div>---------- Forwarded message ----------</div>" +
+            "<div>From: ${TextUtils.htmlEncode(sender)}</div>" +
+            "<div>Subject: ${TextUtils.htmlEncode(subject)}</div><br>" +
+            quoted
     }
 
     private fun withPrefix(subject: String, prefix: String): String {
@@ -477,6 +606,8 @@ class EmailDetailActivity : LockedActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        // No redirectedToUnlock guard: ioExecutor is a property initializer, so it exists even
+        // when onCreate bailed, and skipping shutdown would leak its thread.
         ioExecutor.shutdownNow()
     }
 

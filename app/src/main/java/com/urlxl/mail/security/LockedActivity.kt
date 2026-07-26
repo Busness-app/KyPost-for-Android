@@ -27,18 +27,40 @@ abstract class LockedActivity : AppCompatActivity() {
 
     protected fun isLocked(): Boolean = SecurityRuntime.graph(this).appLockManager.locked.value
 
+    /**
+     * True once this Activity has been redirected to the unlock screen. Subclasses whose `onCreate`
+     * does real work — network calls, database reads, executor dispatch — must check this
+     * immediately after `super.onCreate(...)` and return.
+     *
+     * `onCreate` always runs to completion before `onStart`, so gating only in `onStart` (as this
+     * class originally did) meant every subclass's entire `onCreate` body executed *while the app
+     * was locked*. `EmailDetailActivity` fired an authenticated `markRead` mutation at the server
+     * from there, so a notification tap on a locked app silently marked mail read — destroying the
+     * "was this opened?" signal the real user would otherwise have had — before the PIN screen
+     * appeared.
+     */
+    protected var redirectedToUnlock: Boolean = false
+        private set
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (secureWindow) {
             window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
         }
+        redirectToUnlockIfLocked()
     }
 
+    /** The resume-time half of the gate: the app can lock while this screen sits in the back
+     *  stack, and `onCreate` does not run again on the way back. */
     override fun onStart() {
         super.onStart()
-        if (isLocked()) {
-            startActivity(Intent(this, UnlockActivity::class.java))
-            finish()
-        }
+        redirectToUnlockIfLocked()
+    }
+
+    private fun redirectToUnlockIfLocked() {
+        if (redirectedToUnlock || isFinishing || !isLocked()) return
+        redirectedToUnlock = true
+        startActivity(Intent(this, UnlockActivity::class.java))
+        finish()
     }
 }

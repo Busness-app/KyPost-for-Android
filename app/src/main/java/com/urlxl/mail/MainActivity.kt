@@ -26,11 +26,15 @@ class MainActivity : LockedActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // The app lock redirects and finishes in super.onCreate; nothing below may run,
+        // least of all the network and database work further down this method.
+        if (redirectedToUnlock) return
         routed = savedInstanceState?.getBoolean(STATE_ROUTED, false) ?: false
     }
 
     override fun onStart() {
         super.onStart()
+        if (redirectedToUnlock) return
         // LockedActivity.onStart finishes us and shows UnlockActivity when the app is locked.
         if (isFinishing || routed) return
         routed = true
@@ -39,6 +43,7 @@ class MainActivity : LockedActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        if (redirectedToUnlock) return
         setIntent(intent)
         if (isLocked()) {
             startActivity(Intent(this, com.urlxl.mail.security.UnlockActivity::class.java))
@@ -50,6 +55,7 @@ class MainActivity : LockedActivity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
+        if (redirectedToUnlock) return
         outState.putBoolean(STATE_ROUTED, routed)
     }
 

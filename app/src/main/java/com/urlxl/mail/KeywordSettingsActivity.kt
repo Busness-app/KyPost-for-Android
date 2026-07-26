@@ -13,6 +13,9 @@ class KeywordSettingsActivity : LockedActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // The app lock redirects and finishes in super.onCreate; nothing below may run,
+        // least of all the network and database work further down this method.
+        if (redirectedToUnlock) return
 
         keywordSettings = KeywordSettings(this)
         setTitle(R.string.keyword_settings_title)

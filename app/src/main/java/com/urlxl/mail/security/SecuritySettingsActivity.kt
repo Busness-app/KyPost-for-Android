@@ -32,6 +32,7 @@ class SecuritySettingsActivity : LockedActivity() {
     private lateinit var appLockStore: AppLockStore
     private lateinit var lockSwitch: SwitchCompat
     private lateinit var changePinButton: Button
+    private lateinit var lockGraceButton: Button
     private lateinit var biometricSwitch: SwitchCompat
     private lateinit var hostileLocationSwitch: SwitchCompat
     private lateinit var hostileLocationIntro: TextView
@@ -41,7 +42,10 @@ class SecuritySettingsActivity : LockedActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        appLockStore = AppLockStore(this)
+        // The app lock redirects and finishes in super.onCreate; nothing below may run,
+        // least of all the network and database work further down this method.
+        if (redirectedToUnlock) return
+        appLockStore = SecurityRuntime.graph(this).appLockStore
         setTitle(R.string.security_settings_title)
 
         val scrollView = ScrollView(this)
@@ -78,7 +82,25 @@ class SecuritySettingsActivity : LockedActivity() {
         }
         container.addViewSpaced(biometricSwitch, bottomDp = 20)
 
-        val hostileLocationSettings = HostileLocationSettings(this)
+        // How long backgrounding is tolerated before the lock re-engages. This existed only as a
+        // hardcoded "immediately", which meant the attachment picker, the QR scanner and the
+        // webmail handoff each destroyed the screen that launched them — see KyPostApp.onStop.
+        val lockGraceSettings = SecurityRuntime.graph(this).appLockSettings
+        lockGraceButton = Button(this).apply {
+            text = lockGraceButtonLabel(lockGraceSettings.graceMillis())
+            isEnabled = appLockStore.isLockEnabled()
+            setOnClickListener { promptLockGrace(lockGraceSettings) }
+        }
+        container.addViewSpaced(lockGraceButton, bottomDp = 4)
+        container.addViewSpaced(
+            TextView(this).apply {
+                text = getString(R.string.security_lock_grace_intro)
+                textSize = 13f
+            },
+            bottomDp = 20,
+        )
+
+        val hostileLocationSettings = SecurityRuntime.graph(this).hostileLocationSettings
         hostileLocationSwitch = SwitchCompat(this).apply {
             text = getString(R.string.security_hostile_location_title)
             isChecked = hostileLocationSettings.isEnabled()
@@ -153,6 +175,33 @@ class SecuritySettingsActivity : LockedActivity() {
         scrollView.addView(container)
         setContentView(scrollView)
         applyThemeToActivity(this)
+    }
+
+    private fun lockGraceButtonLabel(millis: Long): String =
+        getString(R.string.security_lock_grace_button, lockGraceLabel(millis))
+
+    private fun lockGraceLabel(millis: Long): String = when (millis) {
+        0L -> getString(R.string.security_lock_grace_immediately)
+        else -> resources.getQuantityString(
+            R.plurals.security_lock_grace_seconds,
+            (millis / 1_000L).toInt(),
+            (millis / 1_000L).toInt(),
+        )
+    }
+
+    private fun promptLockGrace(settings: AppLockSettings) {
+        val options = AppLockSettings.OPTIONS_MILLIS
+        val labels = options.map { lockGraceLabel(it) }.toTypedArray()
+        val current = options.indexOfFirst { it == settings.graceMillis() }.takeIf { it >= 0 } ?: 0
+        AlertDialog.Builder(this)
+            .setTitle(R.string.security_lock_grace_dialog_title)
+            .setSingleChoiceItems(labels, current) { dialog, which ->
+                settings.setGraceMillis(options[which])
+                lockGraceButton.text = lockGraceButtonLabel(options[which])
+                dialog.dismiss()
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
     }
 
     /**
@@ -260,6 +309,7 @@ class SecuritySettingsActivity : LockedActivity() {
                         appLockStore.setLockEnabled(true)
                     }
                     changePinButton.visibility = View.VISIBLE
+                    lockGraceButton.isEnabled = true
                     biometricSwitch.isEnabled = true
                     hostileLocationSwitch.isEnabled = true
                     hostileLocationIntro.text = getString(R.string.security_hostile_location_intro)
@@ -368,6 +418,7 @@ class SecuritySettingsActivity : LockedActivity() {
         }
 
         changePinButton.visibility = View.GONE
+        lockGraceButton.isEnabled = false
         biometricSwitch.isChecked = false
         biometricSwitch.isEnabled = false
         hostileLocationSwitch.isEnabled = false

@@ -347,11 +347,25 @@ private const val MAX_ATTACHMENT_DOWNLOAD_BYTES = 25L * 1024 * 1024
 
 /** Reads at most [limit] bytes, returning what it got. A body longer than the limit is truncated
  *  rather than allocated in full — the caller's checksum/parse will fail on a truncated attachment,
- *  which is a far better outcome than an out-of-memory kill. */
+ *  which is a far better outcome than an out-of-memory kill.
+ *
+ *  The read LOOPS. `BufferedSource.read(sink, byteCount)` reads *up to* `byteCount` and returns how
+ *  many bytes it actually got; it does not fill. Okio's `RealBufferedSource` — what wraps a real
+ *  socket — performs exactly one `source.read(buffer, Segment.SIZE)` when its internal buffer is
+ *  empty, so a single call returned at most 8 KiB and every attachment past that arrived silently
+ *  truncated, reported as `MailOutcome.Success`.
+ *
+ *  The unit tests could not see it: `FakeCalls.response()` builds a `Buffer`-backed body, and
+ *  `Buffer.read` copies `min(byteCount, size)` from itself in one call with no segment limit. The
+ *  fake took a fast path that does not exist on a socket, in exactly the dimension under test. See
+ *  `RelayMailSourceTest.downloadAttachment_readsBodiesLargerThanOneOkioSegment`, which drives a
+ *  multi-segment body through a non-Buffer source. */
 private fun readBounded(body: okhttp3.ResponseBody, limit: Long): ByteArray {
     val source = body.source()
     val buffer = okio.Buffer()
-    source.read(buffer, limit)
+    while (buffer.size < limit) {
+        if (source.read(buffer, limit - buffer.size) == -1L) break
+    }
     return buffer.readByteArray()
 }
 

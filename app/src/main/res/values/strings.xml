@@ -44,6 +44,7 @@
     <string name="action_reply">Reply</string>
     <string name="action_reply_all">Reply all</string>
     <string name="action_forward">Forward</string>
+    <string name="mail_action_failed">%1$s failed: %2$s</string>
 
     <string name="keyword_settings_title">Keyword Settings</string>
     <string name="keyword_settings_intro">Hide or show keyword headings in inbox tabs.</string>
@@ -76,6 +77,8 @@
     <string name="attachment_saved">Saved %1$s to Downloads</string>
     <string name="attachment_save_failed">Couldn\'t save %1$s</string>
     <string name="attachment_open_with">Open attachment with</string>
+    <string name="forward_fetching_attachments">Fetching attachments to forward…</string>
+    <string name="forward_attachments_failed">Couldn\'t fetch %1$d attachment(s) — they won\'t be forwarded</string>
     <string name="cancel">Cancel</string>
     <string name="compose_format_bold">Bold</string>
     <string name="compose_format_italic">Italic</string>
@@ -107,6 +110,7 @@
     <string name="compose_handoff_no_webmail">Couldn\'t work out this server\'s web address — open your drafts in your browser.</string>
     <string name="compose_handoff_no_handler">No app on this device can open that link — open your drafts in your browser.</string>
     <string name="compose_send_success">Email sent successfully</string>
+    <string name="compose_draft_restored">Restored your unsent message</string>
     <string name="address_book_search_hint">Search contacts</string>
     <string name="address_book_action_to">TO</string>
     <string name="address_book_action_cc">CC</string>
@@ -133,11 +137,19 @@
     <string name="pairing_confirm_message">This link wants to pair this device with:\n\n%1$s\n\nOnly continue if you trust the source of this link.</string>
     <string name="pairing_confirm_replace_message">This device is already paired. Continuing will replace your current server with:\n\n%1$s\n\nOnly continue if you trust the source of this link and mean to switch servers.</string>
     <string name="pairing_confirm_positive">Pair</string>
+    <string name="pairing_confirm_bad_url">That pairing code names a server address this app will not send credentials to.</string>
 
     <string name="mfa_approval_title">Approve sign-in</string>
     <string name="mfa_approval_body">Someone is trying to sign in to your account. If this wasn\'t you, deny it.</string>
     <string name="mfa_approval_approve">Approve</string>
     <string name="mfa_approval_deny">Deny</string>
+    <string name="mfa_context_when">When: %1$s</string>
+    <string name="mfa_context_from">Location: %1$s</string>
+    <string name="mfa_context_ip">IP address: %1$s</string>
+    <string name="mfa_context_device">Device: %1$s</string>
+    <string name="mfa_context_unknown">Unknown — your server didn\'t say</string>
+    <string name="mfa_match_prompt">Tap the number shown on the screen you\'re signing in from.</string>
+    <string name="mfa_match_wrong">That number didn\'t match, so the sign-in was denied. If it was you, start again.</string>
 
     <string name="menu_contacts">Contacts</string>
     <string name="contacts_title">Contacts</string>
@@ -298,6 +310,10 @@
     <string name="security_require_unlock_title">Require Unlock to Open</string>
     <string name="security_require_unlock_intro">Require a PIN (or biometric) every time the app opens or returns from the background.</string>
     <string name="security_use_biometric_title">Use biometric unlock</string>
+    <string name="security_lock_grace_button">Lock after: %1$s</string>
+    <string name="security_lock_grace_dialog_title">Lock after</string>
+    <string name="security_lock_grace_immediately">Immediately</string>
+    <string name="security_lock_grace_intro">How long KyPost may stay in the background before it locks again. Picking a short window means switching to another app — the file picker, your browser, the camera — locks KyPost before you get back.</string>
     <string name="security_set_pin_title">Set a PIN (8–12 digits)</string>
     <string name="security_set_pin_confirm">Confirm</string>
     <string name="security_confirm_disable_title">Enter your PIN to turn this off</string>
@@ -329,6 +345,10 @@
     <string name="mfa_auth_title">Confirm it\'s you</string>
     <string name="mfa_auth_subtitle">Authenticate to approve or deny this sign-in</string>
     <string name="mfa_auth_required">Authentication is required to answer a sign-in request</string>
+    <string name="mfa_respond_not_paired">Not paired with a server</string>
+    <string name="mfa_respond_approved">Sign-in approved</string>
+    <string name="mfa_respond_denied">Sign-in denied</string>
+    <string name="mfa_respond_failed">Couldn\'t reach your server: %1$s. The request is still open — try again.</string>
 
     <!-- PIN policy feedback. A rejected PIN used to silently revert the toggle with no message. -->
     <string name="security_pin_too_short">PIN must be at least %1$d digits</string>
@@ -338,4 +358,8 @@
 
     <!-- Hostile Location Protection interactions with device contact sync -->
     <string name="contacts_device_sync_blocked_hostile_location">Device contact sync is unavailable while Hostile Location Protection is on — synced contacts are stored by the system, outside this app\'s protected storage</string>
+    <plurals name="security_lock_grace_seconds">
+        <item quantity="one">%1$d second</item>
+        <item quantity="other">%1$d seconds</item>
+    </plurals>
 </resources>
