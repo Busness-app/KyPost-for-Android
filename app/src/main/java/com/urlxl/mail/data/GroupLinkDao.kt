@@ -18,4 +18,8 @@ interface GroupLinkDao {
 
     @Query("DELETE FROM group_links WHERE groupId = :groupId")
     suspend fun deleteByGroupId(groupId: String)
+
+    /** Used when the pairing changes — group links are scoped to the account that owned them. */
+    @Query("DELETE FROM group_links")
+    suspend fun clearAll()
 }

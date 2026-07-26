@@ -23,6 +23,13 @@ class DeviceContactSyncEnabler(
      *  grant) before doing anything that assumes sync is now enabled. Returns false if it
      *  resolved synchronously because permissions were already granted. */
     fun checkAndEnable(): Boolean {
+        // Refused, not just defaulted off: synced contacts land in the OS contacts provider, which
+        // Hostile Location Protection's in-memory database does not cover.
+        if (!DeviceContactsRuntime.graph(activity).syncPermitted()) {
+            Toast.makeText(activity, R.string.contacts_device_sync_blocked_hostile_location, Toast.LENGTH_LONG).show()
+            return false
+        }
+
         val readContactsGranted = ContextCompat.checkSelfPermission(
             activity,
             Manifest.permission.READ_CONTACTS,
@@ -48,6 +55,10 @@ class DeviceContactSyncEnabler(
 
     fun enableAfterPermissionGrant() {
         val graph = DeviceContactsRuntime.graph(activity)
+        if (!graph.syncPermitted()) {
+            Toast.makeText(activity, R.string.contacts_device_sync_blocked_hostile_location, Toast.LENGTH_LONG).show()
+            return
+        }
         activity.lifecycleScope.launch {
             try {
                 graph.accountManager.ensureAccount()

@@ -15,7 +15,6 @@ class MailGraph(context: Context) {
         cursorProvider = mailCursorStore,
         pinnedCallFactory = PinnedCallFactoryProvider(
             tlsPinProvider = { PushRuntime.graph(appContext).repository.currentTlsPin() },
-            pairingProvider = pairingProvider,
         ),
     )
 
@@ -29,4 +28,8 @@ object MailRuntime {
     private val holder = SingletonGraph(::MailGraph)
 
     fun graph(context: Context): MailGraph = holder.get(context)
+
+    /** See [com.urlxl.mail.SingletonGraph.invalidate] — used by
+     *  [com.urlxl.mail.security.AppRestart]. */
+    fun invalidate() = holder.invalidate()
 }

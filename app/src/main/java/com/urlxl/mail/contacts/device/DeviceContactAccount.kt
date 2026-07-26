@@ -27,7 +27,12 @@ class DeviceContactAccountManager(private val context: Context) {
         }
     }
 
-    suspend fun removeAccount(): Boolean {
+    suspend fun removeAccount(): Boolean = removeAccountBlocking()
+
+    /** Same work as [removeAccount] without the `suspend` marker, for callers already inside a
+     *  non-suspending block — see [com.urlxl.mail.security.SecurityWipe.removeSyncedDeviceContacts].
+     *  `removeAccountExplicitly` is a synchronous AccountManager call either way. */
+    fun removeAccountBlocking(): Boolean {
         val account = DeviceContactAccount.account()
         return try {
             accountManager.removeAccountExplicitly(account)

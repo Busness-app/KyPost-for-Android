@@ -12,13 +12,23 @@ import java.util.concurrent.atomic.AtomicBoolean
 class DeviceContactSyncCoordinator(
     private val repository: DeviceContactRepository,
     private val settings: DeviceContactSyncSettings,
+    /**
+     * Hostile Location Protection makes Room in-memory so nothing reaches disk — but device
+     * contact sync writes names, email addresses, phone numbers and PGP keys into the OS contacts
+     * provider, which is not this app's storage and is not in-memory. Syncing while protection is
+     * on published exactly the data the feature exists to withhold, so it is refused outright
+     * rather than merely defaulted off.
+     */
+    private val hostileLocationEnabled: () -> Boolean = { false },
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var debounceJob: kotlinx.coroutines.Job? = null
     private val isSyncing = AtomicBoolean(false)
 
+    private fun syncAllowed(): Boolean = settings.isEnabled() && !hostileLocationEnabled()
+
     fun syncNowAsync() {
-        if (!settings.isEnabled() || isSyncing.getAndSet(true)) return
+        if (!syncAllowed() || isSyncing.getAndSet(true)) return
         scope.launch {
             try {
                 withTimeoutOrNull(30_000L) {
@@ -31,7 +41,7 @@ class DeviceContactSyncCoordinator(
     }
 
     fun syncWithDebounce() {
-        if (!settings.isEnabled()) return
+        if (!syncAllowed()) return
         debounceJob?.cancel()
         debounceJob = scope.launch {
             delay(3000)

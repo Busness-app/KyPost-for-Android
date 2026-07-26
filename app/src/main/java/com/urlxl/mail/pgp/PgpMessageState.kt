@@ -25,6 +25,15 @@ enum class PgpMessageState {
      * silently: the user should be able to tell that the server read their mail.
      */
     DECRYPTED_BY_SERVER,
+
+    /**
+     * Encrypted, but we do not have this message cached and cannot tell which of the states above
+     * applies. Distinct from [CLIENT_PROTECTED] on purpose: an absent body is not evidence of
+     * client-side protection, and conflating the two made the app assert the *stronger* privacy
+     * property exactly when the weaker one held — concealing the fact that the server had read the
+     * mail. Under Hostile Location Protection this is the normal state of every cold process.
+     */
+    BODY_UNAVAILABLE,
 }
 
 /**
@@ -37,10 +46,14 @@ fun pgpMessageStateOf(
     pgpEncrypted: Boolean,
     pgpDecryptError: String,
     body: String?,
+    /** True when the body could not be read at all (no cached row), as opposed to the server
+     *  having delivered the message with no body. See [PgpMessageState.BODY_UNAVAILABLE]. */
+    bodyUnavailable: Boolean = false,
 ): PgpMessageState = when {
     !pgpEncrypted -> PgpMessageState.NONE
     pgpDecryptError.isNotBlank() -> PgpMessageState.DECRYPT_FAILED
     !body.isNullOrBlank() -> PgpMessageState.DECRYPTED_BY_SERVER
+    bodyUnavailable -> PgpMessageState.BODY_UNAVAILABLE
     else -> PgpMessageState.CLIENT_PROTECTED
 }
 
@@ -55,5 +68,7 @@ fun pgpMessageStateOf(
 fun pgpRowMarker(state: PgpMessageState): String? = when (state) {
     PgpMessageState.CLIENT_PROTECTED -> "🔒"
     PgpMessageState.DECRYPT_FAILED -> "⚠"
-    PgpMessageState.NONE, PgpMessageState.DECRYPTED_BY_SERVER -> null
+    // BODY_UNAVAILABLE is unmarked: we do not know which state applies, and a lock glyph would be
+    // the very claim we cannot substantiate.
+    PgpMessageState.NONE, PgpMessageState.DECRYPTED_BY_SERVER, PgpMessageState.BODY_UNAVAILABLE -> null
 }

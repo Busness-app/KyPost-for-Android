@@ -12,7 +12,6 @@ import android.view.View
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
-import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.chip.Chip
 import com.urlxl.mail.R
@@ -25,6 +24,7 @@ import com.urlxl.mail.data.DataRuntime
 import com.urlxl.mail.getStoredThemePalette
 import com.urlxl.mail.pgp.hasPgpIdentity
 import kotlinx.coroutines.launch
+import com.urlxl.mail.security.LockedActivity
 
 /** Read-only contact screen: what tapping a contact in [ContactsListActivity] opens (replacing the
  *  old direct-to-[ContactEditActivity] jump). Renders every field [ContactEditActivity] lets the
@@ -32,7 +32,7 @@ import kotlinx.coroutines.launch
  *  types that have an obvious action (email → compose, phone → dial, address → map, website →
  *  browser). An "Edit" action-bar item opens the real editor ([ContactEditActivity]) on the same
  *  contact; returning here re-loads and re-renders (see [onResume]) so edits show immediately. */
-class ContactDetailActivity : AppCompatActivity() {
+class ContactDetailActivity : LockedActivity() {
 
     private lateinit var avatarView: TextView
     private lateinit var nameView: TextView
@@ -240,10 +240,25 @@ class ContactDetailActivity : AppCompatActivity() {
         fieldsContainer.addView(row)
     }
 
+    /**
+     * Contact field values are not trustworthy input: they arrive from the paired relay and from any
+     * app holding WRITE_CONTACTS. Restrict the scheme, since a website field is free text that ends
+     * up in an implicit ACTION_VIEW — a `file://` value crashes the app with
+     * `FileUriExposedException` (which is not an `ActivityNotFoundException`, so the old catch missed
+     * it), and any other scheme reaches whichever installed app claims it.
+     *
+     * The catch is widened to `RuntimeException` for the same reason: a tap on a contact row must not
+     * be able to kill the process whatever the stored value is.
+     */
     private fun openUri(uri: String) {
+        val parsed = Uri.parse(uri)
+        if (parsed.scheme?.lowercase() !in ALLOWED_FIELD_SCHEMES) {
+            Toast.makeText(this, R.string.contacts_detail_no_app_for_action, Toast.LENGTH_SHORT).show()
+            return
+        }
         try {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(uri)))
-        } catch (e: ActivityNotFoundException) {
+            startActivity(Intent(Intent.ACTION_VIEW, parsed))
+        } catch (e: RuntimeException) {
             Toast.makeText(this, R.string.contacts_detail_no_app_for_action, Toast.LENGTH_SHORT).show()
         }
     }
@@ -251,6 +266,10 @@ class ContactDetailActivity : AppCompatActivity() {
     private fun String.removeOptionalSuffix(): String = removeSuffix(" (optional)")
 
     companion object {
+        /** Schemes a contact field may open: the ones this screen actually builds
+         *  (`mailto:`/`tel:`/`geo:`) plus web for the website field. */
+        private val ALLOWED_FIELD_SCHEMES = setOf("http", "https", "mailto", "tel", "geo")
+
         private const val MENU_EDIT = 1
         const val EXTRA_UID = "contact_uid"
     }

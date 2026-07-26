@@ -14,6 +14,11 @@ interface ContactDao {
     @Query("SELECT * FROM contacts WHERE uid = :uid")
     suspend fun getByUid(uid: String): ContactEntity?
 
+    /** The account owner's own contact. Used to show the user their own PGP fingerprint next to
+     *  the QR they present, so the other side's "confirm this matches" has something to match. */
+    @Query("SELECT * FROM contacts WHERE isSelf = 1 LIMIT 1")
+    suspend fun getSelf(): ContactEntity?
+
     @Upsert
     suspend fun upsertAll(contacts: List<ContactEntity>)
 

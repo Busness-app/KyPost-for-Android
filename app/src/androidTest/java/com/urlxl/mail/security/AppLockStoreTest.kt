@@ -65,9 +65,43 @@ class AppLockStoreTest {
     }
 
     @Test
-    fun corruptedKeyset_doesNotCrash_resetsToUnlockedAndStaysUsable() {
+    fun tripwire_isUnsetUntilALockIsConfigured() {
         val store = AppLockStore(context)
-        store.setPin("123456")
+        assertFalse(store.wasLockEnabled())
+        assertFalse(store.tripwireBroken())
+    }
+
+    @Test
+    fun tripwire_recordsThatALockExisted_andClearsWhenTheLockIsTurnedOff() {
+        val store = AppLockStore(context)
+        store.setPin("482913")
+        store.setLockEnabled(true)
+        assertTrue(AppLockStore(context).wasLockEnabled())
+
+        store.setLockEnabled(false)
+        assertFalse(AppLockStore(context).wasLockEnabled())
+    }
+
+    @Test
+    fun tripwire_trips_whenTheEncryptedStateVanishesWhileALockWasConfigured() {
+        val store = AppLockStore(context)
+        store.setPin("482913")
+        store.setLockEnabled(true)
+
+        // Simulates an attacker deleting the keyset (or OS-level key invalidation) to turn the
+        // lock off. The old behaviour was to recreate the file empty and report "no lock
+        // configured", opening straight into the inbox with every cached message still on disk.
+        context.deleteSharedPreferences("app_lock_secure")
+
+        val recovered = AppLockStore(context)
+        assertFalse(recovered.isLockEnabled())
+        assertTrue("deleting the encrypted store must be detectable", recovered.tripwireBroken())
+    }
+
+    @Test
+    fun corruptedKeyset_doesNotCrash_andTripsTheTripwire() {
+        val store = AppLockStore(context)
+        store.setPin("482913")
         store.setLockEnabled(true)
 
         val rawPrefs = context.getSharedPreferences("app_lock_secure", android.content.Context.MODE_PRIVATE)
@@ -86,8 +120,13 @@ class AppLockStoreTest {
 
         assertFalse("corrupted store should reset to unlocked, not stale/garbage data", recovered.isLockEnabled())
 
+        // But "unlocked" alone is not an acceptable outcome: the tripwire is what turns this into
+        // a wipe at startup rather than a free pass into the cached mailbox.
+        assertTrue("a corrupted keyset must trip the tripwire", recovered.tripwireBroken())
+
         // The reset must leave a genuinely working store behind, not just a non-crashing shell.
-        recovered.setPin("654321")
-        assertTrue(AppLockStore(context).verifyPin("654321"))
+        recovered.setPin("903471")
+        assertTrue(AppLockStore(context).verifyPin("903471"))
+        assertFalse("setting a new PIN clears the tripwire", AppLockStore(context).tripwireBroken())
     }
 }

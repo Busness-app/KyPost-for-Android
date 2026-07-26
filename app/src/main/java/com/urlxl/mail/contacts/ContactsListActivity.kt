@@ -6,7 +6,6 @@ import android.view.Menu
 import android.view.MenuItem
 import android.view.View
 import android.widget.Toast
-import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -26,8 +25,9 @@ import com.urlxl.mail.contacts.device.DeviceContactSyncScheduler
 import com.urlxl.mail.data.ContactEntity
 import com.urlxl.mail.pgp.hasPgpIdentity
 import kotlinx.coroutines.launch
+import com.urlxl.mail.security.LockedActivity
 
-class ContactsListActivity : AppCompatActivity() {
+class ContactsListActivity : LockedActivity() {
 
     private lateinit var recyclerView: RecyclerView
     private lateinit var emptyText: View

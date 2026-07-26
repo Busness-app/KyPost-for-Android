@@ -1,32 +1,43 @@
 package com.urlxl.mail.security
 
 import android.content.Context
-import com.urlxl.mail.push.SecurePairingStore
+import com.urlxl.mail.push.PushRuntime
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 
 /**
- * Re-wraps the current pairing's `deviceSecret` behind the credential key if it was left stored
- * unwrapped despite the "require unlock to receive push/MFA" gate being on.
+ * Re-wraps the current pairing's `deviceSecret` behind the credential key whenever it isn't
+ * already wrapped under the current scheme.
  *
- * This closes a gap in [com.urlxl.mail.push.PushRepository.savePairing]: it falls back to a
- * plaintext (unwrapped) save whenever the gate is on but [AppLockManager.cachedCredentialKey] is
- * null — which happens whenever a background FCM token rotation runs in a process that was never
- * unlocked this session (Android routinely restarts the app to deliver FCM callbacks, and that
- * fresh process has no PIN-derived key cached yet). The rotated secret would otherwise sit
- * unwrapped indefinitely, silently defeating the gate.
+ * Two cases reach here:
  *
- * Call this after every successful PIN unlock (see [UnlockActivity.attemptUnlock]) — at that
- * point a fresh credential key is cached and any such gap can be closed immediately.
+ * 1. It was saved unwrapped despite the gate being on. `PushRepository.savePairing` falls back to
+ *    a plaintext save when the gate is on but no credential key is cached — which happens on any
+ *    background FCM token rotation in a process that was never PIN-unlocked (Android routinely
+ *    restarts the app to deliver FCM callbacks). The rotated secret would otherwise sit unwrapped
+ *    indefinitely, silently defeating the gate.
+ * 2. It was wrapped by a build from before the Keystore pepper existed
+ *    ([com.urlxl.mail.push.SecurePairingStore.SECRET_VERSION_LEGACY]), and is therefore still
+ *    brute-forceable offline. Re-wrapping migrates it to the peppered key.
+ *
+ * Call after every successful PIN unlock (see [UnlockActivity]) — at that point a fresh credential
+ * key is cached and either gap can be closed immediately.
  */
 suspend fun rewrapPairingIfNeeded(context: Context, appLockManager: AppLockManager) {
-    val appLockStore = AppLockStore(context)
-    if (!appLockStore.isCredentialPinGateEnabled()) return
+    withContext(NonCancellable) {
+        val appLockStore = AppLockStore(context)
+        if (!appLockStore.isCredentialPinGateEnabled()) return@withContext
 
-    val securePairingStore = SecurePairingStore(context)
-    if (securePairingStore.isDeviceSecretWrapped()) return
+        val securePairingStore = PushRuntime.graph(context).securePairingStore
+        if (!securePairingStore.needsCredentialRewrap()) return@withContext
 
-    val credentialKey = appLockManager.cachedCredentialKey() ?: return
-    val credentialSalt = appLockStore.credentialSalt() ?: return
+        val credentialKeys = appLockManager.cachedCredentialKeys() ?: return@withContext
+        val credentialSalt = appLockStore.credentialSalt() ?: return@withContext
 
-    val currentPairing = securePairingStore.pairing.value ?: return
-    securePairingStore.savePairing(currentPairing, credentialKey, credentialSalt)
+        // Read with the keys so a legacy-wrapped secret is decrypted before being re-wrapped; a
+        // currently-unwrapped one comes back the same either way.
+        val currentPairing = securePairingStore.pairingSnapshot(credentialKeys) ?: return@withContext
+        if (currentPairing.deviceSecret.isNullOrBlank()) return@withContext
+        securePairingStore.savePairing(currentPairing, credentialKeys, credentialSalt)
+    }
 }

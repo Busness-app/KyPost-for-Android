@@ -258,7 +258,11 @@ class RelayMailSource(
         val result = effectiveCallFactory().executeSync(request) { response ->
             DownloadResponse(
                 code = response.code,
-                bytes = response.body?.bytes() ?: ByteArray(0),
+                // Bounded read. `bytes()` materialises the whole body, and the advertised `size`
+                // from the attachment listing was never enforced, so a relay could advertise a
+                // kilobyte and stream hundreds of megabytes into the heap. Mirrors the 25MB
+                // outbound cap in ComposeActivity, and matches the server's own message limit.
+                bytes = response.body?.let { readBounded(it, MAX_ATTACHMENT_DOWNLOAD_BYTES) } ?: ByteArray(0),
                 name = filenameFromDisposition(response.header("Content-Disposition")),
                 contentType = response.header("Content-Type") ?: "application/octet-stream",
                 retryAfter = response.header(HEADER_RETRY_AFTER),
@@ -326,6 +330,20 @@ class RelayMailSource(
 
 /** Pulls the filename out of a Content-Disposition header, honoring both the RFC 5987 `filename*`
  *  form and the plain quoted `filename=` form; empty when the header is absent or unparseable. */
+/** Same order of magnitude as the outbound cap in `ComposeActivity` and the server's own
+ *  `MaxInboundMessageBytes`, so no legitimate attachment is refused. */
+private const val MAX_ATTACHMENT_DOWNLOAD_BYTES = 25L * 1024 * 1024
+
+/** Reads at most [limit] bytes, returning what it got. A body longer than the limit is truncated
+ *  rather than allocated in full — the caller's checksum/parse will fail on a truncated attachment,
+ *  which is a far better outcome than an out-of-memory kill. */
+private fun readBounded(body: okhttp3.ResponseBody, limit: Long): ByteArray {
+    val source = body.source()
+    val buffer = okio.Buffer()
+    source.read(buffer, limit)
+    return buffer.readByteArray()
+}
+
 private fun filenameFromDisposition(header: String?): String {
     if (header.isNullOrBlank()) return ""
     Regex("filename\\*=(?:UTF-8'')?\"?([^\";]+)\"?", RegexOption.IGNORE_CASE).find(header)?.let {

@@ -59,10 +59,12 @@
     <string name="email_attachments">Attachments</string>
     <string name="email_images_blocked_message">Images are blocked to protect your privacy.</string>
     <string name="email_show_images_button">Show images</string>
+    <string name="email_link_blocked_scheme">This link uses a scheme KyPost won\'t open from an email.</string>
     <string name="email_pgp_client_protected">This message is end-to-end encrypted. Only your browser holds the key, so it can\'t be read here.</string>
     <string name="email_pgp_open_webmail_button">Open in webmail</string>
     <string name="email_pgp_decrypt_failed">This message is encrypted and couldn\'t be decrypted: %1$s</string>
     <string name="email_pgp_decrypted_by_server">This message was encrypted. The server decrypted it to show it here.</string>
+    <string name="email_pgp_body_unavailable">This message is encrypted and isn\'t cached on this device, so its protection can\'t be confirmed here. Refresh the inbox, or open it in webmail.</string>
     <string name="email_pgp_no_webmail">Couldn\'t work out this server\'s web address — open this message in your browser.</string>
     <string name="email_row_pgp_locked_description">Encrypted, can\'t be read in this app: %1$s</string>
     <string name="email_row_pgp_failed_description">Encrypted, couldn\'t be decrypted: %1$s</string>
@@ -70,6 +72,7 @@
     <string name="attachment_opening">Opening %1$s…</string>
     <string name="attachment_saved">Saved %1$s to Downloads</string>
     <string name="attachment_save_failed">Couldn\'t save %1$s</string>
+    <string name="attachment_open_with">Open attachment with</string>
     <string name="cancel">Cancel</string>
     <string name="compose_format_bold">Bold</string>
     <string name="compose_format_italic">Italic</string>
@@ -249,17 +252,22 @@
     <string name="pgp_qr_scan_unavailable">PGP key exchange is temporarily unavailable on the other person\'s server. Please try again later.</string>
     <string name="pgp_qr_scan_name_label">Name: %1$s</string>
     <string name="pgp_qr_scan_fingerprint_label">Fingerprint: %1$s</string>
-    <string name="pgp_qr_scan_confirm_prompt">Confirm this fingerprint matches the other person\'s device before saving.</string>
+    <string name="pgp_qr_scan_confirm_prompt">Confirm this fingerprint matches the other person\'s device, and check the addresses below, before saving.</string>
+    <string name="pgp_qr_scan_addresses_label">Mail to these addresses will be encrypted to this key:\n%1$s</string>
+    <string name="pgp_qr_scan_addresses_none">This code carries no email address. The key will be saved without one.</string>
     <string name="pgp_qr_scan_confirm_button">Confirm Match</string>
     <string name="pgp_qr_scan_saved">PGP key saved to contact</string>
     <string name="pgp_qr_scan_save_choice_title">Save this contact</string>
+    <string name="pgp_qr_scan_save_choice_body">This will create a contact with the key you just verified, bound to:\n%1$s</string>
+    <string name="pgp_qr_my_fingerprint_label">Your fingerprint: %1$s</string>
+    <string name="pgp_qr_my_fingerprint_unavailable">Your fingerprint is unavailable — check it in webmail before the other person confirms.</string>
     <string name="pgp_qr_scan_save_new_button">Create New Contact</string>
     <string name="pgp_qr_scan_save_existing_button">Add to Existing Contact</string>
     <string name="pgp_qr_scan_saved_new">Contact created with PGP key</string>
     <string name="pgp_qr_scan_canceled">QR scan canceled or failed</string>
 
     <string name="unlock_title">Enter your PIN to continue</string>
-    <string name="unlock_pin_hint">6-digit PIN</string>
+    <string name="unlock_pin_hint">PIN</string>
     <string name="unlock_button">Unlock</string>
     <string name="unlock_wrong_pin">Wrong PIN</string>
     <string name="unlock_locked_out">Too many attempts — try again in %1$s</string>
@@ -269,7 +277,7 @@
     <string name="security_require_unlock_title">Require Unlock to Open</string>
     <string name="security_require_unlock_intro">Require a PIN (or biometric) every time the app opens or returns from the background.</string>
     <string name="security_use_biometric_title">Use biometric unlock</string>
-    <string name="security_set_pin_title">Set a 6-digit PIN</string>
+    <string name="security_set_pin_title">Set a PIN (8–12 digits)</string>
     <string name="security_set_pin_confirm">Confirm</string>
     <string name="security_confirm_disable_title">Enter your PIN to turn this off</string>
     <string name="security_hostile_location_title">Hostile Location Protection</string>
@@ -282,9 +290,31 @@
     <string name="security_credential_gate_warning_body">While this is on, you will not receive new-mail push notifications or MFA approval requests until you open the app and enter your PIN. Turn this on only if you understand that tradeoff.</string>
     <string name="security_credential_gate_warning_confirm">Turn on anyway</string>
     <string name="security_credential_gate_pin_title">Enter your PIN to continue</string>
-    <string name="security_confirm_pin_hint">Confirm 6-digit PIN</string>
+    <string name="security_confirm_pin_hint">Confirm PIN</string>
     <string name="security_pin_mismatch">PINs didn\'t match — try again</string>
     <string name="security_change_pin_title">Change PIN</string>
     <string name="security_change_pin_button">Change PIN</string>
     <string name="security_pin_incorrect">Incorrect PIN</string>
+
+    <string name="email_link_no_handler">No app can open that link</string>
+
+    <!-- Notification redaction while the app lock is engaged -->
+    <string name="notification_hidden_while_locked">New activity — unlock to view</string>
+
+    <!-- MFA approval. The notification carries no detail and no inline actions: approving a
+         sign-in requires opening the app and re-authenticating. -->
+    <string name="mfa_notification_title">Approve sign-in</string>
+    <string name="mfa_notification_body">Open KyPost to approve or deny a sign-in to your account.</string>
+    <string name="mfa_auth_title">Confirm it\'s you</string>
+    <string name="mfa_auth_subtitle">Authenticate to approve or deny this sign-in</string>
+    <string name="mfa_auth_required">Authentication is required to answer a sign-in request</string>
+
+    <!-- PIN policy feedback. A rejected PIN used to silently revert the toggle with no message. -->
+    <string name="security_pin_too_short">PIN must be at least %1$d digits</string>
+    <string name="security_pin_too_long">PIN can be at most %1$d digits</string>
+    <string name="security_pin_not_numeric">PIN must be digits only</string>
+    <string name="security_pin_too_common">That PIN is too easy to guess — the app wipes after 10 wrong attempts, so pick something outside the obvious sequences</string>
+
+    <!-- Hostile Location Protection interactions with device contact sync -->
+    <string name="contacts_device_sync_blocked_hostile_location">Device contact sync is unavailable while Hostile Location Protection is on — synced contacts are stored by the system, outside this app\'s protected storage</string>
 </resources>

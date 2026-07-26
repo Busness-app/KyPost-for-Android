@@ -18,6 +18,7 @@ private class FakeEmailDao : EmailDao {
     override fun updateStatus(id: String, status: String) { rows[id]?.let { rows[id] = it.copy(status = status) } }
     override fun updateFolder(id: String, folder: String) { rows[id]?.let { rows[id] = it.copy(folder = folder) } }
     override fun deleteById(id: String) { rows.remove(id) }
+    override fun clearAll() { rows.clear() }
     override fun getBody(id: String): String? = rows[id]?.body
     override fun getById(id: String): EmailEntity? = rows[id]
     override fun pruneStaleInFolder(folder: String, keepIds: List<String>) {
@@ -87,8 +88,16 @@ class MailRepositoryTest {
         assertEquals("read", merged.status)
     }
 
+    /**
+     * An "updated" delta entry never carries a body. With no local row there is nothing to merge
+     * into, and storing the entry anyway created a row whose empty body was indistinguishable from a
+     * client-protected message — so the detail view asserted "this message is end-to-end encrypted"
+     * about mail the server had decrypted and previously shown. Skipping it is correct: we do not
+     * have this message, and a metadata-only delta is not a delivery of it. The forced daily full
+     * snapshot brings it in with its body.
+     */
     @Test
-    fun deltaResult_updatedEntryWithNoLocalCache_doesNotCrash() {
+    fun deltaResult_updatedEntryWithNoLocalCache_isSkippedRatherThanStoredBodyless() {
         val dao = FakeEmailDao()
 
         val result = MailFetchResult(
@@ -99,7 +108,31 @@ class MailRepositoryTest {
         )
         reconcileFetchResult(dao, "INBOX", "relay", result)
 
-        assertNull(dao.rows.getValue("m2").body)
+        assertNull(dao.rows["m2"])
+    }
+
+    @Test
+    fun deltaResult_updatedEntryWithLocalCache_mergesPreservingBody() {
+        val dao = FakeEmailDao()
+        dao.rows["m2"] = EmailEntity(
+            messageId = "m2",
+            folder = "INBOX",
+            sender = "x",
+            subject = "x",
+            sourceMode = "relay",
+            body = "<p>cached</p>",
+            status = "unread",
+        )
+
+        val result = MailFetchResult(
+            tabs = listOf("Work"),
+            messages = listOf(email("m2", body = null, status = "read")),
+            isDelta = true,
+            updatedMessageIds = setOf("m2"),
+        )
+        reconcileFetchResult(dao, "INBOX", "relay", result)
+
+        assertEquals("<p>cached</p>", dao.rows.getValue("m2").body)
         assertEquals("read", dao.rows.getValue("m2").status)
     }
 

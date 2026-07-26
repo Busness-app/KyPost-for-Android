@@ -15,7 +15,6 @@ import android.widget.PopupMenu
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -33,8 +32,9 @@ import com.urlxl.mail.pgp.PgpKeyActivity
 import com.urlxl.mail.push.PushNotificationDispatcher
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import com.urlxl.mail.security.LockedActivity
 
-class InboxActivity : AppCompatActivity() {
+class InboxActivity : LockedActivity() {
 
     private lateinit var recyclerView: RecyclerView
     private lateinit var keywordChipScroll: View
@@ -95,7 +95,6 @@ class InboxActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.setFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE, android.view.WindowManager.LayoutParams.FLAG_SECURE)
         setContentView(R.layout.activity_inbox)
         applyThemeToActivity(this)
         lastAppliedThemeName = getStoredThemeName(this)
@@ -281,8 +280,16 @@ class InboxActivity : AppCompatActivity() {
         
         // Match by ID first, then fallback to fuzzy match by sender + subject if IDs don't match
         // (common in IMAP where push messageId might be a server UUID but email.id is header Message-ID).
-        val email = emails.find { it.id == id } 
-            ?: emails.find { it.sender.contains(pendingSender ?: "", ignoreCase = true) && it.subject == pendingSubject }
+        // The fallback requires a non-blank sender: `contains("")` is always true, so a push payload
+        // with an empty senderName silently reduced this to subject-only matching and let whoever
+        // composes the payload open — and mark read — an arbitrary other cached message whose
+        // subject they could guess.
+        val email = emails.find { it.id == id }
+            ?: pendingSender
+                ?.takeIf { it.isNotBlank() }
+                ?.let { sender ->
+                    emails.find { it.sender.contains(sender, ignoreCase = true) && it.subject == pendingSubject }
+                }
 
         if (email != null) {
             pendingMessageId = null

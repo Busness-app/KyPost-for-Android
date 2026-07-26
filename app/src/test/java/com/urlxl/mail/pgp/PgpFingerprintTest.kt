@@ -22,6 +22,49 @@ class PgpFingerprintTest {
         assertEquals(PgpFingerprint.compute(TEST_KEY), PgpFingerprint.compute(TEST_KEY))
     }
 
+    /**
+     * Callers persist the WHOLE armored blob, so a fingerprint that describes only part of it cannot
+     * be meaningfully confirmed by a human comparing one string. Bouncy Castle's key-ring stream
+     * constructor stops at a second PUBLIC_KEY packet, which made an appended ring invisible here
+     * while still being saved and uploaded — the user verified one key and stored two.
+     */
+    @Test
+    fun compute_trailingSecondKeyRing_returnsNull() {
+        // Has to be a packet-level append inside ONE armor block, which is what Bouncy Castle's
+        // ring constructor silently ignores. Two separate armor blocks would not exercise it: the
+        // decoder stream simply ends at the first block.
+        assertNull(PgpFingerprint.compute(armor(ringBytes() + ringBytes())))
+    }
+
+    /** Control for the above: the same re-armoring round trip with a single ring must still work,
+     *  so a failure of the previous test means "trailing data rejected", not "fixture broken". */
+    @Test
+    fun compute_reArmoredSingleRing_stillComputes() {
+        assertEquals(TEST_KEY_FINGERPRINT, PgpFingerprint.compute(armor(ringBytes())))
+    }
+
+    private fun ringBytes(): ByteArray {
+        val decoder = org.bouncycastle.openpgp.PGPUtil.getDecoderStream(
+            TEST_KEY.byteInputStream(Charsets.UTF_8),
+        )
+        val ring = org.bouncycastle.openpgp.jcajce.JcaPGPObjectFactory(decoder).nextObject()
+            as org.bouncycastle.openpgp.PGPPublicKeyRing
+        return ring.encoded
+    }
+
+    private fun armor(bytes: ByteArray): String {
+        val out = java.io.ByteArrayOutputStream()
+        org.bouncycastle.bcpg.ArmoredOutputStream(out).use { it.write(bytes) }
+        return out.toString(Charsets.UTF_8.name())
+    }
+
+    /** A single ring must still be accepted — the trailing-data check must not reject the normal
+     *  case, including with surrounding whitespace. */
+    @Test
+    fun compute_singleRingWithSurroundingWhitespace_stillComputes() {
+        assertEquals(TEST_KEY_FINGERPRINT, PgpFingerprint.compute("\n\n" + TEST_KEY.trimEnd() + "\n\n"))
+    }
+
     @Test
     fun compute_blank_returnsNull() {
         assertNull(PgpFingerprint.compute(""))

@@ -113,9 +113,15 @@ class MigrationTest {
     @Test
     fun migrate7To8_addsPgpColumns_andDefaultsExistingRowToNoPgp() {
         helper.createDatabase(TEST_DB, 7).apply {
+            // Every NOT NULL column in the v7 `emails` schema has to be supplied: none of them
+            // carries a SQL default, so a partial INSERT fails with SQLITE_CONSTRAINT_NOTNULL and
+            // the migration below is never reached.
             execSQL(
-                "INSERT INTO emails (messageId, folder, sender, subject, sourceMode) " +
-                    "VALUES ('42', 'INBOX', 'a@example.com', 'Hello', 'relay')",
+                "INSERT INTO emails " +
+                    "(messageId, folder, sender, sentTo, cc, bcc, subject, preview, label, " +
+                    "keywordsJson, status, hasAttachments, sourceMode) " +
+                    "VALUES ('42', 'INBOX', 'a@example.com', '', '', '', 'Hello', '', '', " +
+                    "'[]', 'unread', 0, 'relay')",
             )
             close()
         }

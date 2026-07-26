@@ -17,6 +17,14 @@ class DeviceContactSyncWorker(
 
     override suspend fun doWork(): Result {
         val graph = DeviceContactsRuntime.graph(applicationContext)
+        // This worker calls the repository directly rather than going through the coordinator, so
+        // the coordinator's Hostile Location Protection veto has to be repeated here — an already
+        // enqueued periodic run would otherwise keep writing contacts to the OS provider after
+        // protection was turned on.
+        if (!graph.syncPermitted() || !graph.settings.isEnabled()) {
+            DeviceContactSyncScheduler.cancelPeriodic(applicationContext)
+            return Result.success()
+        }
         return try {
             graph.repository.syncAll()
             Result.success()

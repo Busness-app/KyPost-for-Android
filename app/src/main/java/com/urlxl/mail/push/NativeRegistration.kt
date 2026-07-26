@@ -106,10 +106,11 @@ sealed class NativeRegistrationResult {
         val pullEndpoint: String? = null,
         val transport: String? = null,
         // TOFU (trust-on-first-use) SPKI pin of the leaf certificate seen on this successful
-        // registration call's TLS handshake, or null if the connection wasn't TLS (e.g. a plain
-        // http:// dev server) or the handshake info wasn't available. The caller decides whether
-        // to persist it (see PushSyncCoordinator.attemptPairing) — this class only carries it.
-        val tlsPin: String? = null,
+        // registration call's TLS handshake, paired with the host that handshake was with, or null
+        // if the connection wasn't TLS or the handshake info wasn't available. Carrying the host
+        // is what stops the pin being enforced against a different host later on — see
+        // PinnedCallFactoryProvider. The caller decides whether to persist it.
+        val tlsPin: TlsPin? = null,
     ) : NativeRegistrationResult()
     data class Error(val message: String, val expiredPairingToken: Boolean = false) : NativeRegistrationResult()
 }
@@ -143,6 +144,9 @@ class NativeRegistrationClient(
             .url(pairing.registrationUrl)
             .post(json.encodeToString(request).toRequestBody(JSON_MEDIA_TYPE))
             .build()
+        // The host this call's handshake will be with — the pin below is only meaningful together
+        // with it, since it is this URL, not pairing.serverUrl, that the certificate belongs to.
+        val registrationHost = pairing.registrationUrl.toHttpUrlOrNull()?.host
 
         val result = withContext(Dispatchers.IO) {
             // Captures the handshake alongside code/body (not just the mapped DTO) so a
@@ -157,7 +161,13 @@ class NativeRegistrationClient(
         return when (code) {
             200 -> {
                 val body = runCatching { json.decodeFromString<NativeRegistrationResponse>(rawBody) }.getOrNull()
-                if (body?.ok == true && body.synced) {
+                if (body?.ok == true && body.synced && body.deviceSecret.isNullOrBlank()) {
+                    // A successful registration always mints a secret. Treating a 200 without one
+                    // as success made savePairing erase the stored credential while leaving the rest
+                    // of the pairing intact, so the UI kept reporting "Paired" while every
+                    // authenticated call 401'd with nothing to explain why.
+                    NativeRegistrationResult.Error("Registration did not return a device secret")
+                } else if (body?.ok == true && body.synced) {
                     NativeRegistrationResult.Success(
                         syncedAtEpochMs = nowEpochMs,
                         deviceId = body.deviceId,
@@ -165,7 +175,9 @@ class NativeRegistrationClient(
                         deliveryMode = DeliveryMode.fromWire(body.deliveryMode),
                         pullEndpoint = body.pullEndpoint,
                         transport = body.transport,
-                        tlsPin = handshake?.peerCertificates?.firstOrNull()?.let { SpkiPinner.pinFor(it) },
+                        tlsPin = registrationHost?.let { host ->
+                            handshake?.peerCertificates?.firstOrNull()?.let { TlsPin(host, SpkiPinner.pinFor(it)) }
+                        },
                     )
                 } else {
                     NativeRegistrationResult.Error("Registration did not confirm sync")

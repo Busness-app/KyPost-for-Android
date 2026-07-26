@@ -3,6 +3,7 @@ package com.urlxl.mail.push
 import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -12,13 +13,17 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.urlxl.mail.MainActivity
 import com.urlxl.mail.R
+import com.urlxl.mail.security.SecurityRuntime
 
 object PushNotificationDispatcher {
     private const val CHANNEL_ID = "kypost_push"
     private const val MFA_CHANNEL_ID = "kypost_mfa"
+    private const val MFA_GROUP_KEY = "com.urlxl.mail.push.MFA"
 
-    const val ACTION_MFA_APPROVE = "com.urlxl.mail.push.ACTION_MFA_APPROVE"
-    const val ACTION_MFA_DENY = "com.urlxl.mail.push.ACTION_MFA_DENY"
+    /** Repeat MFA challenges inside this window post silently instead of alerting again — the
+     *  client-side half of MFA-fatigue resistance (the server caps minting rate). */
+    private const val MFA_ALERT_COOLDOWN_MS = 5 * 60 * 1000L
+
     const val EXTRA_MFA_CHALLENGE_ID = "challengeId"
     const val EXTRA_MESSAGE_ID = "com.urlxl.mail.push.EXTRA_MESSAGE_ID"
     const val EXTRA_SENDER = "com.urlxl.mail.push.EXTRA_SENDER"
@@ -56,138 +61,140 @@ object PushNotificationDispatcher {
         manager.createNotificationChannel(channel)
     }
 
+    /**
+     * True when the app lock is engaged, i.e. the correct PIN/biometric has not been presented in
+     * this process. Notification *content* is gated on this: sender and subject on a lock screen
+     * defeat "Require Unlock to Open" entirely, and used to be posted with `BigTextStyle` and no
+     * visibility setting regardless of every security toggle the user had turned on.
+     */
+    private fun isLocked(context: Context): Boolean =
+        // Fails CLOSED: if the lock state can't be read, redact. Defaulting to "unlocked" turned a
+        // storage or Keystore error into exactly the disclosure this gate exists to prevent.
+        runCatching { SecurityRuntime.graph(context).appLockManager.locked.value }.getOrDefault(true)
+
     fun show(context: Context, payload: PushPayload) {
         ensureChannel(context)
+        if (!notificationsAllowed(context)) return
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
-            if (!granted) return
-        }
+        val locked = isLocked(context)
 
         val launchIntent = Intent(context, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             .putExtra(EXTRA_MESSAGE_ID, payload.messageId)
             .putExtra(EXTRA_SENDER, payload.senderName)
             .putExtra(EXTRA_SUBJECT, payload.emailSubject)
-            .putExtra(EXTRA_MESSAGE_ID, payload.messageId)
 
-        val pendingIntent = android.app.PendingIntent.getActivity(
+        val pendingIntent = PendingIntent.getActivity(
             context,
             payload.messageId.hashCode(),
             launchIntent,
-            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+        val title = if (locked) context.getString(R.string.app_name) else PushPayloadParser.title(payload)
+        val body = if (locked) context.getString(R.string.notification_hidden_while_locked) else PushPayloadParser.body(payload)
+
+        val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle(PushPayloadParser.title(payload))
-            .setContentText(PushPayloadParser.body(payload))
-            .setStyle(NotificationCompat.BigTextStyle().bigText(PushPayloadParser.body(payload)))
+            .setContentTitle(title)
+            .setContentText(body)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setVisibility(if (locked) NotificationCompat.VISIBILITY_SECRET else NotificationCompat.VISIBILITY_PRIVATE)
             .setContentIntent(pendingIntent)
-            .build()
+        if (!locked) builder.setStyle(NotificationCompat.BigTextStyle().bigText(body))
 
-        NotificationManagerCompat.from(context).notify(payload.messageId.hashCode(), notification)
+        postNotification(context, payload.messageId.hashCode(), builder.build())
     }
 
+    /**
+     * Posts the tap-to-review prompt for an MFA challenge.
+     *
+     * There are deliberately no "Approve"/"Deny" notification actions. Notification actions fire
+     * from the lock screen without any authentication, so they let anyone holding the powered-on
+     * device approve a sign-in to the account — bypassing the PIN, biometric, lockout and wipe
+     * apparatus wholesale, and bypassing the [MfaChallengeTracker] check as well, since the
+     * receiver they invoked never consulted it. The decision now only happens inside
+     * [MfaApprovalActivity], behind re-authentication.
+     *
+     * Each challenge also gets its own notification id. Distinct challenges used to be coalesced
+     * onto one shared id, so answering either one cancelled the notification for both and the
+     * second challenge silently disappeared — in a feature built to resist MFA fatigue.
+     */
     fun showMfaChallenge(context: Context, payload: MfaChallengePayload) {
         ensureMfaChannel(context)
-        MfaChallengeTracker.markDelivered(payload.challengeId)
+        MfaChallengeTracker(context).markDelivered(payload.challengeId)
+        if (!notificationsAllowed(context)) return
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
-            if (!granted) return
-        }
-
-        // Client-side half of MFA rate-limiting (the server caps how often a challenge can be
-        // minted in the first place): repeated challenges within the cooldown window update the
-        // same notification in place — via the same id plus setOnlyAlertOnce below — instead of
-        // stacking a fresh, separately-alerting notification per challenge, so a flood of
-        // attempts can't use notification spam itself as part of an MFA-fatigue attack.
-        val notificationId = MfaNotificationState.idFor(payload.challengeId)
+        val notificationId = mfaNotificationId(payload.challengeId)
 
         val tapIntent = Intent(context, MfaApprovalActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             .putExtra(EXTRA_MFA_CHALLENGE_ID, payload.challengeId)
-        val tapPendingIntent = android.app.PendingIntent.getActivity(
+        val tapPendingIntent = PendingIntent.getActivity(
             context,
             notificationId,
             tapIntent,
-            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE,
-        )
-
-        val approveIntent = Intent(context, MfaResponseReceiver::class.java)
-            .setAction(ACTION_MFA_APPROVE)
-            .putExtra(EXTRA_MFA_CHALLENGE_ID, payload.challengeId)
-        val approvePendingIntent = android.app.PendingIntent.getBroadcast(
-            context,
-            notificationId * 2,
-            approveIntent,
-            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE,
-        )
-
-        val denyIntent = Intent(context, MfaResponseReceiver::class.java)
-            .setAction(ACTION_MFA_DENY)
-            .putExtra(EXTRA_MFA_CHALLENGE_ID, payload.challengeId)
-        val denyPendingIntent = android.app.PendingIntent.getBroadcast(
-            context,
-            notificationId * 2 + 1,
-            denyIntent,
-            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
         val notification = NotificationCompat.Builder(context, MFA_CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("Approve sign-in")
-            .setContentText("Tap to approve or deny a sign-in to your account.")
+            .setContentTitle(context.getString(R.string.mfa_notification_title))
+            .setContentText(context.getString(R.string.mfa_notification_body))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
             .setAutoCancel(true)
-            .setOnlyAlertOnce(true)
+            .setGroup(MFA_GROUP_KEY)
+            // Silent, not suppressed: a burst of challenges still all appear (none is lost) but
+            // only the first one in the window makes a sound.
+            .setSilent(MfaAlertWindow.shouldSuppressAlert())
             .setContentIntent(tapPendingIntent)
-            .addAction(0, "Approve", approvePendingIntent)
-            .addAction(0, "Deny", denyPendingIntent)
             .build()
 
-        NotificationManagerCompat.from(context).notify(notificationId, notification)
+        postNotification(context, notificationId, notification)
+    }
+
+    /**
+     * Single exit point for posting, so the POST_NOTIFICATIONS check and the failure handling live
+     * in one place.
+     *
+     * [notificationsAllowed] is still the gate, but the permission can be revoked between that check
+     * and this call, and both call sites run on FCM/UnifiedPush delivery threads where an uncaught
+     * `SecurityException` takes out the message handler rather than merely dropping one notification.
+     */
+    private fun postNotification(context: Context, id: Int, notification: android.app.Notification) {
+        if (!notificationsAllowed(context)) return
+        try {
+            NotificationManagerCompat.from(context).notify(id, notification)
+        } catch (e: SecurityException) {
+            android.util.Log.w("PushNotifications", "POST_NOTIFICATIONS revoked; dropping notification", e)
+        }
     }
 
     fun cancelMfaChallenge(context: Context, challengeId: String) {
-        // Prefer the id actually tracked for the current coalescing window (correct even when
-        // this challengeId got folded into an earlier notification rather than posting its own),
-        // falling back to the deterministic per-challenge id if no window was ever recorded.
-        val idToCancel = MfaNotificationState.clear() ?: mfaNotificationId(challengeId)
-        NotificationManagerCompat.from(context).cancel(idToCancel)
+        NotificationManagerCompat.from(context).cancel(mfaNotificationId(challengeId))
+    }
+
+    private fun notificationsAllowed(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return true
+        return ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
     }
 
     private fun mfaNotificationId(challengeId: String): Int = ("mfa-$challengeId").hashCode()
 
-    /** Tracks the notification id of the currently-coalesced MFA prompt, so repeated challenges
-     *  within [WINDOW_MS] reuse it (see [showMfaChallenge]/[cancelMfaChallenge]) instead of each
-     *  minting and alerting on a separate notification. */
-    private object MfaNotificationState {
-        private const val WINDOW_MS = 5 * 60 * 1000L
-        private var activeId: Int? = null
-        private var windowStartedAtEpochMs: Long = 0L
+    /** Tracks only whether the *sound* for an MFA notification was played recently. It no longer
+     *  holds a notification id, so it can't cause one challenge's answer to dismiss another's. */
+    private object MfaAlertWindow {
+        private var lastAlertAtEpochMs: Long = 0L
 
         @Synchronized
-        fun idFor(challengeId: String, nowEpochMs: Long = System.currentTimeMillis()): Int {
-            val existing = activeId
-            if (existing != null && nowEpochMs - windowStartedAtEpochMs <= WINDOW_MS) {
-                return existing
-            }
-            val id = mfaNotificationId(challengeId)
-            activeId = id
-            windowStartedAtEpochMs = nowEpochMs
-            return id
-        }
-
-        @Synchronized
-        fun clear(): Int? {
-            val id = activeId
-            activeId = null
-            return id
+        fun shouldSuppressAlert(nowEpochMs: Long = System.currentTimeMillis()): Boolean {
+            val suppress = lastAlertAtEpochMs != 0L && nowEpochMs - lastAlertAtEpochMs <= MFA_ALERT_COOLDOWN_MS
+            if (!suppress) lastAlertAtEpochMs = nowEpochMs
+            return suppress
         }
     }
 }

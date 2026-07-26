@@ -65,10 +65,28 @@ class MailRepository(
     fun downloadAttachment(id: String, folder: String, index: Int): MailOutcome<DownloadedAttachment> =
         relaySource.downloadAttachment(id, folder, index)
 
+    /**
+     * Returns the cached body, or a failure when we do not have this message at all.
+     *
+     * The distinction matters for PGP state. An empty body plus `pgpEncrypted` is the wire signature
+     * of a client-protected message, so treating "we have no row for this id" the same way made the
+     * detail view assert *"this message is end-to-end encrypted"* about mail the server had actually
+     * decrypted — the wrong direction, since it hides server access from a user auditing what their
+     * host can read. Under Hostile Location Protection that was the normal case, because Room is
+     * in-memory and every cold process starts with no rows.
+     *
+     * A row that exists with no body is still reported as Success-with-empty: that is the server
+     * genuinely having no body for us. (A delta "updated" entry for a message that was never cached
+     * also lands in that shape — see [reconcileFetchResult], which now declines to create such a
+     * row rather than inventing one with a body it was never sent.)
+     */
     fun fetchBody(id: String, folder: String): MailOutcome<MailMessageBody> {
         val cached = emailDao.getBody(id)
         if (!cached.isNullOrBlank()) {
             return MailOutcome.Success(MailMessageBody(html = cached, toAddresses = emptyList(), ccAddresses = emptyList()))
+        }
+        if (emailDao.getById(id) != null) {
+            return MailOutcome.Success(MailMessageBody(html = "", toAddresses = emptyList(), ccAddresses = emptyList()))
         }
         return relaySource.fetchMessageBody(id, folder)
     }
@@ -88,10 +106,16 @@ internal fun reconcileFetchResult(emailDao: EmailDao, folder: String, mode: Stri
     }
     val (updated, new) = result.messages.partition { it.id in result.updatedMessageIds }
     val newEntities = new.map { it.toEntity(folder, mode) }
-    val mergedEntities = updated.map { email ->
+    // An "updated" entry never carries a body. With an existing row we merge, preserving the body we
+    // already have. With NO existing row there is nothing to merge into, and storing the entry as-is
+    // created a row whose empty body was indistinguishable from a client-protected message — so the
+    // detail view claimed end-to-end encryption for mail the server had decrypted. Skip it instead:
+    // we do not have this message, and a metadata-only delta is not a delivery of it. The next full
+    // snapshot (forced daily, see MailCursorStore) brings it in properly.
+    val mergedEntities = updated.mapNotNull { email ->
         val incoming = email.toEntity(folder, mode)
-        val existing = emailDao.getById(incoming.messageId)
-        if (existing != null) incoming.copy(body = existing.body, preview = existing.preview) else incoming
+        val existing = emailDao.getById(incoming.messageId) ?: return@mapNotNull null
+        incoming.copy(body = existing.body, preview = existing.preview)
     }
     emailDao.upsertAll(newEntities + mergedEntities)
     result.removedMessageIds.forEach { emailDao.deleteById(it) }

@@ -8,13 +8,14 @@ import android.os.Environment
 import android.provider.MediaStore
 import android.text.TextUtils
 import android.view.View
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.ImageButton
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
-import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
 import com.urlxl.mail.mail.AttachmentInfo
@@ -27,8 +28,9 @@ import com.urlxl.mail.pgp.pgpMessageStateOf
 import com.urlxl.mail.pgp.webmailMessageUrl
 import com.urlxl.mail.push.PushRuntime
 import java.util.concurrent.Executors
+import com.urlxl.mail.security.LockedActivity
 
-class EmailDetailActivity : AppCompatActivity() {
+class EmailDetailActivity : LockedActivity() {
 
     private val ioExecutor = Executors.newSingleThreadExecutor()
     private lateinit var mailRepository: MailRepository
@@ -48,7 +50,6 @@ class EmailDetailActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.setFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE, android.view.WindowManager.LayoutParams.FLAG_SECURE)
         setContentView(R.layout.activity_email_detail)
         applyThemeToActivity(this)
         lastAppliedThemeName = getStoredThemeName(this)
@@ -143,6 +144,14 @@ class EmailDetailActivity : AppCompatActivity() {
             useWideViewPort = true
             loadWithOverviewMode = true
             defaultTextEncodingName = "utf-8"
+            // Defaults that are wrong for a renderer whose input is attacker-controlled HTML:
+            // allowContentAccess defaults to true, which lets email markup reference this app's
+            // own content:// providers, and DOM storage is state an email has no business
+            // creating. allowFileAccess is already false on this minSdk but is pinned here so it
+            // stays false if the default ever moves.
+            allowContentAccess = false
+            allowFileAccess = false
+            domStorageEnabled = false
             // Senders can embed tracking beacons — not just <img>, but <iframe>, <video>/<audio>
             // src or poster, <link rel="stylesheet">, and remote web fonts all fetch over the
             // network too, and blockNetworkImage only covers image-typed resources. Blocking all
@@ -150,6 +159,35 @@ class EmailDetailActivity : AppCompatActivity() {
             // IP and "message opened" status before they've decided whether to trust the sender.
             // btnShowImages lets them opt in per-message instead.
             blockNetworkLoads = true
+        }
+        // Without a WebViewClient, WebView handles navigation itself: tapping a link in an email —
+        // or a <meta http-equiv="refresh"> the sender planted — replaced this view's contents with
+        // the target page, in-app, with no address bar for the user to check. That is a ready-made
+        // phishing surface inside a trusted mail client. Hand every navigation to the system
+        // instead, so it opens in a real browser with a visible URL.
+        webView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                // Only act on a real tap. Sender HTML navigates on its own — an <iframe src> or a
+                // <meta http-equiv="refresh"> fires this callback with hasGesture() false, needing
+                // no JavaScript and no user interaction beyond opening the message. blockNetworkLoads
+                // does not help: it gates resource loads, while this is a navigation throttle that
+                // runs first, so a non-http scheme sails straight past it. Un-gestured, that gave a
+                // remote sender one free implicit ACTION_VIEW per opened mail to any scheme on the
+                // device — including this app's own kypost://native-pair, which conjures the pairing
+                // dialog on top of the attacker's own pretext.
+                if (!request.hasGesture()) return true
+                val scheme = request.url.scheme?.lowercase()
+                if (scheme !in SAFE_LINK_SCHEMES) {
+                    Toast.makeText(
+                        this@EmailDetailActivity,
+                        R.string.email_link_blocked_scheme,
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    return true
+                }
+                openExternally(request.url)
+                return true
+            }
         }
         btnShowImages.setOnClickListener {
             webView.settings.blockNetworkLoads = false
@@ -162,14 +200,23 @@ class EmailDetailActivity : AppCompatActivity() {
         ioExecutor.execute {
             val outcome = mailRepository.fetchBody(emailId, emailFolder)
             val content = (outcome as? MailOutcome.Success)?.value
-            val pgpState = pgpMessageStateOf(pgpEncrypted, pgpDecryptError, content?.html)
+            // A failed fetch means "not cached", which is NOT the same as "the server sent no
+            // body" — see MailRepository.fetchBody.
+            val bodyUnavailable = outcome !is MailOutcome.Success
+            val pgpState = pgpMessageStateOf(pgpEncrypted, pgpDecryptError, content?.html, bodyUnavailable)
             // A client-protected message has no body to fall back to, and emailPreview is the
             // placeholder subject line — rendering it would look like the message content.
             val bodyToRender = when (pgpState) {
-                PgpMessageState.CLIENT_PROTECTED, PgpMessageState.DECRYPT_FAILED -> ""
+                PgpMessageState.CLIENT_PROTECTED,
+                PgpMessageState.DECRYPT_FAILED,
+                PgpMessageState.BODY_UNAVAILABLE -> ""
                 else -> content?.html?.takeIf { it.isNotBlank() } ?: TextUtils.htmlEncode(emailPreview)
             }
-            val hasRemoteImages = REMOTE_IMAGE_PATTERN.containsMatchIn(bodyToRender)
+            // Same length cap as stripImportant, for the same reason: this is a cosmetic heuristic,
+            // and on a multi-megabyte sender-chosen body a bounded "assume none" beats an unbounded
+            // scan. Belt-and-braces with the bounded tag interior in the pattern itself.
+            val hasRemoteImages = bodyToRender.length <= STRIP_IMPORTANT_MAX_LENGTH &&
+                REMOTE_IMAGE_PATTERN.containsMatchIn(bodyToRender)
             val palette = getStoredThemePalette(this)
             val monoFontFace = ibmPlexMonoFontFaceCss(this)
 
@@ -240,6 +287,8 @@ class EmailDetailActivity : AppCompatActivity() {
                     }
                 }
             }
+            PgpMessageState.BODY_UNAVAILABLE ->
+                pgpText.text = getString(R.string.email_pgp_body_unavailable)
             PgpMessageState.NONE -> Unit
         }
     }
@@ -311,12 +360,22 @@ class EmailDetailActivity : AppCompatActivity() {
     /** Hostile Location Protection path: hands the bytes to [com.urlxl.mail.security.EphemeralAttachmentBytes]
      *  (never written to disk) and launches a viewer via ACTION_VIEW — nothing is saved anywhere. */
     private fun viewAttachmentEphemerally(downloaded: com.urlxl.mail.mail.DownloadedAttachment) {
-        val uri = com.urlxl.mail.security.EphemeralAttachmentBytes.register(downloaded.bytes, downloaded.mimeType)
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, downloaded.mimeType)
+        // Normalise the MIME type before it selects a handler. It comes from the sender's
+        // Content-Type, which the relay passes through unfiltered, and an implicit intent with
+        // exactly one matching activity is launched directly with no chooser — so an obscure type
+        // like application/vnd.kypost-x let a co-installed app guarantee itself sole-resolver status
+        // and silently receive the decrypted bytes, on the one path whose purpose is that the
+        // plaintext never leaves the app's control.
+        val mimeType = downloaded.mimeType.takeIf { it in VIEWABLE_MIME_TYPES } ?: "application/octet-stream"
+        val uri = com.urlxl.mail.security.EphemeralAttachmentBytes.register(downloaded.bytes, mimeType)
+        val view = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, mimeType)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        runCatching { startActivity(intent) }.onFailure {
+        // Always show the chooser, so no app can become a silent default for the attachment type.
+        val chooser = Intent.createChooser(view, getString(R.string.attachment_open_with))
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        runCatching { startActivity(chooser) }.onFailure {
             Toast.makeText(this, getString(R.string.attachment_save_failed, downloaded.name), Toast.LENGTH_LONG).show()
         }
     }
@@ -377,6 +436,21 @@ class EmailDetailActivity : AppCompatActivity() {
         startActivity(intent)
     }
 
+    /** Opens a link the user tapped inside an email in the system browser. Failure is silent-ish
+     *  (a toast) rather than a crash: an email can name any scheme, including ones no app handles.
+     *
+     *  CATEGORY_BROWSABLE narrows resolution to components that accept being driven by untrusted
+     *  content, which is what K-9 does on the same path — without it, an email link can reach an
+     *  installed app's non-browsable exported activities. Callers must already have checked the
+     *  scheme and the user gesture; see [SAFE_LINK_SCHEMES]. */
+    private fun openExternally(uri: android.net.Uri) {
+        val intent = Intent(Intent.ACTION_VIEW, uri)
+            .addCategory(Intent.CATEGORY_BROWSABLE)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { startActivity(intent) }
+            .onFailure { Toast.makeText(this, R.string.email_link_no_handler, Toast.LENGTH_SHORT).show() }
+    }
+
     private fun quoteForReply(sender: String, preview: String): String {
         return "\n\n$sender wrote:\n$preview"
     }
@@ -397,12 +471,34 @@ class EmailDetailActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_REMOVED_EMAIL_ID = "removed_email_id"
 
+        /** Schemes an email link may open. `intent:`, `file:`, `content:` and any third-party
+         *  app's custom scheme are refused: routing untrusted sender content into an arbitrary
+         *  installed app's deep link is not something a mail body gets to do. */
+        private val SAFE_LINK_SCHEMES = setOf("http", "https", "mailto", "tel")
+
+        /** MIME types the ephemeral-view path will hand to an external viewer as-declared. Anything
+         *  else is downgraded to `application/octet-stream`, which every file handler competes for —
+         *  so a sender cannot pick a type only their own app claims. */
+        private val VIEWABLE_MIME_TYPES = setOf(
+            "application/pdf",
+            "image/jpeg", "image/png", "image/gif", "image/webp", "image/heic",
+            "text/plain",
+            "audio/mpeg", "audio/mp4", "audio/ogg",
+            "video/mp4", "video/webm",
+        )
+
         /** Cheap heuristic for "does this body reference remote content" (images, iframes, media,
          *  stylesheets) — only used to decide whether the "Show images" bar is worth showing, not
          *  a security control itself (all network loads are blocked regardless via
-         *  [android.webkit.WebSettings.setBlockNetworkLoads]). */
+         *  [android.webkit.WebSettings.setBlockNetworkLoads]).
+         *
+         *  The tag interior is bounded rather than `[^>]*`. Unbounded, this was quadratic on
+         *  sender-chosen input and — unlike [stripImportant] — had no length cap and ran on every
+         *  message on every theme: `[^>]*` scanned to end-of-body from each of the many `<img`
+         *  positions, then backtracked looking for the attribute. Measured on-device at ~21.8s for
+         *  a 128KB body of repeated `<img`, scaling 4x per doubling. 2KB is far past any real tag. */
         private val REMOTE_IMAGE_PATTERN = Regex(
-            """<(?:img|link|iframe|video|audio|source|embed|object)\b[^>]*\s(?:src|href|poster|data)\s*=\s*["']https?://""",
+            """<(?:img|link|iframe|video|audio|source|embed|object)\b[^>]{0,2048}?\s(?:src|href|poster|data)\s*=\s*["']https?://""",
             RegexOption.IGNORE_CASE,
         )
     }
@@ -495,7 +591,16 @@ internal fun buildEmailBodyHtml(bodyToRender: String, palette: ThemePalette, mon
 // A CSS comment produces zero tokens during tokenization (CSS Syntax §4) and is fully
 // transparent between any two other tokens — including between `!` and `important` — so it
 // must be removed everywhere before the `!important` check below, not just matched around.
-private val CSS_COMMENT = Regex("""/\*.*?\*/""", RegexOption.DOT_MATCHES_ALL)
+//
+// Written in the standard non-backtracking form rather than a lazy `.*?` with DOT_MATCHES_ALL:
+// the lazy version degrades to O(n^2) over the whole body when the closing `*/` is missing, and
+// the input here is chosen by the sender.
+private val CSS_COMMENT = Regex("""/\*[^*]*\*+(?:[^/*][^*]*\*+)*/""")
+
+/** Bodies past this size skip [stripImportant] entirely. It is a rendering nicety for dark mode,
+ *  not a security control, so on a multi-megabyte email it is not worth the scan — and refusing to
+ *  scan is a bounded, predictable outcome where an unbounded regex pass is not. */
+private const val STRIP_IMPORTANT_MAX_LENGTH = 512 * 1024
 
 // A CSS escape sequence is a backslash followed by 1-6 hex digits, optionally followed by one
 // whitespace terminator (CSS Syntax §4.3.7), and decodes to a single Unicode code point — so a
@@ -506,7 +611,15 @@ private val CSS_ESCAPE = Regex("""\\([0-9a-fA-F]{1,6})\s?""")
 // `!` followed by up to 24 characters of letters, whitespace, or CSS escapes — a generous
 // window for "important" plus incidental whitespace/escapes, bounded so we don't scan arbitrarily
 // far into unrelated text after an unrelated `!`.
-private val BANG_CANDIDATE = Regex("""\s*!((?:\\[0-9a-fA-F]{1,6}\s?|[A-Za-z\s]){1,24})""")
+//
+// The leading whitespace run is BOUNDED, not `\s*`. Unbounded it gave the pattern no literal first
+// character, so at every offset in the body the engine consumed whitespace to end-of-input and then
+// backtracked looking for `!` — quadratic, and reachable from a single email with no `!` in it at
+// all. Measured on a 512KB body of nothing but spaces: ~3.9 minutes on a desktop JVM, ~20-35
+// minutes on-device. A bounded run keeps the whitespace *consumed* (so `color:red !important`
+// collapses to `color:red`, as the tests expect) while capping the work per position at 8 tries.
+// Real CSS has one space here; 8 is already generous.
+private val BANG_CANDIDATE = Regex("""\s{0,8}!((?:\\[0-9a-fA-F]{1,6}\s?|[A-Za-z\s]){1,24})""")
 
 /** Strips every `!important` from [html] — see [buildEmailBodyHtml]'s doc for why this is what
  *  actually closes the override gap for `!important`-defended email styling. Tolerant of the two
@@ -521,6 +634,7 @@ private val BANG_CANDIDATE = Regex("""\s*!((?:\\[0-9a-fA-F]{1,6}\s?|[A-Za-z\s]){
  *  `<style>` block) — over-matching a stray `!important` inside, say, an HTML comment or
  *  unrendered text is harmless, since removing it doesn't change what's displayed. */
 internal fun stripImportant(html: String): String {
+    if (html.length > STRIP_IMPORTANT_MAX_LENGTH) return html
     val withoutComments = html.replace(CSS_COMMENT, "")
     return BANG_CANDIDATE.replace(withoutComments) { match ->
         val decoded = CSS_ESCAPE.replace(match.groupValues[1]) { escape ->

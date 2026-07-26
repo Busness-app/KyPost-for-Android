@@ -32,4 +32,8 @@ object ContactsRuntime {
     private val holder = SingletonGraph(::ContactsGraph)
 
     fun graph(context: Context): ContactsGraph = holder.get(context)
+
+    /** See [com.urlxl.mail.SingletonGraph.invalidate] — used by
+     *  [com.urlxl.mail.security.AppRestart]. */
+    fun invalidate() = holder.invalidate()
 }

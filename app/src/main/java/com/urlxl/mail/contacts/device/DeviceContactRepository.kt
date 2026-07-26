@@ -27,10 +27,20 @@ class DeviceContactRepository(
 ) {
     private val contentResolver = context.contentResolver
     private val groupLinker = DeviceGroupLinker(context, db)
+    private val hostileLocationSettings = com.urlxl.mail.security.HostileLocationSettings(context)
+
+    /** Re-read rather than captured, so a long-running sync notices protection being switched on
+     *  mid-flight. The coordinator and the worker both gate on entry; this is the in-loop check. */
+    private fun syncPermitted(): Boolean = !hostileLocationSettings.isEnabled()
 
     // Shares syncRepository.syncMutex with ContactSyncRepository.sync() — see that mutex's KDoc
     // for why: both sides read-modify-write the same contacts table from independent scopes.
     suspend fun syncAll() = syncRepository.syncMutex.withLock {
+        try {
+            pruneForeignLinks()
+        } catch (e: Exception) {
+            android.util.Log.e("DeviceContactSync", "Error pruning foreign links", e)
+        }
         try {
             groupSyncRepository.sync()
             reconcileGroupRenames()
@@ -76,6 +86,13 @@ class DeviceContactRepository(
             ContactsContract.RawContacts._ID,
             ContactsContract.RawContacts.CONTACT_ID,
             ContactsContract.RawContacts.DELETED,
+            // DIRTY has to be read, not assumed. Treating every linked row as dirty meant
+            // clearDirtyFlag issued a provider UPDATE per contact on every cycle; SQLite reports a
+            // matched row as updated even when the value is unchanged, so CP2 marked the
+            // transaction dirty and called notifyChange, which woke this app's own
+            // DeviceContactObserver and re-triggered the sync — an ~8s loop for as long as the
+            // contacts list stayed open, each iteration also making a credentialed network call.
+            ContactsContract.RawContacts.DIRTY,
         )
 
         val selection = "${ContactsContract.RawContacts.ACCOUNT_TYPE} = ?"
@@ -93,13 +110,14 @@ class DeviceContactRepository(
             while (cursor.moveToNext()) {
                 val rawContactId = cursor.getLong(cursor.getColumnIndexOrThrow(ContactsContract.RawContacts._ID))
                 val deleted = cursor.getInt(cursor.getColumnIndexOrThrow(ContactsContract.RawContacts.DELETED)) != 0
+                val dirty = cursor.getInt(cursor.getColumnIndexOrThrow(ContactsContract.RawContacts.DIRTY)) != 0
 
                 val link = db.deviceContactLinkDao().getByRawContactId(rawContactId)
 
                 if (deleted && link != null) {
                     syncRepository.queueDelete(link.uid, 0)
                     db.deviceContactLinkDao().deleteByUid(link.uid)
-                } else if (!deleted && link != null) {
+                } else if (!deleted && dirty && link != null) {
                     dirtyRawContacts.add(rawContactId)
                 }
             }
@@ -329,13 +347,29 @@ class DeviceContactRepository(
             )
 
             if (matchedUid != null) {
-                db.deviceContactLinkDao().upsert(
-                    com.urlxl.mail.data.DeviceContactLinkEntity(
-                        uid = matchedUid,
-                        rawContactId = rawContactId,
-                        deviceUpdatedAtEpochMs = candidate.lastUpdatedEpochMs,
-                    ),
-                )
+                // Deliberately do NOT link a uid to a raw contact owned by another account.
+                // This query only ever returns foreign rows, and a match here is a single shared
+                // email or phone with no name corroboration — but the link makes every later
+                // updateRawContactForDto and deleteDeviceRawContact for that uid target the other
+                // account's row, as a sync adapter. That bypasses the IS_READ_ONLY guard
+                // ContactsProvider2 would otherwise apply, rewrites the row's structured name
+                // (an unstructured-only DISPLAY_NAME update makes CP2 re-split and overwrite
+                // GIVEN/FAMILY/etc), and hard-deletes it with no tombstone, so the owning
+                // account's sync adapter never sees the change and cannot repair it.
+                //
+                // The match still does its job: we skip re-importing this contact. Room already
+                // has it, so pushRoomChangesToDevice creates a raw contact under OUR account and
+                // CP2 aggregates the two into one contact card — which is how every other sync
+                // adapter behaves, and keeps our writes confined to rows we own.
+                if (candidate.accountType == DeviceContactAccount.ACCOUNT_TYPE) {
+                    db.deviceContactLinkDao().upsert(
+                        com.urlxl.mail.data.DeviceContactLinkEntity(
+                            uid = matchedUid,
+                            rawContactId = rawContactId,
+                            deviceUpdatedAtEpochMs = candidate.lastUpdatedEpochMs,
+                        ),
+                    )
+                }
             } else if (candidateEmails.isNotEmpty() || candidatePhones.isNotEmpty()) {
                 val alreadyImported = existing.any { existingContact ->
                     existingContact.fn.equals(candidate.fn, ignoreCase = true) &&
@@ -356,6 +390,11 @@ class DeviceContactRepository(
         val currentRoomContacts = db.contactDao().observeAll().first()
 
         for (entity in currentRoomContacts) {
+            // Policy can change mid-loop — the user can enable Hostile Location Protection while
+            // this is running, and the purge that accompanies it does not cancel us. Publishing
+            // after that point writes exactly the data the feature exists to withhold.
+            if (!syncPermitted()) return@withContext
+
             val dto = entity.toDto()
             val existingLink = db.deviceContactLinkDao().getByUid(dto.uid)
 
@@ -565,6 +604,15 @@ class DeviceContactRepository(
     ) = withContext(Dispatchers.IO) {
         val currentSnapshot = readRawContactSnapshot(link.rawContactId) ?: return@withContext
 
+        // Defence in depth against a stale link row written by an older build: never write to a
+        // raw contact another account owns. The write below goes out as a sync adapter, which
+        // means CP2 skips the IS_READ_ONLY guard and leaves `dirty` unset, so the owning adapter
+        // would neither notice nor repair the change.
+        if (currentSnapshot.accountType != DeviceContactAccount.ACCOUNT_TYPE) {
+            db.deviceContactLinkDao().deleteByUid(dto.uid)
+            return@withContext
+        }
+
         val mergedNameDisplay = DeviceContactFieldMerge.mergeStringField(
             roomValue = dto.fn,
             deviceValue = currentSnapshot.fn,
@@ -649,6 +697,15 @@ class DeviceContactRepository(
     suspend fun deleteDeviceRawContact(uid: String) = withContext(Dispatchers.IO) {
         val link = db.deviceContactLinkDao().getByUid(uid) ?: return@withContext
 
+        // Same guard as updateRawContactForDto, and it matters more here: with
+        // CALLER_IS_SYNCADAPTER, ContactsProvider2 takes deleteRawContactsImmediately rather than
+        // markRawContactAsDeleted, so this is a hard delete with no tombstone. Against another
+        // account's row that is unrecoverable local data loss from a "delete my KyPost contact" tap.
+        if (!ownsRawContact(link.rawContactId)) {
+            db.deviceContactLinkDao().deleteByUid(uid)
+            return@withContext
+        }
+
         val uri = ContactsContract.RawContacts.CONTENT_URI.buildUpon()
             .appendQueryParameter(ContactsContract.CALLER_IS_SYNCADAPTER, "true")
             .build()
@@ -665,6 +722,74 @@ class DeviceContactRepository(
         }
 
         db.deviceContactLinkDao().deleteByUid(uid)
+    }
+
+    /**
+     * Removes every raw contact this app owns from the OS contacts provider, plus the local link
+     * rows that map them.
+     *
+     * Needed because those rows are not in this app's sandbox: enabling Hostile Location
+     * Protection switches the local database to in-memory but does nothing about contacts already
+     * published to the system provider, and [com.urlxl.mail.security.SecurityWipe] has the same
+     * problem in reverse. `CALLER_IS_SYNCADAPTER` makes the delete immediate rather than leaving
+     * tombstoned rows that still hold the contact data.
+     */
+    suspend fun deleteAllSyncedDeviceContacts() = syncRepository.syncMutex.withLock {
+        withContext(Dispatchers.IO) {
+            deleteAllSyncedDeviceContactsLocked()
+        }
+    }
+
+    /** Takes [ContactSyncRepository.syncMutex], which [syncAll] holds for its whole body. Without
+     *  it the purge could interleave with `pushRoomChangesToDevice`, so rows written after the
+     *  delete survived with no link entry — invisible to every later cleanup — after the user
+     *  enabled the feature whose entire purpose is getting that data off the device. */
+    private suspend fun deleteAllSyncedDeviceContactsLocked() = withContext(Dispatchers.IO) {
+        val uri = ContactsContract.RawContacts.CONTENT_URI.buildUpon()
+            .appendQueryParameter(ContactsContract.CALLER_IS_SYNCADAPTER, "true")
+            .appendQueryParameter(ContactsContract.RawContacts.ACCOUNT_NAME, DeviceContactAccount.ACCOUNT_NAME)
+            .appendQueryParameter(ContactsContract.RawContacts.ACCOUNT_TYPE, DeviceContactAccount.ACCOUNT_TYPE)
+            .build()
+        runCatching {
+            contentResolver.delete(
+                uri,
+                "${ContactsContract.RawContacts.ACCOUNT_TYPE} = ?",
+                arrayOf(DeviceContactAccount.ACCOUNT_TYPE),
+            )
+        }.onFailure { android.util.Log.e("DeviceContactSync", "Failed to delete synced raw contacts", it) }
+
+        runCatching { db.deviceContactLinkDao().deleteAll() }
+            .onFailure { android.util.Log.e("DeviceContactSync", "Failed to clear device contact links", it) }
+    }
+
+    /** True only when [rawContactId] belongs to this app's sync account. Every provider write and
+     *  delete this class performs carries `CALLER_IS_SYNCADAPTER`, which removes the read-only
+     *  guard and turns deletes into immediate hard deletes, so the target's ownership has to be
+     *  checked rather than assumed from a link row. */
+    private suspend fun ownsRawContact(rawContactId: Long): Boolean = withContext(Dispatchers.IO) {
+        contentResolver.query(
+            ContactsContract.RawContacts.CONTENT_URI,
+            arrayOf(ContactsContract.RawContacts.ACCOUNT_TYPE),
+            "${ContactsContract.RawContacts._ID} = ?",
+            arrayOf(rawContactId.toString()),
+            null,
+        )?.use { cursor ->
+            cursor.moveToFirst() &&
+                cursor.getString(0) == DeviceContactAccount.ACCOUNT_TYPE
+        } ?: false
+    }
+
+    /** Sweeps link rows that point at raw contacts owned by another account. Older builds created
+     *  these whenever a single email or phone matched a foreign contact, so installs upgrading to
+     *  this build can already carry them; without the sweep the very first sync would rewrite the
+     *  other account's rows before anything else got a chance to stop it. */
+    private suspend fun pruneForeignLinks() = withContext(Dispatchers.IO) {
+        val stale = db.deviceContactLinkDao().getAll()
+            .filter { !ownsRawContact(it.rawContactId) }
+            .map { it.rawContactId }
+        if (stale.isNotEmpty()) {
+            db.deviceContactLinkDao().deleteByRawContactIds(stale)
+        }
     }
 
     private suspend fun queryContactLastUpdated(contactId: Long): Long = withContext(Dispatchers.IO) {

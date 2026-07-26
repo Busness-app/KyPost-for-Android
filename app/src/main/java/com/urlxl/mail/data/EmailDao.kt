@@ -23,6 +23,11 @@ interface EmailDao {
     @Query("UPDATE emails SET folder = :folder WHERE messageId = :id")
     fun updateFolder(id: String, folder: String)
 
+    /** Used when the pairing changes: cached bodies belong to the account that delivered them, and
+     *  nothing else in this table is subscriber-scoped. */
+    @Query("DELETE FROM emails")
+    fun clearAll()
+
     @Query("DELETE FROM emails WHERE messageId = :id")
     fun deleteById(id: String)
 

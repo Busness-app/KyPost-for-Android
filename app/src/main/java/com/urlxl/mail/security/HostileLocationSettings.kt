@@ -17,6 +17,10 @@ class HostileLocationSettings(context: Context) {
     fun isEnabled(): Boolean = prefs.getBoolean(KEY_ENABLED, false)
 
     fun setEnabled(enabled: Boolean) {
-        prefs.edit().putBoolean(KEY_ENABLED, enabled).apply()
+        // commit(), not apply(), like every other security-relevant write in this package: this
+        // flag decides whether Room is disk-backed, and it is written *after* the on-disk database
+        // has already been deleted. A process death before an async flush would have reverted
+        // protection to off while the user believed it was on.
+        prefs.edit().putBoolean(KEY_ENABLED, enabled).commit()
     }
 }

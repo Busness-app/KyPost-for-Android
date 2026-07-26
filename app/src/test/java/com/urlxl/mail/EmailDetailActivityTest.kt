@@ -162,6 +162,59 @@ class EmailDetailActivityTest {
         assertEquals(input, stripImportant(input))
     }
 
+    @Test
+    fun stripImportant_removesCommentSplitImportant() {
+        assertEquals("color:#000000", stripImportant("color:#000000 !/*x*/important"))
+    }
+
+    @Test
+    fun stripImportant_terminatesQuicklyOnAnUnclosedComment() {
+        // The sender picks this input. With the old lazy `/\*.*?\*/` + DOT_MATCHES_ALL pattern an
+        // unterminated comment made the scan quadratic over the whole body; assert it stays fast
+        // rather than merely correct.
+        val hostile = "/*" + "a".repeat(200_000)
+        val elapsed = kotlin.system.measureTimeMillis { stripImportant(hostile) }
+        assertTrue("stripImportant took ${elapsed}ms on an unclosed comment", elapsed < 2_000)
+    }
+
+    /**
+     * The unclosed-comment case above passes in ~30ms even on the pre-fix pattern, so it never
+     * exercised the `!`-candidate backtracking it appeared to guard. Whitespace is the input that
+     * actually blew up: an unbounded leading `\s*` gave the pattern no literal first character, so
+     * the engine consumed to end-of-input from every offset. Measured before the fix: ~23s at 128KB
+     * and ~4 minutes at the 512KB cap, from a body containing no `!` at all.
+     */
+    @Test
+    fun stripImportant_terminatesQuicklyOnWhitespaceHeavyBody() {
+        val hostile = " ".repeat(200_000)
+        val elapsed = kotlin.system.measureTimeMillis { stripImportant(hostile) }
+        assertTrue("stripImportant took ${elapsed}ms on an all-whitespace body", elapsed < 2_000)
+    }
+
+    /** Same shape, but with a trailing `!` so the candidate branch is entered rather than skipped. */
+    @Test
+    fun stripImportant_terminatesQuicklyOnWhitespaceFollowedByBang() {
+        val hostile = " ".repeat(200_000) + "!"
+        val elapsed = kotlin.system.measureTimeMillis { stripImportant(hostile) }
+        assertTrue("stripImportant took ${elapsed}ms on whitespace + bang", elapsed < 2_000)
+    }
+
+    /** The bounded whitespace run must still consume the space before `!important`, which is what
+     *  keeps the surrounding declaration clean. */
+    @Test
+    fun stripImportant_stillConsumesLeadingWhitespace() {
+        assertEquals("color:#000000", stripImportant("color:#000000 !important"))
+        assertEquals("color:#000000", stripImportant("color:#000000    !important"))
+    }
+
+    @Test
+    fun stripImportant_skipsBodiesOverTheSizeCap() {
+        // Past the cap it is a no-op rather than an unbounded regex pass: this is a dark-mode
+        // rendering nicety, not a security control.
+        val huge = "color:#000 !important".padEnd(600_000, 'x')
+        assertEquals(huge, stripImportant(huge))
+    }
+
     // isDarkPalette() itself (the bg-luminance → dark/light classification) calls
     // android.graphics.Color.parseColor, which isn't available in a plain JVM unit test (no
     // Robolectric in this module — see every other test file's Android-framework-free style) —

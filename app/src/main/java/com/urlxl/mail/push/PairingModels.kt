@@ -16,38 +16,56 @@ data class PairingData(
     val pairedAtEpochMs: Long,
 )
 
+/**
+ * True when [candidate] and [reference] are the same https origin (scheme + host + effective port).
+ *
+ * Every URL this app will send pairing credentials to has to pass this. The registration endpoint
+ * mints and returns the device secret, so a QR that names one server in the `srv` parameter — the
+ * one the confirmation dialog shows the user — and a different one in `reg` would POST the
+ * subscriber ID, pairing token and FCM token to an attacker while displaying a trusted hostname.
+ * The pull endpoint already had this check; the endpoint that carries the credential did not.
+ */
+internal fun sameOrigin(candidate: String, reference: String): Boolean {
+    val a = runCatching { URI(candidate) }.getOrNull() ?: return false
+    val b = runCatching { URI(reference) }.getOrNull() ?: return false
+    if (a.host.isNullOrBlank() || b.host.isNullOrBlank()) return false
+    return a.scheme.equals(b.scheme, ignoreCase = true) &&
+        a.host.equals(b.host, ignoreCase = true) &&
+        effectivePort(a) == effectivePort(b)
+}
+
+private fun effectivePort(uri: URI): Int =
+    if (uri.port != -1) uri.port else if (uri.scheme.equals("https", ignoreCase = true)) 443 else 80
+
 object NativeRegistrationEndpointResolver {
     sealed class Resolution {
         data class Resolved(val registrationUrl: String) : Resolution()
         object MissingServerUrl : Resolution()
     }
 
+    /**
+     * A server-supplied [qrReg] wins only if it is the same origin as [qrServerUrl]; anything else
+     * falls back to the endpoint derived from the paired server. Mirrors [resolvePullEndpoint], and
+     * is the second gate behind [NativePairingDeepLinkParser], which rejects a cross-origin `reg`
+     * outright — this one also covers a pairing persisted by an older build.
+     */
     fun resolve(qrReg: String?, qrServerUrl: String?): Resolution {
-        val reg = qrReg?.takeIf { it.isNotBlank() }
-        if (reg != null) return Resolution.Resolved(reg)
-
         val srv = qrServerUrl?.takeIf { it.isNotBlank() }?.trimEnd('/')
-            ?: return Resolution.MissingServerUrl
+        val reg = qrReg?.takeIf { it.isNotBlank() }
 
+        if (srv == null) {
+            // With no server URL there is nothing to validate a reg URL against, so it cannot be
+            // trusted either — this is an unusable pairing, not a reg-only one.
+            return Resolution.MissingServerUrl
+        }
+        if (reg != null && sameOrigin(reg, srv)) return Resolution.Resolved(reg)
         return Resolution.Resolved("$srv/api/notifications/native/register")
     }
 }
 
-data class PairingValidationResult(
-    val isValid: Boolean,
-    val message: String? = null,
-)
-
 sealed class PairingParseResult {
     data class Success(val pairing: PairingData) : PairingParseResult()
     data class Error(val reason: String) : PairingParseResult()
-}
-
-object PairingValidator {
-    fun validate(sub: String): PairingValidationResult {
-        if (sub.isBlank()) return PairingValidationResult(false, "Missing sub parameter")
-        return PairingValidationResult(true)
-    }
 }
 
 object NativePairingDeepLinkParser {
@@ -68,16 +86,9 @@ object NativePairingDeepLinkParser {
         val reg = query["reg"].orEmpty().trim().takeIf { it.isNotBlank() }
         val pt = query["pt"].orEmpty().trim()
 
-        val validation = PairingValidator.validate(sub = sub)
-        if (!validation.isValid) {
-            return PairingParseResult.Error(validation.message ?: "Invalid pairing parameters")
-        }
-        if (pt.isBlank()) {
-            return PairingParseResult.Error("Missing pairing token")
-        }
-        if (srv.isBlank()) {
-            return PairingParseResult.Error("Missing server URL")
-        }
+        if (sub.isBlank()) return PairingParseResult.Error("Missing sub parameter")
+        if (pt.isBlank()) return PairingParseResult.Error("Missing pairing token")
+        if (srv.isBlank()) return PairingParseResult.Error("Missing server URL")
         // The server is arbitrary (self-hosted relays, no fixed domain to allowlist), so https-only
         // is the one property we can enforce — it stops a plain-http deep link/QR from pointing the
         // device's pairing token and subscriber credentials at an unencrypted, spoofable endpoint.
@@ -86,6 +97,13 @@ object NativePairingDeepLinkParser {
         }
         if (reg != null && !isHttpsUrl(reg)) {
             return PairingParseResult.Error("Registration URL must use https")
+        }
+        // https alone is not enough: https://evil.example is a perfectly valid https URL. The
+        // registration URL is where the device secret is minted, and the confirmation dialog shows
+        // the user srv — so reg has to be the same server, or the dialog is lying about where the
+        // credentials are going. See [sameOrigin].
+        if (reg != null && !sameOrigin(reg, srv)) {
+            return PairingParseResult.Error("Registration URL must be on the same server as the server URL")
         }
 
         return PairingParseResult.Success(

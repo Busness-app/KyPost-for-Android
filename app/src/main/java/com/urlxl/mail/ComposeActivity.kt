@@ -13,7 +13,6 @@ import android.widget.LinearLayout
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
-import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
@@ -32,8 +31,9 @@ import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import java.util.concurrent.Executors
+import com.urlxl.mail.security.LockedActivity
 
-class ComposeActivity : AppCompatActivity() {
+class ComposeActivity : LockedActivity() {
 
     private lateinit var toInput: RecipientInputView
     private lateinit var ccInput: RecipientInputView
@@ -62,7 +62,6 @@ class ComposeActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.setFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE, android.view.WindowManager.LayoutParams.FLAG_SECURE)
         setContentView(R.layout.activity_compose)
         applyThemeToActivity(this)
 

@@ -9,7 +9,6 @@ import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
-import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.chip.Chip
 import com.urlxl.mail.R
@@ -23,12 +22,13 @@ import com.urlxl.mail.contacts.device.DeviceContactsRuntime
 import com.urlxl.mail.data.DataRuntime
 import com.urlxl.mail.pgp.hasPgpIdentity
 import kotlinx.coroutines.launch
+import com.urlxl.mail.security.LockedActivity
 
 /** Create/edit form, organized into collapsible sections (Name, Work, Contact, Addresses, Online,
  *  Personal, Notes, Other). Only fn is required per Mobile_Contact_Sync.md's field table; everything
  *  else is optional. Covers every contact field except photoRef/groupIDs (no UI yet) and isSelf/
  *  pgpKey (read-only badges — set only via the web app / PGP QR exchange respectively). */
-class ContactEditActivity : AppCompatActivity() {
+class ContactEditActivity : LockedActivity() {
 
     private lateinit var avatarView: TextView
     private lateinit var fnField: EditText

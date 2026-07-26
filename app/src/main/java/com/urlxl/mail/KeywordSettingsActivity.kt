@@ -5,9 +5,9 @@ import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import androidx.appcompat.app.AppCompatActivity
+import com.urlxl.mail.security.LockedActivity
 
-class KeywordSettingsActivity : AppCompatActivity() {
+class KeywordSettingsActivity : LockedActivity() {
 
     private lateinit var keywordSettings: KeywordSettings
 

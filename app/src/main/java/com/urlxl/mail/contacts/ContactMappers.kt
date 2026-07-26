@@ -15,12 +15,24 @@ private val mapperJson = Json { ignoreUnknownKeys = true }
  * applied to sync-derived keys: the fingerprint is (re)computed locally from the key bytes, and
  * a previously-verified fingerprint changing out from under the contact sets
  * [ContactEntity.pgpKeyNeedsReverification] instead of silently updating the trust badge.
+ *
+ * [verifiedInPerson] is set only by the QR key-exchange flow, where the user has just compared
+ * this exact fingerprint out-of-band against the other person's device. That is the strongest
+ * trust state the app can reach, so it must CLEAR the badge rather than raise it. Raising it
+ * there — which is what happened when a contact legitimately rotated their key and the user
+ * re-verified in person — trained users to dismiss the app's only TOFU alarm, and the badge is
+ * plain text with no provenance, so a dismissed real key swap looks identical.
  */
-fun ContactDto.toEntity(previous: ContactEntity? = null): ContactEntity {
+fun ContactDto.toEntity(
+    previous: ContactEntity? = null,
+    verifiedInPerson: Boolean = false,
+): ContactEntity {
     val newFingerprint = pgpKey?.let { PgpFingerprint.compute(it) }
     val previousFingerprint = previous?.pgpKeyFingerprint
-    val keyRotated = previousFingerprint != null && newFingerprint != null && previousFingerprint != newFingerprint
-    val stillNeedsReverification = previous?.pgpKeyNeedsReverification == true && newFingerprint == previousFingerprint
+    val keyRotated = !verifiedInPerson &&
+        previousFingerprint != null && newFingerprint != null && previousFingerprint != newFingerprint
+    val stillNeedsReverification = !verifiedInPerson &&
+        previous?.pgpKeyNeedsReverification == true && newFingerprint == previousFingerprint
 
     return ContactEntity(
         uid = uid,

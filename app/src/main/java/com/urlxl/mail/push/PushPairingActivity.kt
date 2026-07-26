@@ -13,7 +13,6 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
-import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
@@ -37,8 +36,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import java.text.DateFormat
 import java.util.Date
+import com.urlxl.mail.security.LockedActivity
 
-class PushPairingActivity : AppCompatActivity() {
+class PushPairingActivity : LockedActivity() {
     private val viewModel: PushHomeViewModel by viewModels()
 
     private lateinit var historyList: ListView

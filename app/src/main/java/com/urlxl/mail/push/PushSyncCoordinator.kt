@@ -96,6 +96,14 @@ class PushSyncCoordinator(
         when (result) {
             is NativeRegistrationResult.Success -> {
                 repository.savePairing(pairing.copy(deviceId = result.deviceId ?: pairing.deviceId, deviceSecret = result.deviceSecret))
+                // Still TOFU — the pin is captured on the pairing call, never *replaced* here, so a
+                // MITM appearing after pairing is still rejected rather than re-trusted. But an
+                // install carried over from a build that predated pinning has no pin at all and no
+                // way to ever acquire one, which left it silently running the unpinned fallback
+                // client forever. Capture on first success when, and only when, none is stored.
+                if (repository.currentTlsPin() == null) {
+                    result.tlsPin?.let { repository.saveTlsPin(it) }
+                }
                 persistDelivery(pairing, result)
                 repository.updateTransport(result.transport)
                 // Gate on the transport we requested, not result.transport: older servers may

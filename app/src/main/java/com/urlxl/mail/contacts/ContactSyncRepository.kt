@@ -116,9 +116,11 @@ class ContactSyncRepository(
         return localUid
     }
 
-    suspend fun queueUpdate(contact: ContactDto) {
+    /** [verifiedInPerson] is passed only by the PGP QR flow, where the user has just compared this
+     *  fingerprint out-of-band — see [com.urlxl.mail.contacts.toEntity]. */
+    suspend fun queueUpdate(contact: ContactDto, verifiedInPerson: Boolean = false) {
         val previous = db.contactDao().getByUid(contact.uid)
-        db.contactDao().upsertAll(listOf(contact.toEntity(previous)))
+        db.contactDao().upsertAll(listOf(contact.toEntity(previous, verifiedInPerson)))
         db.pendingContactChangeDao().enqueue(
             PendingContactChangeEntity(
                 localUid = contact.uid,
@@ -158,14 +160,29 @@ class ContactSyncRepository(
         flushedChanges: List<PendingContactChangeEntity>,
     ) {
         if (response.tooOld) {
+            // Non-destructive: reset the cursor so the next pull starts from 0 and rebuilds the
+            // mirror from a full snapshot, but do NOT clear first. Clearing here used to return
+            // before clearFlushed below, so the acknowledged pending changes were replayed — and
+            // since toWireDto sends an empty uid for a create, the server minted a fresh uid per
+            // replay, duplicating the contact on both sides. The server applies pushed changes
+            // before it computes tooOld, so they are already persisted and must be flushed.
             cursorStore.resetCursor(subscriberId)
-            db.contactDao().clearAll()
+            if (flushedChanges.isNotEmpty()) {
+                db.pendingContactChangeDao().clearFlushed(flushedChanges.map { it.id })
+            }
             return
         }
 
         val pendingCreates = flushedChanges.filter { it.changeType == CHANGE_CREATE }
         val reconciled = ContactSyncReconciliation.reconcile(pendingCreates, response.changed)
         if (reconciled.isNotEmpty()) {
+            // The device link row keys on uid, so it has to follow this rename. Without it the
+            // server-assigned uid looks unlinked, pushRoomChangesToDevice inserts a SECOND raw
+            // contact, and the temp-uid link is orphaned forever (getByUid on a dead uid returns
+            // null, so pullDeviceChangesForOwnAccount can never reclaim the first row).
+            reconciled.forEach { (localUid, serverUid) ->
+                db.deviceContactLinkDao().remapUid(localUid, serverUid)
+            }
             // Drop the temp-uid rows; the upsert below inserts the real, server-assigned rows.
             db.contactDao().deleteByUids(reconciled.keys.toList())
         }

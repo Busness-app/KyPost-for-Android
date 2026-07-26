@@ -24,9 +24,11 @@ import androidx.appcompat.app.AlertDialog
 import java.util.Calendar
 
 // -----------------------------------------------------------------------------
-// App version shown on the About overlay. Bump this single value each release.
+// App version shown on the About overlay and reported to the server on every device
+// registration. Sourced from the build's versionName so there is one place to bump: the two used
+// to disagree outright (this said "1" while the manifest said "1.0").
 // -----------------------------------------------------------------------------
-const val APP_VERSION = "1"
+const val APP_VERSION = BuildConfig.VERSION_NAME
 
 /** Shows the "About" overlay: app credit line plus a scrollable copy of the GPL v2. */
 fun showAboutDialog(activity: Activity) {

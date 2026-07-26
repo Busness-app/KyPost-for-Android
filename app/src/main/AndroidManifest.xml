@@ -9,8 +9,10 @@
     <application
         android:name=".KyPostApp"
         android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
+        android:networkSecurityConfig="@xml/network_security_config"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.KyPost" >
@@ -105,17 +107,16 @@
             </intent-filter>
         </service>
 
-        <receiver
-            android:name=".push.MfaResponseReceiver"
-            android:exported="false" />
-
         <!-- taskAffinity="" keeps this in its own task, separate from MainActivity's. Without
              it, tapping the notification after the app process has died resolves to the app's
              existing (dead) task by affinity, which recreates MainActivity as the task root
              instead of reliably launching this activity on top — landing the user on the inbox
              instead of the approve/deny screen. -->
+        <!-- excludeFromRecents matches UnlockActivity: an authenticated approval prompt must not
+             be resumable from the Recents list by whoever next picks the device up. -->
         <activity
             android:name=".push.MfaApprovalActivity"
+            android:excludeFromRecents="true"
             android:exported="false"
             android:launchMode="singleTop"
             android:taskAffinity="" />

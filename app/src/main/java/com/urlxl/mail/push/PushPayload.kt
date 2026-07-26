@@ -18,7 +18,10 @@ object PushPayloadParser {
 
         val senderName = data["senderName"].orEmpty().trim()
         val emailSubject = data["emailSubject"].orEmpty().trim()
-        val keywordsCsv = data["Keywords"].orEmpty()
+        // Accept either casing. The server sends "Keywords" while every other field is camelCase,
+        // and a lone capital letter silently degrading to an empty keyword list is not a failure
+        // mode worth keeping load-bearing.
+        val keywordsCsv = (data["keywords"] ?: data["Keywords"]).orEmpty()
 
         return PushPayload(
             messageId = messageId,

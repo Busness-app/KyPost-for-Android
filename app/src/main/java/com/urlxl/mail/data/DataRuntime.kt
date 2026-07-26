@@ -38,4 +38,8 @@ object DataRuntime {
     private val holder = SingletonGraph(::DataGraph)
 
     fun graph(context: Context): DataGraph = holder.get(context)
+
+    /** See [com.urlxl.mail.SingletonGraph.invalidate] — used by
+     *  [com.urlxl.mail.security.AppRestart]. */
+    fun invalidate() = holder.invalidate()
 }

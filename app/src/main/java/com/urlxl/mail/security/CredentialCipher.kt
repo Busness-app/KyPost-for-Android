@@ -1,7 +1,13 @@
 package com.urlxl.mail.security
 
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import java.security.KeyStore
 import java.security.SecureRandom
 import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.Mac
+import javax.crypto.SecretKey
 import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.PBEKeySpec
@@ -13,25 +19,92 @@ private const val SALT_LENGTH_BYTES = 16
 private const val GCM_IV_LENGTH_BYTES = 12
 private const val GCM_TAG_LENGTH_BITS = 128
 
-/** The PBKDF2 salt is deliberately not part of this type — it's an input to [CredentialCipher.deriveKey],
+private const val ANDROID_KEYSTORE = "AndroidKeyStore"
+private const val PEPPER_KEY_ALIAS = "kypost_credential_pepper"
+private const val PIN_PEPPER_KEY_ALIAS = "kypost_pin_pepper"
+
+/** The PBKDF2 salt is deliberately not part of this type — it's an input to [CredentialCipher.deriveKeys],
  *  owned and persisted once per pairing by the caller ([com.urlxl.mail.push.SecurePairingStore]),
  *  not an output of wrapping a single value. */
 data class WrappedSecret(val iv: ByteArray, val ciphertext: ByteArray)
 
 /**
- * PIN-derived AES-GCM wrapping for the pairing `deviceSecret` — see "Require unlock to receive
- * push/MFA" in the 2026-07-22 security-hardening spec. Deliberately independent of Android
- * Keystore: unlike [AppLockStore]'s Keystore-backed prefs, this key must be re-derivable from
- * just the PIN + a stored salt on demand (whenever [AppLockManager] caches it after a successful
- * unlock), not tied to hardware key material.
+ * The two keys one PIN can produce, so a secret wrapped under the old scheme is still readable.
+ *
+ * [current] is peppered (see [CredentialCipher.deriveKeys]) and is what every new wrap uses.
+ * [legacy] is the bare PBKDF2 output that builds before the pepper existed wrapped with; it is
+ * only ever used to *read* a legacy blob, which is then immediately re-wrapped under [current]
+ * by [rewrapPairingIfNeeded].
+ */
+data class CredentialKeys(val current: SecretKeySpec, val legacy: SecretKeySpec)
+
+/**
+ * Mixes a device-bound secret into the PBKDF2 output. Injected rather than hardcoded so the
+ * wrapping logic stays testable off-device — [KeystoreCredentialPepper] needs a real
+ * `AndroidKeyStore`, which a JVM unit test does not have.
+ */
+fun interface CredentialPepper {
+    fun mix(derived: ByteArray): ByteArray
+}
+
+/** The production pepper: an HMAC-SHA256 key generated in, and never extractable from, the
+ *  AndroidKeyStore. Created on first use and reused thereafter. */
+object KeystoreCredentialPepper : CredentialPepper {
+    override fun mix(derived: ByteArray): ByteArray = keystoreHmac(PEPPER_KEY_ALIAS, derived)
+}
+
+/** The app-lock PIN verifier's pepper. A **separate** alias from [KeystoreCredentialPepper]'s so
+ *  the verifier and the wrapping key are not interchangeable: with one shared key, a stored PIN
+ *  hash and a wrapping key would be the same derivation under two names. */
+object KeystorePinPepper : CredentialPepper {
+    override fun mix(derived: ByteArray): ByteArray = keystoreHmac(PIN_PEPPER_KEY_ALIAS, derived)
+}
+
+private fun keystoreHmac(alias: String, derived: ByteArray): ByteArray {
+    val mac = Mac.getInstance("HmacSHA256")
+    mac.init(pepperKey(alias))
+    return mac.doFinal(derived)
+}
+
+private fun pepperKey(alias: String): SecretKey {
+    val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+    (keyStore.getEntry(alias, null) as? KeyStore.SecretKeyEntry)?.let { return it.secretKey }
+
+    // Deliberately not setUserAuthenticationRequired: the app-lock PIN is this app's own
+    // secret, not a device credential the Keystore can gate on, and this key is also needed
+    // by background token rotations. Non-exportability is the property being bought here.
+    val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_HMAC_SHA256, ANDROID_KEYSTORE)
+    generator.init(KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN).build())
+    return generator.generateKey()
+}
+
+/**
+ * PIN-derived AES-GCM wrapping for the pairing `deviceSecret`.
+ *
+ * A 6-digit PIN is a 10^6 keyspace: 150k PBKDF2 iterations alone put a full offline sweep of an
+ * extracted blob within minutes on one GPU. [deriveKeys] therefore mixes the PBKDF2 output with a
+ * non-exportable AndroidKeyStore HMAC key, so deriving the wrapping key requires the device the
+ * secret was wrapped on — an attacker holding only the blob has nothing to brute-force against.
+ * The PIN is still required, so the key stays re-derivable on demand after any unlock; what this
+ * stops is the attack that never touches the app, and therefore never trips the wipe counter.
+ *
+ * If the Keystore pepper is lost (OS-level key invalidation, keystore reset), unwrapping fails
+ * and the user re-pairs. That is the intended direction to fail in.
  */
 object CredentialCipher {
     fun randomSalt(): ByteArray = ByteArray(SALT_LENGTH_BYTES).also { SecureRandom().nextBytes(it) }
 
-    fun deriveKey(pin: String, salt: ByteArray): SecretKeySpec {
-        val spec = PBEKeySpec(pin.toCharArray(), salt, PBKDF2_ITERATIONS, KEY_LENGTH_BITS)
-        val raw = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
-        return SecretKeySpec(raw, "AES")
+    /** Both derivations for [pin]; see [CredentialKeys]. Runs PBKDF2 once and peppers a copy. */
+    fun deriveKeys(
+        pin: String,
+        salt: ByteArray,
+        pepper: CredentialPepper = KeystoreCredentialPepper,
+    ): CredentialKeys {
+        val raw = pbkdf2(pin, salt)
+        return CredentialKeys(
+            current = SecretKeySpec(pepper.mix(raw), "AES"),
+            legacy = SecretKeySpec(raw, "AES"),
+        )
     }
 
     fun wrap(plaintext: String, key: SecretKeySpec): WrappedSecret {
@@ -50,4 +123,9 @@ object CredentialCipher {
         cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_LENGTH_BITS, wrapped.iv))
         String(cipher.doFinal(wrapped.ciphertext), Charsets.UTF_8)
     }.getOrNull()
+
+    private fun pbkdf2(pin: String, salt: ByteArray): ByteArray {
+        val spec = PBEKeySpec(pin.toCharArray(), salt, PBKDF2_ITERATIONS, KEY_LENGTH_BITS)
+        return SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
+    }
 }

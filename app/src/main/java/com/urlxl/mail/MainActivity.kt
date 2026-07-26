@@ -2,27 +2,55 @@ package com.urlxl.mail
 
 import android.content.Intent
 import android.os.Bundle
-import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.urlxl.mail.push.MfaApprovalActivity
 import com.urlxl.mail.push.MfaChallengePayloadParser
 import com.urlxl.mail.push.MfaChallengeTracker
 import com.urlxl.mail.push.PushNotificationDispatcher
 import com.urlxl.mail.push.PushRuntime
+import com.urlxl.mail.security.LockedActivity
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
-class MainActivity : AppCompatActivity() {
+/**
+ * Launcher and router: decides between the inbox and the pairing screen, and forwards a genuine
+ * MFA push to the approval screen.
+ *
+ * Routing moved out of `onCreate` and into [onStart] so it happens strictly after
+ * [LockedActivity]'s lock check — otherwise this Activity would launch the inbox and *then*
+ * redirect itself to the unlock screen, racing two Activities into the task.
+ */
+class MainActivity : LockedActivity() {
+
+    private var routed = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        routed = savedInstanceState?.getBoolean(STATE_ROUTED, false) ?: false
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // LockedActivity.onStart finishes us and shows UnlockActivity when the app is locked.
+        if (isFinishing || routed) return
+        routed = true
         handleIntent(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        if (isLocked()) {
+            startActivity(Intent(this, com.urlxl.mail.security.UnlockActivity::class.java))
+            finish()
+            return
+        }
         handleIntent(intent)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putBoolean(STATE_ROUTED, routed)
     }
 
     private fun handleIntent(intent: Intent) {
@@ -31,7 +59,7 @@ class MainActivity : AppCompatActivity() {
             // MainActivity is exported as the app's launcher, so any co-installed app can start
             // it with arbitrary extras — only forward to the approval screen for a challengeId
             // that was actually delivered via a real push, not one an attacker merely supplied.
-            if (mfa != null && MfaChallengeTracker.isPending(mfa.challengeId)) {
+            if (mfa != null && MfaChallengeTracker(this@MainActivity).isPending(mfa.challengeId)) {
                 val mfaIntent = Intent(this@MainActivity, MfaApprovalActivity::class.java)
                 mfaIntent.putExtra(PushNotificationDispatcher.EXTRA_MFA_CHALLENGE_ID, mfa.challengeId)
                 startActivity(mfaIntent)
@@ -56,5 +84,9 @@ class MainActivity : AppCompatActivity() {
             startActivity(targetIntent)
             finish()
         }
+    }
+
+    private companion object {
+        const val STATE_ROUTED = "routed"
     }
 }

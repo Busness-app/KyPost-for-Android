@@ -5,11 +5,14 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.urlxl.mail.security.CredentialCipher
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
+/** Instrumented so [CredentialCipher.deriveKeys] uses the real AndroidKeyStore pepper. */
 @RunWith(AndroidJUnit4::class)
 class SecurePairingStoreCredentialGateTest {
     private val context = ApplicationProvider.getApplicationContext<android.content.Context>()
@@ -30,35 +33,81 @@ class SecurePairingStoreCredentialGateTest {
     }
 
     @Test
-    fun savePairing_withCredentialKey_readingWithoutKey_omitsDeviceSecret() = runBlocking {
+    fun savePairing_withCredentialKeys_readingWithoutKeys_omitsDeviceSecret() = runBlocking {
         val salt = CredentialCipher.randomSalt()
-        val key = CredentialCipher.deriveKey("123456", salt)
+        val keys = CredentialCipher.deriveKeys("482913", salt)
         val store = SecurePairingStore(context)
-        store.savePairing(pairing, credentialKey = key, credentialSalt = salt)
+        store.savePairing(pairing, credentialKeys = keys, credentialSalt = salt)
 
         // A read with no key available (app locked) must come back with deviceSecret == null,
         // not throw and not leak the wrapped ciphertext as if it were the plaintext secret.
-        val lockedRead = store.pairingSnapshot(credentialKey = null)
+        val lockedRead = store.pairingSnapshot(credentialKeys = null)
         assertNull(lockedRead?.deviceSecret)
         assertEquals(pairing.subscriberId, lockedRead?.subscriberId)
     }
 
     @Test
-    fun savePairing_withCredentialKey_readingWithCorrectKey_restoresDeviceSecret() = runBlocking {
+    fun savePairing_withCredentialKeys_readingWithCorrectKeys_restoresDeviceSecret() = runBlocking {
         val salt = CredentialCipher.randomSalt()
-        val key = CredentialCipher.deriveKey("123456", salt)
+        val keys = CredentialCipher.deriveKeys("482913", salt)
         val store = SecurePairingStore(context)
-        store.savePairing(pairing, credentialKey = key, credentialSalt = salt)
+        store.savePairing(pairing, credentialKeys = keys, credentialSalt = salt)
 
-        val unlockedRead = store.pairingSnapshot(credentialKey = key)
-        assertEquals(pairing.deviceSecret, unlockedRead?.deviceSecret)
+        assertEquals(pairing.deviceSecret, store.pairingSnapshot(credentialKeys = keys)?.deviceSecret)
     }
 
     @Test
-    fun savePairing_withoutCredentialKey_behavesAsUnwrapped() = runBlocking {
+    fun savePairing_withoutCredentialKeys_behavesAsUnwrapped() = runBlocking {
         val store = SecurePairingStore(context)
         store.savePairing(pairing)
 
-        assertEquals(pairing.deviceSecret, store.pairingSnapshot(credentialKey = null)?.deviceSecret)
+        assertEquals(pairing.deviceSecret, store.pairingSnapshot(credentialKeys = null)?.deviceSecret)
+    }
+
+    @Test
+    fun aWrongPinCannotUnwrap() = runBlocking {
+        val salt = CredentialCipher.randomSalt()
+        val store = SecurePairingStore(context)
+        store.savePairing(pairing, credentialKeys = CredentialCipher.deriveKeys("482913", salt), credentialSalt = salt)
+
+        val wrongKeys = CredentialCipher.deriveKeys("000001", salt)
+        assertNull(store.pairingSnapshot(credentialKeys = wrongKeys)?.deviceSecret)
+    }
+
+    @Test
+    fun needsCredentialRewrap_isTrueWhenStoredUnwrapped_andFalseOnceWrapped() = runBlocking {
+        val store = SecurePairingStore(context)
+        store.savePairing(pairing)
+        // This is the state a background FCM token rotation leaves behind in a process that was
+        // never PIN-unlocked; rewrapPairingIfNeeded keys off exactly this.
+        assertTrue(store.needsCredentialRewrap())
+
+        val salt = CredentialCipher.randomSalt()
+        store.savePairing(pairing, credentialKeys = CredentialCipher.deriveKeys("482913", salt), credentialSalt = salt)
+        assertFalse(store.needsCredentialRewrap())
+    }
+
+    @Test
+    fun clearPairing_dropsTheWrappedSecretAndTheTlsPin() = runBlocking {
+        val salt = CredentialCipher.randomSalt()
+        val store = SecurePairingStore(context)
+        store.savePairing(pairing, credentialKeys = CredentialCipher.deriveKeys("482913", salt), credentialSalt = salt)
+        store.saveTlsPin(TlsPin(host = "server.example.com", spkiSha256 = "sha256/AAAA"))
+
+        store.clearPairing()
+
+        assertNull(store.pairingSnapshot(credentialKeys = null))
+        assertNull(store.currentTlsPin())
+    }
+
+    @Test
+    fun tlsPin_carriesTheHostItWasObservedOn() = runBlocking {
+        val store = SecurePairingStore(context)
+        store.saveTlsPin(TlsPin(host = "server.example.com", spkiSha256 = "sha256/AAAA"))
+
+        // Enforcing a pin against a host it did not come from is what bricked requests when the
+        // registration URL and the server URL disagreed.
+        assertEquals("server.example.com", store.currentTlsPin()?.host)
+        assertEquals("sha256/AAAA", store.currentTlsPin()?.spkiSha256)
     }
 }
