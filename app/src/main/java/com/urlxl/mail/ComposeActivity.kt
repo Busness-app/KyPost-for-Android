@@ -420,6 +420,11 @@ class ComposeActivity : LockedActivity() {
         sendMenuItem?.isEnabled = false
 
         bodyEditor.exportHtml { html ->
+            // exportHtml's callback runs on the main looper and can still fire after onDestroy has
+            // called ioExecutor.shutdownNow() (e.g. app lock finishing this screen while the
+            // export was pending) — dispatchSend below would then hit a shut-down executor and
+            // throw RejectedExecutionException.
+            if (isFinishing || isDestroyed) return@exportHtml
             val draft = MailDraft(
                 to = to, cc = cc, bcc = bcc, subject = subject, body = html, mode = "html",
                 attachments = attachments.toList(),
@@ -451,8 +456,13 @@ class ComposeActivity : LockedActivity() {
                         val warning = outcome.value.warning
                         // The send already succeeded even when sentSaved is false or a pickup link
                         // failed — surface the warning as a notice, never as a failure, and never
-                        // offer a retry that would duplicate the message.
-                        Toast.makeText(this, warning.ifBlank { "Email sent successfully" }, Toast.LENGTH_SHORT).show()
+                        // offer a retry that would duplicate the message. A non-blank warning (e.g.
+                        // "failed to deliver a pickup link to 1 of 3 recipient(s)") is longer than
+                        // the plain success message and shown right before finish(), so it needs
+                        // LENGTH_LONG to have any chance of being read.
+                        val message = warning.ifBlank { getString(R.string.compose_send_success) }
+                        val length = if (warning.isBlank()) Toast.LENGTH_SHORT else Toast.LENGTH_LONG
+                        Toast.makeText(this, message, length).show()
                         finish()
                     }
                     is MailOutcome.PickupFallbackNeeded -> {
@@ -510,7 +520,16 @@ class ComposeActivity : LockedActivity() {
      * report for the traced scenario.
      */
     private fun handOffToWebmail() {
+        // Disabled for the whole in-flight window, starting before the async exportHtml/saveDraft
+        // round trip even begins: a double-tap in that window would park two drafts and overwrite
+        // activeDialog with the second dialog, orphaning the first. Re-enabled on every path that
+        // doesn't end in finish() — the two failure toasts below, and the dialog's dismiss
+        // listener, which covers Cancel and the no-handler case alike.
+        webmailChip.isEnabled = false
         bodyEditor.exportHtml { html ->
+            // Same rationale as sendEmail's guard: this callback can fire after onDestroy has torn
+            // down ioExecutor.
+            if (isFinishing || isDestroyed) return@exportHtml
             val draft = MailDraft(
                 to = toInput.commaJoinedRecipients(),
                 cc = ccInput.commaJoinedRecipients(),
@@ -529,12 +548,18 @@ class ComposeActivity : LockedActivity() {
                     // Activity has finished (app lock) or been destroyed.
                     if (isFinishing || isDestroyed) return@runOnUiThread
                     when {
-                        saved !is MailOutcome.Success -> Toast.makeText(
-                            this,
-                            getString(R.string.compose_handoff_draft_failed, saved.userFacingMessage().orEmpty()),
-                            Toast.LENGTH_LONG,
-                        ).show()
-                        url == null -> Toast.makeText(this, R.string.compose_handoff_no_webmail, Toast.LENGTH_LONG).show()
+                        saved !is MailOutcome.Success -> {
+                            webmailChip.isEnabled = true
+                            Toast.makeText(
+                                this,
+                                getString(R.string.compose_handoff_draft_failed, saved.userFacingMessage().orEmpty()),
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                        url == null -> {
+                            webmailChip.isEnabled = true
+                            Toast.makeText(this, R.string.compose_handoff_no_webmail, Toast.LENGTH_LONG).show()
+                        }
                         else -> showHandoffDialog(url)
                     }
                 }
@@ -562,6 +587,9 @@ class ComposeActivity : LockedActivity() {
                     Toast.makeText(this, R.string.compose_handoff_no_handler, Toast.LENGTH_LONG).show()
                 }
             }
+            // Re-enables the chip after Cancel and after both positive-button outcomes above —
+            // the successful launch doesn't care since finish() is already underway.
+            .setOnDismissListener { webmailChip.isEnabled = true }
             .show()
     }
 

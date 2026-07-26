@@ -694,7 +694,11 @@ class RelayMailSourceTest {
     /** Drafts carry no crypto semantics — the server's draft handler ignores these fields — so
      *  sending them would claim a choice the user did not make at draft-save time. The webmail
      *  handoff saves a draft from a composition whose Encrypt toggle was on, so this is a live
-     *  path, not a hypothetical. */
+     *  path, not a hypothetical.
+     *
+     *  Decoded into the DTO rather than asserted on the raw body string (matches
+     *  resendWithFallback_differsOnlyInAllowPickupFallback above): a raw `!sent.contains("encrypt")`
+     *  would fail spuriously if a fixture subject or body ever happened to contain that word. */
     @Test
     fun saveDraft_omitsPgpFlags() {
         val callFactory = BodyRecordingCallFactory { request -> jsonResponse(request, """{"ok":true}""") }
@@ -708,9 +712,10 @@ class RelayMailSourceTest {
             MailDraft(to = "bob@example.com", subject = "hi", body = "hello", encrypt = true, sign = true),
         )
 
-        val sent = callFactory.bodies.single()
-        assertTrue("expected no encrypt in $sent", !sent.contains("encrypt"))
-        assertTrue("expected no sign in $sent", !sent.contains("\"sign\""))
-        assertTrue("expected no allowPickupFallback in $sent", !sent.contains("allowPickupFallback"))
+        val wireJson = Json { ignoreUnknownKeys = true }
+        val sent = wireJson.decodeFromString<RelayMailRequestDto>(callFactory.bodies.single())
+        assertEquals(false, sent.sign)
+        assertEquals(false, sent.encrypt)
+        assertEquals(false, sent.allowPickupFallback)
     }
 }

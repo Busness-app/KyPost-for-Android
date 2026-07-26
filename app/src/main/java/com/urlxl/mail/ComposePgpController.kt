@@ -10,6 +10,8 @@ import com.urlxl.mail.pgp.pgpComposeStateOf
 import com.urlxl.mail.push.PairingData
 import com.urlxl.mail.push.PushRuntime
 import com.urlxl.mail.push.pinnedPairingCallFactory
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * Flattens the compose screen's three comma-joined recipient fields into one address list for the
@@ -50,7 +52,10 @@ class ComposePgpController(
      */
     suspend fun composeState(): PgpComposeState {
         cachedState?.let { return it }
-        val pairing = pairingProvider()
+        // pairingProvider() reaches SecurePairingStore.pairingSnapshot(), which reads
+        // Keystore-backed EncryptedSharedPreferences and does an AES unwrap — disk plus crypto —
+        // so it must not run on the caller's dispatcher, which is Main for every call site today.
+        val pairing = withContext(Dispatchers.IO) { pairingProvider() }
         val deviceId = pairing?.deviceId
         val deviceSecret = pairing?.deviceSecret
         if (pairing == null || deviceId.isNullOrBlank() || deviceSecret.isNullOrBlank()) {
@@ -72,7 +77,8 @@ class ComposePgpController(
      * so a failed preflight can never be the reason the pickup fallback gets used.
      */
     suspend fun keylessRecipients(addresses: List<String>): List<String> {
-        val pairing = pairingProvider()
+        // Same off-main-thread rationale as composeState() above.
+        val pairing = withContext(Dispatchers.IO) { pairingProvider() }
         val deviceId = pairing?.deviceId
         val deviceSecret = pairing?.deviceSecret
         if (pairing == null || deviceId.isNullOrBlank() || deviceSecret.isNullOrBlank()) return emptyList()

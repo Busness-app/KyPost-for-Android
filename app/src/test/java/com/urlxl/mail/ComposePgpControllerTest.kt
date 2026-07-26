@@ -17,7 +17,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import org.junit.Before
 import org.junit.Test
-import java.io.IOException
 
 /** Fakes OkHttp's [Call.Factory]; mirrors ContactSyncClientTest's hand-rolled-fake style (no
  *  mocking framework, no MockWebServer dependency in this repo). */
@@ -28,10 +27,6 @@ private class FakeCallFactory(private val responder: (Request) -> Response) : Ca
         requests.add(request)
         return FakeCall(request, responder(request))
     }
-}
-
-private class ThrowingCallFactory(private val exception: Exception) : Call.Factory {
-    override fun newCall(request: Request): Call = ThrowingCall(request, exception)
 }
 
 private class FakeCall(private val req: Request, private val response: Response) : Call {
@@ -48,17 +43,6 @@ private class FakeCall(private val req: Request, private val response: Response)
     override fun isCanceled(): Boolean = canceled
     override fun timeout(): Timeout = Timeout.NONE
     override fun clone(): Call = FakeCall(req, response)
-}
-
-private class ThrowingCall(private val req: Request, private val exception: Exception) : Call {
-    override fun request(): Request = req
-    override fun execute(): Response = throw exception
-    override fun enqueue(responseCallback: Callback) = responseCallback.onFailure(this, IOException(exception))
-    override fun cancel() {}
-    override fun isExecuted(): Boolean = false
-    override fun isCanceled(): Boolean = false
-    override fun timeout(): Timeout = Timeout.NONE
-    override fun clone(): Call = ThrowingCall(req, exception)
 }
 
 private fun response(request: Request, body: String, code: Int, message: String = "OK"): Response = Response.Builder()
@@ -137,6 +121,12 @@ class ComposePgpControllerTest {
         )
     }
 
+    /** The cache is `companion object`-scoped (process-wide), not per-instance — a controller
+     *  created fresh for a second compose screen still must not re-hit the network. Calling
+     *  composeState() twice on the *same* instance would pass even against a per-instance cache,
+     *  so this exercises two separate instances sharing one call factory to actually pin the
+     *  process-wide scoping the design (and [PushRepository.purgeAccountScopedData]'s explicit
+     *  invalidation of it on unpair) depends on. */
     @Test
     fun composeState_cachesASuccessForTheProcess() = runBlocking {
         var calls = 0
@@ -144,14 +134,19 @@ class ComposePgpControllerTest {
             calls++
             response(request, """{"hasIdentity":true,"protection":"server"}""", 200)
         }
-        val controller = ComposePgpController(
+        val firstController = ComposePgpController(
+            pairingProvider = { testPairing() },
+            bootstrapClient = PgpBootstrapClient(callFactory = callFactory),
+            recipientKeyClient = RecipientKeyClient(callFactory = callFactory),
+        )
+        val secondController = ComposePgpController(
             pairingProvider = { testPairing() },
             bootstrapClient = PgpBootstrapClient(callFactory = callFactory),
             recipientKeyClient = RecipientKeyClient(callFactory = callFactory),
         )
 
-        controller.composeState()
-        controller.composeState()
+        firstController.composeState()
+        secondController.composeState()
 
         assertEquals(1, calls)
     }

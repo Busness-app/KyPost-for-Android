@@ -103,6 +103,7 @@
     <string name="compose_handoff_draft_failed">Couldn\'t save the draft, so webmail wouldn\'t have your message: %1$s</string>
     <string name="compose_handoff_no_webmail">Couldn\'t work out this server\'s web address — open your drafts in your browser.</string>
     <string name="compose_handoff_no_handler">No app on this device can open that link — open your drafts in your browser.</string>
+    <string name="compose_send_success">Email sent successfully</string>
     <string name="address_book_search_hint">Search contacts</string>
     <string name="address_book_action_to">TO</string>
     <string name="address_book_action_cc">CC</string>
