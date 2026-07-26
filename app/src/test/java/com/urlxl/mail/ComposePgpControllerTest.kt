@@ -4,54 +4,13 @@ import com.urlxl.mail.pgp.PgpBootstrapClient
 import com.urlxl.mail.pgp.PgpComposeState
 import com.urlxl.mail.pgp.RecipientKeyClient
 import com.urlxl.mail.push.PairingData
+import com.urlxl.mail.testing.FakeCallFactory
+import com.urlxl.mail.testing.response
 import kotlinx.coroutines.runBlocking
-import okhttp3.Call
-import okhttp3.Callback
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.Protocol
-import okhttp3.Request
-import okhttp3.Response
-import okhttp3.ResponseBody.Companion.toResponseBody
-import okio.Timeout
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import org.junit.Before
 import org.junit.Test
-
-/** Fakes OkHttp's [Call.Factory]; mirrors ContactSyncClientTest's hand-rolled-fake style (no
- *  mocking framework, no MockWebServer dependency in this repo). */
-private class FakeCallFactory(private val responder: (Request) -> Response) : Call.Factory {
-    val requests = mutableListOf<Request>()
-
-    override fun newCall(request: Request): Call {
-        requests.add(request)
-        return FakeCall(request, responder(request))
-    }
-}
-
-private class FakeCall(private val req: Request, private val response: Response) : Call {
-    private var executed = false
-    private var canceled = false
-    override fun request(): Request = req
-    override fun execute(): Response {
-        executed = true
-        return response
-    }
-    override fun enqueue(responseCallback: Callback) = responseCallback.onResponse(this, response)
-    override fun cancel() { canceled = true }
-    override fun isExecuted(): Boolean = executed
-    override fun isCanceled(): Boolean = canceled
-    override fun timeout(): Timeout = Timeout.NONE
-    override fun clone(): Call = FakeCall(req, response)
-}
-
-private fun response(request: Request, body: String, code: Int, message: String = "OK"): Response = Response.Builder()
-    .request(request)
-    .protocol(Protocol.HTTP_1_1)
-    .code(code)
-    .message(message)
-    .body(body.toResponseBody("application/json".toMediaType()))
-    .build()
 
 private fun testPairing(deviceId: String = "d", deviceSecret: String = "s") = PairingData(
     subscriberId = "sub-1",

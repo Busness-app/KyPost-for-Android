@@ -2,70 +2,15 @@ package com.urlxl.mail.pgp
 
 import com.urlxl.mail.HEADER_DEVICE_SECRET
 import com.urlxl.mail.HEADER_DEVICE_ID
+import com.urlxl.mail.testing.FakeCallFactory
+import com.urlxl.mail.testing.ThrowingCallFactory
+import com.urlxl.mail.testing.response
 import kotlinx.coroutines.runBlocking
-import okhttp3.Call
-import okhttp3.Callback
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.Protocol
-import okhttp3.Request
-import okhttp3.Response
-import okhttp3.ResponseBody.Companion.toResponseBody
-import okio.Timeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
-
-/** Fakes OkHttp's [Call.Factory]; mirrors ContactSyncClientTest's hand-rolled-fake style (no
- *  mocking framework, no MockWebServer dependency in this repo). */
-private class FakeCallFactory(private val responder: (Request) -> Response) : Call.Factory {
-    val requests = mutableListOf<Request>()
-
-    override fun newCall(request: Request): Call {
-        requests.add(request)
-        return FakeCall(request, responder(request))
-    }
-}
-
-private class ThrowingCallFactory(private val exception: Exception) : Call.Factory {
-    override fun newCall(request: Request): Call = ThrowingCall(request, exception)
-}
-
-private class FakeCall(private val req: Request, private val response: Response) : Call {
-    private var executed = false
-    private var canceled = false
-    override fun request(): Request = req
-    override fun execute(): Response {
-        executed = true
-        return response
-    }
-    override fun enqueue(responseCallback: Callback) = responseCallback.onResponse(this, response)
-    override fun cancel() { canceled = true }
-    override fun isExecuted(): Boolean = executed
-    override fun isCanceled(): Boolean = canceled
-    override fun timeout(): Timeout = Timeout.NONE
-    override fun clone(): Call = FakeCall(req, response)
-}
-
-private class ThrowingCall(private val req: Request, private val exception: Exception) : Call {
-    override fun request(): Request = req
-    override fun execute(): Response = throw exception
-    override fun enqueue(responseCallback: Callback) = responseCallback.onFailure(this, IOException(exception))
-    override fun cancel() {}
-    override fun isExecuted(): Boolean = false
-    override fun isCanceled(): Boolean = false
-    override fun timeout(): Timeout = Timeout.NONE
-    override fun clone(): Call = ThrowingCall(req, exception)
-}
-
-private fun response(request: Request, body: String, code: Int, message: String = "OK"): Response = Response.Builder()
-    .request(request)
-    .protocol(Protocol.HTTP_1_1)
-    .code(code)
-    .message(message)
-    .body(body.toResponseBody("application/json".toMediaType()))
-    .build()
 
 class PgpQrClientTest {
 

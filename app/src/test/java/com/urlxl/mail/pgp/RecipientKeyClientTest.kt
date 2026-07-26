@@ -2,90 +2,15 @@ package com.urlxl.mail.pgp
 
 import com.urlxl.mail.HEADER_DEVICE_SECRET
 import com.urlxl.mail.HEADER_DEVICE_ID
+import com.urlxl.mail.testing.BodyRecordingCallFactory
+import com.urlxl.mail.testing.FakeCallFactory
+import com.urlxl.mail.testing.ThrowingCallFactory
+import com.urlxl.mail.testing.response
 import kotlinx.coroutines.runBlocking
-import okhttp3.Call
-import okhttp3.Callback
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.Protocol
-import okhttp3.Request
-import okhttp3.Response
-import okhttp3.ResponseBody.Companion.toResponseBody
-import okio.Timeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
-
-/** Fakes OkHttp's [Call.Factory]; mirrors ContactSyncClientTest's hand-rolled-fake style (no
- *  mocking framework, no MockWebServer dependency in this repo).
- *
- *  Named with a `RecipientKey` prefix, unlike the otherwise-identical block in PgpQrClientTest.kt
- *  and PgpBootstrapClientTest.kt: all three files share the `com.urlxl.mail.pgp` package, and
- *  Kotlin's top-level `private` is file-scoped only for visibility — the JVM class name is still
- *  bare (`FakeCall.class`), so two files in the same package cannot both declare a private
- *  top-level class of the same name. */
-private class RecipientKeyFakeCallFactory(private val responder: (Request) -> Response) : Call.Factory {
-    val requests = mutableListOf<Request>()
-
-    override fun newCall(request: Request): Call {
-        requests.add(request)
-        return RecipientKeyFakeCall(request, responder(request))
-    }
-}
-
-private class RecipientKeyThrowingCallFactory(private val exception: Exception) : Call.Factory {
-    override fun newCall(request: Request): Call = RecipientKeyThrowingCall(request, exception)
-}
-
-private class RecipientKeyFakeCall(private val req: Request, private val response: Response) : Call {
-    private var executed = false
-    private var canceled = false
-    override fun request(): Request = req
-    override fun execute(): Response {
-        executed = true
-        return response
-    }
-    override fun enqueue(responseCallback: Callback) = responseCallback.onResponse(this, response)
-    override fun cancel() { canceled = true }
-    override fun isExecuted(): Boolean = executed
-    override fun isCanceled(): Boolean = canceled
-    override fun timeout(): Timeout = Timeout.NONE
-    override fun clone(): Call = RecipientKeyFakeCall(req, response)
-}
-
-private class RecipientKeyThrowingCall(private val req: Request, private val exception: Exception) : Call {
-    override fun request(): Request = req
-    override fun execute(): Response = throw exception
-    override fun enqueue(responseCallback: Callback) = responseCallback.onFailure(this, IOException(exception))
-    override fun cancel() {}
-    override fun isExecuted(): Boolean = false
-    override fun isCanceled(): Boolean = false
-    override fun timeout(): Timeout = Timeout.NONE
-    override fun clone(): Call = RecipientKeyThrowingCall(req, exception)
-}
-
-/** Body-capturing factory for the POST-body assertion; `RecipientKeyFakeCallFactory` above only
- *  records requests, not bodies. Follows MfaResponseClientTest's `okio.Buffer` capture idiom. */
-private class RecipientKeyBodyRecordingCallFactory(private val responder: (Request) -> Response) : Call.Factory {
-    val requests = mutableListOf<Request>()
-    val bodies = mutableListOf<String>()
-
-    override fun newCall(request: Request): Call {
-        requests.add(request)
-        val buffer = okio.Buffer()
-        request.body?.writeTo(buffer)
-        bodies.add(buffer.readUtf8())
-        return RecipientKeyFakeCall(request, responder(request))
-    }
-}
-
-private fun response(request: Request, body: String, code: Int, message: String = "OK"): Response = Response.Builder()
-    .request(request)
-    .protocol(Protocol.HTTP_1_1)
-    .code(code)
-    .message(message)
-    .body(body.toResponseBody("application/json".toMediaType()))
-    .build()
 
 class RecipientKeyClientTest {
 
@@ -95,7 +20,7 @@ class RecipientKeyClientTest {
             {"address":"bob@example.com","hasKey":true,"revoked":false,"expired":false,"tier":"contact-verified"},
             {"address":"carol@example.com","hasKey":false,"revoked":false,"expired":false,"tier":"none"}
         ]}"""
-        val client = RecipientKeyClient(callFactory = RecipientKeyFakeCallFactory { request -> response(request, body, 200) })
+        val client = RecipientKeyClient(callFactory = FakeCallFactory { request -> response(request, body, 200) })
 
         val result = client.check(
             "https://relay.example.com", "d", "s", listOf("bob@example.com", "carol@example.com"),
@@ -110,7 +35,7 @@ class RecipientKeyClientTest {
     @Test
     fun revokedKeyCountsAsKeyless() = runBlocking {
         val body = """{"results":[{"address":"dave@example.com","hasKey":false,"revoked":true,"expired":false,"tier":"none"}]}"""
-        val client = RecipientKeyClient(callFactory = RecipientKeyFakeCallFactory { request -> response(request, body, 200) })
+        val client = RecipientKeyClient(callFactory = FakeCallFactory { request -> response(request, body, 200) })
 
         val result = client.check("https://relay.example.com", "d", "s", listOf("dave@example.com"))
 
@@ -119,7 +44,7 @@ class RecipientKeyClientTest {
 
     @Test
     fun postsTheAddressesAndAuthHeaders() = runBlocking {
-        val callFactory = RecipientKeyBodyRecordingCallFactory { request -> response(request, """{"results":[]}""", 200) }
+        val callFactory = BodyRecordingCallFactory { request -> response(request, """{"results":[]}""", 200) }
         val client = RecipientKeyClient(callFactory = callFactory)
 
         client.check("https://relay.example.com/", "d", "s", listOf("bob@example.com"))
@@ -136,7 +61,7 @@ class RecipientKeyClientTest {
      *  screen imply an encrypted send when it has no idea. */
     @Test
     fun httpFailureIsDistinctFromNoKeylessRecipients() = runBlocking {
-        val client = RecipientKeyClient(callFactory = RecipientKeyFakeCallFactory { request -> response(request, "boom", 500) })
+        val client = RecipientKeyClient(callFactory = FakeCallFactory { request -> response(request, "boom", 500) })
 
         val result = client.check("https://relay.example.com", "d", "s", listOf("bob@example.com"))
 
@@ -145,7 +70,7 @@ class RecipientKeyClientTest {
 
     @Test
     fun networkThrowIsFailed() = runBlocking {
-        val client = RecipientKeyClient(callFactory = RecipientKeyThrowingCallFactory(IOException("offline")))
+        val client = RecipientKeyClient(callFactory = ThrowingCallFactory(IOException("offline")))
 
         val result = client.check("https://relay.example.com", "d", "s", listOf("bob@example.com"))
 
@@ -155,7 +80,7 @@ class RecipientKeyClientTest {
     /** No addresses to check is a local answer, not a round trip. */
     @Test
     fun emptyAddressListSkipsTheCall() = runBlocking {
-        val callFactory = RecipientKeyFakeCallFactory { request -> response(request, """{"results":[]}""", 200) }
+        val callFactory = FakeCallFactory { request -> response(request, """{"results":[]}""", 200) }
         val client = RecipientKeyClient(callFactory = callFactory)
 
         val result = client.check("https://relay.example.com", "d", "s", emptyList())
