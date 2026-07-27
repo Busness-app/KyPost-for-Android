@@ -1,67 +1,68 @@
 # KyPost for Android
 
-KyPost is an Android email client with IMAP inbox read, SMTP send, and keyword-based inbox tabs driven by IMAP user flags. It also supports an alternate backend-relay connection mode (no IMAP/SMTP credentials on-device) and two-way contact sync against a self-hosted KyPost server, both authenticated via native-push pairing (`sub`/`hash`). Push notifications are delivered via native backend pairing + FCM — Novu is not used on the client; the backend owns the Novu integration (if any) behind its own registration endpoint.
+KyPost is an Android email client. It reads an IMAP inbox, sends mail through SMTP, and shows keyword-based inbox tabs driven by IMAP user flags. It also supports a backend-relay connection mode that keeps no IMAP or SMTP credentials on the device. A two-way contact sync works against a self-hosted KyPost server. Native-push pairing (`sub` and `hash`) authenticates both the relay mode and the contact sync. The app gets push notifications through native backend pairing and FCM. The client does not use Novu. The backend owns any Novu integration behind its own registration endpoint.
 
 ## Features
 
-- **Mail**: IMAP inbox read and SMTP send (Manual IMAP mode), or a backend-relay mode that proxies mail through the paired KyPost server with no mail credentials stored on-device.
-- **Keyword tabs**: Inbox tabs driven by IMAP user flags (Manual IMAP) or server-provided tab/label fields (Relay mode), with tuning in the Keywords screen.
-- **Compose**: Recipient autocomplete on To/Cc/Bcc backed by local contacts, plus an address-book picker for adding recipients directly.
-- **Contacts**: Two-way contact sync against a self-hosted KyPost server, reachable from the Inbox overflow menu.
-- **PGP Key Signing**: A single screen shows your own PGP public-key QR code and lets you scan someone else's to save their key onto an existing contact.
-- **MFA push approval**: Push-based two-factor approve/deny for KyPost account logins, with an in-app fallback screen when OEM background restrictions block the action notification.
-- **Themes**: Multiple theme presets shared with the KyPost web app (default **Patina Ky**), selectable from the Themes screen.
-- **Push notifications**: System notifications plus in-app notification history for new mail, with a per-user delivery mode (`push` | `pull`, see below).
+- **Mail**: IMAP inbox read and SMTP send in Manual IMAP mode. Relay mode proxies mail through the paired KyPost server and stores no mail credentials on the device.
+- **Keyword tabs**: Inbox tabs come from IMAP user flags in Manual IMAP mode, or from server tab and label fields in Relay mode. Tune the tabs in the Keywords screen.
+- **Compose**: The To, Cc, and Bcc fields complete recipients from local contacts. An address-book picker adds recipients directly.
+- **Contacts**: A two-way contact sync runs against a self-hosted KyPost server. Open it from the Inbox overflow menu.
+- **PGP key signing**: One screen shows your own PGP public-key QR code. The same screen scans the QR code of another person and saves that key onto an existing contact.
+- **MFA push approval**: Push notifications approve or deny KyPost account logins. An in-app screen does the same when OEM background limits block the action notification.
+- **Themes**: The app shares theme presets with the KyPost web app. The default theme is **Patina Ky**. Select a theme in the Themes screen.
+- **Push notifications**: The app shows system notifications and keeps an in-app notification history for new mail. Each user selects a delivery mode (`push` or `pull`).
 
 ## Push notification pairing
 
-- Pairs device from a desktop deep link / QR:
+- The app pairs the device from a desktop deep link or QR code:
   `kypost://native-pair?sub=<subscriberId>&hash=<subscriberHash>&srv=<serverUrl>&reg=<registrationUrl>&pt=<pairingToken>`
-- Persists pairing proof material (subscriber id/hash, server URL, registration URL, pairing token, last-known device id) in a Keystore-backed `EncryptedSharedPreferences` file — not the plaintext DataStore used for notification history and sync status.
-- Registers the FCM token against the backend's native registration endpoint (`reg` from the QR, or derived as `{srv}/api/notifications/native/register` when `reg` is absent) on pair and on token refresh.
-- Only marks the device as paired once the registration call actually succeeds (`ok:true`/`synced:true`) — scanning a QR alone does not pair the device.
-- Handles FCM data payload keys: `messageId`, `senderName`, `emailSubject`, `Keywords`.
-- Shows system notifications and keeps an in-app notification history.
-- Supports a per-user **delivery mode** (`push` | `pull`) chosen on the web Notifications page. In `pull` mode the server sends nothing to FCM; the app polls the server directly (see below).
+- The app stores the pairing proof material in a Keystore-backed `EncryptedSharedPreferences` file. This material is the subscriber id, the subscriber hash, the server URL, the registration URL, the pairing token, and the last known device id. The app does not store this material in the plaintext DataStore that holds the notification history and the sync status.
+- The app registers the FCM token against the native registration endpoint of the backend. It uses `reg` from the QR code. If `reg` is absent, it derives `{srv}/api/notifications/native/register`. The app repeats this call on pair and on each token refresh.
+- The app marks the device as paired only after the registration call succeeds (`ok:true` or `synced:true`). A QR code scan alone does not pair the device.
+- The app handles these FCM data payload keys: `messageId`, `senderName`, `emailSubject`, and `Keywords`.
+- The app shows system notifications and keeps an in-app notification history.
+- Each user selects a **delivery mode** (`push` or `pull`) on the web Notifications page. In `pull` mode the server sends nothing to FCM. The app polls the server directly.
 
-## App Pull mode (FCM/relay bypass)
+## Pull mode (FCM and relay bypass)
 
-- The native registration response now also returns `deliveryMode` (`push`|`pull`) and `pullEndpoint`; both are persisted. When `pullEndpoint` is absent it is derived as `{srv}/api/notifications/native/pull`.
-- When the mode is `pull`, the app polls `GET {pullEndpoint}?sub=&hash=&after=<cursor>` — auth is the query params only (the same subscriber HMAC `hash`, URL-encoded), no session/bearer. FCM stays registered but is not the source of truth.
-- Each returned notification is rendered through the same dispatcher as an FCM data message, so the tap behavior is identical. De-duplication is by the strictly-increasing `seq`; a durable per-subscriber `lastCursor` is advanced (to `max(lastCursor, response.cursor)`) only after notifications are handed off, so a crash re-fetches rather than drops.
-- The `deliveryMode` in both the register and pull responses is authoritative: flipping to `push` on the web stops polling; flipping to `pull` resumes it. It is re-read on every app foreground.
-- **Cadence tradeoff:** pull mode has no push to wake the app, so background delivery uses WorkManager periodic work at the platform minimum (15 min) plus an immediate pull on app foreground and after (re)pairing. Near-real-time background delivery would require a foreground service with a short poll loop and a persistent notification — intentionally not the default. 400/401/503 and network errors back off without tight-looping.
+- The native registration response also returns `deliveryMode` (`push` or `pull`) and `pullEndpoint`. The app stores both values. If `pullEndpoint` is absent, the app derives `{srv}/api/notifications/native/pull`.
+- In `pull` mode the app polls `GET {pullEndpoint}?sub=&hash=&after=<cursor>`. The query parameters are the only authentication. The `hash` value is the same URL-encoded subscriber HMAC. The request uses no session and no bearer token. FCM stays registered but is not the source of truth.
+- The app renders each returned notification through the dispatcher that handles an FCM data message. The tap behavior is therefore identical.
+- The strictly increasing `seq` value removes duplicates. The app advances a durable per-subscriber `lastCursor` to `max(lastCursor, response.cursor)`. It advances the cursor only after it hands off the notifications, so a crash causes a re-fetch instead of a lost notification.
+- The `deliveryMode` value in the register response and in the pull response is authoritative. A change to `push` on the web stops the polling. A change to `pull` starts the polling again. The app reads the value again on every app foreground.
+- **Cadence tradeoff**: pull mode has no push message to wake the app. Background delivery uses WorkManager periodic work at the platform minimum of 15 minutes. The app also pulls immediately on app foreground and after each pairing. Near real-time background delivery needs a foreground service with a short poll loop and a persistent notification. This is not the default by design. The app backs off after `400`, `401`, and `503` responses and after network errors, so it does not loop tightly.
 
 ## Firebase setup
 
-1. Create/update your Firebase Android app for application id `com.urlxl.mail`.
+1. Create or update the Firebase Android app for the application id `com.urlxl.mail`.
 2. Download `google-services.json`.
-3. Place it at `app/google-services.json`.
-4. Ensure FCM is enabled in Firebase project settings.
+3. Put the file at `app/google-services.json`.
+4. Enable FCM in the Firebase project settings.
 
-## Notification permission behavior (Android 13+)
+## Notification permission behavior (Android 13 and later)
 
-- App requests `POST_NOTIFICATIONS` at launch.
-- If denied, push payloads are still parsed and saved to in-app history when delivered to app process, but system notifications are not shown.
+- The app requests `POST_NOTIFICATIONS` at launch.
+- If the user denies the permission, the app still parses each delivered push payload and saves it to the in-app history. The app does not show system notifications.
 
-## Pairing from desktop QR
+## Pairing from a desktop QR code
 
-1. Desktop web shows a QR containing the deep link with `sub`, `hash`, `srv`, `pt`, and optionally `reg`.
-2. In the Push Notifications screen, tap **Scan QR Code** (or open the deep link directly, e.g. by tapping it elsewhere on the device — the app registers as a handler for `kypost://native-pair`).
-3. App validates required params (`sub`, `hash`, `srv`, `pt`) and resolves the registration endpoint.
-4. App calls the native registration endpoint with the FCM token; the device is marked paired only on success.
-5. On later FCM token refreshes, the app repeats the same registration call using the stored pairing.
+1. The desktop web app shows a QR code with the deep link. The link contains `sub`, `hash`, `srv`, `pt`, and optionally `reg`.
+2. In the Push Notifications screen, tap **Scan QR Code**. You can also open the deep link directly, because the app is a handler for `kypost://native-pair`.
+3. The app validates the required parameters (`sub`, `hash`, `srv`, `pt`) and resolves the registration endpoint.
+4. The app calls the native registration endpoint with the FCM token. The app marks the device as paired only on success.
+5. On each later FCM token refresh, the app repeats the same registration call with the stored pairing.
 
 ## Troubleshooting checklist
 
-- Verify the deep link scheme/host is exactly `kypost://native-pair` (the legacy `novu-pair` host and the old `llamalabels://` scheme prefix are both no longer supported).
-- Verify required query params exist: `sub`, `hash`, `srv`, `pt`.
-- Verify network access to the resolved registration endpoint (`reg`, or `{srv}/api/notifications/native/register`).
-- Verify Firebase project config matches package `com.urlxl.mail`.
-- If registration fails with `400`, the request was malformed or missing fields.
-- If registration fails with `401`, the pairing token (`pt`) is expired or invalid — rescan a fresh QR.
-- If registration fails with `503`, the backend is missing its `PAIRING_SECRET` configuration (not something the app can retry around).
-- If no visible notification on Android 13+, verify notification permission is granted.
+- Make sure the deep link scheme and host are exactly `kypost://native-pair`. The app no longer supports the legacy `novu-pair` host or the old `llamalabels://` scheme.
+- Make sure the required query parameters exist: `sub`, `hash`, `srv`, and `pt`.
+- Make sure the device can reach the resolved registration endpoint (`reg`, or `{srv}/api/notifications/native/register`).
+- Make sure the Firebase project configuration matches the package `com.urlxl.mail`.
+- If the registration fails with `400`, the request was malformed or missed a field.
+- If the registration fails with `401`, the pairing token (`pt`) is invalid or expired. Scan a new QR code.
+- If the registration fails with `503`, the backend has no `PAIRING_SECRET` configuration. The app cannot retry around this error.
+- If Android 13 or later shows no notification, make sure the user granted the notification permission.
 
 ## Build and test
 
@@ -73,17 +74,18 @@ KyPost is an Android email client with IMAP inbox read, SMTP send, and keyword-b
 ./gradlew assembleDebug
 ```
 
-Instrumented tests (require a connected device/emulator, used for the EncryptedSharedPreferences-backed pairing store):
+Instrumented tests need a connected device or emulator. They cover the pairing store that uses `EncryptedSharedPreferences`.
 
 ```sh
 ./gradlew connectedDebugAndroidTest
 ```
 
-## Test coverage included
+## Test coverage
 
 - Deep-link parser tests (`NativePairingDeepLinkParserTest`)
 - Pairing validation tests (`PairingValidatorTest`)
 - Native registration endpoint resolution tests (`NativeRegistrationEndpointResolverTest`)
 - Payload parser tests (`messageId`, `senderName`, `emailSubject`, `Keywords`)
 - Native registration request mapper tests (`NativeRegistrationRequestMapperTest`)
-- Secure pairing store round-trip/encryption tests (`SecurePairingStoreTest`, instrumented)
+- Secure pairing store round-trip and encryption tests (`SecurePairingStoreTest`, instrumented)
+```
