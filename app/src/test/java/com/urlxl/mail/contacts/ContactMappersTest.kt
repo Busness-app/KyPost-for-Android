@@ -133,6 +133,44 @@ class ContactMappersTest {
     }
 
     @Test
+    fun toEntity_identityChangedOnKeyBearingContact_flaggedForReverification() {
+        // A device-side edit carries the key over untouched, so the fingerprint is unchanged and
+        // the rotation check cannot fire — but the key no longer vouches for the address it is
+        // displayed beside. Any app holding WRITE_CONTACTS can drive this.
+        val previous = ContactEntity(uid = "uid-8", rev = 1, fn = "Alice", pgpKeyFingerprint = TEST_KEY_FINGERPRINT)
+        val dto = ContactDto(uid = "uid-8", rev = 2, fn = "Alice", pgpKey = TEST_KEY)
+
+        val entity = dto.toEntity(previous, identityChanged = true)
+
+        assertEquals(TEST_KEY_FINGERPRINT, entity.pgpKeyFingerprint)
+        assertTrue(entity.pgpKeyNeedsReverification)
+    }
+
+    @Test
+    fun toEntity_identityChangedOnContactWithNoKey_notFlagged() {
+        // Nothing is vouching for anything, so there is no alarm to raise. Flagging here would
+        // put a reverification badge on every ordinary contact edit.
+        val previous = ContactEntity(uid = "uid-9", rev = 1, fn = "Bob")
+        val dto = ContactDto(uid = "uid-9", rev = 2, fn = "Bob")
+
+        val entity = dto.toEntity(previous, identityChanged = true)
+
+        assertFalse(entity.pgpKeyNeedsReverification)
+    }
+
+    @Test
+    fun toEntity_identityChangedButVerifiedInPerson_notFlagged() {
+        // The QR ceremony is the one path where the user just confirmed this key against this
+        // person, so it must still clear rather than raise.
+        val previous = ContactEntity(uid = "uid-10", rev = 1, fn = "Carol", pgpKeyFingerprint = "AAAA BBBB")
+        val dto = ContactDto(uid = "uid-10", rev = 2, fn = "Carol", pgpKey = TEST_KEY)
+
+        val entity = dto.toEntity(previous, verifiedInPerson = true, identityChanged = true)
+
+        assertFalse(entity.pgpKeyNeedsReverification)
+    }
+
+    @Test
     fun toEntity_reverificationFlagStaysSetUntilKeyStabilizes() {
         val previous = ContactEntity(
             uid = "uid-7",

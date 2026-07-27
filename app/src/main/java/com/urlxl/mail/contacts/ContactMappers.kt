@@ -26,6 +26,7 @@ private val mapperJson = Json { ignoreUnknownKeys = true }
 fun ContactDto.toEntity(
     previous: ContactEntity? = null,
     verifiedInPerson: Boolean = false,
+    identityChanged: Boolean = false,
 ): ContactEntity {
     val newFingerprint = pgpKey?.let { PgpFingerprint.compute(it) }
     val previousFingerprint = previous?.pgpKeyFingerprint
@@ -33,6 +34,12 @@ fun ContactDto.toEntity(
         previousFingerprint != null && newFingerprint != null && previousFingerprint != newFingerprint
     val stillNeedsReverification = !verifiedInPerson &&
         previous?.pgpKeyNeedsReverification == true && newFingerprint == previousFingerprint
+    // The mirror of [keyRotated]: same person, different key vs. same key, different person. A
+    // device-side merge carries pgpKey over untouched, so the fingerprint is unchanged and the
+    // rotation check cannot fire — but ContactsContract has no per-account write ACL, so any app
+    // holding WRITE_CONTACTS can swap the address the key is displayed beside, and that edit is
+    // then uploaded to the paired server. Re-arm on the identity, not just on the key.
+    val identityRebound = !verifiedInPerson && identityChanged && !pgpKey.isNullOrBlank()
 
     return ContactEntity(
         uid = uid,
@@ -67,7 +74,7 @@ fun ContactDto.toEntity(
         pronouns = pronouns,
         isSelf = isSelf,
         pgpKeyFingerprint = newFingerprint ?: previousFingerprint,
-        pgpKeyNeedsReverification = keyRotated || stillNeedsReverification,
+        pgpKeyNeedsReverification = keyRotated || stillNeedsReverification || identityRebound,
     )
 }
 

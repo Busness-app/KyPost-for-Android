@@ -163,6 +163,11 @@ class PushRepository(
         // no code path here restarts the process.
         runCatching { com.urlxl.mail.ComposePgpController.resetSessionCache() }
             .onFailure { android.util.Log.e(TAG, "Failed to reset the PGP compose cache", it) }
+        // Same class of process-static state, with a sharper edge: an unsent draft cached under
+        // the previous account is restored by the next Compose, inside the new account's session,
+        // and would be sent through the new account's relay.
+        runCatching { com.urlxl.mail.InMemoryPlaintext.clearAll() }
+            .onFailure { android.util.Log.e(TAG, "Failed to clear in-memory message plaintext", it) }
     }
 
     suspend fun clearPairing() {

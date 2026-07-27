@@ -115,8 +115,17 @@ class DeviceContactRepository(
                 val link = db.deviceContactLinkDao().getByRawContactId(rawContactId)
 
                 if (deleted && link != null) {
-                    syncRepository.queueDelete(link.uid, 0)
-                    db.deviceContactLinkDao().deleteByUid(link.uid)
+                    // Never let a device-side delete tombstone our own identity card. Any app with
+                    // WRITE_CONTACTS can set DELETED=1 on a row under our account type, and the
+                    // server's tombstone clears the contact's PGPKey — for the self contact that is
+                    // the user's own published key. Edits to self still flow (and re-arm the
+                    // reverification flag below); only the destructive direction is refused.
+                    if (db.contactDao().getByUid(link.uid)?.isSelf == true) {
+                        clearDirtyFlag(rawContactId)
+                    } else {
+                        syncRepository.queueDelete(link.uid, 0)
+                        db.deviceContactLinkDao().deleteByUid(link.uid)
+                    }
                 } else if (!deleted && dirty && link != null) {
                     dirtyRawContacts.add(rawContactId)
                 }
@@ -257,7 +266,13 @@ class DeviceContactRepository(
                     phoneticGivenName = mergedPhoneticGivenName,
                     phoneticFamilyName = mergedPhoneticFamilyName,
                 )
-                syncRepository.queueUpdate(mergedDto)
+                // A stored PGP key vouches for a person identified by these fields. ContactsContract
+                // has no per-account write ACL, so any app holding WRITE_CONTACTS can rewrite them
+                // under our account type, and this merge then uploads the result to the paired
+                // server. The key itself is carried over untouched, so the rotation check in
+                // toEntity cannot see it — re-arm on the identity instead.
+                val identityChanged = mergedEmails != roomDto.emails || mergedFn != roomDto.fn
+                syncRepository.queueUpdate(mergedDto, identityChanged = identityChanged)
             }
 
             clearDirtyFlag(rawContactId)

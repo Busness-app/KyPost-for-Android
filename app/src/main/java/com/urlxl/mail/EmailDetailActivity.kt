@@ -22,6 +22,7 @@ import com.urlxl.mail.mail.AttachmentInfo
 import com.urlxl.mail.mail.MailOutcome
 import com.urlxl.mail.mail.MailRepository
 import com.urlxl.mail.mail.MailRuntime
+import com.urlxl.mail.mail.QuotedHtmlSanitizer
 import com.urlxl.mail.mail.addressFromHeader
 import com.urlxl.mail.mail.userFacingMessage
 import com.urlxl.mail.pgp.PgpMessageState
@@ -595,7 +596,7 @@ class EmailDetailActivity : LockedActivity() {
     }
 
     /**
-     * The quoted original, as HTML.
+     * The quoted original, as HTML, sanitized for the compose editor.
      *
      * This used to interpolate `emailPreview`, which is `body.take(140)` of the sender's **raw
      * HTML** (see `RelayMailSource.toUiEmail`). Replying to any HTML message therefore quoted 140
@@ -606,9 +607,18 @@ class EmailDetailActivity : LockedActivity() {
      * Falls back to the escaped preview only when the body genuinely is not available (an
      * uncached message under Hostile Location Protection, or a client-protected one), which is the
      * same condition the PGP bar already reports to the user.
+     *
+     * Both quote builders go through here so the sanitize step cannot be forgotten on one of them.
+     * The editor is a JavaScript-enabled WebView with a bound `@JavascriptInterface` and its
+     * `setHtml` assigns to `innerHTML`, so an `onerror` attribute in a quoted message would execute
+     * with the user's outgoing mail in reach — see [com.urlxl.mail.mail.QuotedHtmlSanitizer].
      */
+    private fun quotedBodyHtml(preview: String): String =
+        fetchedBodyHtml?.takeIf { it.isNotBlank() }?.let { QuotedHtmlSanitizer.sanitize(it) }
+            ?: TextUtils.htmlEncode(preview)
+
     private fun quoteForReply(sender: String, preview: String): String {
-        val quoted = fetchedBodyHtml?.takeIf { it.isNotBlank() } ?: TextUtils.htmlEncode(preview)
+        val quoted = quotedBodyHtml(preview)
         return "<br><br><div>${TextUtils.htmlEncode(sender)} wrote:</div>" +
             "<blockquote style=\"margin:0 0 0 0.8ex;border-left:1px solid #ccc;padding-left:1ex\">" +
             quoted +
@@ -616,7 +626,7 @@ class EmailDetailActivity : LockedActivity() {
     }
 
     private fun quoteForForward(sender: String, subject: String, preview: String): String {
-        val quoted = fetchedBodyHtml?.takeIf { it.isNotBlank() } ?: TextUtils.htmlEncode(preview)
+        val quoted = quotedBodyHtml(preview)
         return "<br><br><div>---------- Forwarded message ----------</div>" +
             "<div>From: ${TextUtils.htmlEncode(sender)}</div>" +
             "<div>Subject: ${TextUtils.htmlEncode(subject)}</div><br>" +

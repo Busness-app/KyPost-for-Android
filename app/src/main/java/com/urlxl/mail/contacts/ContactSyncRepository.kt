@@ -117,10 +117,16 @@ class ContactSyncRepository(
     }
 
     /** [verifiedInPerson] is passed only by the PGP QR flow, where the user has just compared this
-     *  fingerprint out-of-band — see [com.urlxl.mail.contacts.toEntity]. */
-    suspend fun queueUpdate(contact: ContactDto, verifiedInPerson: Boolean = false) {
+     *  fingerprint out-of-band. [identityChanged] is passed only by the device-contact merge, where
+     *  the addresses a stored key vouches for may have been rewritten by another app — see
+     *  [com.urlxl.mail.contacts.toEntity]. */
+    suspend fun queueUpdate(
+        contact: ContactDto,
+        verifiedInPerson: Boolean = false,
+        identityChanged: Boolean = false,
+    ) {
         val previous = db.contactDao().getByUid(contact.uid)
-        db.contactDao().upsertAll(listOf(contact.toEntity(previous, verifiedInPerson)))
+        db.contactDao().upsertAll(listOf(contact.toEntity(previous, verifiedInPerson, identityChanged)))
         db.pendingContactChangeDao().enqueue(
             PendingContactChangeEntity(
                 localUid = contact.uid,

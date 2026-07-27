@@ -122,6 +122,11 @@ dependencies {
     // QR *generation* for the "My QR Code" screen — play-services-code-scanner above only scans.
     implementation("com.google.zxing:core:3.5.3")
     implementation("com.github.infomaniak:android-rich-html-editor:1.1.0")
+    // Sanitizes sender HTML before it is quoted into the compose editor, which is a JavaScript
+    // enabled WebView with a bound @JavascriptInterface. Parser-backed rather than hand-rolled on
+    // purpose: an allowlist applied to a real DOM is the only form that survives mXSS and
+    // malformed-markup tricks, and it is what the comparable clients (K-9, FairEmail) use.
+    implementation(libs.jsoup)
 
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.core.ktx)

@@ -2,6 +2,7 @@ package com.urlxl.mail.security
 
 import android.content.Context
 import android.provider.ContactsContract
+import com.urlxl.mail.InMemoryPlaintext
 import com.urlxl.mail.contacts.device.DeviceContactAccount
 import com.urlxl.mail.contacts.device.DeviceContactAccountManager
 import com.urlxl.mail.data.DataRuntime
@@ -127,6 +128,13 @@ object SecurityWipe {
         // The database goes before the DataStores/prefs (rather than last, as it once did) because
         // nothing below it touches Room any more: clearPairing() — which does purge account-scoped
         // tables — now runs in the network phase, after this.
+        //
+        // Ahead of even that: the in-progress message the user was composing, in full, including
+        // attachment payloads. It needs no I/O, and it is the most sensitive thing this function
+        // touches. AppRestart no longer kills the process (see its KDoc), so without this the wipe
+        // completes, removes the app lock, relaunches into the same JVM — and leaves the draft
+        // restorable from the compose screen in a session the attacker now controls.
+        step("inMemoryPlaintext") { InMemoryPlaintext.clearAll() }
         step("database") { runBlocking { closeAndDeleteDatabase(appContext) } }
         step("datastores") {
             DATASTORE_NAMES.forEach { name ->

@@ -106,6 +106,20 @@ class ComposeActivity : LockedActivity() {
 
         subjectField = findViewById(R.id.composeSubjectField)
         bodyEditor = findViewById(R.id.composeBodyEditor)
+        // The editor ships with JavaScript on and a bound @JavascriptInterface, and it quotes
+        // sender-authored markup. QuotedHtmlSanitizer is the primary control; these are the
+        // independent second layer, and they close the leak that needs no script at all: without
+        // blockNetworkLoads, merely pressing Reply or Forward fetched every remote image, iframe
+        // and stylesheet the sender embedded, defeating the reader's "Show images" opt-in.
+        //
+        // Safe for the editor itself: its chrome is loaded from an inlined template, not over the
+        // network, and on minSdk 31 file:///android_asset stays reachable regardless of
+        // allowFileAccess.
+        bodyEditor.settings.apply {
+            blockNetworkLoads = true
+            allowContentAccess = false
+            allowFileAccess = false
+        }
         bodyPlaceholder = findViewById(R.id.composeBodyPlaceholder)
         attachButton = findViewById(R.id.composeAttachButton)
         attachmentChips = findViewById(R.id.composeAttachmentsCard)

@@ -27,8 +27,10 @@ lifecycleProcess = "2.9.4"
 room = "2.8.4"
 ksp = "2.3.2"
 bouncyCastlePgp = "1.79"
+jsoup = "1.18.3"
 
 [libraries]
+jsoup = { group = "org.jsoup", name = "jsoup", version.ref = "jsoup" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
