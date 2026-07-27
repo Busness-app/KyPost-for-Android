@@ -41,7 +41,30 @@ class PushGraph(context: Context) {
         registrationClient = NativeRegistrationClient(callFactory = pinnedOrFallbackCallFactory),
     )
     val mfaResponseClient = MfaResponseClient(callFactory = pinnedOrFallbackCallFactory)
-    val deregisterClient = DeregisterClient(callFactory = pinnedOrFallbackCallFactory)
+
+    /**
+     * Deregistration gets its own factory purely for the hard call timeout.
+     *
+     * Both callers treat a failed deregister as non-fatal and clear local state regardless
+     * ([PushRepository.unpairDevice]), and [com.urlxl.mail.security.SecurityWipe] runs it while an
+     * attacker may be holding the device — where it must not be able to hold the wipe open for
+     * OkHttp's default connect-plus-read budget. The wipe wrapped it in `withTimeoutOrNull`, which
+     * cannot interrupt a thread blocked in a socket read; OkHttp cancelling its own call can. The
+     * request is a `{}` POST with a one-field response, so this ceiling cannot cut a real one short.
+     */
+    val deregisterClient = DeregisterClient(
+        callFactory = PinnedOrFallbackCallFactory(
+            PinnedCallFactoryProvider(
+                tlsPinProvider = { repository.currentTlsPin() },
+                callTimeoutMillis = DEREGISTER_CALL_TIMEOUT_MS,
+            ),
+            fallback = com.urlxl.mail.pairingHttpClient(callTimeoutMillis = DEREGISTER_CALL_TIMEOUT_MS),
+        ),
+    )
+
+    private companion object {
+        const val DEREGISTER_CALL_TIMEOUT_MS = 3_000L
+    }
 }
 
 object PushRuntime {

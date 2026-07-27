@@ -76,7 +76,12 @@ object PushNotificationDispatcher {
     private fun isLocked(context: Context): Boolean =
         // Fails CLOSED: if the lock state can't be read, redact. Defaulting to "unlocked" turned a
         // storage or Keystore error into exactly the disclosure this gate exists to prevent.
-        runCatching { SecurityRuntime.graph(context).appLockManager.locked.value }.getOrDefault(true)
+        //
+        // isLockedNow(), not locked.value: this runs on a push-delivery thread in a backgrounded
+        // (often freshly-started) process, which is the one situation where the grace window may
+        // have expired with nothing having called lockNow() yet. Reading the flow directly put the
+        // full sender and subject on the lock screen of a phone that had been put down hours ago.
+        runCatching { SecurityRuntime.graph(context).appLockManager.isLockedNow() }.getOrDefault(true)
 
     fun show(context: Context, payload: PushPayload) {
         ensureChannel(context)
@@ -135,18 +140,7 @@ object PushNotificationDispatcher {
 
         val notificationId = mfaNotificationId(payload.challengeId)
 
-        val tapIntent = Intent(context, MfaApprovalActivity::class.java)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            .putExtra(EXTRA_MFA_CHALLENGE_ID, payload.challengeId)
-            // The context the user needs to tell their own sign-in from an attacker's. Safe in
-            // Intent extras: MfaApprovalActivity is not exported, so only this app can supply
-            // them, and MfaChallengeTracker still gates on the id having really been pushed.
-            .putExtra(EXTRA_MFA_IP, payload.ipAddress)
-            .putExtra(EXTRA_MFA_LOCATION, payload.approxLocation)
-            .putExtra(EXTRA_MFA_USER_AGENT, payload.userAgent)
-            .putExtra(EXTRA_MFA_ISSUED_AT, payload.issuedAtEpochMs)
-            .putExtra(EXTRA_MFA_MATCH_DIGITS, payload.matchDigits)
-            .putExtra(EXTRA_MFA_DECOY_DIGITS, payload.decoyDigits.toTypedArray())
+        val tapIntent = mfaApprovalIntent(context, payload)
         val tapPendingIntent = PendingIntent.getActivity(
             context,
             notificationId,
@@ -171,6 +165,31 @@ object PushNotificationDispatcher {
 
         postNotification(context, notificationId, notification)
     }
+
+    /**
+     * The intent that opens [MfaApprovalActivity] for [payload] — the **only** way to build one.
+     *
+     * Every field matters, and the two call sites cannot be allowed to disagree about which ones to
+     * carry. [com.urlxl.mail.MainActivity] used to assemble its own with the challenge id alone, so
+     * a challenge routed through the launcher arrived with no origin (the approval screen printed
+     * "Unknown" for time, location, IP and device) and — worse — no `matchDigits`, which makes
+     * `MfaNumberMatch.optionsFor` return null and silently drops the screen back to a bare Approve
+     * button. Number matching is the whole anti-fatigue control; it must not be possible to lose it
+     * by picking the wrong entry point.
+     *
+     * The context is safe in Intent extras: [MfaApprovalActivity] is not exported, so only this app
+     * can supply them, and [MfaChallengeTracker] still gates on the id having really been pushed.
+     */
+    fun mfaApprovalIntent(context: Context, payload: MfaChallengePayload): Intent =
+        Intent(context, MfaApprovalActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            .putExtra(EXTRA_MFA_CHALLENGE_ID, payload.challengeId)
+            .putExtra(EXTRA_MFA_IP, payload.ipAddress)
+            .putExtra(EXTRA_MFA_LOCATION, payload.approxLocation)
+            .putExtra(EXTRA_MFA_USER_AGENT, payload.userAgent)
+            .putExtra(EXTRA_MFA_ISSUED_AT, payload.issuedAtEpochMs)
+            .putExtra(EXTRA_MFA_MATCH_DIGITS, payload.matchDigits)
+            .putExtra(EXTRA_MFA_DECOY_DIGITS, payload.decoyDigits.toTypedArray())
 
     /**
      * Single exit point for posting, so the POST_NOTIFICATIONS check and the failure handling live

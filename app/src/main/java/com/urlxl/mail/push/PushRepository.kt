@@ -189,9 +189,18 @@ class PushRepository(
      * fails (offline, server already removed the device, credentials already invalid), the device
      * must still be usable to re-pair afterward — local state can never be stuck "paired". Also
      * cancels the periodic pull worker, which [clearPairing] alone does not do.
+     *
+     * [pairing] defaults to reading the credential here, which is right for a user-initiated unpair.
+     * [com.urlxl.mail.security.SecurityWipe] passes one it captured *before* it started deleting
+     * files: the wipe destroys `push_pairing_secure` early on purpose (plaintext first, network
+     * last), so by the time it reaches this call there is nothing left to authenticate with and the
+     * deregister could only ever fail — leaving the relay pushing to a wiped device indefinitely,
+     * which is the exact failure the deregister exists to prevent.
      */
-    suspend fun unpairDevice(deregisterClient: DeregisterClient): DeregisterResult {
-        val pairing = pairingForAuthenticatedCall()
+    suspend fun unpairDevice(
+        deregisterClient: DeregisterClient,
+        pairing: PairingData? = pairingForAuthenticatedCall(),
+    ): DeregisterResult {
         val networkResult = if (pairing != null) {
             deregisterClient.deregister(pairing)
         } else {

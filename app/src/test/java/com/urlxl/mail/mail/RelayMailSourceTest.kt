@@ -14,8 +14,10 @@ import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import okio.Timeout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 
 private fun testPairing() = PairingData(
@@ -388,6 +390,65 @@ class RelayMailSourceTest {
         assertEquals(payload.size, downloaded.bytes.size)
         assertTrue("attachment bytes were altered in transit", payload.contentEquals(downloaded.bytes))
         assertEquals("big.pdf", downloaded.name)
+    }
+
+    /** Drives [readBounded] directly with a small limit rather than allocating the real 25 MB bound
+     *  twice per assertion — the logic under test is the boundary, not the constant. Bodies go
+     *  through [streamingResponse] so they read one segment at a time like a real socket. */
+    private fun readBoundedFrom(bytes: ByteArray, limit: Long): ByteArray {
+        val body = streamingResponse(Request.Builder().url("https://relay.example.com/a").build(), bytes).body!!
+        return readBounded(body, limit)
+    }
+
+    @Test
+    fun readBounded_throwsRatherThanTruncatingAnOversizedBody() {
+        // One byte past the bound. readBounded used to return the prefix, and downloadAttachment
+        // wrapped it in Success — so an oversized attachment was saved to Downloads, and carried
+        // into a forward, as a silently corrupt file. There is no checksum on this path to catch it.
+        val oversized = ByteArray(10_001) { (it % 251).toByte() }
+        try {
+            readBoundedFrom(oversized, 10_000L)
+            fail("expected an IOException for a body past the limit")
+        } catch (expected: java.io.IOException) {
+            assertTrue(expected.message.orEmpty().contains("larger than"))
+        }
+    }
+
+    @Test
+    fun readBounded_acceptsABodyExactlyAtTheLimit() {
+        // The boundary the truncation check must not over-reject: a body of exactly the limit is
+        // legitimate, and `exhausted()` has to report end-of-stream rather than "more to come".
+        val exact = ByteArray(10_000) { (it % 251).toByte() }
+        assertTrue(exact.contentEquals(readBoundedFrom(exact, 10_000L)))
+    }
+
+    @Test
+    fun readBounded_readsAMultiSegmentBodyUnderTheLimitWhole() {
+        // Not a round multiple of 8192, so a truncation to any Okio segment boundary shows.
+        val payload = ByteArray(200_000) { (it % 251).toByte() }
+        assertTrue(payload.contentEquals(readBoundedFrom(payload, 25L * 1024 * 1024)))
+    }
+
+    @Test
+    fun relayRequests_refuseAPersistedNonHttpsServerUrl() {
+        // A pairing saved by a build predating NativePairingDeepLinkParser's https gate. Every
+        // request built from it carries X-Kypost-Device-Secret, so it must not be attempted —
+        // and it must fail as a named BadRequest, not as an opaque platform-level network error.
+        var called = false
+        val callFactory = FakeCallFactory { request ->
+            called = true
+            streamingResponse(request, ByteArray(0))
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing().copy(serverUrl = "http://relay.example") },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = callFactory,
+        )
+
+        val outcome = source.fetchInbox("INBOX", 50, forceFullResync = false)
+
+        assertTrue("expected BadRequest, got $outcome", outcome is MailOutcome.BadRequest)
+        assertFalse("the request must never reach the network", called)
     }
 
     @Test

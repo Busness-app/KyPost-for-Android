@@ -217,53 +217,81 @@ class EmailDetailActivity : LockedActivity() {
             lastRenderedHtml?.let { html -> webView.loadDataWithBaseURL(null, html, "text/html", "utf-8", null) }
         }
 
+        // runCatching, not a bare block: an uncaught exception on an ExecutorService thread is a
+        // process kill, and every input below is chosen by the sender — the body HTML, its length,
+        // its CSS. `stripImportant` threw on a six-hex-digit CSS escape above the Unicode codespace
+        // (fixed in decodeCssEscapes), which crashed the app on open and again on every reopen,
+        // since the message stays in the mailbox. The decode bug is fixed; this makes the next one
+        // an unreadable message rather than an unusable app.
         ioExecutor.execute {
-            val outcome = mailRepository.fetchBody(emailId, emailFolder)
-            val content = (outcome as? MailOutcome.Success)?.value
-            // A failed fetch means "not cached", which is NOT the same as "the server sent no
-            // body" — see MailRepository.fetchBody.
-            val bodyUnavailable = outcome !is MailOutcome.Success
-            val pgpState = pgpMessageStateOf(pgpEncrypted, pgpDecryptError, content?.html, bodyUnavailable)
-            // A client-protected message has no body to fall back to, and emailPreview is the
-            // placeholder subject line — rendering it would look like the message content.
-            val bodyToRender = when (pgpState) {
-                PgpMessageState.CLIENT_PROTECTED,
-                PgpMessageState.DECRYPT_FAILED,
-                PgpMessageState.BODY_UNAVAILABLE -> ""
-                else -> content?.html?.takeIf { it.isNotBlank() } ?: TextUtils.htmlEncode(emailPreview)
-            }
-            // Same length cap as stripImportant, for the same reason: this is a cosmetic heuristic,
-            // and on a multi-megabyte sender-chosen body a bounded "assume none" beats an unbounded
-            // scan. Belt-and-braces with the bounded tag interior in the pattern itself.
-            val hasRemoteImages = bodyToRender.length <= STRIP_IMPORTANT_MAX_LENGTH &&
-                REMOTE_IMAGE_PATTERN.containsMatchIn(bodyToRender)
-            val palette = getStoredThemePalette(this)
-            val monoFontFace = ibmPlexMonoFontFaceCss(this)
-
-            val htmlContent = buildEmailBodyHtml(bodyToRender, palette, monoFontFace, isDark = isDarkPalette(palette))
-            // Resolved here rather than in renderPgpBar: pairingForAuthenticatedCall reads the
-            // Keystore-backed EncryptedSharedPreferences, which is disk I/O and does not belong
-            // on the main thread. Only needed for the one state that offers the button.
-            val webmailUrl = if (pgpState == PgpMessageState.CLIENT_PROTECTED) {
-                PushRuntime.graph(this).repository.pairingForAuthenticatedCall()?.serverUrl
-                    ?.let { webmailMessageUrl(it, emailFolder, emailId) }
-            } else {
-                null
-            }
-
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
-                lastRenderedHtml = htmlContent
-                // Not `bodyToRender`: that is blanked for the PGP states with nothing to show.
-                fetchedBodyHtml = content?.html
-                webView.loadDataWithBaseURL(null, htmlContent, "text/html", "utf-8", null)
-                loading.visibility = android.view.View.GONE
-                imagesBlockedBar.visibility = if (hasRemoteImages) View.VISIBLE else View.GONE
-                renderPgpBar(pgpState, pgpDecryptError, webmailUrl)
-                if (content != null) {
-                    toRecipients = content.toAddresses
-                    ccRecipients = content.ccAddresses
+            runCatching { renderBody(emailId, emailFolder, emailPreview, pgpEncrypted, pgpDecryptError, loading) }
+                .onFailure { error ->
+                    android.util.Log.e(TAG, "Failed to render message body", error)
+                    runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        loading.visibility = android.view.View.GONE
+                        Toast.makeText(this, R.string.email_body_render_failed, Toast.LENGTH_LONG).show()
+                    }
                 }
+        }
+    }
+
+    /** The body fetch, PGP-state resolution and HTML assembly for one message. Extracted from
+     *  `onCreate` so the whole thing sits inside one `runCatching` on the executor thread — see the
+     *  call site for why that matters. */
+    private fun renderBody(
+        emailId: String,
+        emailFolder: String,
+        emailPreview: String,
+        pgpEncrypted: Boolean,
+        pgpDecryptError: String,
+        loading: ProgressBar,
+    ) {
+        val outcome = mailRepository.fetchBody(emailId, emailFolder)
+        val content = (outcome as? MailOutcome.Success)?.value
+        // A failed fetch means "not cached", which is NOT the same as "the server sent no
+        // body" — see MailRepository.fetchBody.
+        val bodyUnavailable = outcome !is MailOutcome.Success
+        val pgpState = pgpMessageStateOf(pgpEncrypted, pgpDecryptError, content?.html, bodyUnavailable)
+        // A client-protected message has no body to fall back to, and emailPreview is the
+        // placeholder subject line — rendering it would look like the message content.
+        val bodyToRender = when (pgpState) {
+            PgpMessageState.CLIENT_PROTECTED,
+            PgpMessageState.DECRYPT_FAILED,
+            PgpMessageState.BODY_UNAVAILABLE -> ""
+            else -> content?.html?.takeIf { it.isNotBlank() } ?: TextUtils.htmlEncode(emailPreview)
+        }
+        // Same length cap as stripImportant, for the same reason: this is a cosmetic heuristic,
+        // and on a multi-megabyte sender-chosen body a bounded "assume none" beats an unbounded
+        // scan. Belt-and-braces with the bounded tag interior in the pattern itself.
+        val hasRemoteImages = bodyToRender.length <= STRIP_IMPORTANT_MAX_LENGTH &&
+            REMOTE_IMAGE_PATTERN.containsMatchIn(bodyToRender)
+        val palette = getStoredThemePalette(this)
+        val monoFontFace = ibmPlexMonoFontFaceCss(this)
+
+        val htmlContent = buildEmailBodyHtml(bodyToRender, palette, monoFontFace, isDark = isDarkPalette(palette))
+        // Resolved here rather than in renderPgpBar: pairingForAuthenticatedCall reads the
+        // Keystore-backed EncryptedSharedPreferences, which is disk I/O and does not belong
+        // on the main thread. Only needed for the one state that offers the button.
+        val webmailUrl = if (pgpState == PgpMessageState.CLIENT_PROTECTED) {
+            PushRuntime.graph(this).repository.pairingForAuthenticatedCall()?.serverUrl
+                ?.let { webmailMessageUrl(it, emailFolder, emailId) }
+        } else {
+            null
+        }
+
+        runOnUiThread {
+            if (isFinishing || isDestroyed) return@runOnUiThread
+            lastRenderedHtml = htmlContent
+            // Not `bodyToRender`: that is blanked for the PGP states with nothing to show.
+            fetchedBodyHtml = content?.html
+            webView.loadDataWithBaseURL(null, htmlContent, "text/html", "utf-8", null)
+            loading.visibility = android.view.View.GONE
+            imagesBlockedBar.visibility = if (hasRemoteImages) View.VISIBLE else View.GONE
+            renderPgpBar(pgpState, pgpDecryptError, webmailUrl)
+            if (content != null) {
+                toRecipients = content.toAddresses
+                ccRecipients = content.ccAddresses
             }
         }
     }
@@ -612,6 +640,8 @@ class EmailDetailActivity : LockedActivity() {
     }
 
     companion object {
+        private const val TAG = "EmailDetailActivity"
+
         const val EXTRA_REMOVED_EMAIL_ID = "removed_email_id"
 
         /** Schemes an email link may open. `intent:`, `file:`, `content:` and any third-party
@@ -749,7 +779,37 @@ private const val STRIP_IMPORTANT_MAX_LENGTH = 512 * 1024
 // whitespace terminator (CSS Syntax §4.3.7), and decodes to a single Unicode code point — so a
 // sender can spell any letter of "important" as an escape (e.g. `!\49 mportant` decodes to
 // `!Important`) instead of the literal character.
+//
+// Six hex digits reach 0xFFFFFF, well past the 0x10FFFF ceiling of the Unicode codespace, so the
+// pattern accepts values that are not code points at all. See [decodeCssEscapes] for why that has
+// to be handled rather than passed straight to Character.toChars.
 private val CSS_ESCAPE = Regex("""\\([0-9a-fA-F]{1,6})\s?""")
+
+/**
+ * Decodes the CSS escape sequences in [candidate], leaving anything that is not a valid code point
+ * as the literal text the sender wrote.
+ *
+ * `Character.toChars` **throws** `IllegalArgumentException` for a code point above 0x10FFFF, and
+ * [CSS_ESCAPE] matches up to six hex digits, so `!\110000 mportant` in a message body used to throw
+ * out of [stripImportant]. That ran on [EmailDetailActivity]'s `ioExecutor`, where an uncaught
+ * exception is a process kill — and since the message stays in the mailbox, every reopen crashed
+ * again. A remote sender got a persistent, un-clearable denial of service on the mail client by
+ * sending one styled `<p>`.
+ *
+ * Out-of-range escapes are left verbatim rather than dropped: CSS says an escape outside the
+ * codespace is a parse error that renders as U+FFFD, so it can never spell a letter of "important"
+ * either way, and leaving the text alone keeps this function's "over-matching is harmless,
+ * under-matching is not" bias pointing the safe direction.
+ */
+private fun decodeCssEscapes(candidate: String): String =
+    CSS_ESCAPE.replace(candidate) { escape ->
+        val codePoint = escape.groupValues[1].toIntOrNull(16)
+        if (codePoint != null && Character.isValidCodePoint(codePoint)) {
+            String(Character.toChars(codePoint))
+        } else {
+            escape.value
+        }
+    }
 
 // `!` followed by up to 24 characters of letters, whitespace, or CSS escapes — a generous
 // window for "important" plus incidental whitespace/escapes, bounded so we don't scan arbitrarily
@@ -780,9 +840,7 @@ internal fun stripImportant(html: String): String {
     if (html.length > STRIP_IMPORTANT_MAX_LENGTH) return html
     val withoutComments = html.replace(CSS_COMMENT, "")
     return BANG_CANDIDATE.replace(withoutComments) { match ->
-        val decoded = CSS_ESCAPE.replace(match.groupValues[1]) { escape ->
-            String(Character.toChars(escape.groupValues[1].toInt(16)))
-        }
+        val decoded = decodeCssEscapes(match.groupValues[1])
         if (decoded.trim().equals("important", ignoreCase = true)) "" else match.value
     }
 }

@@ -1,6 +1,8 @@
 package com.urlxl.mail
 
 import android.app.Application
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
@@ -68,6 +70,13 @@ class KyPostApp : Application(), DefaultLifecycleObserver {
      */
     private var backgroundedAtElapsedMs: Long = 0L
 
+    /** Fires [AppLockSettings.graceMillis] after the app backgrounds; see [onStop]. */
+    private val lockHandler = Handler(Looper.getMainLooper())
+    private val engageLock = Runnable {
+        backgroundedAtElapsedMs = 0L
+        SecurityRuntime.graph(this).appLockManager.lockNow()
+    }
+
     /**
      * Locking is deferred by [AppLockSettings.graceMillis] rather than firing the instant the app
      * loses the foreground.
@@ -82,26 +91,61 @@ class KyPostApp : Application(), DefaultLifecycleObserver {
      * The grace window is the standard resolution (every banking app does this) and is
      * user-configurable, defaulting to 30s — long enough for a file picker round trip, short
      * enough that a pocketed phone re-locks.
+     *
+     * The lock is **scheduled**, not merely deferred to the next foreground. Recording the
+     * background timestamp and evaluating it in [applyLockGrace] alone meant `locked` stayed false
+     * for the entire time the app was away — minutes, hours, days — because nothing else ever calls
+     * `lockNow()`. Two controls that gate on it were void for exactly that window:
+     * [com.urlxl.mail.push.PushNotificationDispatcher.show] redacts the sender and subject only
+     * while locked, so a message arriving on a phone that had been backgrounded since the morning
+     * put both on the lock screen in full; and [AppLockManager]'s cached credential keys, which
+     * `lockNow()` is the only thing that drops, kept the "require unlock to receive push/MFA" gate
+     * open the whole time. [applyLockGrace] is kept as the belt-and-braces path for a process that
+     * was killed and restored with the callback never having fired.
      */
     override fun onStop(owner: LifecycleOwner) {
         val grace = AppLockSettings(this).graceMillis()
         if (grace <= 0L) {
+            lockHandler.removeCallbacks(engageLock)
             SecurityRuntime.graph(this).appLockManager.lockNow()
             backgroundedAtElapsedMs = 0L
             return
         }
         backgroundedAtElapsedMs = SystemClock.elapsedRealtime()
+        // Two mechanisms for one deadline, because neither is sufficient alone. The Handler is what
+        // actually flips the lock state and drops the cached credential keys, but it runs on
+        // `uptimeMillis`, which stops advancing in deep sleep. `scheduleLock` records the same
+        // deadline on `elapsedRealtime`, so AppLockManager.isLockedNow() answers correctly even if
+        // the callback has not fired — see that method.
+        SecurityRuntime.graph(this).appLockManager.scheduleLock(backgroundedAtElapsedMs + grace)
+        lockHandler.removeCallbacks(engageLock)
+        lockHandler.postDelayed(engageLock, grace)
     }
 
+    /**
+     * Resolves the grace window on the way back to the foreground, and cancels the pending
+     * [engageLock] so returning inside the window doesn't re-lock a screen the user is looking at.
+     *
+     * Still re-checks the elapsed time itself rather than trusting the cancelled callback: a
+     * `Handler` callback does not survive process death, and Doze can hold a non-exact
+     * `postDelayed` past its deadline. Whichever of the two notices first, the app locks.
+     */
     private fun applyLockGrace() {
+        lockHandler.removeCallbacks(engageLock)
+        val appLockManager = SecurityRuntime.graph(this).appLockManager
         val backgroundedAt = backgroundedAtElapsedMs
         backgroundedAtElapsedMs = 0L
-        if (backgroundedAt == 0L) return
+        if (backgroundedAt == 0L) {
+            appLockManager.cancelScheduledLock()
+            return
+        }
         // elapsedRealtime, not wall clock: a wall-clock window is defeated by changing the device
         // date, exactly as AppLockState.lockoutUntilElapsedMs already documents.
         val away = SystemClock.elapsedRealtime() - backgroundedAt
         if (away >= AppLockSettings(this).graceMillis()) {
-            SecurityRuntime.graph(this).appLockManager.lockNow()
+            appLockManager.lockNow()
+        } else {
+            appLockManager.cancelScheduledLock()
         }
     }
 }

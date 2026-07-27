@@ -11,7 +11,10 @@ import java.util.Arrays
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.SynchronousQueue
 import java.util.concurrent.ThreadFactory
+import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
 // How long a registered-but-never-opened attachment's bytes may linger in the process heap. Short:
@@ -19,9 +22,28 @@ import java.util.concurrent.TimeUnit
 private const val ATTACHMENT_TTL_MILLIS = 60_000L
 private const val SWEEP_INTERVAL_SECONDS = 15L
 
-/** Bounded pool for pipe writes. One raw `Thread` per attachment was unbounded thread creation
- *  driven by how fast the user can tap. */
-private const val WRITER_THREADS = 2
+/**
+ * Ceiling on *concurrent* pipe writes. One raw `Thread` per attachment was unbounded thread
+ * creation driven by how fast the user can tap; a two-thread fixed pool replaced that with
+ * head-of-line blocking, which is worse.
+ *
+ * A pipe holds 64 KB and `write()` blocks until the reader drains it, so a viewer app that opens
+ * the descriptor and then stops reading — backgrounded, ANR'd, or sniffing only a MIME prefix —
+ * parks its writer thread indefinitely. With a fixed pool of two and an unbounded queue, two such
+ * viewers wedged every subsequent attachment open for the life of the process, with no timeout and
+ * no error, on the one path whose entire purpose is that this is how you open an attachment under
+ * Hostile Location Protection.
+ *
+ * The pool below pairs this cap with a [SynchronousQueue], so a write never waits behind a stalled
+ * one: it either gets a thread immediately or is refused outright, and [EphemeralAttachmentProvider]
+ * turns a refusal into an `IOException` the caller can see. Stalled writers still hold their thread
+ * (nothing can safely interrupt a blocking write mid-stream without handing the viewer a truncated
+ * file), but they can now only consume slots up to this bound.
+ */
+private const val MAX_CONCURRENT_WRITES = 8
+
+/** How long an idle writer thread sticks around before being reclaimed. */
+private const val WRITER_KEEP_ALIVE_SECONDS = 60L
 
 internal data class PendingAttachment(
     val bytes: ByteArray,
@@ -49,7 +71,17 @@ object EphemeralAttachmentBytes {
      */
     private val sweeper = Executors.newSingleThreadScheduledExecutor(daemonThreadFactory("ephemeral-attachment-sweeper"))
 
-    internal val writeExecutor = Executors.newFixedThreadPool(WRITER_THREADS, daemonThreadFactory("ephemeral-attachment-writer"))
+    /** See [MAX_CONCURRENT_WRITES]. `SynchronousQueue` is load-bearing: it has no capacity, so a
+     *  submission that finds every thread busy is rejected immediately instead of queueing behind
+     *  a writer that may never finish. */
+    internal val writeExecutor: ThreadPoolExecutor = ThreadPoolExecutor(
+        0,
+        MAX_CONCURRENT_WRITES,
+        WRITER_KEEP_ALIVE_SECONDS,
+        TimeUnit.SECONDS,
+        SynchronousQueue(),
+        daemonThreadFactory("ephemeral-attachment-writer"),
+    )
 
     init {
         sweeper.scheduleWithFixedDelay(
@@ -123,21 +155,32 @@ class EphemeralAttachmentProvider : ContentProvider() {
         val pipe = ParcelFileDescriptor.createReliablePipe()
         val readSide = pipe[0]
         val writeSide = pipe[1]
-        EphemeralAttachmentBytes.writeExecutor.execute {
-            try {
-                ParcelFileDescriptor.AutoCloseOutputStream(writeSide).use { it.write(attachment.bytes) }
-            } catch (e: Exception) {
-                // Expected/benign, not a bug: the viewer app can close its read side before this
-                // finishes writing (user backs out of the app chooser, the viewer only reads a
-                // MIME-sniffing prefix, etc.), which surfaces here as a broken-pipe IOException.
-                android.util.Log.w(
-                    "EphemeralAttachmentProvider",
-                    "Attachment write aborted (reader likely closed early)",
-                    e,
-                )
-            } finally {
-                Arrays.fill(attachment.bytes, 0)
+        try {
+            EphemeralAttachmentBytes.writeExecutor.execute {
+                try {
+                    ParcelFileDescriptor.AutoCloseOutputStream(writeSide).use { it.write(attachment.bytes) }
+                } catch (e: Exception) {
+                    // Expected/benign, not a bug: the viewer app can close its read side before this
+                    // finishes writing (user backs out of the app chooser, the viewer only reads a
+                    // MIME-sniffing prefix, etc.), which surfaces here as a broken-pipe IOException.
+                    android.util.Log.w(
+                        "EphemeralAttachmentProvider",
+                        "Attachment write aborted (reader likely closed early)",
+                        e,
+                    )
+                } finally {
+                    Arrays.fill(attachment.bytes, 0)
+                }
             }
+        } catch (e: RejectedExecutionException) {
+            // Every writer slot is held by a viewer that stopped reading (see MAX_CONCURRENT_WRITES).
+            // Fail loudly and clean up rather than queueing: an attachment that never opens and
+            // never errors is indistinguishable from a hung app, and the plaintext must not be left
+            // sitting in the heap behind a write that will never run.
+            Arrays.fill(attachment.bytes, 0)
+            runCatching { writeSide.close() }
+            runCatching { readSide.close() }
+            throw IOException("Too many attachment views are still open; close one and retry", e)
         }
         return readSide
     }

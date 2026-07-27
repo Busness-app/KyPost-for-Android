@@ -157,6 +157,27 @@ class EmailDetailActivityTest {
     }
 
     @Test
+    fun stripImportant_survivesEscapesAboveTheUnicodeCodespace() {
+        // The sender picks this. CSS_ESCAPE accepts six hex digits (up to 0xFFFFFF) while
+        // Character.toChars THROWS above 0x10FFFF, so this used to raise IllegalArgumentException
+        // out of stripImportant — on EmailDetailActivity's ioExecutor, where an uncaught exception
+        // kills the process. The message stays in the mailbox, so every reopen crashed again.
+        for (hex in listOf("110000", "ffffff", "FFFFFF", "7FFFFF")) {
+            val input = """<p style="color:red !\$hex mportant">hi</p>"""
+            assertEquals(input, stripImportant(input))
+        }
+    }
+
+    @Test
+    fun stripImportant_stillDecodesTheHighestValidCodePoint() {
+        // 0x10FFFF is the last valid code point — the boundary the guard must not over-reject.
+        // It is not a letter of "important", so the candidate is left alone rather than stripped;
+        // what matters is that it decodes instead of throwing.
+        val input = """color:red !\10FFFF mportant"""
+        assertEquals(input, stripImportant(input))
+    }
+
+    @Test
     fun stripImportant_doesNotAlterUnrelatedBangText() {
         val input = "Great job! Hope you're well."
         assertEquals(input, stripImportant(input))

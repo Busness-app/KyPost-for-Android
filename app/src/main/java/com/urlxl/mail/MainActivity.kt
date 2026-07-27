@@ -3,7 +3,6 @@ package com.urlxl.mail
 import android.content.Intent
 import android.os.Bundle
 import androidx.lifecycle.lifecycleScope
-import com.urlxl.mail.push.MfaApprovalActivity
 import com.urlxl.mail.push.MfaChallengePayloadParser
 import com.urlxl.mail.push.MfaChallengeTracker
 import com.urlxl.mail.push.PushNotificationDispatcher
@@ -66,9 +65,7 @@ class MainActivity : LockedActivity() {
             // it with arbitrary extras — only forward to the approval screen for a challengeId
             // that was actually delivered via a real push, not one an attacker merely supplied.
             if (mfa != null && MfaChallengeTracker(this@MainActivity).isPending(mfa.challengeId)) {
-                val mfaIntent = Intent(this@MainActivity, MfaApprovalActivity::class.java)
-                mfaIntent.putExtra(PushNotificationDispatcher.EXTRA_MFA_CHALLENGE_ID, mfa.challengeId)
-                startActivity(mfaIntent)
+                startActivity(PushNotificationDispatcher.mfaApprovalIntent(this@MainActivity, mfa))
                 finish()
                 return@launch
             }

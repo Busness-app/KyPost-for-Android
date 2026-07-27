@@ -1,6 +1,7 @@
 package com.urlxl.mail.push
 
 import android.content.Context
+import com.urlxl.mail.SingletonGraph
 import com.urlxl.mail.pairingHttpClient
 import okhttp3.Call
 import okhttp3.Request
@@ -19,17 +20,28 @@ import okhttp3.Request
  */
 class PinnedCallFactoryProvider(
     private val tlsPinProvider: () -> TlsPin?,
+    /** Passed through to [pairingHttpClient]; null keeps OkHttp's per-phase defaults. */
+    private val callTimeoutMillis: Long? = null,
 ) : () -> Call.Factory? {
-    @Volatile private var cachedKey: TlsPin? = null
-    @Volatile private var cachedClient: Call.Factory? = null
+    /** The pin and the client built for it, published as ONE reference.
+     *
+     *  These were two separate `@Volatile` fields written one after the other, so two threads
+     *  building for different pins could interleave their writes and leave the client from one pin
+     *  paired with the key of the other — after which [invoke] handed back a client pinned to a
+     *  certificate the caller had not asked for. Narrow (it needs two live pins, i.e. a re-pair),
+     *  but a single immutable pair makes it unrepresentable rather than unlikely. */
+    @Volatile private var cached: Pair<TlsPin, Call.Factory>? = null
 
     override fun invoke(): Call.Factory? {
         val pin = tlsPinProvider() ?: return null
-        cachedClient?.takeIf { cachedKey == pin }?.let { return it }
-        return pairingHttpClient(pinnedSpkiSha256 = pin.spkiSha256, host = pin.host).also {
-            cachedClient = it
-            cachedKey = pin
-        }
+        cached?.takeIf { it.first == pin }?.let { return it.second }
+        val client = pairingHttpClient(
+            pinnedSpkiSha256 = pin.spkiSha256,
+            host = pin.host,
+            callTimeoutMillis = callTimeoutMillis,
+        )
+        cached = pin to client
+        return client
     }
 }
 
@@ -49,17 +61,32 @@ class PinnedOrFallbackCallFactory(
 }
 
 /**
- * Convenience for wiring a [PinnedOrFallbackCallFactory] to [PushRuntime]'s shared repository —
- * for every client/graph that lives *outside* [PushGraph] itself. [PushGraph]'s own internal
- * clients cannot use this (it would recursively call [PushRuntime.graph] while [PushGraph] is
- * still being constructed) and instead wire a [PinnedCallFactoryProvider] directly to their own
- * repository instance — see `PushGraph.pinnedOrFallbackCallFactory`.
+ * The one [PinnedOrFallbackCallFactory] shared by every client/graph that lives *outside*
+ * [PushGraph] itself. [PushGraph]'s own internal clients cannot use this (it would recursively call
+ * [PushRuntime.graph] while [PushGraph] is still being constructed) and instead wire a
+ * [PinnedCallFactoryProvider] directly to their own repository instance — see
+ * `PushGraph.pinnedOrFallbackCallFactory`.
+ *
+ * Process-scoped, because this used to build a brand-new one — and with it a brand-new
+ * [pairingHttpClient] for the unpinned fallback, plus a fresh pinned client the moment a pin
+ * existed — on **every call**. It is invoked from default-argument positions that re-evaluate per
+ * call ([com.urlxl.mail.pgp.hasPgpIdentity]) and per screen
+ * ([com.urlxl.mail.ComposePgpController.from], twice), so opening the contacts list or the composer
+ * repeatedly accumulated `OkHttpClient`s, each holding its own `ConnectionPool` of idle keep-alive
+ * sockets for five minutes plus a cleanup thread. Sharing one instance also means TLS sessions and
+ * connections are actually reused across these clients, which was the point of [PushGraph] holding
+ * a single factory in the first place.
+ *
+ * Safe to hold across an [com.urlxl.mail.security.AppRestart]: the pin is resolved through
+ * [PushRuntime.graph] on every request rather than captured, so a rebuilt graph — or a re-pairing
+ * that replaces the pin — is picked up on the next call with nothing to invalidate here.
  */
-fun pinnedPairingCallFactory(context: Context): Call.Factory {
-    val appContext = context.applicationContext
-    return PinnedOrFallbackCallFactory(
+private val sharedPinnedCallFactory = SingletonGraph<Call.Factory> { appContext ->
+    PinnedOrFallbackCallFactory(
         PinnedCallFactoryProvider(
             tlsPinProvider = { PushRuntime.graph(appContext).repository.currentTlsPin() },
         ),
     )
 }
+
+fun pinnedPairingCallFactory(context: Context): Call.Factory = sharedPinnedCallFactory.get(context)

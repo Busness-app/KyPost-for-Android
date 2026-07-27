@@ -38,14 +38,69 @@ class AppLockManager(
     private val onWipe: suspend () -> WipeResult,
 ) {
     private val _locked = MutableStateFlow(state.isLockEnabled())
+
+    /**
+     * Observable lock state, for screens that react to it.
+     *
+     * A **security decision must use [isLockedNow] instead**: this flow only changes when something
+     * calls [lockNow], and the background grace window's timer is not a guarantee that anything
+     * will. See [scheduleLock].
+     */
     val locked: StateFlow<Boolean> = _locked.asStateFlow()
 
     @Volatile
     private var credentialKeys: CredentialKeys? = null
 
+    /**
+     * When a pending background grace window expires, on [android.os.SystemClock.elapsedRealtime]'s
+     * timebase. Zero means no lock is pending (the app is in the foreground, or already locked).
+     */
+    @Volatile
+    private var lockDeadlineElapsedMs: Long = 0L
+
     fun lockNow() {
+        lockDeadlineElapsedMs = 0L
         if (state.isLockEnabled()) _locked.value = true
         credentialKeys = null
+    }
+
+    /**
+     * Arms the background grace window: the app counts as locked from [deadlineElapsedMs] onward
+     * whether or not anything has called [lockNow] by then.
+     *
+     * [com.urlxl.mail.KyPostApp] also posts a `Handler` callback for the same deadline, because
+     * something has to actually flip [locked] for the UI and drop the cached credential keys. That
+     * callback is not sufficient on its own: `Handler.postDelayed` runs on `uptimeMillis`, which
+     * does not advance while the device is in deep sleep — precisely the pocketed-phone case the
+     * grace window's own doc invokes. The deadline recorded here is on `elapsedRealtime`, which
+     * does, so [isLockedNow] gives the right answer even if the callback has not run yet.
+     */
+    fun scheduleLock(deadlineElapsedMs: Long) {
+        lockDeadlineElapsedMs = deadlineElapsedMs
+    }
+
+    /** Disarms a pending grace window — the app came back to the foreground inside it. */
+    fun cancelScheduledLock() {
+        lockDeadlineElapsedMs = 0L
+    }
+
+    /**
+     * Whether the app is locked *right now*, resolving an expired-but-unfired grace window on the
+     * spot (and flipping [locked] as a side effect, so the UI catches up too).
+     *
+     * This is what every gate on lock state must call. Reading [locked] directly meant the sender
+     * and subject redaction in [com.urlxl.mail.push.PushNotificationDispatcher] — and the credential
+     * gate below — stayed off for as long as nothing happened to call [lockNow], which with a
+     * background grace window is unbounded.
+     */
+    fun isLockedNow(): Boolean {
+        if (_locked.value) return true
+        val deadline = lockDeadlineElapsedMs
+        if (deadline != 0L && elapsedRealtimeMs() >= deadline) {
+            lockNow()
+            return _locked.value
+        }
+        return false
     }
 
     fun unlockWithBiometric() {
@@ -106,8 +161,15 @@ class AppLockManager(
 
     /** The PIN-derived keys for unwrapping `deviceSecret`, if "require unlock to receive
      *  push/MFA" is on and the app is currently unlocked via PIN — null otherwise, including
-     *  the instant [lockNow] runs. See [com.urlxl.mail.push.SecurePairingStore]. */
-    fun cachedCredentialKeys(): CredentialKeys? = credentialKeys
+     *  the instant [lockNow] runs. See [com.urlxl.mail.push.SecurePairingStore].
+     *
+     *  Routed through [isLockedNow] rather than reading the field directly: with a background grace
+     *  window, `lockNow()` may not have run yet even though the window has expired, and these keys
+     *  are exactly what the gate exists to withhold from a backgrounded app. */
+    fun cachedCredentialKeys(): CredentialKeys? {
+        if (isLockedNow()) return null
+        return credentialKeys
+    }
 
     /** Drops the cached keys without locking. Needed when the credential gate is switched off: the
      *  keys otherwise stayed cached, and [com.urlxl.mail.push.PushRepository.savePairing] would

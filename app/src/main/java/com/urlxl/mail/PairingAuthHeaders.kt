@@ -34,8 +34,19 @@ fun Request.Builder.pairingAuthHeaders(deviceId: String, deviceSecret: String): 
  */
 /** [pinnedSpkiSha256] + [host] both null (the default) matches every existing call site
  *  unchanged — no pin enforced, exactly today's behavior. Both non-null enables TOFU pinning
- *  for that host; see [com.urlxl.mail.security.SpkiPinner]. */
-fun pairingHttpClient(pinnedSpkiSha256: String? = null, host: String? = null): OkHttpClient {
+ *  for that host; see [com.urlxl.mail.security.SpkiPinner].
+ *
+ *  [callTimeoutMillis] sets a hard ceiling on the *whole* call — connect, write, read, redirects —
+ *  rather than the per-phase defaults. Null keeps OkHttp's defaults, which is right for the
+ *  endpoints that stream up to 25 MB of attachment. It exists for the deregister call, where
+ *  `withTimeoutOrNull` could not deliver the bound its caller documented: coroutine cancellation
+ *  cannot interrupt a thread blocked inside a socket read, so the only thing that actually bounds a
+ *  blocking OkHttp call is OkHttp cancelling it. See [com.urlxl.mail.security.SecurityWipe]. */
+fun pairingHttpClient(
+    pinnedSpkiSha256: String? = null,
+    host: String? = null,
+    callTimeoutMillis: Long? = null,
+): OkHttpClient {
     val builder = OkHttpClient.Builder()
         .followRedirects(false)
         .followSslRedirects(false)
@@ -44,6 +55,9 @@ fun pairingHttpClient(pinnedSpkiSha256: String? = null, host: String? = null): O
         builder.certificatePinner(
             CertificatePinner.Builder().add(host, pinnedSpkiSha256).build(),
         )
+    }
+    if (callTimeoutMillis != null) {
+        builder.callTimeout(callTimeoutMillis, java.util.concurrent.TimeUnit.MILLISECONDS)
     }
     return builder.build()
 }

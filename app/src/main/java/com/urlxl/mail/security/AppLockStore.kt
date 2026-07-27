@@ -86,6 +86,16 @@ class AppLockStore(context: Context) : AppLockState {
      * every cached message still on disk: deleting one file disabled the lock. This marker
      * survives that, so [tripwireBroken] can tell "never configured" apart from "configured, and
      * the state just vanished" — and the latter is treated as hostile.
+     *
+     * **What this does not defend.** The tripwire only fires when the app next *launches*, so it
+     * defends against an attacker who tampers with the app-lock state and then tries to use the
+     * app. It does nothing against one who simply reads `kypost_mail.db`, which is unencrypted
+     * SQLite holding every cached message body, contact and stored PGP key — no launch, no PIN, no
+     * lockout ladder, no wipe. That is a deliberate scope boundary, not an oversight: the app lock
+     * defends the *UI*, and the sandbox is what defends the data at rest. Hostile Location
+     * Protection ([HostileLocationSettings], which swaps Room to in-memory) is the feature for
+     * users whose threat model includes offline filesystem access. See `app/src/main/AGENTS.md`
+     * for why encryption-at-rest was not chosen instead.
      */
     private val tripwire: SharedPreferences =
         appContext.getSharedPreferences(TRIPWIRE_PREFS_FILE_NAME, Context.MODE_PRIVATE)

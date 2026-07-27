@@ -100,6 +100,22 @@ Owns production Android app code and resources.
   `android.disallowKotlinSourceSets=false` in `gradle.properties` to coexist with AGP's built-in
   Kotlin compilation (this project applies no separate `org.jetbrains.kotlin.android` plugin) — a
   known KSP/AGP-9 interaction (google/ksp#2729), not a general opt-out of that migration.
+- **`kypost_mail.db` is deliberately NOT encrypted at rest.** It is plain SQLite holding every
+  cached message body, every contact and every stored PGP key. The app-lock apparatus (PIN, lockout
+  ladder, wipe threshold, `AppLockStore`'s tripwire) defends the **UI**; the Android app sandbox is
+  what defends the **data**. An attacker with offline filesystem access — root, a hostile backup, a
+  forensic image — reads the database directly and none of the lock machinery is in the path. Say
+  this plainly rather than implying otherwise: `AppLockStore.tripwire`'s KDoc names "an attacker
+  with filesystem access" as in-scope, and it means one who tampers and then *launches the app*,
+  which is a much narrower adversary.
+  Hostile Location Protection (`security/HostileLocationSettings` → `data/DataGraph` builds Room
+  in-memory) is the answer for users whose threat model includes that adversary, at the cost of all
+  offline access. SQLCipher was NOT adopted: it is a large native dependency squarely against "do
+  not add new dependencies unless they reduce overall code size/complexity" below, and it would need
+  a passphrase design (the app-lock PIN is a 10^6 keyspace, so the Keystore pepper would be doing
+  all the work), a migration for existing plaintext databases, and rework of the wipe. Revisit that
+  decision deliberately rather than drifting into it — and if it changes, this bullet and
+  `AppLockStore.tripwire`'s KDoc both move together.
 - STYLE_GUIDE.md §7 gaps are closed: `EmailDetailActivity`'s WebView renders the body in the real
   IBM Plex Mono font via a base64-inlined `@font-face` (`AppTheme.ibmPlexMonoFontFaceCss`, backed
   by `assets/fonts/IBMPlexMono-Regular.ttf`) rather than a `file://` base URL, to avoid granting

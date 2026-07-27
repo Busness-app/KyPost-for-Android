@@ -189,6 +189,70 @@ class AppLockManagerTest {
         assertEquals(0L, manager.remainingLockoutMillis())
     }
 
+    // --- Background grace window --------------------------------------------------------------
+
+    @Test
+    fun isLockedNow_staysFalse_insideTheGraceWindow() = runBlocking {
+        manager.attemptPin("482913")
+        assertFalse(manager.isLockedNow())
+
+        manager.scheduleLock(clock + 30_000L)
+        clock += 29_999L
+
+        assertFalse("the grace window has not expired yet", manager.isLockedNow())
+    }
+
+    @Test
+    fun isLockedNow_locksOnceTheGraceWindowExpires_withoutLockNowEverBeingCalled() = runBlocking {
+        manager.attemptPin("482913")
+        manager.scheduleLock(clock + 30_000L)
+
+        clock += 30_000L
+
+        // The whole point: nothing called lockNow(). KyPostApp's Handler runs on uptimeMillis,
+        // which does not advance in deep sleep, so on a pocketed phone it may not have fired.
+        // Before this existed, `locked` stayed false for the entire time the app was backgrounded,
+        // and PushNotificationDispatcher put the sender and subject on the lock screen in full.
+        assertTrue(manager.isLockedNow())
+        assertTrue("the observable flow must catch up too", manager.locked.value)
+    }
+
+    @Test
+    fun isLockedNow_dropsCachedCredentialKeys_whenTheGraceWindowExpires() = runBlocking {
+        val salt = CredentialCipher.randomSalt()
+        val gated = FakeAppLockState(credentialSalt = salt).apply { setCredentialPinGateEnabled(true) }
+        val gatedManager = newManager(gated)
+        gatedManager.attemptPin("482913")
+        assertTrue(gatedManager.cachedCredentialKeys() != null)
+
+        gatedManager.scheduleLock(clock + 30_000L)
+        clock += 30_000L
+
+        // The credential gate is meant to withhold the device secret from a backgrounded app;
+        // holding the keys until something called lockNow() left it open indefinitely.
+        assertTrue(gatedManager.cachedCredentialKeys() == null)
+    }
+
+    @Test
+    fun cancelScheduledLock_disarmsAnExpiredWindow_forAnAppThatCameBack() = runBlocking {
+        manager.attemptPin("482913")
+        manager.scheduleLock(clock + 30_000L)
+
+        manager.cancelScheduledLock()
+        clock += 60_000L
+
+        assertFalse("returning to the foreground inside the window must not lock later", manager.isLockedNow())
+    }
+
+    @Test
+    fun isLockedNow_ignoresTheDeadline_whenTheLockIsDisabled() {
+        val open = newManager(FakeAppLockState(lockEnabled = false))
+        open.scheduleLock(clock + 1_000L)
+        clock += 1_000L
+
+        assertFalse(open.isLockedNow())
+    }
+
     // --- Credential keys ----------------------------------------------------------------------
 
     @Test

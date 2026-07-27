@@ -25,7 +25,10 @@ abstract class LockedActivity : AppCompatActivity() {
      *  opt out deliberately; no current screen does. */
     protected open val secureWindow: Boolean = true
 
-    protected fun isLocked(): Boolean = SecurityRuntime.graph(this).appLockManager.locked.value
+    /** [AppLockManager.isLockedNow], not the flow's current value: a screen resumed after the
+     *  background grace window expired must gate on the window having expired, not on whether
+     *  anything happened to call `lockNow()` in the meantime. */
+    protected fun isLocked(): Boolean = SecurityRuntime.graph(this).appLockManager.isLockedNow()
 
     /**
      * True once this Activity has been redirected to the unlock screen. Subclasses whose `onCreate`

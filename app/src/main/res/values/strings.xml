@@ -334,6 +334,7 @@
     <string name="security_pin_incorrect">Incorrect PIN</string>
 
     <string name="email_link_no_handler">No app can open that link</string>
+    <string name="email_body_render_failed">This message could not be displayed. Try opening it in webmail.</string>
 
     <!-- Notification redaction while the app lock is engaged -->
     <string name="notification_hidden_while_locked">New activity — unlock to view</string>

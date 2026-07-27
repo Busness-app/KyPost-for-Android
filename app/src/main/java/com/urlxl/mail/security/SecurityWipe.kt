@@ -104,6 +104,17 @@ object SecurityWipe {
         // launch until it completes cleanly. Written with commit(), before anything is destroyed.
         markWipeInProgress(appContext, true)
 
+        // Captured BEFORE the destruction below, which deletes `push_pairing_secure` in the
+        // sharedPrefs step. The deregister runs last on purpose — destroying the plaintext must not
+        // wait on a network round trip — but it authenticates with a credential that lives in the
+        // file that step removes, so reading it at call time meant the deregister could only ever
+        // report "Device is not paired" and the server kept pushing to a wiped device forever.
+        // Holding the secret in memory for the duration of the wipe costs nothing: this process is
+        // about to be relaunched, and the same secret was already in memory to get here.
+        val pairingForDeregister = runCatching { PushRuntime.graph(appContext).repository.pairingForAuthenticatedCall() }
+            .onFailure { android.util.Log.w(TAG, "Could not read the pairing before wiping; deregister will be skipped", it) }
+            .getOrNull()
+
         // Local plaintext FIRST, before anything that can block.
         //
         // This used to lead with tearDownPushDelivery(), whose first act is an authenticated HTTP
@@ -126,13 +137,19 @@ object SecurityWipe {
         step("webViewState") { clearWebViewState(appContext) }
         step("deviceContacts") { removeSyncedDeviceContacts(appContext) }
 
-        // Network teardown LAST, and time-boxed. The credential it authenticates with lives in
-        // push_pairing_secure, which the sharedPrefs step above has already deleted — so this is
-        // now a best-effort courtesy to the server rather than a precondition. Both message
-        // handlers no-op without a pairing, so the "wipe re-accumulates metadata" failure the old
-        // ordering guarded against cannot happen once the local state is already gone.
+        // Network teardown LAST, and time-boxed, using the credential captured at the top. Both
+        // message handlers no-op without a pairing, so the "wipe re-accumulates metadata" failure
+        // the old ordering guarded against cannot happen once the local state is already gone.
+        //
+        // The bound is enforced by the deregister client's own `callTimeout` (see
+        // PushGraph.deregisterClient), not by this withTimeoutOrNull: coroutine cancellation cannot
+        // interrupt a thread blocked inside a socket read, so the wrapper alone left the documented
+        // ceiling as decoration over OkHttp's much larger defaults. It stays as an outer guard for
+        // the non-network work in tearDownPushDelivery.
         step("deregister") {
-            runBlocking { withTimeoutOrNull(DEREGISTER_TIMEOUT_MS) { tearDownPushDelivery(appContext) } }
+            runBlocking {
+                withTimeoutOrNull(DEREGISTER_TIMEOUT_MS) { tearDownPushDelivery(appContext, pairingForDeregister) }
+            }
         }
         // Belt and braces: clears the in-memory pairing StateFlow so anything still holding the
         // graph sees "not paired" rather than a stale pairing read before the file was deleted.
@@ -213,12 +230,12 @@ object SecurityWipe {
      * app's sandbox holding the WebPush ECDH private key and auth secret, which the wipe never
      * touched — that is what let delivery keep working rather than merely being attempted.
      */
-    private suspend fun tearDownPushDelivery(appContext: Context) {
+    private suspend fun tearDownPushDelivery(appContext: Context, pairing: com.urlxl.mail.push.PairingData?) {
         val graph = runCatching { PushRuntime.graph(appContext) }
             .onFailure { android.util.Log.e(TAG, "Push graph unavailable during teardown", it) }
             .getOrNull()
         if (graph != null) {
-            runCatching { graph.repository.unpairDevice(graph.deregisterClient) }
+            runCatching { graph.repository.unpairDevice(graph.deregisterClient, pairing) }
                 .onFailure { android.util.Log.w(TAG, "Server deregistration failed; local state is already gone", it) }
         }
         runCatching { com.urlxl.mail.push.UnifiedPushRegistrar.unregister(appContext) }

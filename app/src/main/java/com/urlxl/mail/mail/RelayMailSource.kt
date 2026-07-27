@@ -5,6 +5,7 @@ import com.urlxl.mail.executeSync
 import com.urlxl.mail.pairingAuthHeaders
 import com.urlxl.mail.pairingHttpClient
 import com.urlxl.mail.push.PairingData
+import com.urlxl.mail.push.pairingUrlHost
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import okhttp3.Call
@@ -13,6 +14,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.IOException
 
 private val JSON_MEDIA_TYPE = "application/json".toMediaType()
 private const val NOT_CONFIGURED_PREFIX = "imap configuration is required"
@@ -335,8 +337,30 @@ class RelayMailSource(
         return onResponse(code, body)
     }
 
-    private fun baseUrl(pairing: PairingData, path: String): HttpUrl? =
-        "${pairing.serverUrl.trimEnd('/')}$path".toHttpUrlOrNull()
+    /**
+     * The endpoint URL for [path], or null if the pairing's `serverUrl` is not one this app may send
+     * credentials to.
+     *
+     * [pairingUrlHost] re-checks https (and rejects userinfo) at *request* time, not just at pairing
+     * time. `toHttpUrlOrNull` accepts `http://` without complaint, and every request built here
+     * carries `X-Kypost-Device-Secret`, so a pairing persisted by a build predating
+     * `NativePairingDeepLinkParser`'s https gate reached this point looking valid.
+     *
+     * `network_security_config.xml` is what actually stops those bytes leaving the device, and it
+     * still is — this is the second lock, not the first. It buys two things. The platform refusal
+     * surfaces as an opaque `UnknownServiceException` mapped to `UpstreamFailure`, i.e. "the server
+     * is having problems"; refusing here yields `BadRequest("Server URL is not valid")`, which is
+     * true and points at re-pairing. And it does not depend on the merged manifest — the network
+     * config's own comment warns that any dependency declaring `usesCleartextTraffic="true"` flips
+     * that default silently, which is precisely the kind of change no test would catch.
+     *
+     * `sameOrigin` and `pairingUrlHost` both already carry doc comments about re-validating
+     * persisted pairings; this was the one consumer that didn't.
+     */
+    private fun baseUrl(pairing: PairingData, path: String): HttpUrl? {
+        if (pairingUrlHost(pairing.serverUrl) == null) return null
+        return "${pairing.serverUrl.trimEnd('/')}$path".toHttpUrlOrNull()
+    }
 }
 
 /** Pulls the filename out of a Content-Disposition header, honoring both the RFC 5987 `filename*`
@@ -345,9 +369,19 @@ class RelayMailSource(
  *  `MaxInboundMessageBytes`, so no legitimate attachment is refused. */
 private const val MAX_ATTACHMENT_DOWNLOAD_BYTES = 25L * 1024 * 1024
 
-/** Reads at most [limit] bytes, returning what it got. A body longer than the limit is truncated
- *  rather than allocated in full — the caller's checksum/parse will fail on a truncated attachment,
- *  which is a far better outcome than an out-of-memory kill.
+/** Reads at most [limit] bytes, and throws [IOException] if the body had more to give — never
+ *  allocating the whole of an oversized body, which is the out-of-memory kill this bound exists to
+ *  prevent.
+ *
+ *  It THROWS rather than returning the prefix. Returning what it got made "read exactly [limit]
+ *  bytes" and "read the first [limit] bytes of a much larger body" indistinguishable, and
+ *  [RelayMailSource.downloadAttachment] wrapped both in `MailOutcome.Success` — so an oversized
+ *  attachment was saved to Downloads, and carried into a forward, as a silently corrupt prefix. The
+ *  old doc justified that with "the caller's checksum/parse will fail", but there is no checksum on
+ *  this path and most formats read a truncated file without complaining. Throwing matches
+ *  [com.urlxl.mail.BodySizeLimitInterceptor], which bounds every other response the same way and
+ *  for the same stated reason: callers map an IOException to `UpstreamFailure`, and a named failure
+ *  beats a mystery.
  *
  *  The read LOOPS. `BufferedSource.read(sink, byteCount)` reads *up to* `byteCount` and returns how
  *  many bytes it actually got; it does not fill. Okio's `RealBufferedSource` — what wraps a real
@@ -360,11 +394,16 @@ private const val MAX_ATTACHMENT_DOWNLOAD_BYTES = 25L * 1024 * 1024
  *  fake took a fast path that does not exist on a socket, in exactly the dimension under test. See
  *  `RelayMailSourceTest.downloadAttachment_readsBodiesLargerThanOneOkioSegment`, which drives a
  *  multi-segment body through a non-Buffer source. */
-private fun readBounded(body: okhttp3.ResponseBody, limit: Long): ByteArray {
+internal fun readBounded(body: okhttp3.ResponseBody, limit: Long): ByteArray {
     val source = body.source()
     val buffer = okio.Buffer()
     while (buffer.size < limit) {
-        if (source.read(buffer, limit - buffer.size) == -1L) break
+        if (source.read(buffer, limit - buffer.size) == -1L) return buffer.readByteArray()
+    }
+    // Stopped on the bound, not on end-of-stream. One more byte available means the body was larger
+    // than the limit and everything read so far is a prefix, not the attachment.
+    if (!source.exhausted()) {
+        throw IOException("Attachment is larger than the $limit byte download limit")
     }
     return buffer.readByteArray()
 }
