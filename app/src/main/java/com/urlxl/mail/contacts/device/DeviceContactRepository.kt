@@ -100,6 +100,11 @@ class DeviceContactRepository(
 
         val dirtyRawContacts = mutableListOf<Long>()
 
+        // Loaded once. `getByRawContactId` was called from inside the cursor loop, so a device with
+        // N synced contacts issued N Room queries per sync cycle to read a table that is small
+        // enough to hold entirely.
+        val linksByRawContactId = db.deviceContactLinkDao().getAll().associateBy { it.rawContactId }
+
         contentResolver.query(
             ContactsContract.RawContacts.CONTENT_URI,
             projection,
@@ -112,7 +117,7 @@ class DeviceContactRepository(
                 val deleted = cursor.getInt(cursor.getColumnIndexOrThrow(ContactsContract.RawContacts.DELETED)) != 0
                 val dirty = cursor.getInt(cursor.getColumnIndexOrThrow(ContactsContract.RawContacts.DIRTY)) != 0
 
-                val link = db.deviceContactLinkDao().getByRawContactId(rawContactId)
+                val link = linksByRawContactId[rawContactId]
 
                 if (deleted && link != null) {
                     // Never let a device-side delete tombstone our own identity card. Any app with
@@ -132,11 +137,15 @@ class DeviceContactRepository(
             }
         }
 
+        // Same reasoning as linksByRawContactId above: one read of the contacts table instead of a
+        // getByUid per dirty row.
+        val roomByUid = db.contactDao().observeAll().first().associateBy { it.uid }
+
         for (rawContactId in dirtyRawContacts) {
             val snapshot = readRawContactSnapshot(rawContactId) ?: continue
-            val link = db.deviceContactLinkDao().getByRawContactId(rawContactId) ?: continue
+            val link = linksByRawContactId[rawContactId] ?: continue
 
-            val roomEntity = db.contactDao().getByUid(link.uid) ?: continue
+            val roomEntity = roomByUid[link.uid] ?: continue
             val roomDto = roomEntity.toDto()
 
             val roomUpdatedAtEpochMs = roomDto.updatedAt?.let { DeviceContactConflictResolver.parseIso(it) }
@@ -345,6 +354,10 @@ class DeviceContactRepository(
         }
 
         val existing = db.contactDao().observeAll().first().map { it.toDto() }
+        // Built once for the whole candidate loop. `findMatch(…, existing)` re-normalized and
+        // rescanned every stored contact for every candidate, which is O(candidates x contacts)
+        // string comparisons on a path that runs from a WorkManager job and from app foreground.
+        val matchIndex = DeviceContactMatcher.Index.of(existing)
 
         for (rawContactId in rawContactCandidates) {
             val candidate = readRawContactSnapshot(rawContactId)
@@ -355,11 +368,7 @@ class DeviceContactRepository(
             val candidateEmails = candidate.emails.map { it.value }
             val candidatePhones = candidate.phones.map { it.value }
 
-            val matchedUid = DeviceContactMatcher.findMatch(
-                candidateEmails,
-                candidatePhones,
-                existing,
-            )
+            val matchedUid = matchIndex.findMatch(candidateEmails, candidatePhones)
 
             if (matchedUid != null) {
                 // Deliberately do NOT link a uid to a raw contact owned by another account.
@@ -386,10 +395,13 @@ class DeviceContactRepository(
                     )
                 }
             } else if (candidateEmails.isNotEmpty() || candidatePhones.isNotEmpty()) {
+                // Compared against the contact's WHOLE email and phone lists, not `firstOrNull()`.
+                // Matching only the head meant a contact whose shared address happened to sit
+                // second in either list read as "not imported yet" and was queued as a create —
+                // producing the duplicate this dedupe exists to prevent, decided by field order.
                 val alreadyImported = existing.any { existingContact ->
                     existingContact.fn.equals(candidate.fn, ignoreCase = true) &&
-                        (candidateEmails.any { it.equals(existingContact.emails.firstOrNull()?.value ?: "", ignoreCase = true) } ||
-                            candidatePhones.any { it == existingContact.phones.firstOrNull()?.value })
+                        sharesAnyIdentifier(existingContact, candidateEmails, candidatePhones)
                 }
                 if (!alreadyImported) {
                     val newDto = candidate.toContactDto(UUID.randomUUID().toString(), 0)
@@ -401,8 +413,23 @@ class DeviceContactRepository(
         settings.setLastForeignScanAtEpochMs(System.currentTimeMillis())
     }
 
+    /** True when [existingContact] and the candidate share any email or phone, normalized the same
+     *  way [DeviceContactMatcher] does so "+1 555…" and "555…" are the same number here too. */
+    private fun sharesAnyIdentifier(
+        existingContact: ContactDto,
+        candidateEmails: List<String>,
+        candidatePhones: List<String>,
+    ): Boolean {
+        val existingEmails = existingContact.emails.map { DeviceContactMatcher.normalizeEmail(it.value) }.toSet()
+        val existingPhones = existingContact.phones.map { DeviceContactMatcher.normalizePhone(it.value) }.toSet()
+        return candidateEmails.any { DeviceContactMatcher.normalizeEmail(it) in existingEmails } ||
+            candidatePhones.any { DeviceContactMatcher.normalizePhone(it) in existingPhones }
+    }
+
     private suspend fun pushRoomChangesToDevice() = withContext(Dispatchers.IO) {
         val currentRoomContacts = db.contactDao().observeAll().first()
+        // One read of the link table for the whole loop rather than a getByUid per contact.
+        val linksByUid = db.deviceContactLinkDao().getAll().associateBy { it.uid }
 
         for (entity in currentRoomContacts) {
             // Policy can change mid-loop — the user can enable Hostile Location Protection while
@@ -411,7 +438,7 @@ class DeviceContactRepository(
             if (!syncPermitted()) return@withContext
 
             val dto = entity.toDto()
-            val existingLink = db.deviceContactLinkDao().getByUid(dto.uid)
+            val existingLink = linksByUid[dto.uid]
 
             if (existingLink == null) {
                 createRawContactForDto(dto)

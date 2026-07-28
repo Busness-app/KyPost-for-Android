@@ -95,15 +95,10 @@ class PushRepository(
      * Saves pairing data, wrapping `deviceSecret` behind the PIN-derived credential key when the
      * credential gate is on.
      *
-     * Both branches key off [AppLockStore.isCredentialPinGateEnabled] — the *policy* — not off
-     * whether a key happens to be cached. Deciding on cache state alone was wrong in both
-     * directions. Wrapping whenever a key was cached meant that disabling the gate (which left the
-     * derived keys cached) and then re-pairing in the same session re-wrapped the secret behind a
-     * gate that would never open again. And falling through to the plaintext branch whenever no key
-     * was cached meant a pairing performed in a biometric-unlocked session silently stored the
-     * secret unwrapped *permanently*: the gate then let background pull/push/MFA succeed while
-     * locked, so the user had no reason to ever enter the PIN, and the repair that
-     * [com.urlxl.mail.security.rewrapPairingIfNeeded] would have applied never ran.
+     * The branch keys off [AppLockStore.isCredentialPinGateEnabled] — the *policy* — never off
+     * whether a key happens to be cached, which is wrong in both directions: it would re-wrap
+     * behind a gate that has just been switched off, and it would permanently store the secret
+     * unwrapped after a pairing made in a biometric-only session.
      *
      * With the gate on and no key available we keep the pairing but drop the secret, leaving
      * [SecurePairingStore.needsCredentialRewrap] true so the next PIN unlock restores it.

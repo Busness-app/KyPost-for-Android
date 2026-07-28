@@ -23,13 +23,9 @@ class PinnedCallFactoryProvider(
     /** Passed through to [pairingHttpClient]; null keeps OkHttp's per-phase defaults. */
     private val callTimeoutMillis: Long? = null,
 ) : () -> Call.Factory? {
-    /** The pin and the client built for it, published as ONE reference.
-     *
-     *  These were two separate `@Volatile` fields written one after the other, so two threads
-     *  building for different pins could interleave their writes and leave the client from one pin
-     *  paired with the key of the other — after which [invoke] handed back a client pinned to a
-     *  certificate the caller had not asked for. Narrow (it needs two live pins, i.e. a re-pair),
-     *  but a single immutable pair makes it unrepresentable rather than unlikely. */
+    /** The pin and the client built for it, published as ONE reference so a client can never be
+     *  read against a pin it was not built for. Two separate `@Volatile` fields allowed exactly
+     *  that under a concurrent re-pair. */
     @Volatile private var cached: Pair<TlsPin, Call.Factory>? = null
 
     override fun invoke(): Call.Factory? {

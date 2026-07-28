@@ -343,6 +343,9 @@
          sign-in requires opening the app and re-authenticating. -->
     <string name="mfa_notification_title">Approve sign-in</string>
     <string name="mfa_notification_body">Open KyPost to approve or deny a sign-in to your account.</string>
+    <string name="mfa_notification_burst_title">Many sign-in requests</string>
+    <string name="mfa_notification_burst_body">Your account has many sign-in requests open at once. If this wasn\'t you, deny it and change your password.</string>
+    <string name="mfa_match_unavailable">This sign-in request has no number to match, so it can only be denied. Start the sign-in again.</string>
     <string name="mfa_auth_title">Confirm it\'s you</string>
     <string name="mfa_auth_subtitle">Authenticate to approve or deny this sign-in</string>
     <string name="mfa_auth_required">Authentication is required to answer a sign-in request</string>

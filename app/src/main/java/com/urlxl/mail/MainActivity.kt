@@ -3,8 +3,6 @@ package com.urlxl.mail
 import android.content.Intent
 import android.os.Bundle
 import androidx.lifecycle.lifecycleScope
-import com.urlxl.mail.push.MfaChallengePayloadParser
-import com.urlxl.mail.push.MfaChallengeTracker
 import com.urlxl.mail.push.PushNotificationDispatcher
 import com.urlxl.mail.push.PushRuntime
 import com.urlxl.mail.security.LockedActivity
@@ -12,8 +10,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
- * Launcher and router: decides between the inbox and the pairing screen, and forwards a genuine
- * MFA push to the approval screen.
+ * Launcher and router: decides between the inbox and the pairing screen.
  *
  * Routing moved out of `onCreate` and into [onStart] so it happens strictly after
  * [LockedActivity]'s lock check — otherwise this Activity would launch the inbox and *then*
@@ -60,16 +57,13 @@ class MainActivity : LockedActivity() {
 
     private fun handleIntent(intent: Intent) {
         lifecycleScope.launch {
-            val mfa = intent.extras?.let { MfaChallengePayloadParser.parse(it) }
-            // MainActivity is exported as the app's launcher, so any co-installed app can start
-            // it with arbitrary extras — only forward to the approval screen for a challengeId
-            // that was actually delivered via a real push, not one an attacker merely supplied.
-            if (mfa != null && MfaChallengeTracker(this@MainActivity).isPending(mfa.challengeId)) {
-                startActivity(PushNotificationDispatcher.mfaApprovalIntent(this@MainActivity, mfa))
-                finish()
-                return@launch
-            }
-
+            // No MFA routing here. This used to parse `type=mfa_challenge` out of its own extras
+            // and forward to the approval screen, gated on MfaChallengeTracker. Nothing in this app
+            // ever built such an intent — the MFA notification's PendingIntent targets
+            // MfaApprovalActivity directly, and UnifiedPush is excluded from MFA server-side — so
+            // the only caller that could reach it was a co-installed app abusing this exported
+            // launcher. That is an attack surface maintained for no user-facing path; the tracker
+            // check on MfaApprovalActivity itself is what actually defends the screen.
             val configured = PushRuntime.graph(this@MainActivity).repository.state.first().pairing != null
 
             val targetIntent = if (configured) {

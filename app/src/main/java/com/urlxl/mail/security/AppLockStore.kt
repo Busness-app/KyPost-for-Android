@@ -67,11 +67,10 @@ interface AppLockState {
  * `EncryptedSharedPreferences` pattern as [com.urlxl.mail.push.SecurePairingStore]. The PIN
  * itself is never stored, only [PinHasher]'s salted hash.
  *
- * Every write here uses `commit()` rather than `apply()` on purpose. `apply()` returns before the
- * write reaches disk, which for [incrementFailedAttempts] specifically would hand an attacker an
- * unlimited-guess bypass: try a PIN, force-stop the app before the async flush lands, repeat with
- * the counter never advancing. These writes are rare and must be durable, so the cost is paid —
- * what changed instead is that [AppLockManager] now keeps every caller off the main thread.
+ * Every write here uses `commit()`, never `apply()`. `apply()` returns before the write reaches
+ * disk, which for [incrementFailedAttempts] is an unlimited-guess bypass: try a PIN, force-stop the
+ * app before the async flush lands, repeat with the counter never advancing. [AppLockManager] keeps
+ * every caller off the main thread so the durability can be afforded.
  */
 class AppLockStore(context: Context) : AppLockState {
     private val appContext = context.applicationContext
@@ -80,22 +79,17 @@ class AppLockStore(context: Context) : AppLockState {
     /**
      * A plain, unencrypted "the user had a lock configured" marker.
      *
-     * The encrypted file above can become unreadable — OS-level Keystore invalidation, or an
-     * attacker with filesystem access deleting the keyset. The old behaviour was to recreate it
-     * empty, which reported `isLockEnabled() == false` and opened straight into the inbox with
-     * every cached message still on disk: deleting one file disabled the lock. This marker
-     * survives that, so [tripwireBroken] can tell "never configured" apart from "configured, and
-     * the state just vanished" — and the latter is treated as hostile.
+     * The encrypted file above can become unreadable — Keystore invalidation, or an attacker
+     * deleting the keyset — and recreating it empty would report `isLockEnabled() == false`, so
+     * deleting one file would disable the lock. This marker lets [tripwireBroken] tell "never
+     * configured" apart from "configured, and the state just vanished", and treat the latter as
+     * hostile.
      *
-     * **What this does not defend.** The tripwire only fires when the app next *launches*, so it
-     * defends against an attacker who tampers with the app-lock state and then tries to use the
-     * app. It does nothing against one who simply reads `kypost_mail.db`, which is unencrypted
-     * SQLite holding every cached message body, contact and stored PGP key — no launch, no PIN, no
-     * lockout ladder, no wipe. That is a deliberate scope boundary, not an oversight: the app lock
-     * defends the *UI*, and the sandbox is what defends the data at rest. Hostile Location
-     * Protection ([HostileLocationSettings], which swaps Room to in-memory) is the feature for
-     * users whose threat model includes offline filesystem access. See `app/src/main/AGENTS.md`
-     * for why encryption-at-rest was not chosen instead.
+     * **Scope boundary.** The tripwire only fires at app *launch*, so it defends the UI against
+     * someone who tampers and then uses the app. It does nothing against someone who simply reads
+     * `kypost_mail.db` offline. Hostile Location Protection ([HostileLocationSettings]) is the
+     * feature for that threat model; see `app/src/main/AGENTS.md` for why encryption-at-rest was
+     * not chosen instead.
      */
     private val tripwire: SharedPreferences =
         appContext.getSharedPreferences(TRIPWIRE_PREFS_FILE_NAME, Context.MODE_PRIVATE)

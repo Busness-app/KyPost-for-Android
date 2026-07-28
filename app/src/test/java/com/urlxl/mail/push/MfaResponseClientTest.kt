@@ -72,7 +72,7 @@ class MfaResponseClientTest {
         val callFactory = MfaFakeCallFactory { request -> response(request, """{"ok": true, "status": "approved"}""", 200) }
         val client = MfaResponseClient(callFactory = callFactory)
 
-        val result = client.respond(testPairing(), challengeId = "challenge-1", approve = true)
+        val result = client.respond(testPairing(), challengeId = "challenge-1", approve = true, matchDigits = "47")
 
         assertTrue(result is MfaRespondResult.Success)
         assertEquals("approved", (result as MfaRespondResult.Success).status)
@@ -87,6 +87,62 @@ class MfaResponseClientTest {
         assertFalse(sentBody.contains("\"deviceId\""))
         assertTrue(sentBody.contains("\"challengeId\":\"challenge-1\""))
         assertTrue(sentBody.contains("\"approve\":true"))
+    }
+
+    /** The server verifies the number server-side and refuses an approval without it
+     *  (kypost-server ResolvePushWithMatch), so it has to be on the wire. */
+    @Test
+    fun respond_approve_putsMatchDigitsOnTheWire() = runBlocking {
+        val callFactory = MfaFakeCallFactory { request -> response(request, """{"ok": true, "status": "approved"}""", 200) }
+        val client = MfaResponseClient(callFactory = callFactory)
+
+        client.respond(testPairing(), challengeId = "challenge-1", approve = true, matchDigits = "47")
+
+        assertTrue(callFactory.bodies.single().contains("\"matchDigits\":\"47\""))
+    }
+
+    /** Deny must never require the number: the person most likely to press it is someone being
+     *  MFA-fatigued, looking at a number they cannot match. The server ignores the field on a deny. */
+    @Test
+    fun respond_deny_sendsEmptyMatchDigits() = runBlocking {
+        val callFactory = MfaFakeCallFactory { request -> response(request, """{"ok": true, "status": "denied"}""", 200) }
+        val client = MfaResponseClient(callFactory = callFactory)
+
+        val result = client.respond(testPairing(), challengeId = "challenge-1", approve = false)
+
+        assertTrue(result is MfaRespondResult.Success)
+        val sentBody = callFactory.bodies.single()
+        assertTrue(sentBody.contains("\"approve\":false"))
+        assertTrue(sentBody.contains("\"matchDigits\":\"\""))
+    }
+
+    /** 400 is "wrong number, challenge still live" — distinct from 401, and the old `else` branch
+     *  reported it as the opaque "Failed to respond (400)". */
+    @Test
+    fun respond_400_reportsTheServerMismatchMessage() = runBlocking {
+        val callFactory = MfaFakeCallFactory { request ->
+            response(request, """{"error": "that is not the number shown in the browser"}""", 400, "Bad Request")
+        }
+        val client = MfaResponseClient(callFactory = callFactory)
+
+        val result = client.respond(testPairing(), challengeId = "challenge-1", approve = true, matchDigits = "11")
+
+        assertTrue(result is MfaRespondResult.Error)
+        assertEquals("that is not the number shown in the browser", (result as MfaRespondResult.Error).message)
+    }
+
+    /** 429 means the attempt budget is spent and the challenge is dead even with the right number. */
+    @Test
+    fun respond_429_reportsAttemptsExhausted() = runBlocking {
+        val callFactory = MfaFakeCallFactory { request ->
+            response(request, """{"error": "too many incorrect attempts; start the sign-in again"}""", 429, "Too Many Requests")
+        }
+        val client = MfaResponseClient(callFactory = callFactory)
+
+        val result = client.respond(testPairing(), challengeId = "challenge-1", approve = true, matchDigits = "11")
+
+        assertTrue(result is MfaRespondResult.Error)
+        assertEquals("too many incorrect attempts; start the sign-in again", (result as MfaRespondResult.Error).message)
     }
 
     @Test

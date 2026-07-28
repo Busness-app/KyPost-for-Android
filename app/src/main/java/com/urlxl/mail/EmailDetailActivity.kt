@@ -262,10 +262,9 @@ class EmailDetailActivity : LockedActivity() {
             PgpMessageState.BODY_UNAVAILABLE -> ""
             else -> content?.html?.takeIf { it.isNotBlank() } ?: TextUtils.htmlEncode(emailPreview)
         }
-        // Same length cap as stripImportant, for the same reason: this is a cosmetic heuristic,
-        // and on a multi-megabyte sender-chosen body a bounded "assume none" beats an unbounded
-        // scan. Belt-and-braces with the bounded tag interior in the pattern itself.
-        val hasRemoteImages = bodyToRender.length <= STRIP_IMPORTANT_MAX_LENGTH &&
+        // Cosmetic heuristic, so on a multi-megabyte sender-chosen body a bounded "assume none"
+        // beats an unbounded scan. Belt-and-braces with the bounded tag interior in the pattern.
+        val hasRemoteImages = bodyToRender.length <= REMOTE_IMAGE_SCAN_MAX_LENGTH &&
             REMOTE_IMAGE_PATTERN.containsMatchIn(bodyToRender)
         val palette = getStoredThemePalette(this)
         val monoFontFace = ibmPlexMonoFontFaceCss(this)
@@ -488,13 +487,7 @@ class EmailDetailActivity : LockedActivity() {
     /** Hostile Location Protection path: hands the bytes to [com.urlxl.mail.security.EphemeralAttachmentBytes]
      *  (never written to disk) and launches a viewer via ACTION_VIEW — nothing is saved anywhere. */
     private fun viewAttachmentEphemerally(downloaded: com.urlxl.mail.mail.DownloadedAttachment) {
-        // Normalise the MIME type before it selects a handler. It comes from the sender's
-        // Content-Type, which the relay passes through unfiltered, and an implicit intent with
-        // exactly one matching activity is launched directly with no chooser — so an obscure type
-        // like application/vnd.kypost-x let a co-installed app guarantee itself sole-resolver status
-        // and silently receive the decrypted bytes, on the one path whose purpose is that the
-        // plaintext never leaves the app's control.
-        val mimeType = downloaded.mimeType.takeIf { it in VIEWABLE_MIME_TYPES } ?: "application/octet-stream"
+        val mimeType = safeMimeType(downloaded.mimeType)
         val uri = com.urlxl.mail.security.EphemeralAttachmentBytes.register(downloaded.bytes, mimeType)
         val view = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, mimeType)
@@ -508,13 +501,20 @@ class EmailDetailActivity : LockedActivity() {
         }
     }
 
-    /** Writes bytes into the shared Downloads collection via MediaStore (no storage permission
-     *  needed on the app's minSdk 31). Returns false if the insert or stream write fails. */
+    /**
+     * Writes bytes into the shared Downloads collection via MediaStore (no storage permission
+     * needed on the app's minSdk 31). Returns false if the insert or stream write fails.
+     *
+     * Name and type are sanitised on the way in, exactly as [viewAttachmentEphemerally] does.
+     * Both come from the sender's `Content-Disposition`/`Content-Type`, which the relay passes
+     * through unfiltered — and this is the branch taken when Hostile Location Protection is *off*,
+     * i.e. by default, so it was the unhardened path that nearly everyone uses.
+     */
     private fun saveToDownloads(name: String, mimeType: String, bytes: ByteArray): Boolean {
         val resolver = contentResolver
         val values = ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, name)
-            put(MediaStore.Downloads.MIME_TYPE, mimeType.ifBlank { "application/octet-stream" })
+            put(MediaStore.Downloads.DISPLAY_NAME, safeFileName(name))
+            put(MediaStore.Downloads.MIME_TYPE, safeMimeType(mimeType))
             put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
         }
         return runCatching {
@@ -659,16 +659,8 @@ class EmailDetailActivity : LockedActivity() {
          *  installed app's deep link is not something a mail body gets to do. */
         private val SAFE_LINK_SCHEMES = setOf("http", "https", "mailto", "tel")
 
-        /** MIME types the ephemeral-view path will hand to an external viewer as-declared. Anything
-         *  else is downgraded to `application/octet-stream`, which every file handler competes for —
-         *  so a sender cannot pick a type only their own app claims. */
-        private val VIEWABLE_MIME_TYPES = setOf(
-            "application/pdf",
-            "image/jpeg", "image/png", "image/gif", "image/webp", "image/heic",
-            "text/plain",
-            "audio/mpeg", "audio/mp4", "audio/ogg",
-            "video/mp4", "video/webm",
-        )
+        /** Bodies past this size skip the remote-content scan entirely and assume none. */
+        private const val REMOTE_IMAGE_SCAN_MAX_LENGTH = 512 * 1024
 
         /** Cheap heuristic for "does this body reference remote content" (images, iframes, media,
          *  stylesheets) — only used to decide whether the "Show images" bar is worth showing, not
@@ -771,45 +763,62 @@ internal fun buildEmailBodyHtml(bodyToRender: String, palette: ThemePalette, mon
     """.trimIndent()
 }
 
-// A CSS comment produces zero tokens during tokenization (CSS Syntax §4) and is fully
-// transparent between any two other tokens — including between `!` and `important` — so it
-// must be removed everywhere before the `!important` check below, not just matched around.
-//
-// Written in the standard non-backtracking form rather than a lazy `.*?` with DOT_MATCHES_ALL:
-// the lazy version degrades to O(n^2) over the whole body when the closing `*/` is missing, and
-// the input here is chosen by the sender.
-private val CSS_COMMENT = Regex("""/\*[^*]*\*+(?:[^/*][^*]*\*+)*/""")
-
-/** Bodies past this size skip [stripImportant] entirely. It is a rendering nicety for dark mode,
- *  not a security control, so on a multi-megabyte email it is not worth the scan — and refusing to
- *  scan is a bounded, predictable outcome where an unbounded regex pass is not. */
-private const val STRIP_IMPORTANT_MAX_LENGTH = 512 * 1024
-
-// A CSS escape sequence is a backslash followed by 1-6 hex digits, optionally followed by one
-// whitespace terminator (CSS Syntax §4.3.7), and decodes to a single Unicode code point — so a
-// sender can spell any letter of "important" as an escape (e.g. `!\49 mportant` decodes to
-// `!Important`) instead of the literal character.
-//
-// Six hex digits reach 0xFFFFFF, well past the 0x10FFFF ceiling of the Unicode codespace, so the
-// pattern accepts values that are not code points at all. See [decodeCssEscapes] for why that has
-// to be handled rather than passed straight to Character.toChars.
-private val CSS_ESCAPE = Regex("""\\([0-9a-fA-F]{1,6})\s?""")
+/**
+ * The sender's filename, reduced to something safe to hand MediaStore.
+ *
+ * Drops path separators (so nothing can steer the write out of `Downloads/`), drops every character
+ * that is not plainly part of a filename — which also removes the NUL and control bytes used to
+ * make a name read as one extension and resolve as another — and bounds the length.
+ */
+internal fun safeFileName(raw: String): String =
+    raw.substringAfterLast('/')
+        .substringAfterLast('\\')
+        .filter { it.isLetterOrDigit() || it in "._- ()[]" }
+        .trim()
+        .trimStart('.')
+        .take(120)
+        .ifBlank { "attachment" }
 
 /**
- * Decodes the CSS escape sequences in [candidate], leaving anything that is not a valid code point
- * as the literal text the sender wrote.
+ * MIME types this app will hand to another app as-declared. Anything else becomes
+ * `application/octet-stream`, which every file handler competes for.
  *
- * `Character.toChars` **throws** `IllegalArgumentException` for a code point above 0x10FFFF, and
- * [CSS_ESCAPE] matches up to six hex digits, so `!\110000 mportant` in a message body used to throw
- * out of [stripImportant]. That ran on [EmailDetailActivity]'s `ioExecutor`, where an uncaught
- * exception is a process kill — and since the message stays in the mailbox, every reopen crashed
- * again. A remote sender got a persistent, un-clearable denial of service on the mail client by
- * sending one styled `<p>`.
+ * The type comes from the sender's `Content-Type`, which the relay passes through unfiltered. An
+ * obscure type like `application/vnd.kypost-x` lets a co-installed app guarantee itself
+ * sole-resolver status for the attachment — so it applies on both the ephemeral-view path and the
+ * save-to-Downloads path, not just the one that skips disk.
+ */
+private val VIEWABLE_MIME_TYPES = setOf(
+    "application/pdf",
+    "image/jpeg", "image/png", "image/gif", "image/webp", "image/heic",
+    "text/plain",
+    "audio/mpeg", "audio/mp4", "audio/ogg",
+    "video/mp4", "video/webm",
+)
+
+internal fun safeMimeType(raw: String): String =
+    raw.substringBefore(';').trim().lowercase()
+        .takeIf { it in VIEWABLE_MIME_TYPES }
+        ?: "application/octet-stream"
+
+// A CSS comment produces zero tokens during tokenization (CSS Syntax §4) and is fully transparent
+// between any two other tokens — including between `!` and `important` — so it has to be removed
+// before the token check rather than matched around.
+private val CSS_COMMENT = Regex("""/\*[^*]*\*+(?:[^/*][^*]*\*+)*/""")
+
+// A CSS escape sequence is a backslash followed by 1-6 hex digits and an optional whitespace
+// terminator (CSS Syntax §4.3.7), so a sender can spell any letter of "important" as an escape
+// (`!\49 mportant` decodes to `!Important`).
+private val CSS_ESCAPE = Regex("""\\([0-9a-fA-F]{1,6})\s?""")
+
+private val BANG_CANDIDATE = Regex("""\s*!((?:\\[0-9a-fA-F]{1,6}\s?|[A-Za-z\s]){1,24})""")
+
+/**
+ * Decodes CSS escape sequences, leaving anything that is not a valid code point as literal text.
  *
- * Out-of-range escapes are left verbatim rather than dropped: CSS says an escape outside the
- * codespace is a parse error that renders as U+FFFD, so it can never spell a letter of "important"
- * either way, and leaving the text alone keeps this function's "over-matching is harmless,
- * under-matching is not" bias pointing the safe direction.
+ * [CSS_ESCAPE] matches up to six hex digits, which reaches 0xFFFFFF — past the 0x10FFFF ceiling of
+ * the Unicode codespace — and `Character.toChars` throws on those. CSS treats an out-of-range escape
+ * as a parse error rendering as U+FFFD, so it can never spell a letter of "important" either way.
  */
 private fun decodeCssEscapes(candidate: String): String =
     CSS_ESCAPE.replace(candidate) { escape ->
@@ -821,36 +830,58 @@ private fun decodeCssEscapes(candidate: String): String =
         }
     }
 
-// `!` followed by up to 24 characters of letters, whitespace, or CSS escapes — a generous
-// window for "important" plus incidental whitespace/escapes, bounded so we don't scan arbitrarily
-// far into unrelated text after an unrelated `!`.
-//
-// The leading whitespace run is BOUNDED, not `\s*`. Unbounded it gave the pattern no literal first
-// character, so at every offset in the body the engine consumed whitespace to end-of-input and then
-// backtracked looking for `!` — quadratic, and reachable from a single email with no `!` in it at
-// all. Measured on a 512KB body of nothing but spaces: ~3.9 minutes on a desktop JVM, ~20-35
-// minutes on-device. A bounded run keeps the whitespace *consumed* (so `color:red !important`
-// collapses to `color:red`, as the tests expect) while capping the work per position at 8 tries.
-// Real CSS has one space here; 8 is already generous.
-private val BANG_CANDIDATE = Regex("""\s{0,8}!((?:\\[0-9a-fA-F]{1,6}\s?|[A-Za-z\s]){1,24})""")
-
-/** Strips every `!important` from [html] — see [buildEmailBodyHtml]'s doc for why this is what
- *  actually closes the override gap for `!important`-defended email styling. Tolerant of the two
- *  CSS-spec-legal ways a sender can split the token to dodge a plain text search: a CSS comment
- *  inserted anywhere (removed globally, since a comment has no display semantics to preserve),
- *  and any letter of "important" written as a CSS escape sequence instead of the literal
- *  character (decoded only within the captured `!`-prefixed candidate, so escape sequences
- *  elsewhere in the email body — which do have display semantics — are left untouched). A
- *  blunt text-level removal rather than a real CSS/HTML parse: this app has no HTML parser
- *  dependency, the input is untrusted, and correctness only requires that no `!important`
- *  survive anywhere reachable by a CSS declaration (inline `style=` attributes or an embedded
- *  `<style>` block) — over-matching a stray `!important` inside, say, an HTML comment or
- *  unrendered text is harmless, since removing it doesn't change what's displayed. */
-internal fun stripImportant(html: String): String {
-    if (html.length > STRIP_IMPORTANT_MAX_LENGTH) return html
-    val withoutComments = html.replace(CSS_COMMENT, "")
-    return BANG_CANDIDATE.replace(withoutComments) { match ->
-        val decoded = decodeCssEscapes(match.groupValues[1])
-        if (decoded.trim().equals("important", ignoreCase = true)) "" else match.value
+/**
+ * Removes every `!important` from one CSS declaration block or stylesheet body.
+ *
+ * Tolerant of the two spec-legal ways a sender can split the token to dodge a plain text search: a
+ * CSS comment inserted anywhere, and any letter written as an escape sequence.
+ */
+internal fun stripImportantFromCss(css: String): String =
+    BANG_CANDIDATE.replace(css.replace(CSS_COMMENT, "")) { match ->
+        if (decodeCssEscapes(match.groupValues[1]).trim().equals("important", ignoreCase = true)) {
+            ""
+        } else {
+            match.value
+        }
     }
+
+/**
+ * Strips every `!important` the sender's markup can bring — see [buildEmailBodyHtml] for why that
+ * is what actually closes the dark-mode override gap.
+ *
+ * Parsed with jsoup rather than pattern-matched over the raw body. The previous version was a
+ * text-level regex sweep across the whole message, justified by "this app has no HTML parser
+ * dependency" — which stopped being true when jsoup was added for [com.urlxl.mail.mail.QuotedHtmlSanitizer].
+ * Doing it structurally means the token patterns only ever run over a single `style` attribute or
+ * `<style>` block, so the catastrophic-backtracking cases that needed a bounded whitespace run and a
+ * 512 KB skip-the-whole-thing cap are no longer reachable from a message body at all — and CSS in
+ * places CSS cannot apply (text, comments, attribute values) is no longer rewritten.
+ *
+ * Returns [html] byte-identical when nothing needed changing, so an unstyled message is not
+ * re-serialised through the parser for no reason.
+ */
+internal fun stripImportant(html: String): String {
+    if (html.isBlank()) return html
+    val doc = runCatching { org.jsoup.Jsoup.parseBodyFragment(html) }.getOrNull() ?: return html
+    doc.outputSettings().prettyPrint(false)
+
+    var changed = false
+    doc.select("[style]").forEach { element ->
+        val original = element.attr("style")
+        val cleaned = stripImportantFromCss(original)
+        if (cleaned != original) {
+            element.attr("style", cleaned)
+            changed = true
+        }
+    }
+    doc.select("style").forEach { element ->
+        val original = element.data()
+        val cleaned = stripImportantFromCss(original)
+        if (cleaned != original) {
+            element.empty()
+            element.appendChild(org.jsoup.nodes.DataNode(cleaned))
+            changed = true
+        }
+    }
+    return if (changed) doc.body().html() else html
 }

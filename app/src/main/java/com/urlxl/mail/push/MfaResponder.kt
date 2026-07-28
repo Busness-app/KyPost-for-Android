@@ -28,7 +28,12 @@ object MfaResponder {
      * Cancel-on-success still preserves the replay property that ordering was there for: a
      * decision that reached the server cannot be re-opened.
      */
-    suspend fun respond(context: Context, challengeId: String, approve: Boolean): Boolean {
+    suspend fun respond(
+        context: Context,
+        challengeId: String,
+        approve: Boolean,
+        matchDigits: String = "",
+    ): Boolean {
         val appContext = context.applicationContext
 
         val graph = PushRuntime.graph(appContext)
@@ -38,7 +43,7 @@ object MfaResponder {
             return false
         }
 
-        return when (val result = graph.mfaResponseClient.respond(pairing, challengeId, approve)) {
+        return when (val result = graph.mfaResponseClient.respond(pairing, challengeId, approve, matchDigits)) {
             is MfaRespondResult.Success -> {
                 PushNotificationDispatcher.cancelMfaChallenge(appContext, challengeId)
                 // Answered once, answerable once: a replayed notification tap must not re-open a

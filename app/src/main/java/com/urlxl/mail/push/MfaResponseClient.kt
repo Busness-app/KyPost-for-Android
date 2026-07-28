@@ -20,12 +20,28 @@ private val JSON_MEDIA_TYPE = "application/json".toMediaType()
 data class MfaRespondRequest(
     @SerialName("challengeId") val challengeId: String,
     @SerialName("approve") val approve: Boolean,
+    /**
+     * The number the user picked off [MfaApprovalActivity]'s choice row.
+     *
+     * The server verifies this itself (kypost-server `Store.ResolvePushWithMatch`) and refuses an
+     * approval that does not carry it — this endpoint is reachable by anyone holding device
+     * credentials, so the on-device comparison in [MfaApprovalActivity.onMatchChosen] is UX, not
+     * the control. Always serialized, including as `""` on a deny, which the server ignores.
+     *
+     * An *approve* with `""` is therefore never something to send: it cannot succeed, and it spends
+     * one of the challenge's three attempts on the way to failing. [MfaApprovalActivity] has no
+     * approve path that can produce one — a challenge without a complete number match offers Deny
+     * only. The client used to keep a bare Approve button for "un-upgraded servers" and document it
+     * as accepted without a number, which was never true of any server that mints digits.
+     */
+    @SerialName("matchDigits") val matchDigits: String,
 )
 
 @Serializable
 data class MfaRespondResponse(
     @SerialName("ok") val ok: Boolean = false,
     @SerialName("status") val status: String? = null,
+    @SerialName("error") val error: String? = null,
 )
 
 /** Mirrors [resolvePullEndpoint] in NativeRegistration.kt — the respond endpoint has no server-provided override, it's always derived from the paired server URL. */
@@ -44,14 +60,24 @@ class MfaResponseClient(
     // Mirrors PullNotificationClient/RelayMailSource/ContactSyncClient's callFactory pattern.
     private val callFactory: Call.Factory = pairingHttpClient(),
 ) {
-    suspend fun respond(pairing: PairingData, challengeId: String, approve: Boolean): MfaRespondResult {
+    suspend fun respond(
+        pairing: PairingData,
+        challengeId: String,
+        approve: Boolean,
+        matchDigits: String = "",
+    ): MfaRespondResult {
         val deviceId = pairing.deviceId
         val deviceSecret = pairing.deviceSecret
         if (deviceId.isNullOrBlank() || deviceSecret.isNullOrBlank()) {
             return MfaRespondResult.Error("Device is not registered yet")
         }
 
-        val request = MfaRespondRequest(challengeId = challengeId, approve = approve)
+        val request = MfaRespondRequest(
+            challengeId = challengeId,
+            approve = approve,
+            // Never on a deny: the safe answer must not depend on reading a number.
+            matchDigits = if (approve) matchDigits else "",
+        )
         val httpRequest = Request.Builder()
             .url(resolveMfaRespondEndpoint(pairing.serverUrl))
             .post(json.encodeToString(request).toRequestBody(JSON_MEDIA_TYPE))
@@ -73,8 +99,13 @@ class MfaResponseClient(
                     MfaRespondResult.Error("Server did not confirm response")
                 }
             }
+            // The number was wrong, but the credentials were fine and the challenge is still live —
+            // so this is a re-prompt, not a re-pair. Prefer the server's own wording: it is the
+            // side that knows whether this was a mismatch or a spent attempt budget.
+            400 -> MfaRespondResult.Error(serverError(rawBody) ?: "That is not the number shown in the browser")
             401 -> MfaRespondResult.Error("Pairing is no longer valid")
             403 -> MfaRespondResult.Error("This device cannot approve sign-in")
+            429 -> MfaRespondResult.Error(serverError(rawBody) ?: "Too many incorrect attempts; start the sign-in again")
             409 -> {
                 val body = runCatching { json.decodeFromString<MfaRespondResponse>(rawBody) }.getOrNull()
                 MfaRespondResult.Error("Already ${body?.status ?: "resolved"} on another device")
@@ -82,4 +113,14 @@ class MfaResponseClient(
             else -> MfaRespondResult.Error("Failed to respond ($code)")
         }
     }
+
+    /** The server's `error` string, or null when the body is not the shape we expect. Length-capped
+     *  because it reaches a Toast. */
+    private fun serverError(rawBody: String): String? =
+        runCatching { json.decodeFromString<MfaRespondResponse>(rawBody) }
+            .getOrNull()
+            ?.error
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?.take(200)
 }

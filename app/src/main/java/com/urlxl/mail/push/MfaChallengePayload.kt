@@ -22,10 +22,11 @@ data class MfaChallengePayload(
     val userAgent: String = "",
     val issuedAtEpochMs: Long = 0L,
     /** The digits the server is simultaneously showing in the browser that started the sign-in.
-     *  Blank when the server does not support number matching. */
+     *  Blank when the server sent nothing usable, in which case this challenge cannot be approved
+     *  — see [MfaNumberMatch]. */
     val matchDigits: String = "",
-    /** Decoy values the approval screen offers alongside [matchDigits]. Empty means the client
-     *  generates its own. */
+    /** The wrong values the approval screen offers alongside [matchDigits]. The server mints these;
+     *  the client never invents them. */
     val decoyDigits: List<String> = emptyList(),
 )
 
@@ -36,7 +37,16 @@ object MfaChallengePayloadParser {
      *  server-supplied string could push the approve/deny buttons off-screen. */
     private const val MAX_CONTEXT_LENGTH = 120
 
-    const val MATCH_DIGITS_LENGTH = 2
+    /**
+     * Accepted width of a number-match value, as a range rather than a constant.
+     *
+     * The server currently mints two digits. Pinning that here (and in [MfaNumberMatch], and again
+     * in the server) meant a server widening its value space would make every deployed client
+     * discard the field and lose number matching silently. The range is deliberately generous; the
+     * server decides, this only refuses values that are not a plausible tile label.
+     */
+    const val MATCH_DIGITS_MIN_LENGTH = 1
+    const val MATCH_DIGITS_MAX_LENGTH = 6
 
     fun parse(data: Map<String, String>): MfaChallengePayload? =
         build(
@@ -83,14 +93,16 @@ object MfaChallengePayloadParser {
             issuedAtEpochMs = issuedAt?.trim()?.toLongOrNull()?.takeIf { it > 0L } ?: 0L,
             // Only well-formed digit runs: these drive tap targets, so neither the server nor
             // anyone who can reach the push channel gets to put arbitrary text on a button.
-            matchDigits = matchDigits.orEmpty().trim().takeIf { it.isValidMatchDigits() }.orEmpty(),
+            matchDigits = matchDigits.orEmpty().trim().takeIf { isValidMatchDigits(it) }.orEmpty(),
             decoyDigits = decoyDigits.orEmpty().split(',')
                 .map { it.trim() }
-                .filter { it.isValidMatchDigits() }
+                .filter { isValidMatchDigits(it) }
                 .distinct(),
         )
     }
 
-    private fun String.isValidMatchDigits(): Boolean =
-        length == MATCH_DIGITS_LENGTH && all { it.isDigit() }
+    /** Shape only. Whether a *set* of these adds up to an approvable challenge is
+     *  [MfaNumberMatch.optionsFor]'s decision. */
+    fun isValidMatchDigits(value: String): Boolean =
+        value.length in MATCH_DIGITS_MIN_LENGTH..MATCH_DIGITS_MAX_LENGTH && value.all { it.isDigit() }
 }
