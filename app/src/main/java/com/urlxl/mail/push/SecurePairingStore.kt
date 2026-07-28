@@ -52,20 +52,9 @@ class SecurePairingStore(context: Context) {
     private val _pairing = MutableStateFlow<PairingData?>(null)
     val pairing: StateFlow<PairingData?> = _pairing.asStateFlow()
 
-    /**
-     * The TOFU pin, cached in memory.
-     *
-     * [currentTlsPin] is called on *every* HTTP request (see
-     * [com.urlxl.mail.push.PinnedOrFallbackCallFactory]), and reading it from
-     * `EncryptedSharedPreferences` means two AES-SIV key decryptions plus two AES-GCM value
-     * decryptions per request — paid on the calling thread, before the socket is touched, on an
-     * inbox refresh that runs every 90 seconds.
-     *
-     * Freshness is preserved exactly: [saveTlsPin] and [clearPairing] are the only writers, and
-     * both update this. The comment on [currentTlsPin] used to justify the per-call read as
-     * necessary for re-pairing to take effect; keeping the single owner of the file also the owner
-     * of the cache gets the same guarantee for a volatile field read.
-     */
+    /** The TOFU pin, cached because [currentTlsPin] is on the hot path of every HTTP request and
+     *  the backing file costs four AES operations to read. **Invariant:** [saveTlsPin] and
+     *  [clearPairing] are the only writers and both must update this. */
     @Volatile
     private var cachedTlsPin: TlsPin? = null
 
@@ -135,11 +124,9 @@ class SecurePairingStore(context: Context) {
         cachedTlsPin = pin
     }
 
-    /** The currently enforced TLS pin, or null if this device has never captured one (not yet
-     *  paired, or paired before this feature existed — in which case the host is unknown and the
-     *  stale pin is ignored rather than applied to a host it may not have come from).
-     *
-     *  Served from [cachedTlsPin]; this is on the hot path of every request. */
+    /** The currently enforced TLS pin, or null if this device has never captured one — including
+     *  a pin stored without its host, which is ignored rather than applied to a host it may not
+     *  have come from. */
     fun currentTlsPin(): TlsPin? = cachedTlsPin
 
     private fun readTlsPin(): TlsPin? {

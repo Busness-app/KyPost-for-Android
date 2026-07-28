@@ -116,25 +116,63 @@ class EmailDetailActivityTest {
         assertTrue(html.contains(email))
     }
 
-    // ---- stripImportant ----
+    // ---- stripImportantFromCss: token removal within one declaration block ----
 
     @Test
-    fun stripImportant_removesLowercaseImportant() {
-        assertEquals("color:#000000", stripImportant("color:#000000 !important"))
+    fun stripImportantFromCss_removesLowercaseImportant() {
+        assertEquals("color:#000000", stripImportantFromCss("color:#000000 !important"))
     }
 
     @Test
-    fun stripImportant_isCaseInsensitive() {
-        assertEquals("color:#000000", stripImportant("color:#000000 !IMPORTANT"))
+    fun stripImportantFromCss_isCaseInsensitive() {
+        assertEquals("color:#000000", stripImportantFromCss("color:#000000 !IMPORTANT"))
     }
 
     @Test
-    fun stripImportant_toleratesNoSpaceBeforeImportant() {
-        assertEquals("color:#000000", stripImportant("color:#000000!important"))
+    fun stripImportantFromCss_toleratesNoSpaceBeforeImportant() {
+        assertEquals("color:#000000", stripImportantFromCss("color:#000000!important"))
     }
 
     @Test
-    fun stripImportant_removesEveryOccurrence() {
+    fun stripImportantFromCss_consumesLeadingWhitespace() {
+        assertEquals("color:#000000", stripImportantFromCss("color:#000000    !important"))
+    }
+
+    @Test
+    fun stripImportantFromCss_removesCommentSplitImportant() {
+        assertEquals("color:#000000", stripImportantFromCss("color:#000000!/**/important"))
+        assertEquals("color:#000000", stripImportantFromCss("color:#000000 !/*x*/important"))
+    }
+
+    @Test
+    fun stripImportantFromCss_removesEscapeSplitImportant() {
+        // \49 is the CSS escape for code point 0x49 ("I"), so this decodes to "!Important".
+        assertEquals("color:#000000", stripImportantFromCss("""color:#000000!\49 mportant"""))
+    }
+
+    @Test
+    fun stripImportantFromCss_survivesEscapesAboveTheUnicodeCodespace() {
+        // CSS_ESCAPE accepts six hex digits (up to 0xFFFFFF) while Character.toChars THROWS above
+        // 0x10FFFF. The sender picks this value, and it used to reach EmailDetailActivity's
+        // ioExecutor as an uncaught IllegalArgumentException — a process kill that repeated on
+        // every reopen, because the message stays in the mailbox.
+        for (hex in listOf("110000", "ffffff", "FFFFFF", "7FFFFF")) {
+            val input = """color:red !\$hex mportant"""
+            assertEquals(input, stripImportantFromCss(input))
+        }
+    }
+
+    @Test
+    fun stripImportantFromCss_stillDecodesTheHighestValidCodePoint() {
+        // 0x10FFFF is the last valid code point — the boundary the guard must not over-reject.
+        val input = """color:red !\10FFFF mportant"""
+        assertEquals(input, stripImportantFromCss(input))
+    }
+
+    // ---- stripImportant: which parts of the document the removal reaches ----
+
+    @Test
+    fun stripImportant_removesEveryOccurrenceInStyleAttributesAndStyleBlocks() {
         val input = """<div style="color:#000 !important; background:#fff !important"><style>.x{color:red!important}</style></div>"""
         assertFalse(stripImportant(input).contains("important", ignoreCase = true))
     }
@@ -145,95 +183,64 @@ class EmailDetailActivityTest {
         assertEquals(input, stripImportant(input))
     }
 
+    /**
+     * The old version was a text sweep over the whole body, so it rewrote prose. `!important` in
+     * visible text is not a CSS declaration and removing it changes what the message says.
+     */
     @Test
-    fun stripImportant_removesCssCommentSplitImportant() {
-        assertEquals("color:#000000", stripImportant("color:#000000!/**/important"))
-    }
-
-    @Test
-    fun stripImportant_removesEscapeSplitImportant() {
-        // \49 is the CSS escape for code point 0x49 ("I"), so this decodes to "!Important".
-        assertEquals("color:#000000", stripImportant("""color:#000000!\49 mportant"""))
-    }
-
-    @Test
-    fun stripImportant_survivesEscapesAboveTheUnicodeCodespace() {
-        // The sender picks this. CSS_ESCAPE accepts six hex digits (up to 0xFFFFFF) while
-        // Character.toChars THROWS above 0x10FFFF, so this used to raise IllegalArgumentException
-        // out of stripImportant — on EmailDetailActivity's ioExecutor, where an uncaught exception
-        // kills the process. The message stays in the mailbox, so every reopen crashed again.
-        for (hex in listOf("110000", "ffffff", "FFFFFF", "7FFFFF")) {
-            val input = """<p style="color:red !\$hex mportant">hi</p>"""
-            assertEquals(input, stripImportant(input))
-        }
-    }
-
-    @Test
-    fun stripImportant_stillDecodesTheHighestValidCodePoint() {
-        // 0x10FFFF is the last valid code point — the boundary the guard must not over-reject.
-        // It is not a letter of "important", so the candidate is left alone rather than stripped;
-        // what matters is that it decodes instead of throwing.
-        val input = """color:red !\10FFFF mportant"""
+    fun stripImportant_doesNotRewriteBodyText() {
+        val input = "<p>Great job! Hope you're well. This is !important to me.</p>"
         assertEquals(input, stripImportant(input))
-    }
-
-    @Test
-    fun stripImportant_doesNotAlterUnrelatedBangText() {
-        val input = "Great job! Hope you're well."
-        assertEquals(input, stripImportant(input))
-    }
-
-    @Test
-    fun stripImportant_removesCommentSplitImportant() {
-        assertEquals("color:#000000", stripImportant("color:#000000 !/*x*/important"))
-    }
-
-    @Test
-    fun stripImportant_terminatesQuicklyOnAnUnclosedComment() {
-        // The sender picks this input. With the old lazy `/\*.*?\*/` + DOT_MATCHES_ALL pattern an
-        // unterminated comment made the scan quadratic over the whole body; assert it stays fast
-        // rather than merely correct.
-        val hostile = "/*" + "a".repeat(200_000)
-        val elapsed = kotlin.system.measureTimeMillis { stripImportant(hostile) }
-        assertTrue("stripImportant took ${elapsed}ms on an unclosed comment", elapsed < 2_000)
     }
 
     /**
-     * The unclosed-comment case above passes in ~30ms even on the pre-fix pattern, so it never
-     * exercised the `!`-candidate backtracking it appeared to guard. Whitespace is the input that
-     * actually blew up: an unbounded leading `\s*` gave the pattern no literal first character, so
-     * the engine consumed to end-of-input from every offset. Measured before the fix: ~23s at 128KB
-     * and ~4 minutes at the 512KB cap, from a body containing no `!` at all.
+     * Parsing means the token patterns only ever see one attribute or one `<style>` block, so the
+     * inputs that made the whole-body regex quadratic — an unclosed comment, a body of nothing but
+     * whitespace — are no longer reachable, and the 512KB "skip it entirely" cap is gone with them.
+     * Measured before: ~23s at 128KB, ~4 minutes at 512KB, from a body containing no `!` at all.
      */
     @Test
-    fun stripImportant_terminatesQuicklyOnWhitespaceHeavyBody() {
-        val hostile = " ".repeat(200_000)
-        val elapsed = kotlin.system.measureTimeMillis { stripImportant(hostile) }
-        assertTrue("stripImportant took ${elapsed}ms on an all-whitespace body", elapsed < 2_000)
+    fun stripImportant_terminatesQuicklyOnHostileBodies() {
+        val hostile = listOf(
+            "/*" + "a".repeat(200_000),
+            " ".repeat(200_000),
+            " ".repeat(200_000) + "!",
+            "<p>" + "x".repeat(600_000) + "</p>",
+        )
+        hostile.forEach { body ->
+            val elapsed = kotlin.system.measureTimeMillis { stripImportant(body) }
+            assertTrue("stripImportant took ${elapsed}ms", elapsed < 2_000)
+        }
     }
 
-    /** Same shape, but with a trailing `!` so the candidate branch is entered rather than skipped. */
+    /** No size cap any more: a large body is still cleaned, because the parse bounds the work
+     *  instead of the length check doing it. */
     @Test
-    fun stripImportant_terminatesQuicklyOnWhitespaceFollowedByBang() {
-        val hostile = " ".repeat(200_000) + "!"
-        val elapsed = kotlin.system.measureTimeMillis { stripImportant(hostile) }
-        assertTrue("stripImportant took ${elapsed}ms on whitespace + bang", elapsed < 2_000)
+    fun stripImportant_stillCleansLargeBodies() {
+        val huge = """<div style="color:#000 !important">""" + "x".repeat(600_000) + "</div>"
+        assertFalse(stripImportant(huge).contains("important", ignoreCase = true))
     }
 
-    /** The bounded whitespace run must still consume the space before `!important`, which is what
-     *  keeps the surrounding declaration clean. */
+    // ---- attachment name and type sanitising ----
+
     @Test
-    fun stripImportant_stillConsumesLeadingWhitespace() {
-        assertEquals("color:#000000", stripImportant("color:#000000 !important"))
-        assertEquals("color:#000000", stripImportant("color:#000000    !important"))
+    fun safeFileName_stripsPathsAndControlCharacters() {
+        assertEquals("invoice.pdf", safeFileName("../../etc/invoice.pdf"))
+        assertEquals("invoice.pdf", safeFileName("""C:\windows\invoice.pdf"""))
+        assertEquals("invoice.pdf.apk", safeFileName("invoice.pdf\u0000.apk"))
+        assertEquals("attachment", safeFileName(""))
+        assertEquals("attachment", safeFileName("///"))
+        assertEquals("hidden", safeFileName(".hidden"))
+        assertEquals(120, safeFileName("a".repeat(500)).length)
     }
 
     @Test
-    fun stripImportant_skipsBodiesOverTheSizeCap() {
-        // Past the cap it is a no-op rather than an unbounded regex pass: this is a dark-mode
-        // rendering nicety, not a security control.
-        val huge = "color:#000 !important".padEnd(600_000, 'x')
-        assertEquals(huge, stripImportant(huge))
+    fun safeMimeType_downgradesAnythingNotOnTheAllowlist() {
+        assertEquals("application/pdf", safeMimeType("application/pdf"))
+        assertEquals("application/pdf", safeMimeType("Application/PDF; charset=utf-8"))
+        // A type only the sender's own app claims would otherwise make it the sole resolver.
+        assertEquals("application/octet-stream", safeMimeType("application/vnd.attacker-x"))
+        assertEquals("application/octet-stream", safeMimeType(""))
     }
 
     // isDarkPalette() itself (the bg-luminance → dark/light classification) calls

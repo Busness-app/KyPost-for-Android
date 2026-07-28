@@ -42,6 +42,30 @@ class SecurePairingStoreTest {
         assertEquals(pairing, reloaded)
     }
 
+    /**
+     * The in-memory pin cache must stay in step with the file. This was a paragraph of KDoc
+     * asserting that [SecurePairingStore.saveTlsPin] and [SecurePairingStore.clearPairing] are the
+     * only writers and both update it; prose does not fail the build.
+     */
+    @Test
+    fun tlsPinCache_tracksEveryWriteAndSurvivesReload() = runBlocking {
+        val store = SecurePairingStore(context)
+        assertNull(store.currentTlsPin())
+
+        val pin = TlsPin(host = "server.example.com", spkiSha256 = "sha256/AAAA")
+        store.saveTlsPin(pin)
+        assertEquals(pin, store.currentTlsPin())
+        assertEquals(pin, SecurePairingStore(context).currentTlsPin())
+
+        val rotated = TlsPin(host = "other.example.com", spkiSha256 = "sha256/BBBB")
+        store.saveTlsPin(rotated)
+        assertEquals(rotated, store.currentTlsPin())
+
+        store.clearPairing()
+        assertNull(store.currentTlsPin())
+        assertNull(SecurePairingStore(context).currentTlsPin())
+    }
+
     @Test
     fun clearPairing_removesPersistedData() = runBlocking {
         val store = SecurePairingStore(context)

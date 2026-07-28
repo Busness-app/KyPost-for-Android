@@ -24,6 +24,19 @@ object PushNotificationDispatcher {
      *  client-side half of MFA-fatigue resistance (the server caps minting rate). */
     private const val MFA_ALERT_COOLDOWN_MS = 5 * 60 * 1000L
 
+    /**
+     * Live challenges past which individual notifications stop being posted.
+     *
+     * Silencing the *sound* is not flood control: every challenge still got its own notification id
+     * and its own row in the shade, so a relay minting thousands of challenges buried the device in
+     * exactly the feature built to resist that. Past this threshold the challenges collapse into
+     * one summary on a fixed id, which says plainly that something is wrong.
+     */
+    private const val MFA_BURST_THRESHOLD = 3
+
+    /** Fixed id, so a burst overwrites one row instead of accumulating. */
+    private val MFA_BURST_NOTIFICATION_ID = stableNotificationId("mfa-burst")
+
     const val EXTRA_MFA_CHALLENGE_ID = "challengeId"
     const val EXTRA_MFA_IP = "mfaIpAddress"
     const val EXTRA_MFA_LOCATION = "mfaApproxLocation"
@@ -74,13 +87,9 @@ object PushNotificationDispatcher {
      * visibility setting regardless of every security toggle the user had turned on.
      */
     private fun isLocked(context: Context): Boolean =
-        // Fails CLOSED: if the lock state can't be read, redact. Defaulting to "unlocked" turned a
-        // storage or Keystore error into exactly the disclosure this gate exists to prevent.
-        //
-        // isLockedNow(), not locked.value: this runs on a push-delivery thread in a backgrounded
-        // (often freshly-started) process, which is the one situation where the grace window may
-        // have expired with nothing having called lockNow() yet. Reading the flow directly put the
-        // full sender and subject on the lock screen of a phone that had been put down hours ago.
+        // Fails CLOSED, and uses isLockedNow() rather than locked.value: this runs on a
+        // push-delivery thread in a backgrounded process, the one place where the grace window may
+        // have expired with nothing having called lockNow() yet.
         runCatching { SecurityRuntime.graph(context).appLockManager.isLockedNow() }.getOrDefault(true)
 
     fun show(context: Context, payload: PushPayload) {
@@ -135,52 +144,59 @@ object PushNotificationDispatcher {
      */
     fun showMfaChallenge(context: Context, payload: MfaChallengePayload) {
         ensureMfaChannel(context)
-        MfaChallengeTracker(context).markDelivered(payload.challengeId)
-        if (!notificationsAllowed(context)) return
+        val tracker = MfaChallengeTracker(context)
+        val burst = tracker.liveCount() >= MFA_BURST_THRESHOLD
 
-        val notificationId = mfaNotificationId(payload.challengeId)
-
-        val tapIntent = mfaApprovalIntent(context, payload)
+        val notificationId = if (burst) MFA_BURST_NOTIFICATION_ID else mfaNotificationId(payload.challengeId)
         val tapPendingIntent = PendingIntent.getActivity(
             context,
             notificationId,
-            tapIntent,
+            mfaApprovalIntent(context, payload),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
         val notification = NotificationCompat.Builder(context, MFA_CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle(context.getString(R.string.mfa_notification_title))
-            .setContentText(context.getString(R.string.mfa_notification_body))
+            .setContentTitle(
+                context.getString(
+                    if (burst) R.string.mfa_notification_burst_title else R.string.mfa_notification_title,
+                ),
+            )
+            .setContentText(
+                context.getString(
+                    if (burst) R.string.mfa_notification_burst_body else R.string.mfa_notification_body,
+                ),
+            )
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_STATUS)
             .setVisibility(NotificationCompat.VISIBILITY_SECRET)
             .setAutoCancel(true)
             .setGroup(MFA_GROUP_KEY)
-            // Silent, not suppressed: a burst of challenges still all appear (none is lost) but
-            // only the first one in the window makes a sound.
             .setSilent(MfaAlertWindow.shouldSuppressAlert())
             .setContentIntent(tapPendingIntent)
             .build()
 
-        postNotification(context, notificationId, notification)
+        // Tracked only once a notification for it is actually on screen. Marking first meant that
+        // with POST_NOTIFICATIONS denied — or any SecurityException on the way out — the challenge
+        // became answerable for five minutes with nothing ever shown to the user, which is the
+        // pretext an approval screen must not be reachable under.
+        if (postNotification(context, notificationId, notification)) {
+            tracker.markDelivered(payload.challengeId)
+        }
     }
 
     /**
-     * The intent that opens [MfaApprovalActivity] for [payload] — the **only** way to build one.
+     * The intent that opens [MfaApprovalActivity] for [payload] — the only way one is built, and
+     * now the only route to that screen at all.
      *
-     * Every field matters, and the two call sites cannot be allowed to disagree about which ones to
-     * carry. [com.urlxl.mail.MainActivity] used to assemble its own with the challenge id alone, so
-     * a challenge routed through the launcher arrived with no origin (the approval screen printed
-     * "Unknown" for time, location, IP and device) and — worse — no `matchDigits`, which makes
-     * `MfaNumberMatch.optionsFor` return null and silently drops the screen back to a bare Approve
-     * button. Number matching is the whole anti-fatigue control; it must not be possible to lose it
-     * by picking the wrong entry point.
+     * Every field matters. A challenge that arrives without `matchDigits` and its decoys cannot be
+     * approved (see [MfaNumberMatch]), so an entry point that assembled a partial intent would not
+     * degrade the screen, it would disable it.
      *
      * The context is safe in Intent extras: [MfaApprovalActivity] is not exported, so only this app
      * can supply them, and [MfaChallengeTracker] still gates on the id having really been pushed.
      */
-    fun mfaApprovalIntent(context: Context, payload: MfaChallengePayload): Intent =
+    private fun mfaApprovalIntent(context: Context, payload: MfaChallengePayload): Intent =
         Intent(context, MfaApprovalActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             .putExtra(EXTRA_MFA_CHALLENGE_ID, payload.challengeId)
@@ -199,12 +215,14 @@ object PushNotificationDispatcher {
      * and this call, and both call sites run on FCM/UnifiedPush delivery threads where an uncaught
      * `SecurityException` takes out the message handler rather than merely dropping one notification.
      */
-    private fun postNotification(context: Context, id: Int, notification: android.app.Notification) {
-        if (!notificationsAllowed(context)) return
-        try {
+    private fun postNotification(context: Context, id: Int, notification: android.app.Notification): Boolean {
+        if (!notificationsAllowed(context)) return false
+        return try {
             NotificationManagerCompat.from(context).notify(id, notification)
+            true
         } catch (e: SecurityException) {
             android.util.Log.w("PushNotifications", "POST_NOTIFICATIONS revoked; dropping notification", e)
+            false
         }
     }
 
@@ -221,16 +239,13 @@ object PushNotificationDispatcher {
     private fun mfaNotificationId(challengeId: String): Int = stableNotificationId("mfa-$challengeId")
 
     /**
-     * A collision-resistant id derived from [key].
+     * A collision-resistant id derived from [key], used for both the notification id and the
+     * PendingIntent request code.
      *
-     * `String.hashCode` was used for both the notification id and the PendingIntent request code.
-     * It is a 32-bit value designed for HashMap bucketing, not distinctness — and it is trivially
-     * collidable on purpose. Two colliding message ids meant the second notification *replaced*
-     * the first, and `FLAG_UPDATE_CURRENT` rewrote the first's extras to point at the second
-     * message, so tapping the survivor opened the wrong email.
-     *
-     * SHA-256 truncated to 31 bits keeps the value positive (some launchers dislike negative ids)
-     * and pushes the collision probability out past any plausible number of live notifications.
+     * Not `String.hashCode`: it is 32 bits designed for HashMap bucketing and is trivially
+     * collidable on purpose, and a collision here means one notification replaces another while
+     * `FLAG_UPDATE_CURRENT` rewrites the survivor's extras — so the tap opens the wrong message.
+     * SHA-256 truncated to 31 bits stays positive (some launchers dislike negative ids).
      */
     internal fun stableNotificationId(key: String): Int {
         val digest = java.security.MessageDigest.getInstance("SHA-256").digest(key.toByteArray())

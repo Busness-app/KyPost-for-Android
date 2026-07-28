@@ -15,26 +15,51 @@ object DeviceContactMatcher {
         return if (digits.length == 11 && digits.startsWith("1")) digits.substring(1) else digits
     }
 
+    /**
+     * Every normalized email and phone in [existing], mapped to the uid that owns it.
+     *
+     * Built once per sync and reused across candidates. [findMatch] used to rescan and re-normalize
+     * the whole contact list for every candidate, so a device with 2,000 contacts and a Room store
+     * of 2,000 did millions of string comparisons per sync cycle — and re-derived the same
+     * normalized values every time.
+     *
+     * Each value carries its owner's position in [existing], and [Index.findMatch] returns the
+     * lowest-positioned match. That reproduces the old scan exactly — "the first contact in list
+     * order that matches on either an email or a phone" — rather than quietly preferring whichever
+     * field happens to be checked first.
+     */
+    class Index private constructor(private val byValue: Map<String, Match>) {
+        private data class Match(val uid: String, val ordinal: Int)
+
+        fun findMatch(candidateEmails: List<String>, candidatePhones: List<String>): String? {
+            val keys = candidateEmails.map { emailKey(it) } + candidatePhones.map { phoneKey(it) }
+            return keys.mapNotNull { byValue[it] }.minByOrNull { it.ordinal }?.uid
+        }
+
+        companion object {
+            fun of(existing: List<ContactDto>): Index {
+                val byValue = HashMap<String, Match>()
+                existing.forEachIndexed { ordinal, contact ->
+                    val match = Match(contact.uid, ordinal)
+                    (contact.emails.map { emailKey(it.value) } + contact.phones.map { phoneKey(it.value) })
+                        .forEach { key ->
+                            val current = byValue[key]
+                            if (current == null || ordinal < current.ordinal) byValue[key] = match
+                        }
+                }
+                return Index(byValue)
+            }
+        }
+    }
+
+    /** Emails and phones share one map, so they are namespaced to keep a phone-shaped email from
+     *  matching a phone. */
+    private fun emailKey(value: String) = "e:${normalizeEmail(value)}"
+    private fun phoneKey(value: String) = "p:${normalizePhone(value)}"
+
     fun findMatch(
         candidateEmails: List<String>,
         candidatePhones: List<String>,
         existing: List<ContactDto>,
-    ): String? {
-        val normalizedCandidateEmails = candidateEmails.map { normalizeEmail(it) }.toSet()
-        val normalizedCandidatePhones = candidatePhones.map { normalizePhone(it) }.toSet()
-
-        for (contact in existing) {
-            val contactEmails = contact.emails.map { normalizeEmail(it.value) }.toSet()
-            val contactPhones = contact.phones.map { normalizePhone(it.value) }.toSet()
-
-            if ((normalizedCandidateEmails intersect contactEmails).isNotEmpty()) {
-                return contact.uid
-            }
-            if ((normalizedCandidatePhones intersect contactPhones).isNotEmpty()) {
-                return contact.uid
-            }
-        }
-
-        return null
-    }
+    ): String? = Index.of(existing).findMatch(candidateEmails, candidatePhones)
 }

@@ -1,0 +1,9 @@
+# Source must stay text. A stray control character in a string literal once made
+# MailCursorStore.kt read as binary, which silently excluded it from every
+# grep/ripgrep sweep over the repo — including the security ones.
+*.kt   text diff=kotlin
+*.java text
+*.xml  text
+*.kts  text
+*.pro  text
+*.md   text

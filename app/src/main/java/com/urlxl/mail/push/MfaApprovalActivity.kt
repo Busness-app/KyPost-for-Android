@@ -34,34 +34,49 @@ import kotlinx.coroutines.launch
  * actionable, however this screen was reached.
  */
 class MfaApprovalActivity : AppCompatActivity() {
-    private lateinit var approveButton: Button
     private lateinit var denyButton: Button
     private lateinit var contextText: TextView
     private lateinit var matchGroup: View
     private lateinit var matchChoices: LinearLayout
+    private lateinit var matchUnavailable: TextView
     private var challengeId: String = ""
     private var resolveJob: Job? = null
     private var authenticated = false
 
-    /** The digits the server is showing in the browser, or blank when this server does not
-     *  support number matching (in which case the plain Approve button is used). */
+    /** Set by [burnChallenge]: this challenge is finished on this device regardless of what the
+     *  network says, so [resolve] must not re-offer it. */
+    private var burned = false
+
+    /** The digits the server is showing in the browser, or blank when this challenge carries no
+     *  usable number match — in which case it can only be denied. */
     private var matchDigits: String = ""
+
+    /** The tile order, shuffled once per challenge and kept across recreation. Reshuffling on a
+     *  configuration change or a return from the biometric prompt would move the tiles under the
+     *  user's finger mid-decision. */
+    private var matchOptions: List<String> = emptyList()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
         setContentView(R.layout.activity_mfa_approval)
 
-        approveButton = findViewById(R.id.btnMfaApprove)
         denyButton = findViewById(R.id.btnMfaDeny)
         contextText = findViewById(R.id.mfaApprovalContext)
         matchGroup = findViewById(R.id.mfaMatchGroup)
         matchChoices = findViewById(R.id.mfaMatchChoices)
-        approveButton.setOnClickListener { resolve(approve = true) }
+        matchUnavailable = findViewById(R.id.mfaMatchUnavailable)
         denyButton.setOnClickListener { resolve(approve = false) }
+
+        savedInstanceState?.getStringArray(STATE_MATCH_OPTIONS)?.let { matchOptions = it.toList() }
 
         if (!adoptChallenge(intent)) return
         requireAuthentication()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putStringArray(STATE_MATCH_OPTIONS, matchOptions.toTypedArray())
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -73,6 +88,10 @@ class MfaApprovalActivity : AppCompatActivity() {
         // can't finish() this screen out from under the new one.
         resolveJob?.cancel()
         resolveJob = null
+        // A different challenge means a different choice set and a fresh verdict; neither the
+        // previous one's tile order nor its burn may carry over.
+        matchOptions = emptyList()
+        burned = false
 
         if (!adoptChallenge(intent)) return
         // Re-authenticate per challenge: the previous approval's authentication was consent for
@@ -125,32 +144,37 @@ class MfaApprovalActivity : AppCompatActivity() {
     }
 
     /**
-     * Replaces the bare Approve button with a three-way number match when the server supplies the
-     * digits it is simultaneously showing in the browser.
+     * Renders the number match, which is the only way to approve.
      *
-     * A tap on "Approve" is exactly what an MFA-fatigue attack harvests. A choice between three
-     * numbers cannot be made correctly by someone who is not looking at the screen that started
-     * the sign-in. Falls back to the plain button when the server sends no digits, so an
-     * un-upgraded server keeps working.
+     * There is no bare Approve button any more. The server always mints the value it displays in
+     * the browser plus two decoys and verifies the answer itself, so a challenge that does not
+     * carry a complete choice set is one this client cannot approve — offering a button that sends
+     * no number would spend the server's attempt budget and return a 400 telling the user they got
+     * a number wrong that they were never shown. Deny stays available unconditionally.
      */
     private fun setUpNumberMatching(source: Intent) {
         matchDigits = source.getStringExtra(PushNotificationDispatcher.EXTRA_MFA_MATCH_DIGITS).orEmpty()
         val decoys = source.getStringArrayExtra(PushNotificationDispatcher.EXTRA_MFA_DECOY_DIGITS)
             ?.toList()
             .orEmpty()
-        val options = MfaNumberMatch.optionsFor(challengeId, matchDigits, decoys)
+        // Shuffled once. A restored order is reused so a recreate cannot move the tiles — but only
+        // if it still contains this challenge's answer, or every tap would be wrong and the first
+        // one would burn a challenge the user answered correctly.
+        val options = matchOptions.takeIf { it.isNotEmpty() && matchDigits in it }
+            ?: MfaNumberMatch.optionsFor(matchDigits, decoys).orEmpty()
+        matchOptions = options
 
         matchChoices.removeAllViews()
-        if (options == null) {
+        if (options.isEmpty()) {
             matchDigits = ""
             matchGroup.visibility = View.GONE
-            approveButton.visibility = View.VISIBLE
+            matchUnavailable.visibility = View.VISIBLE
+            com.urlxl.mail.applyWarningCalloutTheme(this, matchUnavailable)
             return
         }
 
+        matchUnavailable.visibility = View.GONE
         matchGroup.visibility = View.VISIBLE
-        // The generic Approve button must not remain as a way around the match.
-        approveButton.visibility = View.GONE
         options.forEach { value ->
             val button = Button(this).apply {
                 text = value
@@ -165,23 +189,35 @@ class MfaApprovalActivity : AppCompatActivity() {
     }
 
     /**
-     * A wrong number is treated as a denial, not a retry.
+     * A wrong number burns the challenge. It is not a retry, and it is not merely a deny request.
      *
-     * Letting the user guess again turns a three-way match into a one-in-three chance for an
-     * attacker whose victim is tapping blind. The sign-in this challenge belongs to is refused.
+     * The server keeps a small attempt budget so a legitimate mis-tap is recoverable, but this
+     * client deliberately does not use it: letting the user guess again turns a three-way match
+     * into a one-in-three chance for an attacker whose victim is tapping blind. So the challenge is
+     * struck from the tracker and its notification cancelled *before* the deny is sent, which makes
+     * the burn hold even if the deny never reaches the server. Leaving it to the request alone
+     * meant that offline, a failed deny re-enabled the tiles and handed back exactly the retry this
+     * refuses to allow.
      */
     private fun onMatchChosen(chosen: String) {
         if (!authenticated) return
         if (chosen == matchDigits) {
-            resolve(approve = true)
+            resolve(approve = true, chosenDigits = chosen)
             return
         }
         Toast.makeText(this, R.string.mfa_match_wrong, Toast.LENGTH_LONG).show()
+        burnChallenge()
         resolve(approve = false)
     }
 
+    /** Makes this challenge unanswerable on this device, whatever the network does next. */
+    private fun burnChallenge() {
+        PushNotificationDispatcher.cancelMfaChallenge(this, challengeId)
+        MfaChallengeTracker(this).clear(challengeId)
+        burned = true
+    }
+
     private fun setButtonsEnabled(enabled: Boolean) {
-        approveButton.isEnabled = enabled
         denyButton.isEnabled = enabled
         for (i in 0 until matchChoices.childCount) {
             matchChoices.getChildAt(i).isEnabled = enabled
@@ -274,33 +310,45 @@ class MfaApprovalActivity : AppCompatActivity() {
     }
 
     /**
-     * Re-authenticate per challenge, as this file's `onNewIntent` contract already intends. Without
-     * this the activity kept `authenticated = true` across a Home press, and — not being
-     * `excludeFromRecents` — could be resumed from Recents by anyone within the tracker's
-     * five-minute window and approved with no further check.
+     * Authentication is consent for one decision, and it does not survive leaving the screen.
+     *
+     * This used to be skipped whenever a resolve was in flight, on the reasoning that an in-flight
+     * request should not be de-authenticated mid-call. What it actually bought was `authenticated`
+     * staying true across a Home press for as long as an OkHttp call with no `callTimeout` can
+     * hang — and the in-flight resolve, on failure, then re-enabled every tile on a screen the user
+     * had walked away from. The request is unaffected by this; only the ability to submit another
+     * one is.
      */
     override fun onStop() {
         super.onStop()
-        if (resolveJob == null) {
-            authenticated = false
-            setButtonsEnabled(false)
-        }
+        authenticated = false
+        setButtonsEnabled(false)
     }
 
-    private fun resolve(approve: Boolean) {
+    /**
+     * [chosenDigits] is the value the user tapped. The server is what actually checks it
+     * ([MfaResponseClient]); the local comparison in [onMatchChosen] only decides which request to
+     * send. Empty on a deny, which the server accepts without a number.
+     */
+    private fun resolve(approve: Boolean, chosenDigits: String = "") {
         if (!authenticated) return
         setButtonsEnabled(false)
         resolveJob = lifecycleScope.launch {
-            val delivered = MfaResponder.respond(applicationContext, challengeId, approve)
-            if (delivered) {
+            val delivered = MfaResponder.respond(applicationContext, challengeId, approve, chosenDigits)
+            if (delivered || burned) {
+                // A burned challenge is over on this device whether or not the deny landed; there
+                // is nothing left here for the user to do.
                 finish()
             } else {
-                // The decision never reached the server, so the challenge is still open. Stay put
-                // and re-enable the buttons rather than finishing onto a toast the user cannot act
-                // on — MfaResponder deliberately leaves the tracker entry intact for this.
+                // An undelivered *approve* leaves the challenge genuinely open, and MfaResponder
+                // keeps the tracker entry for exactly this — let the user retry.
                 resolveJob = null
                 setButtonsEnabled(true)
             }
         }
+    }
+
+    private companion object {
+        const val STATE_MATCH_OPTIONS = "matchOptions"
     }
 }

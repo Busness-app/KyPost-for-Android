@@ -13,24 +13,27 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
+import java.io.IOException
 
 /** Every DataStore this app owns. DataStore has no "delete everything" API, so the backing files
  *  are removed directly — safe here because a wipe is always followed by [AppRestart.relaunch],
  *  which rebuilds the graphs that own them. */
 private val DATASTORE_NAMES = listOf("push_state", "contacts_state", "mail_sync_state")
 
-/** Every SharedPreferences file this app owns except the app-lock store, which [AppLockStore.reset]
- *  handles (it also has to clear its unencrypted tripwire companion). */
-private val PREFS_NAMES = listOf(
-    "com.urlxl.mail.hostile_location_settings",
-    "com.urlxl.mail.device_contacts",
-    "com.urlxl.mail.keyword_settings",
-    "com.urlxl.mail.settings",
-    "push_pairing_secure",
-    // A wipe runs because the device is presumed hostile, and challenge ids plus their delivery
-    // timestamps are message-adjacent metadata: leaving them behind records that a sign-in
-    // approval was pushed here and when.
-    "com.urlxl.mail.mfa_challenges",
+/**
+ * SharedPreferences files the enumeration in [deleteAllSharedPrefs] must NOT touch.
+ *
+ * The two app-lock files belong to [AppLockStore.reset], which deletes the unencrypted tripwire
+ * *before* the encrypted store — an order this enumeration cannot promise. The wipe marker has to
+ * outlive the wipe's own deletions, or an interruption erases the evidence that a wipe was started.
+ * The UnifiedPush connector's file is deleted in [tearDownPushDelivery] instead, because it holds
+ * the distributor selection that `UnifiedPush.unregister` needs to actually unsubscribe.
+ */
+private val PREFS_NAMES_RETAINED = setOf(
+    "app_lock_secure",
+    "app_lock_tripwire",
+    "com.urlxl.mail.wipe_state",
+    "unifiedpush.connector",
 )
 
 /**
@@ -66,12 +69,10 @@ sealed class WipeResult {
  * when the [AppLockStore] tripwire fires, and when disabling "Require Unlock to Open" needs to
  * recover a credential-gate wrapped `deviceSecret`.
  *
- * This deliberately covers far more than the Room database. The previous version deleted
- * `kypost_mail.db`, cleared the pairing prefs and reset the app lock, and left behind: the last 30
- * push payloads — **sender names and email subjects** — in the plaintext `push_state` DataStore;
- * every contact this app had synced into the OS contacts provider, which is not in this app's
- * sandbox at all; and the sync cursors, keyword filters and theme prefs. A wipe that runs
- * precisely because the device is presumed hostile cannot leave the message metadata behind.
+ * Its scope is deliberately wider than the Room database: the push history holds sender names and
+ * subjects, and the contacts this app synced live in the OS provider, outside its sandbox
+ * entirely. A wipe that runs precisely because the device is presumed hostile cannot leave message
+ * metadata behind — and must never report [WipeResult.Complete] unless every step really ran.
  */
 object SecurityWipe {
     private const val TAG = "SecurityWipe"
@@ -116,24 +117,13 @@ object SecurityWipe {
             .onFailure { android.util.Log.w(TAG, "Could not read the pairing before wiping; deregister will be skipped", it) }
             .getOrNull()
 
-        // Local plaintext FIRST, before anything that can block.
+        // ORDER IS THE POINT: local plaintext first, network last. An attacker holding the device
+        // can force-stop the app at any moment, so every step that blocks — above all the ~20s of
+        // OkHttp timeouts in the deregister — has to come after the destruction, not before it.
         //
-        // This used to lead with tearDownPushDelivery(), whose first act is an authenticated HTTP
-        // POST to deregister — up to ~20s of OkHttp connect+read timeouts before a single byte of
-        // cached mail was touched. Ordering the network ahead of the destruction ranked
-        // metadata-hygiene above destroying the plaintext, and handed anyone holding the device a
-        // wide, reliably reproducible window in which force-stopping the app left kypost_mail.db,
-        // the pairing and every cached message body fully intact.
-        //
-        // The database goes before the DataStores/prefs (rather than last, as it once did) because
-        // nothing below it touches Room any more: clearPairing() — which does purge account-scoped
-        // tables — now runs in the network phase, after this.
-        //
-        // Ahead of even that: the in-progress message the user was composing, in full, including
-        // attachment payloads. It needs no I/O, and it is the most sensitive thing this function
-        // touches. AppRestart no longer kills the process (see its KDoc), so without this the wipe
-        // completes, removes the app lock, relaunches into the same JVM — and leaves the draft
-        // restorable from the compose screen in a session the attacker now controls.
+        // The in-memory draft leads because it needs no I/O and is the most sensitive thing here:
+        // AppRestart relaunches into the same JVM rather than killing the process, so an uncleared
+        // draft is restorable from the compose screen in the attacker's session.
         step("inMemoryPlaintext") { InMemoryPlaintext.clearAll() }
         step("database") { runBlocking { closeAndDeleteDatabase(appContext) } }
         step("datastores") {
@@ -141,19 +131,14 @@ object SecurityWipe {
                 File(appContext.filesDir, "datastore/$name.preferences_pb").delete()
             }
         }
-        step("sharedPrefs") { PREFS_NAMES.forEach { appContext.deleteSharedPreferences(it) } }
-        step("webViewState") { clearWebViewState(appContext) }
+        step("sharedPrefs") { deleteAllSharedPrefs(appContext) }
+        step("webViewState") { runBlocking { clearWebViewState(appContext) } }
         step("deviceContacts") { removeSyncedDeviceContacts(appContext) }
 
-        // Network teardown LAST, and time-boxed, using the credential captured at the top. Both
-        // message handlers no-op without a pairing, so the "wipe re-accumulates metadata" failure
-        // the old ordering guarded against cannot happen once the local state is already gone.
-        //
-        // The bound is enforced by the deregister client's own `callTimeout` (see
-        // PushGraph.deregisterClient), not by this withTimeoutOrNull: coroutine cancellation cannot
-        // interrupt a thread blocked inside a socket read, so the wrapper alone left the documented
-        // ceiling as decoration over OkHttp's much larger defaults. It stays as an outer guard for
-        // the non-network work in tearDownPushDelivery.
+        // Network teardown LAST, time-boxed, using the credential captured at the top. The bound is
+        // enforced by the deregister client's own `callTimeout` (see PushGraph.deregisterClient) —
+        // coroutine cancellation cannot interrupt a thread blocked in a socket read, so this
+        // withTimeoutOrNull only guards the non-network work in tearDownPushDelivery.
         step("deregister") {
             runBlocking {
                 withTimeoutOrNull(DEREGISTER_TIMEOUT_MS) { tearDownPushDelivery(appContext, pairingForDeregister) }
@@ -268,24 +253,54 @@ object SecurityWipe {
     }
 
     /**
-     * Clears Chromium's per-application profile. Tapping "Show images" on a message makes the mail
-     * WebView perform real network fetches, after which cookies, `TransportSecurity` (HSTS hosts)
-     * and `Network Persistent State` (alt-svc/QUIC hosts) persist under `app_webview` — a
-     * host-level record of the remote-content servers contacted while reading mail. Nothing in the
-     * app ever cleared any of it, and WebView's own documentation makes that the application's job.
+     * Every SharedPreferences file this app owns, minus [PREFS_NAMES_RETAINED].
+     *
+     * Enumerated rather than listed by name. The list this replaced claimed to be complete and was
+     * not — `com.urlxl.mail.app_lock_settings` had never been added to it — and a hardcoded list
+     * silently goes stale every time a preference file is introduced.
+     *
+     * Throws on the first failure so [wipeAndResetApp] records the step as failed.
      */
-    private fun clearWebViewState(appContext: Context) {
-        runCatching {
+    private fun deleteAllSharedPrefs(appContext: Context) {
+        val names = File(appContext.dataDir, "shared_prefs")
+            .listFiles { file -> file.name.endsWith(".xml") }
+            .orEmpty()
+            .map { it.name.removeSuffix(".xml") }
+            .filterNot { it in PREFS_NAMES_RETAINED }
+        val undeleted = names.filterNot { appContext.deleteSharedPreferences(it) }
+        if (undeleted.isNotEmpty()) {
+            throw IOException("Failed to delete shared preferences: $undeleted")
+        }
+    }
+
+    /**
+     * Clears Chromium's per-application profile: tapping "Show images" makes the mail WebView
+     * perform real network fetches, after which cookies, `TransportSecurity` (HSTS hosts) and
+     * `Network Persistent State` (alt-svc/QUIC hosts) persist under `app_webview` as a host-level
+     * record of the remote-content servers contacted while reading mail.
+     *
+     * Nothing here is caught. Every statement used to sit inside a bare `runCatching {}`, so a
+     * failure could not reach [wipeAndResetApp]'s `failed` list and the wipe reported
+     * [WipeResult.Complete] with the browsing state still on disk — the one claim that must never
+     * be made falsely. The WebView statics additionally run on the main thread: this function is
+     * called from `Dispatchers.IO`, and initialising the WebView provider off the UI thread throws.
+     */
+    private suspend fun clearWebViewState(appContext: Context) {
+        withContext(Dispatchers.Main) {
             android.webkit.WebStorage.getInstance().deleteAllData()
             android.webkit.CookieManager.getInstance().removeAllCookies(null)
             android.webkit.CookieManager.getInstance().flush()
         }
-        runCatching { File(appContext.dataDir, "app_webview").deleteRecursively() }
-            .onFailure { android.util.Log.e(TAG, "Failed to delete the WebView profile", it) }
-        runCatching { appContext.cacheDir.deleteRecursively() }
-            .onFailure { android.util.Log.e(TAG, "Failed to clear the cache dir", it) }
-        runCatching { appContext.codeCacheDir.deleteRecursively() }
-            .onFailure { android.util.Log.e(TAG, "Failed to clear the code cache dir", it) }
+        // deleteRecursively() reports false for a partial delete rather than throwing, and a
+        // half-deleted profile is exactly the state this must not call Complete.
+        val undeleted = listOf(
+            File(appContext.dataDir, "app_webview"),
+            appContext.cacheDir,
+            appContext.codeCacheDir,
+        ).filterNot { it.deleteRecursively() }
+        if (undeleted.isNotEmpty()) {
+            throw IOException("Failed to delete WebView/cache directories: ${undeleted.map { it.name }}")
+        }
     }
 
     /**

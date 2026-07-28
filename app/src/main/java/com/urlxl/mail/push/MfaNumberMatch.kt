@@ -1,19 +1,24 @@
 package com.urlxl.mail.push
 
-import kotlin.math.abs
-
 /**
  * The number-matching choice set for one MFA challenge.
  *
- * A bare Approve button asks for a tap, and a tap is exactly what an MFA-fatigue attack harvests:
- * the user is woken at 03:00, has approved this same contentless prompt fifty times legitimately,
- * and taps. Number matching replaces the tap with a discrimination the user can only make if they
- * are looking at the screen that started the sign-in — which is what killed fatigue attacks for
- * Microsoft and Duo.
+ * A bare Approve button asks for a tap, and a tap is exactly what an MFA-fatigue attack harvests.
+ * Number matching replaces it with a discrimination the user can only make if they are looking at
+ * the screen that started the sign-in.
  *
- * Derived deterministically from the challenge id when the server does not supply decoys, so the
- * same challenge always renders the same options: `onNewIntent`, a recreate, or a return from the
- * biometric prompt must not reshuffle the buttons under the user's finger.
+ * **Every value comes from the server.** The client used to invent decoys from a linear congruential
+ * generator seeded on the challenge id when the server sent too few, which made the wrong answers
+ * derivable by anyone who knew the id. The server mints the correct value and both decoys from
+ * `crypto/rand` (kypost-server `mfa.newNumberMatch`), and it verifies the answer itself
+ * (`Store.ResolvePushWithMatch`) — so a challenge that does not carry all three is one this client
+ * cannot offer an approval for at all. [optionsFor] returns null there, and the caller must leave
+ * only Deny available rather than falling back to a button the server will refuse.
+ *
+ * Digit width is whatever the server used, not a hardcoded 2. The width was pinned in three places
+ * across two repositories with no negotiation, so widening the server's value space — the obvious
+ * next hardening, since two digits is only 100 values — would have silently disabled approval on
+ * every deployed client.
  *
  * Pure and Context-free so the selection logic is unit-testable on the JVM.
  */
@@ -21,29 +26,25 @@ internal object MfaNumberMatch {
     const val CHOICE_COUNT = 3
 
     /**
-     * [correct] first is *not* the display order — [optionsFor] shuffles deterministically. Returns
-     * null when the server supplied no [correct] value, meaning number matching is unavailable and
-     * the caller must fall back to plain approve/deny.
+     * The tiles to render, in the order to render them, or null when [correct] and [serverDecoys]
+     * do not describe a complete [CHOICE_COUNT]-way choice.
+     *
+     * Order is randomised per call. [shuffle] is injectable only so tests can pin it; callers must
+     * shuffle **once** and keep the result for the life of the challenge, or a recreate would
+     * reorder the tiles under the user's finger — see [MfaApprovalActivity].
      */
-    fun optionsFor(challengeId: String, correct: String, serverDecoys: List<String>): List<String>? {
-        if (correct.length != MfaChallengePayloadParser.MATCH_DIGITS_LENGTH) return null
-
-        val decoys = (serverDecoys - correct).distinct().toMutableList()
-        // Deterministic filler, seeded from the challenge id, when the server sent too few. Using
-        // the id rather than a random source keeps the set stable across Activity recreation.
-        var seed = challengeId.fold(7L) { acc, c -> acc * 31 + c.code }
-        while (decoys.size < CHOICE_COUNT - 1) {
-            seed = seed * 6364136223846793005L + 1442695040888963407L
-            val candidate = (abs(seed / 65_536L) % 100L).toString().padStart(
-                MfaChallengePayloadParser.MATCH_DIGITS_LENGTH,
-                '0',
-            )
-            if (candidate != correct && candidate !in decoys) decoys += candidate
-        }
-
-        val choices = (decoys.take(CHOICE_COUNT - 1) + correct)
-        // Stable shuffle: sort by a hash of (challengeId, value) so the correct answer is not
-        // always in the same position, but the order never changes for a given challenge.
-        return choices.sortedBy { value -> (challengeId + value).fold(17) { acc, c -> acc * 31 + c.code } }
+    fun optionsFor(
+        correct: String,
+        serverDecoys: List<String>,
+        shuffle: (List<String>) -> List<String> = { it.shuffled() },
+    ): List<String>? {
+        if (!MfaChallengePayloadParser.isValidMatchDigits(correct)) return null
+        val decoys = serverDecoys
+            .filter { it != correct && it.length == correct.length }
+            .distinct()
+        // Exactly, not at least: fewer is an incomplete challenge, and more means the server and
+        // this client disagree about the shape of the choice.
+        if (decoys.size != CHOICE_COUNT - 1) return null
+        return shuffle(decoys + correct)
     }
 }

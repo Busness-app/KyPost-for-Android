@@ -46,7 +46,8 @@ class MfaChallengePayloadParserTest {
     }
 
     /** matchDigits drives a tap target, so nobody who can reach the push channel gets to put
-     *  arbitrary text on a button. */
+     *  arbitrary text on a button. Width is the server's choice within a sane range — see
+     *  [MfaChallengePayloadParser.MATCH_DIGITS_MAX_LENGTH]. */
     @Test
     fun parse_dropsMalformedMatchDigits() {
         fun digitsFor(value: String) = MfaChallengePayloadParser.parse(
@@ -54,10 +55,27 @@ class MfaChallengePayloadParserTest {
         )!!.matchDigits
 
         assertEquals("", digitsFor("APPROVE"))
-        assertEquals("", digitsFor("4"))
-        assertEquals("", digitsFor("4242"))
         assertEquals("", digitsFor("4a"))
+        assertEquals("", digitsFor("1234567"))
         assertEquals("42", digitsFor("42"))
+    }
+
+    /** A server that widens its value space must not have its digits silently discarded by an
+     *  already-shipped client — that would disable approval outright, since there is no longer a
+     *  bare Approve button to fall back to. */
+    @Test
+    fun parse_acceptsWiderMatchDigitsThanTheServerCurrentlySends() {
+        val payload = MfaChallengePayloadParser.parse(
+            mapOf(
+                "type" to "mfa_challenge",
+                "challengeId" to "c-1",
+                "matchDigits" to "047",
+                "decoyDigits" to "128,935",
+            ),
+        )!!
+
+        assertEquals("047", payload.matchDigits)
+        assertEquals(listOf("128", "935"), payload.decoyDigits)
     }
 
     @Test
