@@ -605,7 +605,14 @@ class EmailDetailActivity : LockedActivity() {
      *  CATEGORY_BROWSABLE narrows resolution to components that accept being driven by untrusted
      *  content, which is what K-9 does on the same path — without it, an email link can reach an
      *  installed app's non-browsable exported activities. Callers must already have checked the
-     *  scheme and the user gesture; see [SAFE_LINK_SCHEMES]. */
+     *  scheme and the user gesture; see [SAFE_LINK_SCHEMES].
+     *
+     *  Deliberately NOT a Custom Tab, unlike the webmail handoff in renderPgpBar. A Custom Tab
+     *  renders inside this app's task wearing this app's toolbar colour, so a page opened in one
+     *  reads to the user as part of the app. That is the right frame for the user's own webmail
+     *  and precisely the wrong one for a URL chosen by whoever sent the email. Sender-controlled
+     *  links go to a separate browser app, where the address bar and the app switch are the
+     *  cues that this is somewhere else. */
     private fun openExternally(uri: android.net.Uri) {
         val intent = Intent(Intent.ACTION_VIEW, uri)
             .addCategory(Intent.CATEGORY_BROWSABLE)
