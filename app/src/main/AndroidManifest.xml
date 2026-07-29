@@ -6,6 +6,22 @@
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.WRITE_CONTACTS" />
 
+    <!--
+      Package visibility for browsers only, so CustomTabsClient.getPackageName can find a
+      Custom Tabs-capable one. Without this, minSdk 31's filtering hides every browser and the
+      Custom Tab path silently degrades to an external-browser launch on all devices.
+
+      Deliberately an <intent> filter and not QUERY_ALL_PACKAGES: this grants sight of apps that
+      answer VIEW/BROWSABLE for https, which is the question being asked, and nothing else.
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" />
+        </intent>
+    </queries>
+
     <application
         android:name=".KyPostApp"
         android:allowBackup="false"
