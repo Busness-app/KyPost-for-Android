@@ -17,6 +17,7 @@ import com.urlxl.mail.R
 import com.urlxl.mail.security.AppLockStore
 import com.urlxl.mail.security.SecurityRuntime
 import com.urlxl.mail.security.resolvePinAttempt
+import com.urlxl.mail.security.showSecurely
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
@@ -50,6 +51,10 @@ class MfaApprovalActivity : AppCompatActivity() {
      *  after `onCreate` has already started one — `authenticated` is still false because the prompt
      *  is asynchronous — and the user gets two stacked biometric dialogs on every cold start. */
     private var authInFlight = false
+
+    /** The app-lock PIN dialog while it is showing. Held so [onStop] can dismiss it — see
+     *  [promptAppLockPin]. */
+    private var pinDialog: android.app.AlertDialog? = null
 
     /** Set by [burnChallenge]: this challenge is finished on this device regardless of what the
      *  network says, so [resolve] must not re-offer it. */
@@ -115,6 +120,10 @@ class MfaApprovalActivity : AppCompatActivity() {
     private fun adoptChallenge(source: Intent): Boolean {
         val adopted = PushNotificationDispatcher.payloadFrom(source)
         if (adopted == null || !PushRuntime.graph(this).mfaChallengeTracker.isPending(adopted.challengeId)) {
+            // Say why. A challenge can legitimately stop being pending — it expired, it was already
+            // answered, or a flood of new ones evicted it from the tracker's bounded set — and
+            // finishing in silence made a tapped notification look like a broken app.
+            Toast.makeText(this, R.string.mfa_challenge_unavailable, Toast.LENGTH_LONG).show()
             finish()
             return false
         }
@@ -231,23 +240,42 @@ class MfaApprovalActivity : AppCompatActivity() {
      * Gates both buttons behind a biometric or device-credential check, falling back to this app's
      * own PIN when the device has neither.
      *
-     * `canAuthenticate(BIOMETRIC_STRONG or DEVICE_CREDENTIAL)` returns success whenever a device
-     * credential is enrolled, even with no usable sensor, so the fallback branch is reached only on
-     * a device with **no screen lock at all**. That used to enable both buttons outright, on the
-     * argument that anyone holding such a device already has unrestricted access. That argument is
-     * false here: this app maintains its own PIN, lockout ladder and wipe threshold, and this screen
-     * is deliberately exempt from the app lock, so the PIN was the only thing an attacker would
-     * otherwise have had to defeat — on what this file itself calls the highest-value action in the
-     * app. Fall back to that PIN, and fail open only when there is no authenticator of any kind.
+     * **The app-lock PIN comes first whenever the credential gate is on**, because answering a
+     * challenge needs the PIN-derived key: [MfaResponder] authenticates with `deviceSecret`, which
+     * [com.urlxl.mail.push.PushRepository.pairingForAuthenticatedCall] can only unwrap from a
+     * cached credential key, and a device credential is not that key. Authenticating with a
+     * fingerprint here and then discovering the response cannot be sent is a decision taken and
+     * silently dropped, on the highest-value action in this app.
+     *
+     * The fallback used to be reached on *any* status other than `BIOMETRIC_SUCCESS`, on the
+     * argument that `canAuthenticate(BIOMETRIC_STRONG or DEVICE_CREDENTIAL)` succeeds whenever a
+     * device credential is enrolled, so anything else means no screen lock at all. It does not:
+     * `BIOMETRIC_ERROR_HW_UNAVAILABLE` (sensor temporarily down) and `BIOMETRIC_STATUS_UNKNOWN`
+     * (documented as indeterminate, with the advice to call `authenticate()` anyway) both land
+     * there on a device that *does* have a screen lock — and with this app's own PIN unset, both
+     * buttons went live with no authentication whatsoever. Only the three statuses that definitely
+     * mean "there is no authenticator to use" take the fallback now; everything else shows the
+     * prompt and lets [BiometricPrompt.AuthenticationCallback.onAuthenticationError] finish the
+     * screen.
      */
     private fun requireAuthentication() {
         authInFlight = true
+
+        // The gate is on: nothing but the PIN produces a usable credential, so ask for it directly
+        // rather than collecting a device credential that cannot answer the challenge.
+        if (credentialGateNeedsPin()) {
+            promptAppLockPin()
+            return
+        }
+
         val authenticators = BiometricManager.Authenticators.BIOMETRIC_STRONG or
             BiometricManager.Authenticators.DEVICE_CREDENTIAL
-        if (BiometricManager.from(this).canAuthenticate(authenticators) != BiometricManager.BIOMETRIC_SUCCESS) {
+        if (mfaHasNoAuthenticator(BiometricManager.from(this).canAuthenticate(authenticators))) {
             if (SecurityRuntime.graph(this).appLockStore.isLockEnabled()) {
                 promptAppLockPin()
             } else {
+                // Genuinely nothing to authenticate against: no sensor, no enrolled device
+                // credential, and no app-lock PIN configured either.
                 authInFlight = false
                 authenticated = true
                 setButtonsEnabled(true)
@@ -282,30 +310,59 @@ class MfaApprovalActivity : AppCompatActivity() {
         ).authenticate(promptInfo)
     }
 
+    /** The credential gate is on and this process has no PIN-derived key, so only the app-lock PIN
+     *  can make this challenge answerable. */
+    private fun credentialGateNeedsPin(): Boolean {
+        val graph = SecurityRuntime.graph(this)
+        if (!graph.appLockStore.isLockEnabled()) return false
+        if (!graph.appLockStore.isCredentialPinGateEnabled()) return false
+        return graph.appLockManager.cachedCredentialKeys() == null
+    }
+
     /**
-     * The app-lock PIN as the authenticator of last resort, routed through
-     * [AppLockManager.verifyPinThrottled] so the lockout ladder and the wipe threshold apply here
-     * exactly as they do on the unlock screen — an approval prompt must not become an unthrottled
-     * PIN oracle.
+     * The app-lock PIN, routed through [AppLockManager] so the lockout ladder and the wipe
+     * threshold apply here exactly as they do on the unlock screen — an approval prompt must not
+     * become an unthrottled PIN oracle.
+     *
+     * Uses [AppLockManager.deriveAndCacheCredentialKeys] rather than
+     * [AppLockManager.verifyPinThrottled] when the credential gate is on: both run the same
+     * throttled verification, but only the former caches the key that
+     * [MfaResponder] needs to unwrap `deviceSecret`. Verifying alone would authenticate the user
+     * and still leave the response unsendable.
+     *
+     * The dialog is **held and dismissed in [onStop]**. It is `setCancelable(false)` and survives
+     * backgrounding, while `onStop` clears `authInFlight` — so returning to the screen ran
+     * [requireAuthentication] again and stacked a second identical prompt on the first, leaking the
+     * first's window and letting two dismissals burn two attempts against the wipe threshold for
+     * what the user saw as one prompt.
      */
     private fun promptAppLockPin() {
+        pinDialog?.dismiss()
         val pinField = android.widget.EditText(this).apply {
             inputType = android.text.InputType.TYPE_CLASS_NUMBER or
                 android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD
             hint = getString(R.string.unlock_pin_hint)
         }
-        android.app.AlertDialog.Builder(this)
+        val gateNeedsPin = credentialGateNeedsPin()
+        pinDialog = android.app.AlertDialog.Builder(this)
             .setTitle(R.string.mfa_auth_title)
-            .setMessage(R.string.mfa_auth_subtitle)
+            .setMessage(if (gateNeedsPin) R.string.mfa_auth_subtitle_pin_required else R.string.mfa_auth_subtitle)
             .setView(pinField)
             .setPositiveButton(android.R.string.ok) { _, _ ->
                 lifecycleScope.launch {
                     val manager = SecurityRuntime.graph(this@MfaApprovalActivity).appLockManager
+                    val pin = pinField.text.toString()
+                    val attempt = if (gateNeedsPin) {
+                        manager.deriveAndCacheCredentialKeys(pin)
+                    } else {
+                        manager.verifyPinThrottled(pin)
+                    }
                     // resolvePinAttempt, not `is Success`: the wipe threshold applies here too, and
                     // reporting a completed destructive wipe as "authentication required" told the
                     // user nothing about what had just happened to their data. See [PinGate].
-                    val ok = resolvePinAttempt(manager.verifyPinThrottled(pinField.text.toString()))
+                    val ok = resolvePinAttempt(attempt)
                     authInFlight = false
+                    pinDialog = null
                     if (ok) {
                         authenticated = true
                         setButtonsEnabled(true)
@@ -315,9 +372,14 @@ class MfaApprovalActivity : AppCompatActivity() {
                     }
                 }
             }
-            .setNegativeButton(android.R.string.cancel) { _, _ -> authInFlight = false; finish() }
+            .setNegativeButton(android.R.string.cancel) { _, _ ->
+                authInFlight = false
+                pinDialog = null
+                finish()
+            }
             .setCancelable(false)
-            .show()
+            .create()
+            .showSecurely()
     }
 
     /**
@@ -334,6 +396,10 @@ class MfaApprovalActivity : AppCompatActivity() {
         super.onStop()
         authenticated = false
         authInFlight = false
+        // Torn down with the authentication it belongs to. Leaving it up while clearing
+        // `authInFlight` is what let [onStart] stack a second one on top of it.
+        pinDialog?.dismiss()
+        pinDialog = null
         setButtonsEnabled(false)
     }
 
@@ -387,4 +453,33 @@ class MfaApprovalActivity : AppCompatActivity() {
     private companion object {
         const val STATE_MATCH_OPTIONS = "matchOptions"
     }
+}
+
+/**
+ * Whether a [BiometricManager.canAuthenticate] status means there is genuinely **no authenticator
+ * to use**, as opposed to one that could not be checked right now.
+ *
+ * [MfaApprovalActivity] used to treat everything except `BIOMETRIC_SUCCESS` as the former and, with
+ * this app's own PIN unset, enable approve and deny with no authentication at all. The premise —
+ * "`canAuthenticate(BIOMETRIC_STRONG or DEVICE_CREDENTIAL)` succeeds whenever a device credential is
+ * enrolled, so anything else means no screen lock" — is not what the API guarantees:
+ *
+ * - `BIOMETRIC_ERROR_HW_UNAVAILABLE` is *temporary* (sensor busy or powered down).
+ * - `BIOMETRIC_STATUS_UNKNOWN` is documented as indeterminate, with the explicit advice to call
+ *   `authenticate()` anyway.
+ * - `BIOMETRIC_ERROR_SECURITY_UPDATE_REQUIRED` means the sensor is untrusted, not that the device
+ *   credential is gone.
+ *
+ * All three occur on devices that *do* have a screen lock, so all three must show the prompt and
+ * let its error callback fail the screen closed. Only the three below are terminal.
+ *
+ * Top-level and Context-free so the classification is unit-testable on the JVM — the same reason
+ * [MfaNumberMatch] and [mfaChallengeIsFresh] live outside their callers.
+ */
+internal fun mfaHasNoAuthenticator(canAuthenticateStatus: Int): Boolean = when (canAuthenticateStatus) {
+    BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE,
+    BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED,
+    BiometricManager.BIOMETRIC_ERROR_UNSUPPORTED,
+    -> true
+    else -> false
 }

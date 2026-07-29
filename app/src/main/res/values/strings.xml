@@ -323,6 +323,7 @@
     <string name="unlock_wrong_pin">Wrong PIN</string>
     <string name="unlock_locked_out">Too many attempts — try again in %1$s</string>
     <string name="unlock_use_pin_button">Use PIN</string>
+    <string name="unlock_pin_required_for_credential_gate">Secure messaging is on, so your PIN is required. A fingerprint cannot unlock the credential this device sends mail and answers sign-ins with.</string>
 
     <string name="security_settings_title">Security</string>
     <string name="security_require_unlock_title">Require Unlock to Open</string>
@@ -380,6 +381,8 @@
     <string name="mfa_auth_title">Confirm it\'s you</string>
     <string name="mfa_auth_subtitle">Authenticate to approve or deny this sign-in</string>
     <string name="mfa_auth_required">Authentication is required to answer a sign-in request</string>
+    <string name="mfa_auth_subtitle_pin_required">Enter your app PIN. Secure messaging is on, so only your PIN can unlock the credential this device answers with.</string>
+    <string name="mfa_challenge_unavailable">This sign-in request is no longer available. It expired, it was already answered, or newer requests replaced it. Start the sign-in again.</string>
     <string name="mfa_respond_not_paired">Not paired with a server</string>
     <string name="mfa_respond_approved">Sign-in approved</string>
     <string name="mfa_respond_denied">Sign-in denied</string>

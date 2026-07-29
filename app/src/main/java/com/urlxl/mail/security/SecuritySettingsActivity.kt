@@ -370,7 +370,11 @@ class SecuritySettingsActivity : LockedActivity() {
             }
             .setNegativeButton(android.R.string.cancel) { _, _ -> onCancelled() }
             .setCancelable(false)
-            .show()
+            // FLAG_SECURE lives on the Activity window and a Dialog has its own, so this PIN was
+            // screenshot- and screen-recordable while the identical field on UnlockActivity was
+            // not. See [showSecurely].
+            .create()
+            .showSecurely()
     }
 
     private fun pinPolicyMessage(result: PinPolicy.Result): String? = when (result) {
@@ -627,6 +631,8 @@ class SecuritySettingsActivity : LockedActivity() {
             .setPositiveButton(R.string.security_set_pin_confirm) { _, _ -> onEntered(pinField.text.toString()) }
             .setNegativeButton(android.R.string.cancel) { _, _ -> onCancelled() }
             .setCancelable(false)
-            .show()
+            // See [promptEnterAndConfirmPin] and [showSecurely].
+            .create()
+            .showSecurely()
     }
 }

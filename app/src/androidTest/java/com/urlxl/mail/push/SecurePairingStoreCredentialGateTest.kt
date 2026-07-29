@@ -87,6 +87,57 @@ class SecurePairingStoreCredentialGateTest {
         assertFalse(store.needsCredentialRewrap())
     }
 
+    /**
+     * The regression that made a background token rotation unrecoverable.
+     *
+     * `PushRepository.savePairing` reaches this when the credential gate is on and no PIN-derived
+     * key is cached. It passes `deviceSecret = null` to mean "I may not persist this one", and the
+     * store used to read that as "there is no secret" and erase the stored one — while the server
+     * had just minted a replacement and revoked the old. The device was left with no credential at
+     * all and no repair path: a rewrap has nothing to rewrap, and turning the gate off unwraps a
+     * value that is no longer there.
+     */
+    @Test
+    fun savePairing_withPreserveStoredSecret_leavesAWrappedSecretIntact() = runBlocking {
+        val salt = CredentialCipher.randomSalt()
+        val keys = CredentialCipher.deriveKeys("482913", salt)
+        val store = SecurePairingStore(context)
+        store.savePairing(pairing, credentialKeys = keys, credentialSalt = salt)
+
+        // Exactly what the gate-on/no-key branch does: rewrite the pairing, keep hands off the
+        // secret.
+        store.savePairing(
+            pairing.copy(deviceId = "rotated-device-id", deviceSecret = null),
+            preserveStoredSecret = true,
+        )
+
+        val reread = store.pairingSnapshot(credentialKeys = keys)
+        assertEquals(pairing.deviceSecret, reread?.deviceSecret)
+        assertEquals("rotated-device-id", reread?.deviceId)
+    }
+
+    @Test
+    fun savePairing_withPreserveStoredSecret_leavesAnUnwrappedSecretIntact() = runBlocking {
+        val store = SecurePairingStore(context)
+        store.savePairing(pairing)
+
+        store.savePairing(pairing.copy(deviceSecret = null), preserveStoredSecret = true)
+
+        assertEquals(pairing.deviceSecret, store.pairingSnapshot(credentialKeys = null)?.deviceSecret)
+    }
+
+    /** The ordinary null still means "there is no secret" — preserving must be opt-in, or
+     *  [SecurePairingStore.clearPairing] and a genuinely secret-less pairing would stop working. */
+    @Test
+    fun savePairing_withoutPreserve_stillClearsTheSecret() = runBlocking {
+        val store = SecurePairingStore(context)
+        store.savePairing(pairing)
+
+        store.savePairing(pairing.copy(deviceSecret = null))
+
+        assertNull(store.pairingSnapshot(credentialKeys = null)?.deviceSecret)
+    }
+
     @Test
     fun clearPairing_dropsTheWrappedSecretAndTheTlsPin() = runBlocking {
         val salt = CredentialCipher.randomSalt()

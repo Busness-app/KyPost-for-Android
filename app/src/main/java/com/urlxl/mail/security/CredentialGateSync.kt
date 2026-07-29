@@ -12,17 +12,22 @@ import kotlinx.coroutines.withContext
  *
  * Two cases reach here:
  *
- * 1. It was saved unwrapped despite the gate being on. `PushRepository.savePairing` falls back to
- *    a plaintext save when the gate is on but no credential key is cached — which happens on any
- *    background FCM token rotation in a process that was never PIN-unlocked (Android routinely
- *    restarts the app to deliver FCM callbacks). The rotated secret would otherwise sit unwrapped
- *    indefinitely, silently defeating the gate.
+ * 1. It is stored unwrapped from before the gate was switched on — the pairing predates the toggle,
+ *    so the secret sits in the clear behind a gate the user believes is closed.
  * 2. It was wrapped by a build from before the Keystore pepper existed
  *    ([com.urlxl.mail.push.SecurePairingStore.SECRET_VERSION_LEGACY]), and is therefore still
  *    brute-forceable offline. Re-wrapping migrates it to the peppered key.
  *
+ * **This is a migration, not a recovery.** It can only re-wrap a secret that is still readable; a
+ * secret that was never stored is gone, and the `isNullOrBlank` guard below returns rather than
+ * pretending otherwise. Keeping a secret storable in the first place is
+ * [com.urlxl.mail.push.PushRepository.canPersistDeviceSecret]'s job, enforced in
+ * [com.urlxl.mail.push.PushSyncCoordinator] before any registration mints one.
+ *
  * Call after every successful PIN unlock (see [UnlockActivity]) — at that point a fresh credential
- * key is cached and either gap can be closed immediately.
+ * key is cached and either gap can be closed immediately. A biometric unlock derives no PIN key, so
+ * [UnlockActivity] demands the PIN outright whenever the gate is on rather than leaving these gaps
+ * open until some later unlock that a biometric user may never perform.
  *
  * `Dispatchers.Default`, not [NonCancellable] alone. `withContext` replaces only the context
  * elements it is handed, and [NonCancellable] is a [kotlinx.coroutines.Job] — the dispatcher is

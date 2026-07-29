@@ -92,28 +92,83 @@ class PushRepository(
     fun needsCredentialRewrap(): Boolean = securePairingStore.needsCredentialRewrap()
 
     /**
+     * What [savePairing] can do with a `deviceSecret` at a given moment.
+     *
+     * Captured as a value rather than re-derived inside [savePairing], because a caller that is
+     * about to mint a secret has to decide *before* the network call and store *after* it, and the
+     * app can lock in between — a background grace window expiring drops the cached credential key.
+     * Re-reading the state on the way out would turn a checked precondition into
+     * [Unavailable] with the server's rotation already committed.
+     */
+    sealed class PairingCredentialState {
+        /** The credential gate is off: secrets are stored as they arrive. */
+        object NotGated : PairingCredentialState()
+
+        /** The gate is on and this process holds the PIN-derived key to wrap with. */
+        data class Available(
+            val keys: com.urlxl.mail.security.CredentialKeys,
+            val salt: ByteArray,
+        ) : PairingCredentialState()
+
+        /** The gate is on and no PIN-derived key exists here — nothing may be wrapped, and nothing
+         *  that is already stored may be replaced. */
+        object Unavailable : PairingCredentialState()
+    }
+
+    /**
+     * Reads the current credential state.
+     *
+     * **Every caller that is about to mint a new secret must take this first and hand the same
+     * value back to [savePairing].** The registration endpoint mints a fresh secret on each success
+     * and invalidates the previous one, so registering while the result cannot be stored burns a
+     * working credential to produce one with nowhere to go — see [PushSyncCoordinator].
+     *
+     * Keys off [AppLockStore.isCredentialPinGateEnabled] — the *policy* — never off whether a key
+     * happens to be cached, which is wrong in both directions: it would re-wrap behind a gate that
+     * has just been switched off, and it would permanently store the secret unwrapped after a
+     * pairing made in a biometric-only session.
+     */
+    fun currentCredentialState(): PairingCredentialState {
+        val securityGraph = SecurityRuntime.graph(context)
+        if (!securityGraph.appLockStore.isCredentialPinGateEnabled()) return PairingCredentialState.NotGated
+        val keys = securityGraph.appLockManager.cachedCredentialKeys() ?: return PairingCredentialState.Unavailable
+        val salt = securityGraph.appLockStore.credentialSalt() ?: return PairingCredentialState.Unavailable
+        return PairingCredentialState.Available(keys, salt)
+    }
+
+    /**
      * Saves pairing data, wrapping `deviceSecret` behind the PIN-derived credential key when the
      * credential gate is on.
      *
-     * The branch keys off [AppLockStore.isCredentialPinGateEnabled] — the *policy* — never off
-     * whether a key happens to be cached, which is wrong in both directions: it would re-wrap
-     * behind a gate that has just been switched off, and it would permanently store the secret
-     * unwrapped after a pairing made in a biometric-only session.
-     *
-     * With the gate on and no key available we keep the pairing but drop the secret, leaving
-     * [SecurePairingStore.needsCredentialRewrap] true so the next PIN unlock restores it.
+     * On [PairingCredentialState.Unavailable] the stored secret is left exactly as it was. It used
+     * to be *deleted* here, on the reasoning that [SecurePairingStore.needsCredentialRewrap] would
+     * then be true and the next PIN unlock would restore it. Nothing could: a rewrap has no source
+     * to rewrap from once the value is gone, and the caller reached this branch precisely because
+     * the server had just replaced the secret. The device ended up with no credential, a UI still
+     * reading "Paired", and only a re-pair to get out. [currentCredentialState] is what stops the
+     * caller getting here at all; this branch is the backstop, and it must not destroy anything.
      */
-    suspend fun savePairing(pairing: PairingData) {
-        val securityGraph = SecurityRuntime.graph(context)
-        val gateEnabled = securityGraph.appLockStore.isCredentialPinGateEnabled()
-        val credentialKeys = securityGraph.appLockManager.cachedCredentialKeys()
-        val credentialSalt = if (credentialKeys != null) securityGraph.appLockStore.credentialSalt() else null
-        when {
-            gateEnabled && credentialKeys != null && credentialSalt != null ->
-                securePairingStore.savePairing(pairing, credentialKeys, credentialSalt)
-            gateEnabled ->
-                securePairingStore.savePairing(pairing.copy(deviceSecret = null))
-            else ->
+    suspend fun savePairing(
+        pairing: PairingData,
+        credentialState: PairingCredentialState = currentCredentialState(),
+    ) {
+        when (credentialState) {
+            is PairingCredentialState.Available ->
+                securePairingStore.savePairing(pairing, credentialState.keys, credentialState.salt)
+            is PairingCredentialState.Unavailable -> {
+                if (!pairing.deviceSecret.isNullOrBlank()) {
+                    android.util.Log.e(
+                        TAG,
+                        "Refusing to store a device secret with the credential gate on and no PIN-derived key; " +
+                            "the caller should have taken currentCredentialState() before registering",
+                    )
+                }
+                securePairingStore.savePairing(
+                    pairing.copy(deviceSecret = null),
+                    preserveStoredSecret = true,
+                )
+            }
+            is PairingCredentialState.NotGated ->
                 securePairingStore.savePairing(pairing)
         }
         context.pushDataStore.edit { prefs ->

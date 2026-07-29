@@ -104,6 +104,14 @@ class MfaChallengeTracker(context: Context) {
     }
 
     /**
+     * The outcome of an alert-cooldown check.
+     *
+     * [previousAlertAtEpochMs] exists so a caller that ends up posting nothing can put the cooldown
+     * back — see [restoreAlertCooldown].
+     */
+    data class AlertDecision(val suppress: Boolean, val previousAlertAtEpochMs: Long)
+
+    /**
      * Whether the MFA notification's *sound* should be suppressed, advancing the cooldown when it
      * should not.
      *
@@ -111,14 +119,40 @@ class MfaChallengeTracker(context: Context) {
      * freshly-started process and kills it moments later. Holding this in a process-scoped `var`
      * meant the cooldown reset on every process churn — so under a real flood, which is the only
      * situation it exists for, every challenge alerted at IMPORTANCE_HIGH.
+     *
+     * The check and the advance stay in one locked section so two concurrent deliveries cannot both
+     * decide to alert. A caller whose notification then fails to post calls [restoreAlertCooldown]
+     * with [AlertDecision.previousAlertAtEpochMs]; rolling back afterwards is what keeps the
+     * atomicity while still not spending a cooldown on an alert nobody heard.
      */
-    fun shouldSuppressAlert(cooldownMs: Long, nowEpochMs: Long = System.currentTimeMillis()): Boolean =
+    fun shouldSuppressAlert(cooldownMs: Long, nowEpochMs: Long = System.currentTimeMillis()): AlertDecision =
         synchronized(lock) {
             val last = prefs.getLong(KEY_LAST_ALERT_AT, 0L)
             val suppress = last != 0L && nowEpochMs - last in 0..cooldownMs
             if (!suppress) prefs.edit().putLong(KEY_LAST_ALERT_AT, nowEpochMs).commit()
-            suppress
+            AlertDecision(suppress = suppress, previousAlertAtEpochMs = last)
         }
+
+    /**
+     * Undoes [shouldSuppressAlert]'s advance when the notification it was for never reached the
+     * shade — POST_NOTIFICATIONS revoked between the check and the post, or a `SecurityException`
+     * on the way out.
+     *
+     * Without this, a delivery that showed the user nothing still silenced the next five minutes of
+     * genuine sign-in prompts. [markDelivered] already refuses to record a challenge that was not
+     * actually posted, for the same reason; the cooldown had been left out of that reasoning.
+     */
+    fun restoreAlertCooldown(previousAlertAtEpochMs: Long) {
+        synchronized(lock) {
+            val editor = prefs.edit()
+            if (previousAlertAtEpochMs == 0L) {
+                editor.remove(KEY_LAST_ALERT_AT)
+            } else {
+                editor.putLong(KEY_LAST_ALERT_AT, previousAlertAtEpochMs)
+            }
+            editor.commit()
+        }
+    }
 
     /** Callers hold [lock]. */
     private fun liveEntries(nowEpochMs: Long): List<Pair<String, Long>> =
