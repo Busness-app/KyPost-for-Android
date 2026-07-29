@@ -1,7 +1,5 @@
 package com.urlxl.mail
 
-import android.content.ActivityNotFoundException
-import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
@@ -31,6 +29,7 @@ import com.urlxl.mail.mail.MailRuntime
 import com.urlxl.mail.mail.OutgoingAttachment
 import com.urlxl.mail.mail.userFacingMessage
 import com.urlxl.mail.pgp.PgpComposeState
+import com.urlxl.mail.pgp.openWebmail
 import com.urlxl.mail.pgp.webmailDraftsUrl
 import com.urlxl.mail.push.PushRuntime
 import kotlinx.coroutines.Dispatchers
@@ -671,34 +670,30 @@ class ComposeActivity : LockedActivity() {
                                 Toast.LENGTH_LONG,
                             ).show()
                         }
-                        url == null -> {
+                        serverUrl == null || url == null -> {
                             webmailChip.isEnabled = true
                             Toast.makeText(this, R.string.compose_handoff_no_webmail, Toast.LENGTH_LONG).show()
                         }
-                        else -> showHandoffDialog(url)
+                        else -> showHandoffDialog(serverUrl, url)
                     }
                 }
             }
         }
     }
 
-    private fun showHandoffDialog(url: String) {
+    private fun showHandoffDialog(serverUrl: String, url: String) {
         activeDialog = AlertDialog.Builder(this)
             .setTitle(R.string.compose_handoff_dialog_title)
             .setMessage(R.string.compose_handoff_dialog_body)
             .setNegativeButton(android.R.string.cancel, null)
             .setPositiveButton(R.string.compose_handoff_dialog_confirm) { _, _ ->
-                // Guarded, but not via resolveActivity: minSdk 31 plus no <queries> manifest entry
-                // means package-visibility filtering applies to this implicit https intent on every
-                // supported device, so resolveActivity can return null even though a browser (which
-                // always answers ACTION_VIEW for http/https) is present — a false negative that would
-                // stall the only path client-custody accounts have to finish sending. Attempt the
-                // launch and catch the (rarer, genuine) no-handler case instead.
-                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-                try {
-                    startActivity(intent)
+                // Prefers the installed PWA, then an in-app Custom Tab, which carries the browser
+                // session webmail already holds, so the user is not asked to log in again just to
+                // press send. Falls back to an external browser where no Custom Tabs-capable
+                // browser exists. Still no resolveActivity: see WebmailTab.launchExternalBrowser.
+                if (openWebmail(this, serverUrl, url)) {
                     finish()
-                } catch (e: ActivityNotFoundException) {
+                } else {
                     Toast.makeText(this, R.string.compose_handoff_no_handler, Toast.LENGTH_LONG).show()
                 }
             }

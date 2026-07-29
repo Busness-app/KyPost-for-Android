@@ -1,5 +1,19 @@
 # On-device PGP decryption for client-custody accounts
 
+> **Status (2026-07-29): deferred behind a cheaper step.** The context-switch
+> friction this spec targets is being addressed first with in-app Custom Tabs
+> (`docs/superpowers/plans/2026-07-29-webmail-custom-tabs.md`), which removes the
+> app switch and the re-login for a fraction of the cost and no new cryptography.
+> Build what follows only if measured friction survives that change.
+>
+> Two corrections to the reasoning below, found while planning that work:
+>
+> - On-device decryption is **not** an offline win. Ciphertext is fetched per
+>   message from `/api/mail/pgp-payload`, so it needs the network regardless.
+> - It may **increase** passphrase prompts rather than reduce them. The web vault
+>   holds the unwrapped key for the life of the page; an Android vault clears on
+>   app lock, `onTrimMemory` and process death.
+
 ## Why this exists
 
 A client-custody account's private key is wrapped under a secret the relay does
@@ -147,16 +161,27 @@ stored material — that is Lever B collapsing into the rejected design. This
 distinction is the one most likely to be eroded by a later "for convenience" change,
 so it belongs in the code comments, not just here.
 
-**Lever C — a separate PGP passphrase.** The largest posture win available, and it
-is a *server* change. Today the envelope is wrapped under the account password, so
-typing it on a phone exposes the credential that also gates web login and admin —
-which is the objection E2E_PGP.md raises. Rewrapping under an independent
-passphrase decouples those blast radii: a compromised phone costs the mail, not the
-account. The envelope is versioned, `POST /api/pgp/identity/rewrap` already exists,
-and users who imported a passphrase-protected key expect a separate passphrase
-anyway (E2E_PGP.md notes the Qt clients need copy explaining that it is *not*
-separate). It requires a matching change in the web vault, so it is a cross-repo
-decision, not an Android one.
+**Lever C — a separate PGP passphrase.** The largest posture win available. It is a
+**browser** change plus a small server flag — not server cryptography. The server
+holds only a scrypt hash of the password and cannot derive the wrapping key, so it
+cannot rewrap anything; `frontend/src/lib/keyVault.ts` does the wrapping and `POST
+/api/pgp/identity/rewrap` merely stores the resulting blob. That endpoint is
+`withAuth` (session only) and `run4_security_fixes_test.go:334` asserts a paired
+device cannot call it, so rewrapping from the phone is closed off by design.
+
+Today the envelope is wrapped under the account password, so typing it on a phone
+exposes the credential that also gates web login and admin — which is the objection
+E2E_PGP.md raises. Rewrapping under an independent passphrase decouples those blast
+radii: a compromised phone costs the mail, not the account. The envelope is
+versioned, `POST /api/pgp/identity/rewrap` already exists, and users who imported a
+passphrase-protected key expect a separate passphrase anyway (E2E_PGP.md notes the
+Qt clients need copy explaining that it is *not* separate). It requires a matching
+change in the web vault, so it is a cross-repo decision, not an Android one.
+
+Worth doing on its own merits regardless of Android: `E2E_PGP.md` lists "admin
+password reset destroys the key" as an inherent cost of the model. It is inherent
+only because the wrapping secret *is* the account password. Under a separate
+passphrase, a password reset stops touching the key.
 
 **Recommendation:** ship Levers A and B with conservative defaults; treat Lever C as
 a prerequisite discussion with the server side, because shipping password entry on

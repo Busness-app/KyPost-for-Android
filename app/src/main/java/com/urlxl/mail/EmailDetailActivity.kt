@@ -26,6 +26,7 @@ import com.urlxl.mail.mail.QuotedHtmlSanitizer
 import com.urlxl.mail.mail.addressFromHeader
 import com.urlxl.mail.mail.userFacingMessage
 import com.urlxl.mail.pgp.PgpMessageState
+import com.urlxl.mail.pgp.openWebmail
 import com.urlxl.mail.pgp.pgpMessageStateOf
 import com.urlxl.mail.pgp.webmailMessageUrl
 import com.urlxl.mail.push.PushRuntime
@@ -270,15 +271,15 @@ class EmailDetailActivity : LockedActivity() {
         val monoFontFace = ibmPlexMonoFontFaceCss(this)
 
         val htmlContent = buildEmailBodyHtml(bodyToRender, palette, monoFontFace, isDark = isDarkPalette(palette))
-        // Resolved here rather than in renderPgpBar: pairingForAuthenticatedCall reads the
-        // Keystore-backed EncryptedSharedPreferences, which is disk I/O and does not belong
-        // on the main thread. Only needed for the one state that offers the button.
-        val webmailUrl = if (pgpState == PgpMessageState.CLIENT_PROTECTED) {
+        // Resolved off the main thread with the URL it builds — pairingForAuthenticatedCall
+        // reads Keystore-backed EncryptedSharedPreferences, which is disk I/O. Both are kept:
+        // openWebmail re-derives the origin from serverUrl to check the URL it is handed.
+        val serverUrl = if (pgpState == PgpMessageState.CLIENT_PROTECTED) {
             PushRuntime.graph(this).repository.pairingForAuthenticatedCall()?.serverUrl
-                ?.let { webmailMessageUrl(it, emailFolder, emailId) }
         } else {
             null
         }
+        val webmailUrl = serverUrl?.let { webmailMessageUrl(it, emailFolder, emailId) }
 
         runOnUiThread {
             if (isFinishing || isDestroyed) return@runOnUiThread
@@ -288,7 +289,7 @@ class EmailDetailActivity : LockedActivity() {
             webView.loadDataWithBaseURL(null, htmlContent, "text/html", "utf-8", null)
             loading.visibility = android.view.View.GONE
             imagesBlockedBar.visibility = if (hasRemoteImages) View.VISIBLE else View.GONE
-            renderPgpBar(pgpState, pgpDecryptError, webmailUrl)
+            renderPgpBar(pgpState, pgpDecryptError, serverUrl, webmailUrl)
             if (content != null) {
                 toRecipients = content.toAddresses
                 ccRecipients = content.ccAddresses
@@ -369,10 +370,16 @@ class EmailDetailActivity : LockedActivity() {
     /**
      * The only screen that tells the user what happened to an encrypted message. Silence here is
      * what the old build did, and it read as "this email is blank".
+     *
+     * [serverUrl] is passed in beside [webmailUrl] rather than read from a field so the two are
+     * provably from the same render pass: the click listener below re-checks the link against the
+     * origin it was built from, and a field could have been overwritten by a later render in
+     * between.
      */
     private fun renderPgpBar(
         state: PgpMessageState,
         pgpDecryptError: String,
+        serverUrl: String?,
         webmailUrl: String?,
     ) {
         if (state == PgpMessageState.NONE) {
@@ -388,22 +395,25 @@ class EmailDetailActivity : LockedActivity() {
             PgpMessageState.DECRYPTED_BY_SERVER ->
                 pgpText.text = getString(R.string.email_pgp_decrypted_by_server)
             PgpMessageState.CLIENT_PROTECTED -> {
-                if (webmailUrl == null) {
+                // No pairing, or a serverUrl no URL could be built from: we genuinely do not know
+                // this server's web address, which is what email_pgp_no_webmail says. A launch
+                // that fails later is a different problem and gets a different string.
+                if (serverUrl == null || webmailUrl == null) {
                     pgpText.text = getString(R.string.email_pgp_client_protected) +
                         "\n" + getString(R.string.email_pgp_no_webmail)
                 } else {
                     pgpText.text = getString(R.string.email_pgp_client_protected)
                     btnOpenInWebmail.visibility = View.VISIBLE
-                    // Handed to the system, so an installed PWA or the user's browser opens it
-                    // with the session it already has — deliberately not an in-app WebView,
-                    // which shares no session and would put an account-password field inside
-                    // this app.
+                    // A Custom Tab where one is available: the user's real browser, with the
+                    // session webmail already holds, rendered over this activity so a back
+                    // gesture comes straight back to the message list. See WebmailTab for why
+                    // this is not the in-app WebView the old comment here ruled out.
                     btnOpenInWebmail.setOnClickListener {
-                        val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(webmailUrl))
-                        if (intent.resolveActivity(packageManager) != null) {
-                            startActivity(intent)
-                        } else {
-                            Toast.makeText(this, R.string.email_pgp_no_webmail, Toast.LENGTH_LONG).show()
+                        // The address is known — it is on the button. A failure here means nothing
+                        // on the device would open it, so say that rather than blaming the server
+                        // address, which is what this branch used to tell a user with no browser.
+                        if (!openWebmail(this, serverUrl, webmailUrl)) {
+                            Toast.makeText(this, R.string.email_pgp_no_handler, Toast.LENGTH_LONG).show()
                         }
                     }
                 }
@@ -601,7 +611,14 @@ class EmailDetailActivity : LockedActivity() {
      *  CATEGORY_BROWSABLE narrows resolution to components that accept being driven by untrusted
      *  content, which is what K-9 does on the same path — without it, an email link can reach an
      *  installed app's non-browsable exported activities. Callers must already have checked the
-     *  scheme and the user gesture; see [SAFE_LINK_SCHEMES]. */
+     *  scheme and the user gesture; see [SAFE_LINK_SCHEMES].
+     *
+     *  Deliberately NOT a Custom Tab, unlike the webmail handoff in renderPgpBar. A Custom Tab
+     *  renders inside this app's task wearing this app's toolbar colour, so a page opened in one
+     *  reads to the user as part of the app. That is the right frame for the user's own webmail
+     *  and precisely the wrong one for a URL chosen by whoever sent the email. Sender-controlled
+     *  links go to a separate browser app, where the address bar and the app switch are the
+     *  cues that this is somewhere else. */
     private fun openExternally(uri: android.net.Uri) {
         val intent = Intent(Intent.ACTION_VIEW, uri)
             .addCategory(Intent.CATEGORY_BROWSABLE)
