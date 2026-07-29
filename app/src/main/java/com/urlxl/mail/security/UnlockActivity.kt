@@ -51,7 +51,15 @@ class UnlockActivity : AppCompatActivity() {
         submitButton = findViewById(R.id.unlockSubmitButton)
         submitButton.setOnClickListener { attemptUnlock() }
 
-        if (SecurityRuntime.graph(this).appLockStore.isBiometricEnabled()) {
+        // Not offered at all when the credential gate is on: the prompt would succeed and then be
+        // refused by requirePinForCredentialGate anyway, and asking for a fingerprint the app is
+        // about to decline is worse than asking for the PIN in the first place. The check in the
+        // success callback stays as the backstop for a gate switched on mid-session.
+        val store = SecurityRuntime.graph(this).appLockStore
+        if (store.isCredentialPinGateEnabled()) {
+            errorText.visibility = View.VISIBLE
+            errorText.text = getString(R.string.unlock_pin_required_for_credential_gate)
+        } else if (store.isBiometricEnabled()) {
             showBiometricPromptIfAvailable()
         }
     }
@@ -147,6 +155,33 @@ class UnlockActivity : AppCompatActivity() {
         }.start()
     }
 
+    /**
+     * When "require unlock to receive push/MFA" is on, the PIN is demanded **now** — not deferred
+     * to whenever the user next happens to type it.
+     *
+     * The credential gate wraps `deviceSecret` behind a key only the PIN can derive, and
+     * [AppLockManager.unlockWithBiometric] derives nothing. A biometric-only session therefore ran
+     * with the gate permanently shut: no authenticated relay call could be made, MFA challenges
+     * could not be answered, and every migration hung off a PIN unlock
+     * ([rewrapPairingIfNeeded]) simply never ran — for a user whose whole point is that they use
+     * the fingerprint reader and not the PIN.
+     *
+     * The unlock is left *incomplete* rather than granted-then-topped-up: returning true keeps the
+     * app locked and hands the user back to the PIN field, so there is no window in which the app
+     * is open and the key is still missing. Entering the PIN goes through the ordinary
+     * [attemptUnlock] path, which caches the key and runs the rewrap.
+     *
+     * Returns true when the PIN is now required, i.e. the caller must not proceed.
+     */
+    private fun requirePinForCredentialGate(): Boolean {
+        val store = SecurityRuntime.graph(this).appLockStore
+        if (!store.isCredentialPinGateEnabled()) return false
+        errorText.visibility = View.VISIBLE
+        errorText.text = getString(R.string.unlock_pin_required_for_credential_gate)
+        pinField.requestFocus()
+        return true
+    }
+
     private fun showBiometricPromptIfAvailable() {
         val biometricManager = BiometricManager.from(this)
         val canAuthenticate = biometricManager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG)
@@ -163,6 +198,12 @@ class UnlockActivity : AppCompatActivity() {
             ContextCompat.getMainExecutor(this),
             object : BiometricPrompt.AuthenticationCallback() {
                 override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    // With the credential gate on, biometric is not a complete unlock and must not
+                    // be treated as one — see [requirePinForCredentialGate]. Do NOT unlock first
+                    // and ask afterwards: `unlockWithBiometric()` flips the app to unlocked, and
+                    // Back from this screen then drops the user into a live app with the PIN never
+                    // entered, which is the deferral this exists to remove.
+                    if (requirePinForCredentialGate()) return
                     appLockManager.unlockWithBiometric()
                     proceedIntoApp()
                 }

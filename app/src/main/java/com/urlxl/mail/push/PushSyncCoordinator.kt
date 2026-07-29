@@ -4,17 +4,41 @@ import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.tasks.await
 
+/**
+ * Every registration this class performs mints a **new** `deviceSecret` server-side and invalidates
+ * the previous one (see [NativeRegistrationResponse.deviceSecret]). That makes registering while
+ * the result cannot be stored strictly destructive: the working credential is revoked and its
+ * replacement is discarded. [PushRepository.currentCredentialState] is therefore a precondition on
+ * every path below, not a courtesy check — with the credential PIN gate on, a background FCM token
+ * rotation in a process that was never PIN-unlocked used to leave the device permanently
+ * unauthenticated behind a UI still reading "Paired".
+ */
 class PushSyncCoordinator(
     private val repository: PushRepository,
     private val registrationClient: NativeRegistrationClient,
 ) {
+    /** The error every deferred registration reports, so the pairing screen shows one explanation
+     *  rather than a transport-specific one per entry point. */
+    private fun credentialGateDeferral() = NativeRegistrationResult.Error(
+        "Unlock with your PIN to sync push registration",
+    )
+
     suspend fun attemptPairing(pairing: PairingData): NativeRegistrationResult {
+        // Taken BEFORE the network call and reused after it: the app can lock while the call is in
+        // flight, and re-reading the state on the way out would discard a secret the server has
+        // already committed to.
+        val credentialState = repository.currentCredentialState()
+        if (credentialState is PushRepository.PairingCredentialState.Unavailable) return credentialGateDeferral()
+
         val token = fetchFcmTokenOrNull()
             ?: return NativeRegistrationResult.Error("Unable to fetch FCM token")
 
         val result = registrationClient.register(pairing = pairing, token = token)
         if (result is NativeRegistrationResult.Success) {
-            repository.savePairing(pairing.copy(deviceId = result.deviceId ?: pairing.deviceId, deviceSecret = result.deviceSecret))
+            repository.savePairing(
+                pairing.copy(deviceId = result.deviceId ?: pairing.deviceId, deviceSecret = result.deviceSecret),
+                credentialState,
+            )
             // TOFU: capture the TLS pin only here, on the pairing call itself — never on the
             // routine resyncs below (syncAndPersist), so a MITM that appears after pairing gets
             // rejected rather than silently re-trusted on the next successful resync.
@@ -86,6 +110,17 @@ class PushSyncCoordinator(
         p256dh: String? = null,
         auth: String? = null,
     ): NativeRegistrationResult {
+        // The single choke point for every resync entry point (token refresh, transport switch,
+        // manual "Resync token", app-open recovery), so none of them can register into a state
+        // where the minted secret has nowhere to go. Reported as a sync error like any other, which
+        // is what surfaces it on the pairing screen instead of failing silently in the background.
+        val credentialState = repository.currentCredentialState()
+        if (credentialState is PushRepository.PairingCredentialState.Unavailable) {
+            val deferred = credentialGateDeferral()
+            repository.updateSyncState(lastSyncAtEpochMs = null, syncError = deferred.message)
+            return deferred
+        }
+
         val result = registrationClient.register(
             pairing = pairing,
             token = token,
@@ -95,7 +130,10 @@ class PushSyncCoordinator(
         )
         when (result) {
             is NativeRegistrationResult.Success -> {
-                repository.savePairing(pairing.copy(deviceId = result.deviceId ?: pairing.deviceId, deviceSecret = result.deviceSecret))
+                repository.savePairing(
+                    pairing.copy(deviceId = result.deviceId ?: pairing.deviceId, deviceSecret = result.deviceSecret),
+                    credentialState,
+                )
                 // Still TOFU — the pin is captured on the pairing call, never *replaced* here, so a
                 // MITM appearing after pairing is still rejected rather than re-trusted. But an
                 // install carried over from a build that predated pinning has no pin at all and no

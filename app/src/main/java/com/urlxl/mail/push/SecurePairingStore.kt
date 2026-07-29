@@ -63,10 +63,24 @@ class SecurePairingStore(context: Context) {
         cachedTlsPin = readTlsPin()
     }
 
+    /**
+     * @param preserveStoredSecret leaves whatever secret is already on disk untouched, instead of
+     *   reading a null [PairingData.deviceSecret] as "there is no secret, delete it".
+     *
+     *   The two meanings were conflated, and the difference is a credential the user cannot get
+     *   back. `PushRepository.savePairing` passes `deviceSecret = null` to mean "I am not allowed to
+     *   persist this one right now" (the credential gate is on and no PIN-derived key is cached),
+     *   and this method obligingly erased the stored credential as well — while the server had
+     *   just minted a replacement and invalidated the previous one. The device was left with no
+     *   usable secret at all, a UI still reading "Paired", and no repair path:
+     *   [com.urlxl.mail.security.rewrapPairingIfNeeded] bails on a blank secret, and turning the
+     *   gate back off unwraps a value that is no longer there.
+     */
     suspend fun savePairing(
         pairing: PairingData,
         credentialKeys: CredentialKeys? = null,
         credentialSalt: ByteArray? = null,
+        preserveStoredSecret: Boolean = false,
     ) {
         withContext(Dispatchers.IO + NonCancellable) {
             val editor = prefs.edit()
@@ -79,6 +93,7 @@ class SecurePairingStore(context: Context) {
 
             val deviceSecret = pairing.deviceSecret
             when {
+                preserveStoredSecret -> Unit
                 deviceSecret.isNullOrBlank() -> editor.clearWrappedSecret().remove(KEY_DEVICE_SECRET)
                 credentialKeys != null && credentialSalt != null -> {
                     val wrapped = CredentialCipher.wrap(deviceSecret, credentialKeys.current)

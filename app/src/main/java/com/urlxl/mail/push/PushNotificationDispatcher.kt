@@ -188,12 +188,15 @@ object PushNotificationDispatcher : com.urlxl.mail.ProcessScopedState {
     fun showMfaChallenge(context: Context, payload: MfaChallengePayload) {
         val tracker = PushRuntime.graph(context).mfaChallengeTracker
         val burst = tracker.liveCount() >= MFA_BURST_THRESHOLD
-        val silent = tracker.shouldSuppressAlert(MFA_ALERT_COOLDOWN_MS)
+        val alert = tracker.shouldSuppressAlert(MFA_ALERT_COOLDOWN_MS)
         // Tracked (below) only once a notification for it is actually on screen. Marking first
         // meant that with POST_NOTIFICATIONS denied — or any SecurityException on the way out — the
         // challenge became answerable for five minutes with nothing ever shown to the user, which
-        // is the pretext an approval screen must not be reachable under.
-        val notificationId = postMfaNotification(context, payload, burst, silent) ?: return
+        // is the pretext an approval screen must not be reachable under. The alert cooldown is
+        // rolled back on the same failure and for the same reason: a delivery the user never saw
+        // must not silence the next five minutes of real ones.
+        val notificationId = postMfaNotification(context, payload, burst, alert.suppress)
+            ?: return tracker.restoreAlertCooldown(alert.previousAlertAtEpochMs)
 
         synchronized(postedNotificationIds) {
             if (burst) {

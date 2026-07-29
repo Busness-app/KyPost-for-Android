@@ -110,10 +110,34 @@ class MfaChallengeTrackerPersistenceTest {
         // Reset the window by consuming whatever a previous test left, then take the alert.
         newTracker().shouldSuppressAlert(cooldownMs)
 
-        assertTrue(newTracker().shouldSuppressAlert(cooldownMs))
+        assertTrue(newTracker().shouldSuppressAlert(cooldownMs).suppress)
 
         // An unrelated delivery rewrites the whole file; the cooldown must be carried across it.
         newTracker().markDelivered("cooldown-probe-${System.nanoTime()}")
-        assertTrue(newTracker().shouldSuppressAlert(cooldownMs))
+        assertTrue(newTracker().shouldSuppressAlert(cooldownMs).suppress)
+    }
+
+    /**
+     * A delivery that posted no notification must not spend the cooldown, or a single revoked
+     * POST_NOTIFICATIONS (or a SecurityException on the way out) silences the next five minutes of
+     * sign-in prompts the user *would* have seen.
+     */
+    @Test
+    fun restoringTheCooldownReopensTheAlertWindow() {
+        val cooldownMs = 5 * 60 * 1000L
+        val now = System.currentTimeMillis()
+        // Explicit starting point and explicit clock: these tests share one preferences file, so
+        // "no alert has been taken yet" has to be established rather than assumed.
+        newTracker().restoreAlertCooldown(0L)
+
+        val first = newTracker().shouldSuppressAlert(cooldownMs, now)
+        assertFalse(first.suppress)
+        assertTrue(newTracker().shouldSuppressAlert(cooldownMs, now + 1_000L).suppress)
+
+        // The notification never reached the shade, so the window has to reopen — otherwise one
+        // revoked permission silences five minutes of sign-in prompts the user would have seen.
+        newTracker().restoreAlertCooldown(first.previousAlertAtEpochMs)
+
+        assertFalse(newTracker().shouldSuppressAlert(cooldownMs, now + 1_000L).suppress)
     }
 }

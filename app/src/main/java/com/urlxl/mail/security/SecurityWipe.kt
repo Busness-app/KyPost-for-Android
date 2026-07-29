@@ -24,9 +24,10 @@ private val DATASTORE_NAMES = listOf("push_state", "contacts_state", "mail_sync_
  * The two app-lock files belong to [AppLockStore.reset], which deletes the unencrypted tripwire
  * *before* the encrypted store — an order this enumeration cannot promise. The wipe marker has to
  * outlive the wipe's own deletions, or an interruption erases the evidence that a wipe was started.
- * The UnifiedPush connector's file is deleted by the `unifiedPushUnregister` step instead, which
- * runs before the `sharedPrefs` enumeration because it holds the distributor selection that
- * `UnifiedPush.unregister` needs to actually unsubscribe.
+ * The UnifiedPush connector's file is deleted by the dedicated `unifiedPushPrefs` step, which runs
+ * after `unifiedPushUnregister` because it holds the distributor selection that
+ * `UnifiedPush.unregister` needs to actually unsubscribe. That step is what makes excluding it here
+ * safe; the exclusion previously rested on the unregister step deleting it, which it never did.
  */
 private val PREFS_NAMES_RETAINED = setOf(
     "app_lock_secure",
@@ -194,11 +195,31 @@ object SecurityWipe {
             // the wipe, readable with no forensics at all.
             appContext.getSystemService(android.app.NotificationManager::class.java)?.cancelAll()
         }
+        // UNREGISTER FIRST, THEN DELETE THE CONNECTOR'S STATE. Reversed, the unregister ran against
+        // a connector whose own registration records had just been deleted, so it had nothing left
+        // to tell the distributor to unsubscribe — the device stayed subscribed at the distributor
+        // and its push server. The `PREFS_NAMES_RETAINED` note already applied this reasoning to
+        // the connector's preferences file and stopped short of its database.
+        step("unifiedPushUnregister") { com.urlxl.mail.push.UnifiedPushRegistrar.unregister(appContext) }
         step("unifiedPushDatabase") {
-            // Lives in our sandbox but is not ours to name elsewhere.
+            // Lives in our sandbox but is not ours to name elsewhere. Holds the WebPush ECDH
+            // private key and auth secret.
             appContext.deleteDatabase("unifiedpush-connector")
         }
-        step("unifiedPushUnregister") { com.urlxl.mail.push.UnifiedPushRegistrar.unregister(appContext) }
+        step("unifiedPushPrefs") {
+            // Explicit, because `PREFS_NAMES_RETAINED` excludes this file from the enumeration and
+            // claimed the unregister step removed it. It does not: `UnifiedPushRegistrar.unregister`
+            // delegates to `UnifiedPush.unregister`, which unsubscribes the instance and
+            // deliberately keeps the distributor selection so a later re-register reuses it. So the
+            // record of which push distributor this user runs survived a wipe performed precisely
+            // because the device is presumed hostile.
+            if (!appContext.deleteSharedPreferences("unifiedpush.connector")) {
+                // Absent is the normal case (UnifiedPush was never selected); only a file that is
+                // there and will not go is a failure.
+                val file = File(File(appContext.dataDir, "shared_prefs"), "unifiedpush.connector.xml")
+                if (file.exists()) throw IOException("Failed to delete unifiedpush.connector preferences")
+            }
+        }
         step("fcmToken") { com.google.firebase.messaging.FirebaseMessaging.getInstance().deleteToken() }
         step("pullWorker") { com.urlxl.mail.push.PullScheduler.cancelPeriodic(appContext) }
         step("deviceContactWorker") { com.urlxl.mail.contacts.device.DeviceContactSyncScheduler.cancelPeriodic(appContext) }
