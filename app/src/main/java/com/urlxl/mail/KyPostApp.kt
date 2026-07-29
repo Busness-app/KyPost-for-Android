@@ -33,10 +33,34 @@ class KyPostApp : Application(), DefaultLifecycleObserver {
         PushNotificationDispatcher.ensureChannel(this)
 
         appScope.launch {
-            // Runs before anything reads cached data: if the encrypted app-lock state vanished
-            // while the tripwire says a lock was configured, the local database is destroyed
-            // rather than served up behind a lock that now reports itself as disabled.
-            if (SecurityWipe.enforceTripwire(this@KyPostApp)) return@launch
+            // Build the security graph HERE, on IO, before any Activity asks for it.
+            //
+            // Constructing it forces AppLockStore's EncryptedSharedPreferences, which is a
+            // MasterKey round trip into the AndroidKeyStore plus a Tink keyset load. The first
+            // caller was LockedActivity.onCreate — via isLocked() — so that cost landed on the main
+            // thread inside the first Activity of every cold start, including the FCM-woken process
+            // that has to render MfaApprovalActivity promptly. SecurityGraph's own KDoc already
+            // diagnosed this cost and fixed the *number* of times it was paid, not the thread.
+            runCatching { SecurityRuntime.graph(this@KyPostApp) }
+                .onFailure { android.util.Log.e("KyPostApp", "Failed to warm the security graph", it) }
+
+            // If the encrypted app-lock state vanished while the tripwire says a lock was
+            // configured, the local database is destroyed rather than served up behind a lock that
+            // now reports itself as disabled.
+            //
+            // The verdict is published to SecurityWipe.startupVerdict, which every LockedActivity
+            // awaits before it renders anything. This used to be a bare call in this coroutine
+            // under a comment claiming it "runs before anything reads cached data" — it does not;
+            // Application.onCreate returns immediately and the launcher Activity starts alongside
+            // it. On failure the verdict still has to be published, or every screen in the app
+            // waits forever on a gate that will never open; a graph that could not even be built
+            // is treated as "wiped" so the app lands on a first-run screen rather than a live one.
+            val wiped = runCatching { SecurityWipe.enforceTripwire(this@KyPostApp) }
+                .onFailure { android.util.Log.e("KyPostApp", "Startup tripwire check failed", it) }
+                .getOrDefault(true)
+            SecurityWipe.startupVerdict.complete(wiped)
+            if (wiped) return@launch
+
             runCatching { DeviceContactsRuntime.graph(this@KyPostApp).bootstrapIfEnabled() }
                 .onFailure { android.util.Log.e("KyPostApp", "Failed to bootstrap device contacts", it) }
         }
@@ -54,7 +78,13 @@ class KyPostApp : Application(), DefaultLifecycleObserver {
         // Nothing below runs while locked. These are credential-bearing network syncs; kicking
         // them off behind the unlock screen both leaks activity and pointlessly fails whenever
         // the credential gate is on and the device secret is still wrapped.
-        if (SecurityRuntime.graph(this).appLockManager.locked.value) return
+        //
+        // isLockedNow(), not locked.value — AppLockManager's own contract says a security decision
+        // must use the former, because the flow only changes when something calls lockNow() and a
+        // background grace window may have expired with nothing having done so. applyLockGrace()
+        // above happens to cover this today; relying on that made the correctness of these three
+        // syncs depend on the order of two lines in this method.
+        if (SecurityRuntime.graph(this).appLockManager.isLockedNow()) return
 
         runCatching { PushRuntime.graph(this).pullCoordinator.pullNowAsync() }
             .onFailure { android.util.Log.e("KyPostApp", "Failed to pull", it) }

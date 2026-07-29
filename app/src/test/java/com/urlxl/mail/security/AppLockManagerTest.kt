@@ -1,8 +1,11 @@
 package com.urlxl.mail.security
 
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -15,6 +18,9 @@ private class FakeAppLockState(
     private var lockEnabled: Boolean = true,
     private var pin: String? = "482913",
     private var credentialSalt: ByteArray? = null,
+    /** Simulates the Keystore pepper behind the stored verifier having gone away, which makes
+     *  [verifyPin] unevaluable rather than false. See [PepperUnavailableException]. */
+    var verifierUnavailable: Boolean = false,
 ) : AppLockState {
     private var biometricEnabled = false
     private var credentialGateEnabled = false
@@ -30,7 +36,10 @@ private class FakeAppLockState(
     override fun isCredentialPinGateEnabled() = credentialGateEnabled
     override fun setCredentialPinGateEnabled(enabled: Boolean) { credentialGateEnabled = enabled }
     override fun setPin(pin: String) { this.pin = pin }
-    override fun verifyPin(pin: String) = this.pin == pin
+    override fun verifyPin(pin: String): Boolean {
+        if (verifierUnavailable) throw PepperUnavailableException("test-alias")
+        return this.pin == pin
+    }
     override fun hasPin() = pin != null
     override fun incrementFailedAttempts(): Int { failedAttempts++; return failedAttempts }
     override fun resetFailedAttempts() { failedAttempts = 0; lockoutUntilElapsed = 0L; lockoutDuration = 0L }
@@ -288,7 +297,118 @@ class AppLockManagerTest {
 
     @Test
     fun deriveAndCacheCredentialKeys_refusesAnUnverifiedPin() = runBlocking {
-        assertFalse(manager.deriveAndCacheCredentialKeys("000001"))
+        assertTrue(manager.deriveAndCacheCredentialKeys("000001") is UnlockAttemptResult.Rejected)
         assertTrue(manager.cachedCredentialKeys() == null)
+    }
+
+    /**
+     * The reason [AppLockManager.deriveAndCacheCredentialKeys] returns [UnlockAttemptResult] rather
+     * than a `Boolean`: this path runs the same wipe threshold as every other PIN check, and
+     * collapsing the outcome to `false` meant the settings screen reported a completed destructive
+     * wipe as "wrong PIN" and carried on against a store that no longer existed.
+     */
+    @Test
+    fun deriveAndCacheCredentialKeys_reportsAWipeRatherThanAPlainRejection() = runBlocking {
+        repeat(LockoutPolicy.WIPE_THRESHOLD - 1) {
+            state.setLockout(0L, 0L)
+            manager.deriveAndCacheCredentialKeys("000001")
+        }
+        state.setLockout(0L, 0L)
+        assertTrue(manager.deriveAndCacheCredentialKeys("000001") is UnlockAttemptResult.Wiped)
+        assertTrue(wipeCount > 0)
+    }
+
+    /**
+     * Concurrent PIN checks must not lose an increment of the failed-attempt counter.
+     *
+     * [AppLockState.incrementFailedAttempts] is a read-modify-write, and all three public entry
+     * points hop to the multi-threaded [kotlinx.coroutines.Dispatchers.Default] pool, so without the
+     * manager's own mutex two checks in flight together both read `n` and both write `n + 1` — the
+     * lockout ladder and the wipe threshold silently under-count, which is an unthrottled parallel
+     * guessing window.
+     *
+     * The clock advances an hour on every read so no lockout is ever in force; what is under test is
+     * the counter, not the delay ladder. Attempts stay below [LockoutPolicy.WIPE_THRESHOLD] so the
+     * wipe branch does not swallow the last one.
+     */
+    @Test
+    fun concurrentWrongPins_eachAdvanceTheAttemptCounter() = runBlocking {
+        val attempts = LockoutPolicy.WIPE_THRESHOLD - 1
+        val racingClock = java.util.concurrent.atomic.AtomicLong(1_000L)
+        val racingManager = AppLockManager(
+            state = state,
+            elapsedRealtimeMs = { racingClock.addAndGet(3_600_000L) },
+            pepper = TestPepper,
+            onWipe = { wipeCount++; wipeResult },
+        )
+
+        coroutineScope {
+            repeat(attempts) { launch { racingManager.verifyPinThrottled("000001") } }
+        }
+
+        assertEquals(attempts, state.failedAttempts)
+        assertEquals(0, wipeCount)
+    }
+
+    /**
+     * An unevaluable verifier is not a wrong PIN.
+     *
+     * `PinHasher.pepperKey` used to *create* a key whenever it found none, so an OS-level Keystore
+     * reset silently produced a different pepper and every subsequent correct PIN verified as
+     * false. Ten of those hit [LockoutPolicy.WIPE_THRESHOLD] and destroyed the user's mail,
+     * contacts and pairing — in response to an event they neither caused nor could avoid.
+     */
+    @Test
+    fun unevaluableVerifier_isNotCountedAsAWrongPin() = runBlocking {
+        state.verifierUnavailable = true
+
+        repeat(LockoutPolicy.WIPE_THRESHOLD * 2) {
+            assertEquals(UnlockAttemptResult.VerifierUnavailable, manager.attemptPin("482913"))
+        }
+
+        assertEquals(0, state.failedAttempts)
+        assertEquals(0, wipeCount)
+        assertTrue(manager.locked.value)
+    }
+
+    /** The same guarantee on the settings/MFA entry point, which runs the identical accounting. */
+    @Test
+    fun unevaluableVerifier_isNotCountedByVerifyPinThrottled() = runBlocking {
+        state.verifierUnavailable = true
+
+        repeat(LockoutPolicy.WIPE_THRESHOLD) {
+            assertEquals(UnlockAttemptResult.VerifierUnavailable, manager.verifyPinThrottled("482913"))
+        }
+
+        assertEquals(0, state.failedAttempts)
+        assertEquals(0, wipeCount)
+    }
+
+    /**
+     * A correct PIN whose *credential* key cannot be derived is still a correct PIN.
+     *
+     * The two peppers are separate Keystore aliases on purpose, so the wrapping key can be lost
+     * without the verifier being lost. Letting a derivation failure propagate out of the success
+     * path would have turned that into an unlock failure — and, on the settings screen, into
+     * another counted attempt.
+     */
+    @Test
+    fun credentialDerivationFailure_doesNotFailAnOtherwiseCorrectUnlock() = runBlocking {
+        val exploding = object : CredentialPepper {
+            override fun mix(derived: ByteArray): ByteArray = throw PepperUnavailableException("credential-alias")
+        }
+        val gatedState = FakeAppLockState().apply { setCredentialPinGateEnabled(true) }
+        val gatedManager = AppLockManager(
+            state = gatedState,
+            elapsedRealtimeMs = { clock },
+            pepper = exploding,
+            onWipe = { wipeCount++; wipeResult },
+        )
+
+        assertEquals(UnlockAttemptResult.Success, gatedManager.attemptPin("482913"))
+        assertFalse(gatedManager.locked.value)
+        // The gated secret simply stays unavailable, exactly as after a biometric-only unlock.
+        assertNull(gatedManager.cachedCredentialKeys())
+        assertEquals(0, wipeCount)
     }
 }

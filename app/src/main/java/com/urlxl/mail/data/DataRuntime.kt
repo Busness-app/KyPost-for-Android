@@ -42,4 +42,9 @@ object DataRuntime {
     /** See [com.urlxl.mail.SingletonGraph.invalidate] — used by
      *  [com.urlxl.mail.security.AppRestart]. */
     fun invalidate() = holder.invalidate()
+
+    /** See [com.urlxl.mail.SingletonGraph.take] — used by
+     *  [com.urlxl.mail.security.SecurityWipe.closeAndDeleteDatabase], which has to close the
+     *  database instance that is actually in use, not a freshly built stand-in. */
+    fun takeGraph(): DataGraph? = holder.take()
 }

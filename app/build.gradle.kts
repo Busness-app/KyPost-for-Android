@@ -74,6 +74,17 @@ android {
     buildFeatures {
         buildConfig = true
     }
+    testOptions {
+        unitTests {
+            // `android.util.Log` throws "not mocked" by default, which forces production code that
+            // JVM tests exercise to choose between logging and being testable. AppLockManager hit
+            // exactly that: it is deliberately Context-free so it can be unit-tested against a fake
+            // AppLockState, and it now has to report two security-relevant events (an unevaluable
+            // PIN verifier, and a credential-key derivation that failed on an otherwise correct
+            // unlock). Silently dropping those is not an acceptable price for a stub's behaviour.
+            isReturnDefaultValues = true
+        }
+    }
     packaging {
         resources {
             excludes += "META-INF/NOTICE.md"

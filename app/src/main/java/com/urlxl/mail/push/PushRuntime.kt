@@ -17,6 +17,16 @@ class PushGraph(context: Context) {
 
     val repository = PushRepository(appContext, securePairingStore)
 
+    /**
+     * The single [MfaChallengeTracker] for the process.
+     *
+     * Its mutations are serialised on a class-level lock regardless, so this is about ownership
+     * rather than correctness — but every call site used to build its own instance, which meant
+     * the object that guards the highest-value screen in the app had no owner at all and no
+     * obvious place to look for one.
+     */
+    val mfaChallengeTracker = MfaChallengeTracker(appContext)
+
     // Every credential-bearing client below shares this one pinned-or-fallback factory rather
     // than defaulting to the plain unpinned `pairingHttpClient()` — see the 2026-07-22
     // security-hardening spec's final-review fix round, finding C2. Wired directly to this

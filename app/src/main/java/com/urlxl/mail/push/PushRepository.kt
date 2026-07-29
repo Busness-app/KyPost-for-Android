@@ -151,18 +151,17 @@ class PushRepository(
             .onFailure { android.util.Log.e(TAG, "Failed to disable device contact sync", it) }
         runCatching { context.deleteSharedPreferences(com.urlxl.mail.KeywordSettings.PREFS_NAME) }
             .onFailure { android.util.Log.e(TAG, "Failed to delete keyword settings", it) }
-        // ComposePgpController's bootstrap cache is process-static and keyed on nothing but
-        // "the last account we asked" — without this, pairing a server-custody account right
-        // after unpairing a client-custody one would keep hiding the Encrypt/Sign chips (or the
-        // reverse: offering them where they must not appear) for the rest of the process, since
-        // no code path here restarts the process.
-        runCatching { com.urlxl.mail.ComposePgpController.resetSessionCache() }
-            .onFailure { android.util.Log.e(TAG, "Failed to reset the PGP compose cache", it) }
-        // Same class of process-static state, with a sharper edge: an unsent draft cached under
-        // the previous account is restored by the next Compose, inside the new account's session,
-        // and would be sent through the new account's relay.
-        runCatching { com.urlxl.mail.InMemoryPlaintext.clearAll() }
-            .onFailure { android.util.Log.e(TAG, "Failed to clear in-memory message plaintext", it) }
+        // Every process-static holder at once, via the registry rather than by name: an unsent
+        // draft cached under the previous account would otherwise be restored by the next Compose
+        // inside the new account's session and sent through the new account's relay; the PGP
+        // custody cache would keep hiding (or offering) the Encrypt/Sign chips for the wrong
+        // account; the ephemeral attachment plaintext would simply still be there. No code path
+        // here restarts the process. Enumerating them individually is what let the third one be
+        // written and never added — see [com.urlxl.mail.ProcessScopedState].
+        val uncleared = com.urlxl.mail.InMemoryPlaintext.clearAll()
+        if (uncleared.isNotEmpty()) {
+            android.util.Log.e(TAG, "Failed to clear process-scoped state: $uncleared")
+        }
     }
 
     suspend fun clearPairing() {
@@ -220,9 +219,9 @@ class PushRepository(
     }
 
     /** Persist the transport the server confirmed for the last successful registration. */
-    suspend fun updateTransport(transport: String?) {
+    suspend fun updateTransport(transport: PushTransport?) {
         context.pushDataStore.edit { prefs ->
-            if (transport.isNullOrBlank()) prefs.remove(KEY_TRANSPORT) else prefs[KEY_TRANSPORT] = transport
+            if (transport == null) prefs.remove(KEY_TRANSPORT) else prefs[KEY_TRANSPORT] = transport.wire
         }
     }
 
@@ -286,7 +285,7 @@ class PushRepository(
             latestPayload = history.firstOrNull(),
             deliveryMode = DeliveryMode.fromWire(prefs[KEY_DELIVERY_MODE]),
             pullEndpoint = pullEndpoint,
-            transport = prefs[KEY_TRANSPORT],
+            transport = PushTransport.fromWire(prefs[KEY_TRANSPORT]),
             unifiedPushEndpoint = prefs[KEY_UNIFIEDPUSH_ENDPOINT],
             unifiedPushP256dh = prefs[KEY_UNIFIEDPUSH_P256DH],
             unifiedPushAuth = prefs[KEY_UNIFIEDPUSH_AUTH],
@@ -309,7 +308,7 @@ data class PushState(
     val history: List<PushPayload>,
     val deliveryMode: DeliveryMode = DeliveryMode.PUSH,
     val pullEndpoint: String? = null,
-    val transport: String? = null,
+    val transport: PushTransport? = null,
     val unifiedPushEndpoint: String? = null,
     val unifiedPushP256dh: String? = null,
     val unifiedPushAuth: String? = null,

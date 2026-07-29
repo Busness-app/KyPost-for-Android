@@ -34,21 +34,45 @@ object PinHasher {
     const val VERSION_LEGACY_UNPEPPERED = 1
     const val VERSION_PEPPERED = 2
 
+    /**
+     * Derives a storable verifier, creating the Keystore pepper if this is the first one.
+     *
+     * The creation is here and **not** in [matches], because "no pepper key" means opposite things
+     * on the two paths: setting a PIN legitimately establishes one, while verifying against a
+     * missing one means the stored verifier can no longer be evaluated at all. Minting a key on the
+     * verify path made every subsequent correct PIN read as wrong, and ten of those wipe the
+     * device. See [PepperUnavailableException].
+     */
     fun hash(
         pin: String,
         salt: ByteArray = randomSalt(),
         pepper: CredentialPepper = KeystorePinPepper,
-    ): PinHash = PinHash(salt, pepper.mix(pbkdf2(pin, salt)))
+    ): PinHash {
+        if (pepper === KeystorePinPepper) KeystorePinPepper.ensureExists()
+        return PinHash(salt, derive(pin, salt, pepper))
+    }
+
+    /** Read-only derivation: peppers, never creates. Throws [PepperUnavailableException] when the
+     *  Keystore key behind [pepper] is gone. */
+    private fun derive(pin: String, salt: ByteArray, pepper: CredentialPepper): ByteArray =
+        pepper.mix(pbkdf2(pin, salt))
 
     /** v1 verifier, retained only so a pre-pepper hash can be checked once and upgraded. */
     fun hashLegacy(pin: String, salt: ByteArray): PinHash = PinHash(salt, pbkdf2(pin, salt))
 
+    /**
+     * Verifies [pin] against a stored verifier. Never creates a pepper key — see [hash].
+     *
+     * Throws [PepperUnavailableException] rather than returning false when the pepper is gone: a
+     * `false` here is indistinguishable from a wrong PIN, and wrong PINs are counted toward
+     * [LockoutPolicy.WIPE_THRESHOLD].
+     */
     fun matches(
         pin: String,
         salt: ByteArray,
         expectedHash: ByteArray,
         pepper: CredentialPepper = KeystorePinPepper,
-    ): Boolean = MessageDigest.isEqual(hash(pin, salt, pepper).hash, expectedHash)
+    ): Boolean = MessageDigest.isEqual(derive(pin, salt, pepper), expectedHash)
 
     fun matchesLegacy(pin: String, salt: ByteArray, expectedHash: ByteArray): Boolean =
         MessageDigest.isEqual(hashLegacy(pin, salt).hash, expectedHash)

@@ -33,10 +33,15 @@ import com.urlxl.mail.mail.userFacingMessage
 import com.urlxl.mail.pgp.PgpComposeState
 import com.urlxl.mail.pgp.webmailDraftsUrl
 import com.urlxl.mail.push.PushRuntime
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
+import java.io.IOException
+import java.io.InputStream
 import java.util.concurrent.Executors
 import com.urlxl.mail.security.LockedActivity
 
@@ -89,7 +94,7 @@ class ComposeActivity : LockedActivity() {
 
     private val pickAttachments = registerForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments(),
-    ) { uris -> uris?.forEach(::addAttachment) }
+    ) { uris -> if (!uris.isNullOrEmpty()) addAttachments(uris) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -401,42 +406,99 @@ class ComposeActivity : LockedActivity() {
         return TextUtils.htmlEncode(text).replace("\n", "<br>")
     }
 
-    /** Reads the picked document off the UI thread's ContentResolver, base64-encodes it, enforces
-     *  the 25 MB total cap (matching the backend), and renders a removable chip. */
-    private fun addAttachment(uri: Uri) {
-        val resolver = contentResolver
-        var name = "attachment"
-        var size = 0L
-        runCatching {
-            resolver.query(uri, null, null, null, null)?.use { cursor ->
-                if (cursor.moveToFirst()) {
-                    val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    if (nameIdx >= 0 && !cursor.isNull(nameIdx)) name = cursor.getString(nameIdx)
-                    val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
-                    if (sizeIdx >= 0 && !cursor.isNull(sizeIdx)) size = cursor.getLong(sizeIdx)
-                }
+    /**
+     * Adds the picked documents, one at a time.
+     *
+     * Sequential rather than a `forEach` of independent jobs: each one is checked against the
+     * remaining budget, and concurrent checks would all see the same "before" total and every one
+     * of them would pass.
+     */
+    private fun addAttachments(uris: List<Uri>) {
+        lifecycleScope.launch {
+            for (uri in uris) {
+                if (isFinishing || isDestroyed) return@launch
+                addAttachment(uri)
             }
         }
-        val bytes = runCatching { resolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
-        if (bytes == null) {
-            Toast.makeText(this, "Couldn't read $name", Toast.LENGTH_SHORT).show()
-            return
+    }
+
+    /**
+     * Reads one picked document on [Dispatchers.IO], enforces the 25 MB total cap (matching the
+     * backend) **before** the bytes are in the heap, and renders a removable chip.
+     *
+     * Three things were wrong here. `OpenableColumns.SIZE` was read and then never used — the cap
+     * was applied to `bytes.size`, i.e. after `readBytes()` had already materialised the entire
+     * document, so picking a multi-gigabyte file from a cloud provider was an `OutOfMemoryError`
+     * (which `runCatching` does not catch, so: a hard crash with an unsent message in flight, before
+     * `onStop` could cache the draft). The read, the 33 MB base64 `String` and the whole thing again
+     * for every file in a multi-select all ran on the main thread, from the picker callback — an ANR
+     * on any real attachment. And the KDoc said "off the UI thread", which is where it was.
+     *
+     * The declared size is a hint, not a guarantee — a provider may under-report or omit it — so the
+     * stream read is bounded too, and refuses rather than truncating. Same contract as
+     * [com.urlxl.mail.mail.readBounded] on the inbound side, for the same reason: a silently
+     * truncated attachment is worse than a refused one.
+     */
+    private suspend fun addAttachment(uri: Uri) {
+        val resolver = contentResolver
+        val budget = MAX_ATTACHMENT_BYTES - attachments.sumOf { it.size.toLong() }
+
+        val picked = withContext(Dispatchers.IO) {
+            var name = "attachment"
+            var declaredSize = -1L
+            runCatching {
+                resolver.query(uri, null, null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (nameIdx >= 0 && !cursor.isNull(nameIdx)) name = cursor.getString(nameIdx)
+                        val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
+                        if (sizeIdx >= 0 && !cursor.isNull(sizeIdx)) declaredSize = cursor.getLong(sizeIdx)
+                    }
+                }
+            }
+            // Refuse on the advertised size first, so an oversized file is never opened at all.
+            if (declaredSize > budget) return@withContext PickedAttachment.TooLarge(name)
+
+            val bytes = try {
+                resolver.openInputStream(uri)?.use { readAtMost(it, budget, declaredSize) }
+            } catch (e: AttachmentTooLargeException) {
+                // The provider under-reported, or omitted, OpenableColumns.SIZE.
+                android.util.Log.i(TAG, "Picked attachment exceeded the remaining budget", e)
+                return@withContext PickedAttachment.TooLarge(name)
+            } catch (e: Exception) {
+                android.util.Log.w(TAG, "Could not read the picked attachment", e)
+                return@withContext PickedAttachment.Unreadable(name)
+            } ?: return@withContext PickedAttachment.Unreadable(name)
+
+            PickedAttachment.Ready(
+                OutgoingAttachment(
+                    name = name,
+                    mimeType = resolver.getType(uri) ?: "application/octet-stream",
+                    dataBase64 = Base64.encodeToString(bytes, Base64.NO_WRAP),
+                    size = bytes.size,
+                ),
+            )
         }
-        val currentTotal = attachments.sumOf { it.size.toLong() }
-        if (currentTotal + bytes.size > MAX_ATTACHMENT_BYTES) {
-            Toast.makeText(this, getString(R.string.compose_attachments_too_large), Toast.LENGTH_LONG).show()
-            return
+
+        if (isFinishing || isDestroyed) return
+        when (picked) {
+            is PickedAttachment.Ready -> {
+                attachments.add(picked.attachment)
+                renderAttachmentChips()
+            }
+            is PickedAttachment.TooLarge ->
+                Toast.makeText(this, getString(R.string.compose_attachments_too_large), Toast.LENGTH_LONG).show()
+            is PickedAttachment.Unreadable ->
+                Toast.makeText(this, getString(R.string.compose_attachment_unreadable, picked.name), Toast.LENGTH_SHORT).show()
         }
-        val mimeType = resolver.getType(uri) ?: "application/octet-stream"
-        attachments.add(
-            OutgoingAttachment(
-                name = name,
-                mimeType = mimeType,
-                dataBase64 = Base64.encodeToString(bytes, Base64.NO_WRAP),
-                size = bytes.size,
-            ),
-        )
-        renderAttachmentChips()
+    }
+
+    /** Outcome of reading one picked document — named rather than a nullable pair so the three
+     *  cases stay distinguishable at the call site. */
+    private sealed class PickedAttachment {
+        data class Ready(val attachment: OutgoingAttachment) : PickedAttachment()
+        data class TooLarge(val name: String) : PickedAttachment()
+        data class Unreadable(val name: String) : PickedAttachment()
     }
 
     private fun renderAttachmentChips() {
@@ -464,7 +526,7 @@ class ComposeActivity : LockedActivity() {
         val isBodyEmpty = bodyEditor.isEmptyFlow.value != false
 
         if (to.isBlank() || subject.isBlank() || isBodyEmpty) {
-            Toast.makeText(this, "Please fill in all fields", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, R.string.compose_fill_all_fields, Toast.LENGTH_SHORT).show()
             return
         }
 
@@ -672,6 +734,13 @@ class ComposeActivity : LockedActivity() {
         val subject = subjectField.text.toString()
         val currentAttachments = attachments.toList()
         bodyEditor.exportHtml { html ->
+            // Guarded like every other exportHtml callback in this file — this one had been missed,
+            // and it is the one that writes into a process-scoped static. A security wipe clears
+            // ComposeDraftCache as its first step on an IO thread; a callback already queued on the
+            // main looper then landed afterwards and put the victim's unsent message straight back
+            // into a cache that survives AppRestart.relaunch. ComposeDraftCache also refuses writes
+            // while sealed, so this is the second of two gates rather than the only one.
+            if (isDestroyed) return@exportHtml
             ComposeDraftCache.save(
                 CachedDraft(
                     to = to,
@@ -703,8 +772,49 @@ class ComposeActivity : LockedActivity() {
          *  [EXTRA_BODY] because that one is plain text and gets html-escaped on the way in. */
         const val EXTRA_BODY_HTML = "compose_body_html"
 
+        private const val TAG = "ComposeActivity"
+
         // Mirror of the backend maxMailAttachmentBytes (25 MB total decoded).
         private const val MAX_ATTACHMENT_BYTES = 25L * 1024 * 1024
         private const val MENU_SEND = 1
+    }
+}
+
+/** Thrown by [readAtMost] so the caller can tell "this file is too big" apart from "this file could
+ *  not be read", which a nullable return could not. */
+internal class AttachmentTooLargeException : IOException("Attachment exceeds the remaining budget")
+
+/** Copy buffer for [readAtMost]. Large enough that a 25 MB attachment is a few hundred reads, small
+ *  enough that the refusal below happens long before the heap notices. */
+private const val ATTACHMENT_COPY_BUFFER_BYTES = 64 * 1024
+
+/**
+ * Reads [input] fully, or throws [AttachmentTooLargeException] as soon as it has produced more than
+ * [limit] bytes — never allocating the whole of an oversized source.
+ *
+ * Throws rather than returning the prefix, for the same reason
+ * [com.urlxl.mail.mail.readBounded] does on the inbound side: a truncated attachment is
+ * indistinguishable from a complete one to almost every file format, so returning what it got would
+ * mean silently sending a corrupt file.
+ *
+ * `internal` rather than private so it is reachable from a plain JVM test — the bound is the whole
+ * point of this function and the old code had none.
+ */
+internal fun readAtMost(input: InputStream, limit: Long, expectedSize: Long = -1L): ByteArray {
+    // Pre-sized when the provider told us how big the document is, because ByteArrayOutputStream
+    // grows by doubling and then `toByteArray()` copies the whole thing again. For a 25 MB
+    // attachment that is ~32 MB of internal buffer plus a 25 MB copy, on the way to a ~34 MB base64
+    // String — roughly triple the peak of a function whose entire purpose is bounding the heap.
+    // Clamped to the budget so a provider that over-reports cannot make us allocate past it.
+    val initial = expectedSize.takeIf { it in 0..limit }?.toInt() ?: ATTACHMENT_COPY_BUFFER_BYTES
+    val out = ByteArrayOutputStream(initial)
+    val buffer = ByteArray(ATTACHMENT_COPY_BUFFER_BYTES)
+    var total = 0L
+    while (true) {
+        val read = input.read(buffer)
+        if (read == -1) return out.toByteArray()
+        total += read
+        if (total > limit) throw AttachmentTooLargeException()
+        out.write(buffer, 0, read)
     }
 }

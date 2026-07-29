@@ -17,24 +17,52 @@ import com.urlxl.mail.mail.OutgoingAttachment
  * app sandbox, which is exactly what Hostile Location Protection exists to prevent. A cache that
  * dies with the process needs no special-casing for that mode at all.
  */
-object ComposeDraftCache {
+object ComposeDraftCache : ProcessScopedState {
     @Volatile
     private var draft: CachedDraft? = null
 
+    /**
+     * Refuses writes until the next [take].
+     *
+     * `ComposeActivity.onStop` stashes the draft from `bodyEditor.exportHtml`, which is an
+     * **asynchronous** callback on the main looper. A wipe clears this cache on an IO thread as
+     * its very first step, and a callback already queued before that then landed afterwards and
+     * put the victim's unsent message — recipients, body, attachments — straight back into a
+     * static that survives [com.urlxl.mail.security.AppRestart.relaunch]. Sealing on [clear]
+     * makes the late write a no-op instead of a resurrection.
+     */
+    @Volatile
+    private var sealed: Boolean = false
+
+    init {
+        ProcessState.register(this)
+    }
+
     fun save(draft: CachedDraft) {
+        if (sealed) return
         this.draft = draft.takeIf { it.hasContent() }
     }
 
-    /** Returns and clears — a restored draft is now owned by the screen that took it. */
+    /**
+     * Returns and clears — a restored draft is now owned by the screen that took it.
+     *
+     * Also unseals: a compose screen asking for the draft is a live session, and any callback left
+     * over from the session that was wiped has long since been drained off the main looper (it was
+     * queued strictly earlier than this Activity's `onCreate`).
+     */
     fun take(): CachedDraft? {
         val current = draft
         draft = null
+        sealed = false
         return current
     }
 
     fun clear() {
         draft = null
+        sealed = true
     }
+
+    override fun resetForNewSession() = clear()
 }
 
 data class CachedDraft(

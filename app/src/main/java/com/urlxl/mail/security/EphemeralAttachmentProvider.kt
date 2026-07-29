@@ -45,6 +45,19 @@ private const val MAX_CONCURRENT_WRITES = 8
 /** How long an idle writer thread sticks around before being reclaimed. */
 private const val WRITER_KEEP_ALIVE_SECONDS = 60L
 
+/**
+ * Ceiling on the total plaintext held awaiting a read.
+ *
+ * [MAX_CONCURRENT_WRITES] bounds writer *threads*; nothing bounded the map they read from. Each
+ * registration parks a whole attachment — up to the 25 MB relay download limit — in the heap for
+ * [ATTACHMENT_TTL_MILLIS], and the TTL only matters if the process lives that long. Tapping a
+ * handful of large attachments and backing out of each chooser (which never calls `take`) put
+ * hundreds of megabytes of decrypted mail in the heap, on the one path whose entire premise is
+ * that this plaintext is short-lived. Sized to comfortably hold several real attachments while
+ * making "the user is opening things faster than viewers consume them" a refusal rather than an OOM.
+ */
+private const val MAX_PENDING_BYTES = 64L * 1024 * 1024
+
 internal data class PendingAttachment(
     val bytes: ByteArray,
     val mimeType: String,
@@ -56,8 +69,10 @@ internal data class PendingAttachment(
  * token. Nothing here is ever written to disk — see [EphemeralAttachmentProvider], the
  * `ContentProvider` that serves these bytes to a viewer app.
  */
-object EphemeralAttachmentBytes {
+object EphemeralAttachmentBytes : com.urlxl.mail.ProcessScopedState {
     private val pending = ConcurrentHashMap<String, PendingAttachment>()
+
+    @Volatile
     private var authority: String = ""
 
     /**
@@ -90,15 +105,59 @@ object EphemeralAttachmentBytes {
             SWEEP_INTERVAL_SECONDS,
             TimeUnit.SECONDS,
         )
+        // See [com.urlxl.mail.ProcessScopedState]. This holder is the reason that registry exists:
+        // it parks up to MAX_PENDING_BYTES of decrypted attachment plaintext in a process-scoped
+        // object, and AppRestart.relaunch no longer kills the process — so a security wipe used to
+        // run to completion, relaunch into the same JVM, and leave the plaintext readable in the
+        // attacker's session. InMemoryPlaintext's own KDoc invited a future holder to register
+        // here; this is that holder, and it did not.
+        com.urlxl.mail.ProcessState.register(this)
     }
 
     internal fun configure(authority: String) {
         this.authority = authority
     }
 
-    fun register(bytes: ByteArray, mimeType: String): Uri {
+    /**
+     * Drops and zeroes every held attachment. See [com.urlxl.mail.ProcessScopedState].
+     *
+     * Zeroes rather than merely dropping, for the same reason [purgeExpired] does: until the
+     * collector runs — and possibly after, if a buffer was promoted — this plaintext is readable
+     * in a heap dump, and a wipe runs precisely when the device is presumed hostile.
+     */
+    override fun resetForNewSession() {
+        pending.keys.toList().forEach { token ->
+            pending.remove(token)?.let { Arrays.fill(it.bytes, 0) }
+        }
+    }
+
+    /**
+     * Parks [bytes] for a single ephemeral read, or returns null when doing so would push the
+     * held-plaintext total past [MAX_PENDING_BYTES].
+     *
+     * Refuses rather than evicting: the entries already here belong to attachments the user has
+     * asked for and a viewer may be about to open, and silently dropping one would hand that viewer
+     * an "already consumed" error for something the user did nothing wrong with. A refusal is a
+     * message the caller can show. Expired entries are swept first, so the common case of "the
+     * previous attachments were simply never opened" resolves itself.
+     */
+    fun register(bytes: ByteArray, mimeType: String): Uri? {
+        // Nothing may be parked under an unknown authority. [configure] runs from the provider's
+        // attachInfo, and an empty authority produced `content:///token` — a malformed URI handed
+        // to the chooser, resolving to nothing, with the plaintext left in the map until the
+        // sweeper reached it. The caller already has a "cannot serve this" path; use it.
+        val authority = this.authority
+        if (authority.isBlank()) {
+            android.util.Log.e("EphemeralAttachmentProvider", "Refusing to register before the provider is attached")
+            return null
+        }
+        purgeExpired()
         val token = UUID.randomUUID().toString()
-        pending[token] = PendingAttachment(bytes, mimeType)
+        synchronized(this) {
+            val held = pending.values.sumOf { it.bytes.size.toLong() }
+            if (held + bytes.size > MAX_PENDING_BYTES) return null
+            pending[token] = PendingAttachment(bytes, mimeType)
+        }
         return Uri.parse("content://$authority/$token")
     }
 
@@ -124,11 +183,6 @@ object EphemeralAttachmentBytes {
         }
     }
 
-    /** Visible for tests. */
-    internal fun clearForTest() {
-        pending.keys.toList().forEach { pending.remove(it) }
-    }
-
     private fun daemonThreadFactory(name: String) = ThreadFactory { runnable ->
         Thread(runnable, name).apply { isDaemon = true }
     }
@@ -150,6 +204,13 @@ class EphemeralAttachmentProvider : ContentProvider() {
     override fun getType(uri: Uri): String? = EphemeralAttachmentBytes.peekMimeType(tokenFrom(uri))
 
     override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor {
+        // Checked BEFORE take(), which consumes the single-use token. `mode` used to be accepted
+        // and discarded, so a viewer opening "rw" or "w" got a read-only pipe end, an
+        // incomprehensible failure downstream, and a token that was already gone by the time it
+        // retried. There is nothing here to write to: these bytes are read once and zeroed.
+        if (mode != "r") {
+            throw SecurityException("Ephemeral attachments are read-only; requested mode '$mode'")
+        }
         val attachment = EphemeralAttachmentBytes.take(tokenFrom(uri))
             ?: throw IOException("Attachment already consumed or unknown: $uri")
         val pipe = ParcelFileDescriptor.createReliablePipe()

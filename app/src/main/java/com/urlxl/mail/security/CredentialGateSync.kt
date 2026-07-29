@@ -2,6 +2,7 @@ package com.urlxl.mail.security
 
 import android.content.Context
 import com.urlxl.mail.push.PushRuntime
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 
@@ -22,9 +23,14 @@ import kotlinx.coroutines.withContext
  *
  * Call after every successful PIN unlock (see [UnlockActivity]) — at that point a fresh credential
  * key is cached and either gap can be closed immediately.
+ *
+ * `Dispatchers.Default`, not [NonCancellable] alone. `withContext` replaces only the context
+ * elements it is handed, and [NonCancellable] is a [kotlinx.coroutines.Job] — the dispatcher is
+ * inherited. Every caller here is an Activity's `lifecycleScope`, i.e. `Dispatchers.Main.immediate`,
+ * so the Keystore reads, the AES-GCM unwrap and the `commit()` below all ran on the UI thread.
  */
 suspend fun rewrapPairingIfNeeded(context: Context, appLockManager: AppLockManager) {
-    withContext(NonCancellable) {
+    withContext(Dispatchers.Default + NonCancellable) {
         val appLockStore = SecurityRuntime.graph(context).appLockStore
         if (!appLockStore.isCredentialPinGateEnabled()) return@withContext
 

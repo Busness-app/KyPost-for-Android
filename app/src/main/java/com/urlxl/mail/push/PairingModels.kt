@@ -1,11 +1,18 @@
 package com.urlxl.mail.push
 
-import kotlinx.serialization.Serializable
 import java.net.URI
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 
-@Serializable
+/**
+ * Deliberately **not** `@Serializable`.
+ *
+ * It carries `deviceSecret` and `pairingToken` — the credentials every authenticated call to the
+ * relay is made with. Nothing serializes this type (the wire DTOs in `NativeRegistration.kt` are
+ * separate on purpose, and [SecurePairingStore] writes field by field into a Keystore-backed store),
+ * so the annotation bought nothing and stood as a standing invitation to put the whole thing in an
+ * Intent extra, a log line or a crash report. Keep the credentials un-serializable by construction.
+ */
 data class PairingData(
     val subscriberId: String,
     val serverUrl: String,

@@ -14,9 +14,15 @@ import com.urlxl.mail.mail.OutgoingAttachment
  * Single-use ([take] clears) so a later plain Compose cannot silently inherit the attachments of a
  * forward the user abandoned.
  */
-object ForwardAttachmentHandoff {
+object ForwardAttachmentHandoff : ProcessScopedState {
     @Volatile
     private var pending: List<OutgoingAttachment>? = null
+
+    init {
+        ProcessState.register(this)
+    }
+
+    override fun resetForNewSession() = clear()
 
     fun put(attachments: List<OutgoingAttachment>) {
         pending = attachments.takeIf { it.isNotEmpty() }

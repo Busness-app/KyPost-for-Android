@@ -107,6 +107,11 @@ class SecurePairingStore(context: Context) {
      * Keystore pepper existed. Both are closed by [com.urlxl.mail.security.rewrapPairingIfNeeded].
      */
     fun needsCredentialRewrap(): Boolean {
+        // No pairing means no secret to wrap. Without this, an unpaired device answered "yes"
+        // forever, so every PIN unlock ran the full rewrap dance — Keystore read, pairing snapshot,
+        // AES — before bailing out at the first null. Cheapest possible check, and it is the same
+        // field readPairing() treats as the pairing's existence.
+        if (prefs.getString(KEY_SUBSCRIBER_ID, null).isNullOrBlank()) return false
         if (!prefs.contains(KEY_DEVICE_SECRET_CIPHERTEXT)) return true
         return prefs.getInt(KEY_DEVICE_SECRET_VERSION, SECRET_VERSION_LEGACY) < SECRET_VERSION_PEPPERED
     }

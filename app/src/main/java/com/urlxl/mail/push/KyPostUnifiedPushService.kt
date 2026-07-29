@@ -34,7 +34,7 @@ class KyPostUnifiedPushService : PushService() {
             // decrypt them on receipt — without them, onMessage() only ever sees ciphertext.
             graph.syncCoordinator.syncProvidedToken(
                 endpoint.url,
-                transport = "unifiedpush",
+                transport = PushTransport.UNIFIED_PUSH,
                 p256dh = endpoint.pubKeySet?.pubKey,
                 auth = endpoint.pubKeySet?.auth,
             )

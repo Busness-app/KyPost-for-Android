@@ -16,7 +16,7 @@ import androidx.lifecycle.lifecycleScope
 import com.urlxl.mail.R
 import com.urlxl.mail.security.AppLockStore
 import com.urlxl.mail.security.SecurityRuntime
-import com.urlxl.mail.security.UnlockAttemptResult
+import com.urlxl.mail.security.resolvePinAttempt
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
@@ -39,9 +39,17 @@ class MfaApprovalActivity : AppCompatActivity() {
     private lateinit var matchGroup: View
     private lateinit var matchChoices: LinearLayout
     private lateinit var matchUnavailable: TextView
-    private var challengeId: String = ""
+    /** The whole challenge, not just its id: [MfaResponder] needs it to put the notification back
+     *  when a response fails to reach the server. Null before [adoptChallenge] has accepted one. */
+    private var payload: MfaChallengePayload? = null
+    private val challengeId: String get() = payload?.challengeId.orEmpty()
     private var resolveJob: Job? = null
     private var authenticated = false
+
+    /** A prompt is on screen and has not answered yet. Without this, [onStart] fires immediately
+     *  after `onCreate` has already started one — `authenticated` is still false because the prompt
+     *  is asynchronous — and the user gets two stacked biometric dialogs on every cold start. */
+    private var authInFlight = false
 
     /** Set by [burnChallenge]: this challenge is finished on this device regardless of what the
      *  network says, so [resolve] must not re-offer it. */
@@ -92,25 +100,27 @@ class MfaApprovalActivity : AppCompatActivity() {
         // previous one's tile order nor its burn may carry over.
         matchOptions = emptyList()
         burned = false
+        payload = null
 
         if (!adoptChallenge(intent)) return
         // Re-authenticate per challenge: the previous approval's authentication was consent for
         // that decision, not a session that later challenges can ride on.
         authenticated = false
+        authInFlight = false
         requireAuthentication()
     }
 
-    /** Returns false (and finishes) if the challenge is blank or was never delivered by a real
+    /** Returns false (and finishes) if the challenge is malformed or was never delivered by a real
      *  push. Also renders the sign-in's context and sets up number matching. */
     private fun adoptChallenge(source: Intent): Boolean {
-        val id = source.getStringExtra(PushNotificationDispatcher.EXTRA_MFA_CHALLENGE_ID).orEmpty()
-        if (id.isBlank() || !MfaChallengeTracker(this).isPending(id)) {
+        val adopted = PushNotificationDispatcher.payloadFrom(source)
+        if (adopted == null || !PushRuntime.graph(this).mfaChallengeTracker.isPending(adopted.challengeId)) {
             finish()
             return false
         }
-        challengeId = id
-        renderContext(source)
-        setUpNumberMatching(source)
+        payload = adopted
+        renderContext(adopted)
+        setUpNumberMatching(adopted)
         setButtonsEnabled(false)
         return true
     }
@@ -122,23 +132,18 @@ class MfaApprovalActivity : AppCompatActivity() {
      * every other control on this screen ceremony. Where the server has not sent a field, say so
      * explicitly — "Unknown" is information; a blank line reads as "nothing to worry about".
      */
-    private fun renderContext(source: Intent) {
+    private fun renderContext(source: MfaChallengePayload) {
         val unknown = getString(R.string.mfa_context_unknown)
-        val ip = source.getStringExtra(PushNotificationDispatcher.EXTRA_MFA_IP).orEmpty()
-        val location = source.getStringExtra(PushNotificationDispatcher.EXTRA_MFA_LOCATION).orEmpty()
-        val userAgent = source.getStringExtra(PushNotificationDispatcher.EXTRA_MFA_USER_AGENT).orEmpty()
-        val issuedAt = source.getLongExtra(PushNotificationDispatcher.EXTRA_MFA_ISSUED_AT, 0L)
-
-        val whenText = if (issuedAt > 0L) {
-            android.text.format.DateFormat.getTimeFormat(this).format(java.util.Date(issuedAt))
+        val whenText = if (source.issuedAtEpochMs > 0L) {
+            android.text.format.DateFormat.getTimeFormat(this).format(java.util.Date(source.issuedAtEpochMs))
         } else {
             unknown
         }
         contextText.text = listOf(
             getString(R.string.mfa_context_when, whenText),
-            getString(R.string.mfa_context_from, location.ifBlank { unknown }),
-            getString(R.string.mfa_context_ip, ip.ifBlank { unknown }),
-            getString(R.string.mfa_context_device, userAgent.ifBlank { unknown }),
+            getString(R.string.mfa_context_from, source.approxLocation.ifBlank { unknown }),
+            getString(R.string.mfa_context_ip, source.ipAddress.ifBlank { unknown }),
+            getString(R.string.mfa_context_device, source.userAgent.ifBlank { unknown }),
         ).joinToString("\n")
         com.urlxl.mail.applyWarningCalloutTheme(this, contextText)
     }
@@ -152,11 +157,9 @@ class MfaApprovalActivity : AppCompatActivity() {
      * no number would spend the server's attempt budget and return a 400 telling the user they got
      * a number wrong that they were never shown. Deny stays available unconditionally.
      */
-    private fun setUpNumberMatching(source: Intent) {
-        matchDigits = source.getStringExtra(PushNotificationDispatcher.EXTRA_MFA_MATCH_DIGITS).orEmpty()
-        val decoys = source.getStringArrayExtra(PushNotificationDispatcher.EXTRA_MFA_DECOY_DIGITS)
-            ?.toList()
-            .orEmpty()
+    private fun setUpNumberMatching(source: MfaChallengePayload) {
+        matchDigits = source.matchDigits
+        val decoys = source.decoyDigits
         // Shuffled once. A restored order is reused so a recreate cannot move the tiles — but only
         // if it still contains this challenge's answer, or every tap would be wrong and the first
         // one would burn a challenge the user answered correctly.
@@ -213,7 +216,7 @@ class MfaApprovalActivity : AppCompatActivity() {
     /** Makes this challenge unanswerable on this device, whatever the network does next. */
     private fun burnChallenge() {
         PushNotificationDispatcher.cancelMfaChallenge(this, challengeId)
-        MfaChallengeTracker(this).clear(challengeId)
+        PushRuntime.graph(this).mfaChallengeTracker.clear(challengeId)
         burned = true
     }
 
@@ -238,12 +241,14 @@ class MfaApprovalActivity : AppCompatActivity() {
      * app. Fall back to that PIN, and fail open only when there is no authenticator of any kind.
      */
     private fun requireAuthentication() {
+        authInFlight = true
         val authenticators = BiometricManager.Authenticators.BIOMETRIC_STRONG or
             BiometricManager.Authenticators.DEVICE_CREDENTIAL
         if (BiometricManager.from(this).canAuthenticate(authenticators) != BiometricManager.BIOMETRIC_SUCCESS) {
             if (SecurityRuntime.graph(this).appLockStore.isLockEnabled()) {
                 promptAppLockPin()
             } else {
+                authInFlight = false
                 authenticated = true
                 setButtonsEnabled(true)
             }
@@ -261,11 +266,13 @@ class MfaApprovalActivity : AppCompatActivity() {
             ContextCompat.getMainExecutor(this),
             object : BiometricPrompt.AuthenticationCallback() {
                 override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    authInFlight = false
                     authenticated = true
                     setButtonsEnabled(true)
                 }
 
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                    authInFlight = false
                     // Cancelled or unavailable: leave the decision unmade rather than falling
                     // through to enabled buttons.
                     Toast.makeText(this@MfaApprovalActivity, R.string.mfa_auth_required, Toast.LENGTH_SHORT).show()
@@ -294,7 +301,11 @@ class MfaApprovalActivity : AppCompatActivity() {
             .setPositiveButton(android.R.string.ok) { _, _ ->
                 lifecycleScope.launch {
                     val manager = SecurityRuntime.graph(this@MfaApprovalActivity).appLockManager
-                    val ok = manager.verifyPinThrottled(pinField.text.toString()) is UnlockAttemptResult.Success
+                    // resolvePinAttempt, not `is Success`: the wipe threshold applies here too, and
+                    // reporting a completed destructive wipe as "authentication required" told the
+                    // user nothing about what had just happened to their data. See [PinGate].
+                    val ok = resolvePinAttempt(manager.verifyPinThrottled(pinField.text.toString()))
+                    authInFlight = false
                     if (ok) {
                         authenticated = true
                         setButtonsEnabled(true)
@@ -304,7 +315,7 @@ class MfaApprovalActivity : AppCompatActivity() {
                     }
                 }
             }
-            .setNegativeButton(android.R.string.cancel) { _, _ -> finish() }
+            .setNegativeButton(android.R.string.cancel) { _, _ -> authInFlight = false; finish() }
             .setCancelable(false)
             .show()
     }
@@ -322,7 +333,26 @@ class MfaApprovalActivity : AppCompatActivity() {
     override fun onStop() {
         super.onStop()
         authenticated = false
+        authInFlight = false
         setButtonsEnabled(false)
+    }
+
+    /**
+     * Re-authenticates on the way back, because [onStop] de-authenticates on the way out.
+     *
+     * Without this the screen was a dead end: `authenticated` was cleared by [onStop] and nothing
+     * ever set it again — [requireAuthentication] ran only from `onCreate` and [onNewIntent]. A
+     * user who took a phone call mid-decision came back to buttons that silently did nothing,
+     * because [onMatchChosen] and [resolve] both bail on `!authenticated`. On the screen this file
+     * calls the highest-value action in the app.
+     *
+     * Skipped while a resolve is in flight — that decision is already made and submitted; prompting
+     * for a fingerprint on top of it would be asking consent for something already sent.
+     */
+    override fun onStart() {
+        super.onStart()
+        if (authenticated || authInFlight || payload == null || resolveJob?.isActive == true) return
+        requireAuthentication()
     }
 
     /**
@@ -332,19 +362,25 @@ class MfaApprovalActivity : AppCompatActivity() {
      */
     private fun resolve(approve: Boolean, chosenDigits: String = "") {
         if (!authenticated) return
+        val current = payload ?: return
         setButtonsEnabled(false)
         resolveJob = lifecycleScope.launch {
-            val delivered = MfaResponder.respond(applicationContext, challengeId, approve, chosenDigits)
+            val delivered = MfaResponder.respond(applicationContext, current, approve, chosenDigits)
             if (delivered || burned) {
                 // A burned challenge is over on this device whether or not the deny landed; there
                 // is nothing left here for the user to do.
                 finish()
-            } else {
-                // An undelivered *approve* leaves the challenge genuinely open, and MfaResponder
-                // keeps the tracker entry for exactly this — let the user retry.
-                resolveJob = null
-                setButtonsEnabled(true)
+                return@launch
             }
+            // An undelivered *approve* leaves the challenge genuinely open, and MfaResponder
+            // keeps the tracker entry and re-posts the notification for exactly this — let the
+            // user retry.
+            resolveJob = null
+            // Only if this screen is still authenticated. `lifecycleScope` cancels on DESTROY, not
+            // on STOP, so a slow request that fails after the user pressed Home used to re-enable
+            // every tile on a stopped screen — which then stayed enabled and inert on the way back,
+            // since onStop had already cleared `authenticated`. onStart re-prompts instead.
+            if (authenticated) setButtonsEnabled(true)
         }
     }
 
