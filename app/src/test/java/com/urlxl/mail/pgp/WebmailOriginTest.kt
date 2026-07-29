@@ -66,63 +66,46 @@ class WebmailOriginTest {
         assertFalse(isFirstPartyWebmailUrl("not a url", "https://mail.example.com/read"))
     }
 
+    /**
+     * The order is the whole contract: a PWA attempt cannot be predicted, only tried, so the list
+     * must lead with it and still hold a fallback for the (usual) case where it fails.
+     */
     @Test
-    fun `prefers an installed native handler over a custom tab`() {
+    fun `tries the pwa first, then a custom tab, then any browser`() {
         assertEquals(
-            WebmailLaunchMode.NATIVE_APP,
-            webmailLaunchMode(
-                isFirstParty = true,
-                hasNativeHandler = true,
-                customTabsPackage = "com.android.chrome",
+            listOf(
+                WebmailLaunchMode.NATIVE_APP,
+                WebmailLaunchMode.CUSTOM_TAB,
+                WebmailLaunchMode.EXTERNAL_BROWSER,
             ),
+            webmailLaunchOrder(isFirstParty = true, customTabsPackage = "com.android.chrome"),
         )
     }
 
+    /** No Custom Tabs-capable browser: the tab is dropped from the chain, not the PWA attempt. */
     @Test
-    fun `picks a custom tab when a capable browser is installed and no native handler is`() {
+    fun `drops the custom tab when no capable browser is installed`() {
         assertEquals(
-            WebmailLaunchMode.CUSTOM_TAB,
-            webmailLaunchMode(
-                isFirstParty = true,
-                hasNativeHandler = false,
-                customTabsPackage = "com.android.chrome",
-            ),
+            listOf(WebmailLaunchMode.NATIVE_APP, WebmailLaunchMode.EXTERNAL_BROWSER),
+            webmailLaunchOrder(isFirstParty = true, customTabsPackage = null),
         )
     }
 
-    @Test
-    fun `falls back to an external browser when no capable browser is found`() {
-        assertEquals(
-            WebmailLaunchMode.EXTERNAL_BROWSER,
-            webmailLaunchMode(isFirstParty = true, hasNativeHandler = false, customTabsPackage = null),
-        )
-    }
-
-    @Test
-    fun `prefers a native handler even when no custom tabs browser exists`() {
-        assertEquals(
-            WebmailLaunchMode.NATIVE_APP,
-            webmailLaunchMode(isFirstParty = true, hasNativeHandler = true, customTabsPackage = null),
-        )
-    }
-
+    /** Refusal is an empty chain, so nothing is attempted at all — not a browser fallback, which
+     *  would hide the programming error that produced a foreign URL. */
     @Test
     fun `refuses a url that is not first party even when a custom tab is available`() {
         assertEquals(
-            WebmailLaunchMode.NONE,
-            webmailLaunchMode(
-                isFirstParty = false,
-                hasNativeHandler = false,
-                customTabsPackage = "com.android.chrome",
-            ),
+            emptyList<WebmailLaunchMode>(),
+            webmailLaunchOrder(isFirstParty = false, customTabsPackage = "com.android.chrome"),
         )
     }
 
     @Test
-    fun `refuses a url that is not first party even when a native handler claims it`() {
+    fun `refuses a url that is not first party when no browser is available either`() {
         assertEquals(
-            WebmailLaunchMode.NONE,
-            webmailLaunchMode(isFirstParty = false, hasNativeHandler = true, customTabsPackage = null),
+            emptyList<WebmailLaunchMode>(),
+            webmailLaunchOrder(isFirstParty = false, customTabsPackage = null),
         )
     }
 }

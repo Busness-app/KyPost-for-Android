@@ -7,18 +7,20 @@
     <uses-permission android:name="android.permission.WRITE_CONTACTS" />
 
     <!--
-      Package visibility for browsers only, so CustomTabsClient.getPackageName can find a
-      Custom Tabs-capable one. Without this, minSdk 31's filtering hides every browser and the
-      Custom Tab path silently degrades to an external-browser launch on all devices.
+      Package visibility for apps that host the Custom Tabs service, so
+      CustomTabsClient.getPackageName can find one. androidx.browser 1.8.0 contributes no <queries>
+      of its own, so this block is load-bearing: without it minSdk 31's filtering hides every
+      browser and the Custom Tab path silently degrades to an external-browser launch everywhere.
 
-      Deliberately an <intent> filter and not QUERY_ALL_PACKAGES: this grants sight of apps that
-      answer VIEW/BROWSABLE for https, which is the question being asked, and nothing else.
+      Narrower than the VIEW/BROWSABLE-for-https filter it replaces, which granted sight of every
+      app claiming any https link. That breadth existed for a queryIntentActivities probe of the
+      webmail host that could never work (see launchNonBrowser in WebmailTab.kt) and is now
+      unused — the PWA preference asks the system at launch time instead. This is the query the
+      AndroidX Custom Tabs docs specify, and it answers only the question actually being asked.
     -->
     <queries>
         <intent>
-            <action android:name="android.intent.action.VIEW" />
-            <category android:name="android.intent.category.BROWSABLE" />
-            <data android:scheme="https" />
+            <action android:name="android.support.customtabs.action.CustomTabsService" />
         </intent>
     </queries>
 

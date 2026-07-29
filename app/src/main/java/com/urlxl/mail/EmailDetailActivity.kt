@@ -49,10 +49,6 @@ class EmailDetailActivity : LockedActivity() {
     private var lastAppliedThemeName: String = ""
     private var lastRenderedHtml: String? = null
 
-    /** The paired server's URL, captured with the webmail link so the Custom Tab launcher can
-     *  re-check the link's origin without another disk read on the main thread. */
-    private var pairedServerUrl: String? = null
-
     /** The message's real body, once the background fetch has answered. Reply/Forward quote this;
      *  see [quoteForReply] for why the 140-character preview was never an acceptable substitute. */
     private var fetchedBodyHtml: String? = null
@@ -288,13 +284,12 @@ class EmailDetailActivity : LockedActivity() {
         runOnUiThread {
             if (isFinishing || isDestroyed) return@runOnUiThread
             lastRenderedHtml = htmlContent
-            pairedServerUrl = serverUrl
             // Not `bodyToRender`: that is blanked for the PGP states with nothing to show.
             fetchedBodyHtml = content?.html
             webView.loadDataWithBaseURL(null, htmlContent, "text/html", "utf-8", null)
             loading.visibility = android.view.View.GONE
             imagesBlockedBar.visibility = if (hasRemoteImages) View.VISIBLE else View.GONE
-            renderPgpBar(pgpState, pgpDecryptError, webmailUrl)
+            renderPgpBar(pgpState, pgpDecryptError, serverUrl, webmailUrl)
             if (content != null) {
                 toRecipients = content.toAddresses
                 ccRecipients = content.ccAddresses
@@ -375,10 +370,16 @@ class EmailDetailActivity : LockedActivity() {
     /**
      * The only screen that tells the user what happened to an encrypted message. Silence here is
      * what the old build did, and it read as "this email is blank".
+     *
+     * [serverUrl] is passed in beside [webmailUrl] rather than read from a field so the two are
+     * provably from the same render pass: the click listener below re-checks the link against the
+     * origin it was built from, and a field could have been overwritten by a later render in
+     * between.
      */
     private fun renderPgpBar(
         state: PgpMessageState,
         pgpDecryptError: String,
+        serverUrl: String?,
         webmailUrl: String?,
     ) {
         if (state == PgpMessageState.NONE) {
@@ -394,7 +395,10 @@ class EmailDetailActivity : LockedActivity() {
             PgpMessageState.DECRYPTED_BY_SERVER ->
                 pgpText.text = getString(R.string.email_pgp_decrypted_by_server)
             PgpMessageState.CLIENT_PROTECTED -> {
-                if (webmailUrl == null) {
+                // No pairing, or a serverUrl no URL could be built from: we genuinely do not know
+                // this server's web address, which is what email_pgp_no_webmail says. A launch
+                // that fails later is a different problem and gets a different string.
+                if (serverUrl == null || webmailUrl == null) {
                     pgpText.text = getString(R.string.email_pgp_client_protected) +
                         "\n" + getString(R.string.email_pgp_no_webmail)
                 } else {
@@ -405,9 +409,11 @@ class EmailDetailActivity : LockedActivity() {
                     // gesture comes straight back to the message list. See WebmailTab for why
                     // this is not the in-app WebView the old comment here ruled out.
                     btnOpenInWebmail.setOnClickListener {
-                        val serverUrl = pairedServerUrl
-                        if (serverUrl == null || !openWebmail(this, serverUrl, webmailUrl)) {
-                            Toast.makeText(this, R.string.email_pgp_no_webmail, Toast.LENGTH_LONG).show()
+                        // The address is known — it is on the button. A failure here means nothing
+                        // on the device would open it, so say that rather than blaming the server
+                        // address, which is what this branch used to tell a user with no browser.
+                        if (!openWebmail(this, serverUrl, webmailUrl)) {
+                            Toast.makeText(this, R.string.email_pgp_no_handler, Toast.LENGTH_LONG).show()
                         }
                     }
                 }

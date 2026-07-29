@@ -71,6 +71,7 @@
     <string name="email_pgp_decrypted_by_server">This message was encrypted. The server decrypted it to show it here.</string>
     <string name="email_pgp_body_unavailable">This message is encrypted and isn\'t cached on this device, so its protection can\'t be confirmed here. Refresh the inbox, or open it in webmail.</string>
     <string name="email_pgp_no_webmail">Couldn\'t work out this server\'s web address — open this message in your browser.</string>
+    <string name="email_pgp_no_handler">No app on this device can open that link — open this message in your browser.</string>
     <string name="email_row_pgp_locked_description">Encrypted, can\'t be read in this app: %1$s</string>
     <string name="email_row_pgp_failed_description">Encrypted, couldn\'t be decrypted: %1$s</string>
     <string name="attachment_downloading">Downloading %1$s…</string>

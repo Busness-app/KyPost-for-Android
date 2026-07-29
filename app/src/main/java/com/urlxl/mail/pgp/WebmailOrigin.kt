@@ -26,7 +26,14 @@ fun isFirstPartyWebmailUrl(serverUrl: String, candidateUrl: String): Boolean {
 /** How to open a webmail URL, in preference order. */
 enum class WebmailLaunchMode {
     /**
-     * A non-browser app claims this URL — in practice the webmail PWA.
+     * Offer the URL to a non-browser app — in practice the webmail PWA.
+     *
+     * *Attempted*, not detected. Nothing here knows whether such an app exists: the launch carries
+     * `FLAG_ACTIVITY_REQUIRE_NON_BROWSER` and the system throws when only browsers would have
+     * taken it, so the caller finds out by trying and falls through to the next mode. An earlier
+     * revision tried to predict it by diffing `queryIntentActivities`, which could never fire —
+     * see `launchNonBrowser` in `WebmailTab.kt` for why package-visibility filtering made the PWA
+     * invisible on every device.
      *
      * Ranked above [CUSTOM_TAB] because it is already the best experience available: a standalone
      * window with the session it holds, and no browser chrome. A Custom Tab targets a browser and
@@ -52,24 +59,35 @@ enum class WebmailLaunchMode {
 }
 
 /**
- * Picks the launch mode.
+ * The modes to try, best first, until one of them actually launches.
  *
- * [hasNativeHandler] and [customTabsPackage] are both probed by the caller — see `WebmailTab.kt` —
- * rather than read here, so this stays a pure function with no Android dependency and the
- * precedence order itself is unit-testable.
+ * An ordered list and not a single verdict because [WebmailLaunchMode.NATIVE_APP] cannot be
+ * predicted, only attempted — see its KDoc. A function that returned one mode would have to claim
+ * knowledge of an installed PWA that no in-process query can honestly supply, which is exactly the
+ * bug this replaced: the probe it used could never return true, so the PWA preference was dead code
+ * on every device. Handing the caller a fallback chain lets the system answer the question at
+ * launch time, where it is the only party that can.
  *
- * A non-first-party URL is [WebmailLaunchMode.NONE] rather than
- * [WebmailLaunchMode.EXTERNAL_BROWSER] on purpose: every caller of this builds its URL from the
- * pairing's own `serverUrl`, so a failure here is a programming error, not a user situation to
- * degrade gracefully around. Silently opening it elsewhere would hide the bug.
+ * [customTabsPackage] is probed by the caller — see `WebmailTab.kt` — rather than read here, so
+ * this stays a pure function with no Android dependency and the precedence order itself is
+ * unit-testable.
+ *
+ * A non-first-party URL yields an empty list — refuse, in the sense of [WebmailLaunchMode.NONE] —
+ * rather than degrading to [WebmailLaunchMode.EXTERNAL_BROWSER]: every caller of this builds its
+ * URL from the pairing's own `serverUrl`, so a failure here is a programming error, not a user
+ * situation to degrade gracefully around. Silently opening it elsewhere would hide the bug. It is
+ * also what keeps the guard ahead of the launch attempts, so a refused URL is never handed to the
+ * system at all.
  */
-fun webmailLaunchMode(
+fun webmailLaunchOrder(
     isFirstParty: Boolean,
-    hasNativeHandler: Boolean,
     customTabsPackage: String?,
-): WebmailLaunchMode = when {
-    !isFirstParty -> WebmailLaunchMode.NONE
-    hasNativeHandler -> WebmailLaunchMode.NATIVE_APP
-    customTabsPackage != null -> WebmailLaunchMode.CUSTOM_TAB
-    else -> WebmailLaunchMode.EXTERNAL_BROWSER
+): List<WebmailLaunchMode> = when {
+    !isFirstParty -> emptyList()
+    customTabsPackage != null -> listOf(
+        WebmailLaunchMode.NATIVE_APP,
+        WebmailLaunchMode.CUSTOM_TAB,
+        WebmailLaunchMode.EXTERNAL_BROWSER,
+    )
+    else -> listOf(WebmailLaunchMode.NATIVE_APP, WebmailLaunchMode.EXTERNAL_BROWSER)
 }

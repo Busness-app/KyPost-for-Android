@@ -1,6 +1,5 @@
 package com.urlxl.mail
 
-import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
@@ -688,10 +687,10 @@ class ComposeActivity : LockedActivity() {
             .setMessage(R.string.compose_handoff_dialog_body)
             .setNegativeButton(android.R.string.cancel, null)
             .setPositiveButton(R.string.compose_handoff_dialog_confirm) { _, _ ->
-                // Prefers an in-app Custom Tab, which carries the browser session webmail
-                // already holds, so the user is not asked to log in again just to press send.
-                // Falls back to an external browser where no Custom Tabs-capable browser
-                // exists. Still no resolveActivity: see WebmailTab.launchExternalBrowser.
+                // Prefers the installed PWA, then an in-app Custom Tab, which carries the browser
+                // session webmail already holds, so the user is not asked to log in again just to
+                // press send. Falls back to an external browser where no Custom Tabs-capable
+                // browser exists. Still no resolveActivity: see WebmailTab.launchExternalBrowser.
                 if (openWebmail(this, serverUrl, url)) {
                     finish()
                 } else {
