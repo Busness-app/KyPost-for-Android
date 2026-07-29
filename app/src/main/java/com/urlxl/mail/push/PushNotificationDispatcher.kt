@@ -15,7 +15,7 @@ import com.urlxl.mail.MainActivity
 import com.urlxl.mail.R
 import com.urlxl.mail.security.SecurityRuntime
 
-object PushNotificationDispatcher {
+object PushNotificationDispatcher : com.urlxl.mail.ProcessScopedState {
     private const val CHANNEL_ID = "kypost_push"
     private const val MFA_CHANNEL_ID = "kypost_mfa"
     private const val MFA_GROUP_KEY = "com.urlxl.mail.push.MFA"
@@ -36,6 +36,49 @@ object PushNotificationDispatcher {
 
     /** Fixed id, so a burst overwrites one row instead of accumulating. */
     private val MFA_BURST_NOTIFICATION_ID = stableNotificationId("mfa-burst")
+
+    /**
+     * The notification id each challenge was actually posted under.
+     *
+     * [cancelMfaChallenge] used to recompute `mfaNotificationId(challengeId)`, which is only correct
+     * outside a burst — during one, every challenge shares [MFA_BURST_NOTIFICATION_ID]. So answering
+     * or burning a challenge mid-flood cancelled a notification that had never been posted and left
+     * the burst row sitting in the shade pointing at a dead challenge. That is a bug that exists
+     * *only* during an MFA-fatigue flood, i.e. only in the scenario this whole feature is for.
+     *
+     * Bounded by the same ceiling as the tracker: entries are removed on cancel, but a challenge
+     * that is never answered would otherwise linger for the life of the process.
+     */
+    private val postedNotificationIds = object : LinkedHashMap<String, Int>(16, 0.75f, false) {
+        override fun removeEldestEntry(eldest: Map.Entry<String, Int>): Boolean = size > MAX_TRACKED_CHALLENGES
+    }
+
+    /**
+     * The challenge the burst summary currently points at, or null when no burst row is showing.
+     *
+     * A burst posts ONE notification whose `PendingIntent` is rewritten (`FLAG_UPDATE_CURRENT`) to
+     * the newest challenge each time. The previous occupant is then unreachable from the UI — but it
+     * stayed marked deliverable in [MfaChallengeTracker] for five minutes, so up to
+     * [MAX_TRACKED_CHALLENGES] challenges were answerable while exactly one had ever been shown.
+     * [MfaApprovalActivity] treats "tracked" as "the user was really shown this", and that invariant
+     * was simply false in burst mode. Revoking the outgoing one keeps it true.
+     */
+    @Volatile
+    private var burstChallengeId: String? = null
+
+    init {
+        // Both fields above are account-scoped bookkeeping in a process that AppRestart no longer
+        // kills: a stale burst pointer or a stale posted-id map outlives an unpair and then makes
+        // the next session cancel the wrong notification. See [com.urlxl.mail.ProcessScopedState].
+        com.urlxl.mail.ProcessState.register(this)
+    }
+
+    override fun resetForNewSession() {
+        synchronized(postedNotificationIds) {
+            postedNotificationIds.clear()
+            burstChallengeId = null
+        }
+    }
 
     const val EXTRA_MFA_CHALLENGE_ID = "challengeId"
     const val EXTRA_MFA_IP = "mfaIpAddress"
@@ -143,10 +186,68 @@ object PushNotificationDispatcher {
      * second challenge silently disappeared — in a feature built to resist MFA fatigue.
      */
     fun showMfaChallenge(context: Context, payload: MfaChallengePayload) {
-        ensureMfaChannel(context)
-        val tracker = MfaChallengeTracker(context)
+        val tracker = PushRuntime.graph(context).mfaChallengeTracker
         val burst = tracker.liveCount() >= MFA_BURST_THRESHOLD
+        val silent = tracker.shouldSuppressAlert(MFA_ALERT_COOLDOWN_MS)
+        // Tracked (below) only once a notification for it is actually on screen. Marking first
+        // meant that with POST_NOTIFICATIONS denied — or any SecurityException on the way out — the
+        // challenge became answerable for five minutes with nothing ever shown to the user, which
+        // is the pretext an approval screen must not be reachable under.
+        val notificationId = postMfaNotification(context, payload, burst, silent) ?: return
 
+        synchronized(postedNotificationIds) {
+            if (burst) {
+                // The summary can only point at one challenge, and this call has just repointed it.
+                // Revoke the one it used to point at, so "tracked" keeps meaning "reachable from a
+                // notification the user was actually shown". Without this, a flood silently
+                // accumulated answerable challenges behind a single row.
+                burstChallengeId
+                    ?.takeIf { it != payload.challengeId }
+                    ?.let { superseded ->
+                        tracker.clear(superseded)
+                        postedNotificationIds.remove(superseded)
+                    }
+                burstChallengeId = payload.challengeId
+            }
+            postedNotificationIds[payload.challengeId] = notificationId
+        }
+        tracker.markDelivered(payload.challengeId)
+    }
+
+    /**
+     * Puts a challenge's notification back after a failed approve/deny, without touching the
+     * tracker.
+     *
+     * `setAutoCancel(true)` removed the row the moment the user tapped it, so a send that never
+     * reached the server left them with a toast, an Activity they were about to leave, and no route
+     * back to a challenge that is still open — for the rest of its five-minute window.
+     * [MfaResponder] claimed in a comment to do this and did not.
+     *
+     * Deliberately does **not** call [MfaChallengeTracker.markDelivered]: the entry is still there
+     * (only a *successful* response clears it) and re-marking would slide the freshness deadline
+     * forward, extending an answerable window because the network failed. Silent, too — the user is
+     * looking at the screen; this is a breadcrumb, not an alert.
+     */
+    fun repostMfaChallenge(context: Context, payload: MfaChallengePayload) {
+        // Only what is still answerable. A wrong number-match burns the challenge (tracker entry
+        // removed) *before* the deny is sent, precisely so the burn holds when the deny fails —
+        // re-posting there would put back a row whose only effect on tap is an Activity that
+        // finishes instantly.
+        if (!PushRuntime.graph(context).mfaChallengeTracker.isPending(payload.challengeId)) return
+        val burst = synchronized(postedNotificationIds) { burstChallengeId == payload.challengeId }
+        postMfaNotification(context, payload, burst, silent = true)
+    }
+
+    /** Builds and posts the row, returning the id it went out under, or null if nothing was
+     *  posted. Shared by [showMfaChallenge] and [repostMfaChallenge] so the two cannot drift in
+     *  what they put on screen. */
+    private fun postMfaNotification(
+        context: Context,
+        payload: MfaChallengePayload,
+        burst: Boolean,
+        silent: Boolean,
+    ): Int? {
+        ensureMfaChannel(context)
         val notificationId = if (burst) MFA_BURST_NOTIFICATION_ID else mfaNotificationId(payload.challengeId)
         val tapPendingIntent = PendingIntent.getActivity(
             context,
@@ -172,17 +273,32 @@ object PushNotificationDispatcher {
             .setVisibility(NotificationCompat.VISIBILITY_SECRET)
             .setAutoCancel(true)
             .setGroup(MFA_GROUP_KEY)
-            .setSilent(MfaAlertWindow.shouldSuppressAlert())
+            .setSilent(silent)
             .setContentIntent(tapPendingIntent)
             .build()
 
-        // Tracked only once a notification for it is actually on screen. Marking first meant that
-        // with POST_NOTIFICATIONS denied — or any SecurityException on the way out — the challenge
-        // became answerable for five minutes with nothing ever shown to the user, which is the
-        // pretext an approval screen must not be reachable under.
-        if (postNotification(context, notificationId, notification)) {
-            tracker.markDelivered(payload.challengeId)
-        }
+        return if (postNotification(context, notificationId, notification)) notificationId else null
+    }
+
+    /**
+     * Rebuilds the payload an [mfaApprovalIntent] was assembled from.
+     *
+     * Kept next to its inverse so the two cannot drift: [MfaApprovalActivity] needs the whole
+     * payload (not just the id) to hand back to [MfaResponder] for [repostMfaChallenge], and
+     * reading the seven extras out by hand at each use site is how they drift apart.
+     */
+    fun payloadFrom(intent: Intent): MfaChallengePayload? {
+        val id = intent.getStringExtra(EXTRA_MFA_CHALLENGE_ID).orEmpty()
+        if (!MfaChallengePayloadParser.isValidChallengeId(id)) return null
+        return MfaChallengePayload(
+            challengeId = id,
+            ipAddress = intent.getStringExtra(EXTRA_MFA_IP).orEmpty(),
+            approxLocation = intent.getStringExtra(EXTRA_MFA_LOCATION).orEmpty(),
+            userAgent = intent.getStringExtra(EXTRA_MFA_USER_AGENT).orEmpty(),
+            issuedAtEpochMs = intent.getLongExtra(EXTRA_MFA_ISSUED_AT, 0L),
+            matchDigits = intent.getStringExtra(EXTRA_MFA_MATCH_DIGITS).orEmpty(),
+            decoyDigits = intent.getStringArrayExtra(EXTRA_MFA_DECOY_DIGITS)?.toList().orEmpty(),
+        )
     }
 
     /**
@@ -226,8 +342,20 @@ object PushNotificationDispatcher {
         }
     }
 
+    /**
+     * Cancels the notification this challenge was posted under — [postedNotificationIds], not a
+     * recomputed per-challenge id, because during a burst it was posted under the shared summary id.
+     *
+     * Falls back to the derived id when nothing is recorded, which covers the process having been
+     * restarted between the notification being posted and the user answering it. FCM routinely does
+     * exactly that, and outside a burst the derived id is correct.
+     */
     fun cancelMfaChallenge(context: Context, challengeId: String) {
-        NotificationManagerCompat.from(context).cancel(mfaNotificationId(challengeId))
+        val notificationId = synchronized(postedNotificationIds) {
+            if (burstChallengeId == challengeId) burstChallengeId = null
+            postedNotificationIds.remove(challengeId)
+        } ?: mfaNotificationId(challengeId)
+        NotificationManagerCompat.from(context).cancel(notificationId)
     }
 
     private fun notificationsAllowed(context: Context): Boolean {
@@ -236,7 +364,7 @@ object PushNotificationDispatcher {
             PackageManager.PERMISSION_GRANTED
     }
 
-    private fun mfaNotificationId(challengeId: String): Int = stableNotificationId("mfa-$challengeId")
+    internal fun mfaNotificationId(challengeId: String): Int = stableNotificationId("mfa-$challengeId")
 
     /**
      * A collision-resistant id derived from [key], used for both the notification id and the
@@ -255,16 +383,4 @@ object PushNotificationDispatcher {
             (digest[3].toInt() and 0xFF)
     }
 
-    /** Tracks only whether the *sound* for an MFA notification was played recently. It no longer
-     *  holds a notification id, so it can't cause one challenge's answer to dismiss another's. */
-    private object MfaAlertWindow {
-        private var lastAlertAtEpochMs: Long = 0L
-
-        @Synchronized
-        fun shouldSuppressAlert(nowEpochMs: Long = System.currentTimeMillis()): Boolean {
-            val suppress = lastAlertAtEpochMs != 0L && nowEpochMs - lastAlertAtEpochMs <= MFA_ALERT_COOLDOWN_MS
-            if (!suppress) lastAlertAtEpochMs = nowEpochMs
-            return suppress
-        }
-    }
 }

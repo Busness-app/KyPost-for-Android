@@ -67,7 +67,7 @@ class PushPairingActivity : LockedActivity() {
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
         if (!granted) {
-            Toast.makeText(this, "Notifications disabled; push still arrives in-app history", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, R.string.push_pairing_notifications_denied, Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -167,34 +167,45 @@ class PushPairingActivity : LockedActivity() {
         val baseStatus = getString(
             if (state.pairing == null) R.string.push_pairing_status_not_paired else R.string.push_pairing_status_paired,
         )
+        val none = getString(R.string.push_pairing_value_none)
         statusText.text = if (state.pairing == null) {
             baseStatus
         } else {
-            val modeLabel = if (state.deliveryMode == DeliveryMode.PULL) "App Pull" else "Relay Push"
-            "$baseStatus • $modeLabel"
+            val modeLabel = getString(
+                if (state.deliveryMode == DeliveryMode.PULL) R.string.push_pairing_mode_pull
+                else R.string.push_pairing_mode_push,
+            )
+            getString(R.string.push_pairing_status_with_mode, baseStatus, modeLabel)
         }
-        serverUrlText.text = "Server: ${state.pairing?.serverUrl ?: "-"}"
-        subscriberText.text = "Subscriber ID: ${state.pairing?.subscriberId?.let { maskTail(it, 6) } ?: "-"}"
-        deviceIdText.text = "Device ID: ${state.pairing?.deviceId ?: "-"}"
-        lastSyncText.text = "Last token sync: ${state.lastTokenSyncAtEpochMs?.let { dateFormat.format(Date(it)) } ?: "-"}"
+        serverUrlText.text = getString(R.string.push_pairing_server, state.pairing?.serverUrl ?: none)
+        subscriberText.text =
+            getString(R.string.push_pairing_subscriber, state.pairing?.subscriberId?.let { maskTail(it, 6) } ?: none)
+        deviceIdText.text = getString(R.string.push_pairing_device_id, state.pairing?.deviceId ?: none)
+        lastSyncText.text = getString(
+            R.string.push_pairing_last_sync,
+            state.lastTokenSyncAtEpochMs?.let { dateFormat.format(Date(it)) } ?: none,
+        )
 
         if (state.syncError.isNullOrBlank()) {
             syncErrorText.visibility = View.GONE
         } else {
             syncErrorText.visibility = View.VISIBLE
-            syncErrorText.text = "Sync error: ${state.syncError}"
+            syncErrorText.text = getString(R.string.push_pairing_sync_error, state.syncError)
         }
 
-        transportText.text = "Notification method: ${transportLabel(state.transport)}"
+        transportText.text = getString(R.string.push_pairing_transport, transportLabel(state.transport))
 
-        latestSenderText.text = "Sender: ${state.latestPayload?.let { PushPayloadParser.title(it) } ?: "-"}"
-        latestSubjectText.text = "Subject: ${state.latestPayload?.let { PushPayloadParser.body(it) } ?: "-"}"
-        latestKeywordsText.text = "Keywords: ${state.latestPayload?.keywords?.joinToString() ?: "-"}"
+        latestSenderText.text =
+            getString(R.string.push_pairing_latest_sender, state.latestPayload?.let { PushPayloadParser.title(it) } ?: none)
+        latestSubjectText.text =
+            getString(R.string.push_pairing_latest_subject, state.latestPayload?.let { PushPayloadParser.body(it) } ?: none)
+        latestKeywordsText.text =
+            getString(R.string.push_pairing_latest_keywords, state.latestPayload?.keywords?.joinToString() ?: none)
 
         historyAdapter.submit(state.history)
 
         val paired = state.pairing != null
-        val isUnifiedPush = state.transport == "unifiedpush"
+        val isUnifiedPush = state.transport == PushTransport.UNIFIED_PUSH
         btnResyncToken.isEnabled = !state.isWorking
         btnUnpairDevice.isEnabled = !state.isWorking
         btnScanQr.isEnabled = !state.isWorking
@@ -263,7 +274,7 @@ class PushPairingActivity : LockedActivity() {
                     handleParsedPairing(NativePairingDeepLinkParser.parse(raw))
                 }
             }.onFailure {
-                Toast.makeText(this@PushPairingActivity, "QR scan canceled or failed", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@PushPairingActivity, R.string.push_pairing_qr_scan_failed, Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -357,9 +368,9 @@ private fun maskTail(value: String, keepLast: Int): String {
 }
 
 // Mirrors the badge labels on the web Notifications page; null means never synced yet.
-private fun transportLabel(transport: String?): String = when (transport?.trim()?.lowercase()) {
-    "unifiedpush" -> "UnifiedPush"
-    "apns" -> "APNs"
-    "fcm" -> "Firebase"
-    else -> "Firebase (default)"
+private fun transportLabel(transport: PushTransport?): String = when (transport) {
+    PushTransport.UNIFIED_PUSH -> "UnifiedPush"
+    PushTransport.APNS -> "APNs"
+    PushTransport.FCM -> "Firebase"
+    null -> "Firebase (default)"
 }

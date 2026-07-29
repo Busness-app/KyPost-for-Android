@@ -1,8 +1,7 @@
 package com.urlxl.mail
 
 /**
- * Message plaintext that deliberately never touches disk, and therefore has to be destroyed by
- * hand when the account goes away.
+ * Destroys every process-scoped holder of message plaintext and account-scoped state.
  *
  * [ComposeDraftCache] and [ForwardAttachmentHandoff] are process-scoped `object`s holding the
  * in-progress message — recipients, body and every attachment's base64 payload. Both were written
@@ -13,18 +12,19 @@ package com.urlxl.mail
  * now controls. The same statics also crossed an unpair/re-pair, restoring one account's draft
  * inside another account's session.
  *
- * Kept as one function rather than two calls at each site so a future in-memory plaintext holder
- * has an obvious place to register, and so the behaviour is unit-testable — neither
- * [com.urlxl.mail.security.SecurityWipe] nor [com.urlxl.mail.push.PushRepository.clearPairing] can
- * be reached from a JVM test.
+ * **This no longer enumerates the holders.** It used to name two, and its own KDoc invited "a
+ * future in-memory plaintext holder" to register here — after which
+ * [com.urlxl.mail.security.EphemeralAttachmentBytes] was written, parking up to 64 MB of decrypted
+ * attachment plaintext in exactly this shape, and was never added. Enumeration by memory does not
+ * survive contact with a growing codebase, so holders now announce themselves via
+ * [ProcessScopedState] and this is a thin, honest facade over [ProcessState.resetAll].
  *
  * Deliberately NOT called from `AppLockManager.lockNow()`: the draft cache exists precisely so a
  * lock-interrupted composition survives, and clearing it there would discard the user's message on
  * every ordinary lock.
  */
 object InMemoryPlaintext {
-    fun clearAll() {
-        ComposeDraftCache.clear()
-        ForwardAttachmentHandoff.clear()
-    }
+    /** Returns the names of holders that failed to clear, so a caller that must report honestly
+     *  ([com.urlxl.mail.security.SecurityWipe]) can refuse to claim a clean wipe. Empty on success. */
+    fun clearAll(): List<String> = ProcessState.resetAll()
 }

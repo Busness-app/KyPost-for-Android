@@ -96,6 +96,16 @@ class UnlockActivity : AppCompatActivity() {
                     submitButton.isEnabled = true
                     if (result.delayMillis > 0) applyRemainingLockout()
                 }
+                is UnlockAttemptResult.VerifierUnavailable -> {
+                    // The Keystore key behind the stored verifier is gone, so no PIN can ever match
+                    // again. Saying "wrong PIN" would send the user round the loop until the wipe
+                    // threshold — which this outcome deliberately does not advance — so name the
+                    // real problem and the only real remedy.
+                    pinField.text.clear()
+                    errorText.visibility = View.VISIBLE
+                    errorText.text = getString(R.string.security_verifier_unavailable)
+                    submitButton.isEnabled = true
+                }
             }
         }
     }

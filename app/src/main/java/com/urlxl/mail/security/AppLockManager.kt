@@ -5,12 +5,25 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 sealed class UnlockAttemptResult {
     object Success : UnlockAttemptResult()
     data class Rejected(val delayMillis: Long) : UnlockAttemptResult()
     object Wiped : UnlockAttemptResult()
+
+    /**
+     * The PIN could not be checked at all — the Keystore pepper backing the stored verifier is
+     * gone or unusable, so neither "correct" nor "wrong" is knowable.
+     *
+     * Distinct from [Rejected] because it **must not count toward the wipe threshold**. Folding it
+     * into "wrong PIN" meant an OS-level Keystore invalidation made every correct PIN read as
+     * wrong, and ten of those destroyed the user's mail, contacts and pairing in response to an
+     * event they neither caused nor could avoid. See [PepperUnavailableException].
+     */
+    object VerifierUnavailable : UnlockAttemptResult()
 
     /** The wipe threshold was reached and the wipe ran, but at least one step failed — so local
      *  data may still be on disk. Distinct from [Wiped] because the UI must not tell the user
@@ -50,6 +63,23 @@ class AppLockManager(
 
     @Volatile
     private var credentialKeys: CredentialKeys? = null
+
+    /**
+     * Serialises every PIN check in the process.
+     *
+     * [attemptPin], [verifyPinThrottled] and [deriveAndCacheCredentialKeys] all run
+     * check-lockout → verify → account-for-failure, and [AppLockState.incrementFailedAttempts] is a
+     * read-modify-write on a `SharedPreferences` int. Without this, two checks in flight together on
+     * the multi-threaded [Dispatchers.Default] pool — the settings screen and a notification-tapped
+     * [com.urlxl.mail.push.MfaApprovalActivity], or simply a double submit — both read the same
+     * attempt count and both write `n + 1`, so the lockout ladder and the wipe threshold under-count.
+     * They also both pass the lockout gate at the same instant, which is an unthrottled parallel
+     * guessing window.
+     *
+     * Non-reentrant: everything that runs under it must call [verifyLocked], never a public method
+     * on this class.
+     */
+    private val pinGate = Mutex()
 
     /**
      * When a pending background grace window expires, on [android.os.SystemClock.elapsedRealtime]'s
@@ -123,26 +153,56 @@ class AppLockManager(
      * unthrottled brute-force oracle.
      */
     suspend fun attemptPin(pin: String): UnlockAttemptResult = withContext(Dispatchers.Default) {
-        val remaining = remainingLockoutMillis()
-        if (remaining > 0) return@withContext UnlockAttemptResult.Rejected(remaining)
+        pinGate.withLock {
+            verifyLocked(pin) {
+                // Unlock FIRST, derive second. The credential key comes from a *different* Keystore
+                // alias than the PIN verifier, so it can be lost on its own — and a correct PIN
+                // whose wrapping key has gone is still a correct PIN. Deriving first meant a throw
+                // from the Keystore skipped the unlock and left the user locked out of an app whose
+                // PIN they had just entered correctly.
+                _locked.value = false
+                cacheCredentialKeysIfEnabled(pin)
+            }
+        }
+    }
 
-        if (state.verifyPin(pin)) {
+    /**
+     * The whole check-verify-account sequence, run under [pinGate] by every public entry point.
+     *
+     * [onSuccess] is what distinguishes the callers — unlock the app, cache a credential key, or
+     * nothing at all. Deliberately a lambda rather than a boolean flag: a boolean parameter that
+     * selects between fundamentally different post-conditions is exactly the shape that let
+     * `verifyPinThrottled` and `attemptPin` drift into two copies of the same accounting code.
+     */
+    private suspend fun verifyLocked(pin: String, onSuccess: () -> Unit): UnlockAttemptResult {
+        val remaining = remainingLockoutMillis()
+        if (remaining > 0) return UnlockAttemptResult.Rejected(remaining)
+
+        // The verifier itself may be unevaluable, which is not a wrong PIN and must not be counted
+        // as one — the `incrementFailedAttempts()` below is what feeds the wipe threshold.
+        val verified = try {
+            state.verifyPin(pin)
+        } catch (e: PepperUnavailableException) {
+            android.util.Log.e("AppLockManager", "PIN verifier is unevaluable; refusing to count an attempt", e)
+            return UnlockAttemptResult.VerifierUnavailable
+        }
+
+        if (verified) {
             state.resetFailedAttempts()
-            cacheCredentialKeysIfEnabled(pin)
-            _locked.value = false
-            return@withContext UnlockAttemptResult.Success
+            onSuccess()
+            return UnlockAttemptResult.Success
         }
 
         val attempts = state.incrementFailedAttempts()
         if (LockoutPolicy.shouldWipe(attempts)) {
-            return@withContext when (val wipe = onWipe()) {
+            return when (val wipe = onWipe()) {
                 is WipeResult.Complete -> UnlockAttemptResult.Wiped
                 is WipeResult.Incomplete -> UnlockAttemptResult.WipeFailed(wipe.failedSteps)
             }
         }
         val delay = LockoutPolicy.delayMillisFor(attempts)
         if (delay > 0) state.setLockout(elapsedRealtimeMs() + delay, delay)
-        UnlockAttemptResult.Rejected(delay)
+        return UnlockAttemptResult.Rejected(delay)
     }
 
     /**
@@ -186,24 +246,7 @@ class AppLockManager(
      * [attemptPin]'s own contract warns about.
      */
     suspend fun verifyPinThrottled(pin: String): UnlockAttemptResult = withContext(Dispatchers.Default) {
-        val remaining = remainingLockoutMillis()
-        if (remaining > 0) return@withContext UnlockAttemptResult.Rejected(remaining)
-
-        if (state.verifyPin(pin)) {
-            state.resetFailedAttempts()
-            return@withContext UnlockAttemptResult.Success
-        }
-
-        val attempts = state.incrementFailedAttempts()
-        if (LockoutPolicy.shouldWipe(attempts)) {
-            return@withContext when (val wipe = onWipe()) {
-                is WipeResult.Complete -> UnlockAttemptResult.Wiped
-                is WipeResult.Incomplete -> UnlockAttemptResult.WipeFailed(wipe.failedSteps)
-            }
-        }
-        val delay = LockoutPolicy.delayMillisFor(attempts)
-        if (delay > 0) state.setLockout(elapsedRealtimeMs() + delay, delay)
-        UnlockAttemptResult.Rejected(delay)
+        pinGate.withLock { verifyLocked(pin) {} }
     }
 
     /**
@@ -211,24 +254,61 @@ class AppLockManager(
      * is currently enabled — used when the user is toggling the gate itself, where there is no
      * "successful unlock" event to hang off of and no PIN-derived key can be assumed to already be
      * cached (the current session may have been unlocked via biometric only). Verifies [pin]
-     * against the stored hash first and returns `false` without deriving anything if it's wrong —
-     * never derives a key from an unverified PIN.
+     * against the stored hash first and derives nothing if it's wrong — never derives a key from an
+     * unverified PIN.
+     *
+     * Returns the full [UnlockAttemptResult], not a `Boolean`. It used to collapse everything that
+     * was not [UnlockAttemptResult.Success] into `false`, which silently discarded
+     * [UnlockAttemptResult.Wiped] — this path runs the same wipe threshold as every other PIN check,
+     * so the caller has to be told when the wipe has actually run. See
+     * [com.urlxl.mail.security.resolvePinAttempt].
      */
-    suspend fun deriveAndCacheCredentialKeys(pin: String): Boolean = withContext(Dispatchers.Default) {
+    suspend fun deriveAndCacheCredentialKeys(pin: String): UnlockAttemptResult = withContext(Dispatchers.Default) {
         // Throttled like every other PIN check — this is reachable from the settings screen, so
         // verifying directly against the store made it an unthrottled oracle for the one secret
         // a biometric-only unlock does not already grant.
-        if (verifyPinThrottled(pin) !is UnlockAttemptResult.Success) return@withContext false
-        credentialKeys = deriveUsingPersistedSalt(pin)
-        true
+        pinGate.withLock {
+            // Unlike the unlock path, this caller specifically asked for the key — the settings
+            // screen is about to switch the credential gate on and re-wrap the device secret behind
+            // it. A derivation that failed must therefore be reported, not swallowed: proceeding
+            // would enable a gate with no key to open it.
+            var derivationFailed = false
+            val result = verifyLocked(pin) {
+                credentialKeys = try {
+                    deriveUsingPersistedSalt(pin)
+                } catch (e: PepperUnavailableException) {
+                    android.util.Log.e("AppLockManager", "Credential key derivation is unavailable", e)
+                    derivationFailed = true
+                    null
+                }
+            }
+            if (result is UnlockAttemptResult.Success && derivationFailed) {
+                UnlockAttemptResult.VerifierUnavailable
+            } else {
+                result
+            }
+        }
     }
 
+    /** Best-effort by contract: this runs as a side effect of unlocking, and a Keystore that cannot
+     *  produce the wrapping key leaves the gated secret unavailable for the session — exactly as a
+     *  biometric-only unlock does — rather than failing the unlock. [deriveAndCacheCredentialKeys]
+     *  is the path where the caller actually asked for the key, and it reports the failure. */
     private fun cacheCredentialKeysIfEnabled(pin: String) {
         if (!state.isCredentialPinGateEnabled()) return
-        credentialKeys = deriveUsingPersistedSalt(pin)
+        credentialKeys = runCatching { deriveUsingPersistedSalt(pin) }
+            .onFailure { android.util.Log.e("AppLockManager", "Could not derive credential keys on unlock", it) }
+            .getOrNull()
     }
 
     private fun deriveUsingPersistedSalt(pin: String): CredentialKeys {
+        // Create-on-demand is right for the *wrapping* key, and wrong for the PIN verifier — which
+        // is why the two live behind separate aliases and separate accessors now. Losing this key
+        // makes an existing wrapped secret undecryptable (the GCM tag stops verifying,
+        // SecurePairingStore reads it as "credential unavailable", the user re-pairs), which is the
+        // failure direction CredentialCipher's KDoc already chose. Losing the *verifier's* key
+        // instead made a correct PIN read as wrong forever, and wiped the device on the tenth try.
+        if (pepper === KeystoreCredentialPepper) KeystoreCredentialPepper.ensureExists()
         val salt = state.credentialSalt() ?: CredentialCipher.randomSalt().also { state.setCredentialSalt(it) }
         return CredentialCipher.deriveKeys(pin, salt, pepper)
     }

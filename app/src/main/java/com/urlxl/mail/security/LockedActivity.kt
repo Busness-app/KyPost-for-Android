@@ -2,8 +2,11 @@ package com.urlxl.mail.security
 
 import android.content.Intent
 import android.os.Bundle
+import android.view.View
 import android.view.WindowManager
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 
 /**
  * Base class for every screen that must not be reachable while the app lock is engaged.
@@ -50,13 +53,69 @@ abstract class LockedActivity : AppCompatActivity() {
         if (secureWindow) {
             window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
         }
+        if (!passesStartupTripwire()) return
         redirectToUnlockIfLocked()
+    }
+
+    /**
+     * Blocks this screen until [SecurityWipe.enforceTripwire] has ruled on whether the local
+     * database is about to be destroyed. Returns false when the caller must do nothing at all.
+     *
+     * The tripwire decides whether the encrypted app-lock state vanished under a configured lock —
+     * i.e. whether someone deleted the keyset to disable the lock. It runs on a background
+     * coroutine started from `Application.onCreate`, which returns before this Activity is created,
+     * so it used to race the first screen: an attacker got a fully populated inbox rendered from
+     * the cache for as long as the Keystore round trip took, and the wipe landed afterwards,
+     * tearing the database out from under a live screen. `Application.onCreate` cannot make the
+     * "runs before anything reads cached data" promise its comment used to make, so the gate has to
+     * be here.
+     *
+     * While the verdict is pending this sets [redirectedToUnlock] and returns false, which is
+     * exactly the contract every subclass already honours (`if (redirectedToUnlock) return`
+     * immediately after `super.onCreate`) — so no subclass runs its database reads, network calls
+     * or executor dispatch in the meantime. Blanking the window alone would have hidden the render
+     * while letting all of that happen anyway. When the verdict lands clean the Activity is simply
+     * recreated, and the check below is synchronous from then on: the deferred is process-scoped,
+     * so this costs at most one recreate on the first screen of a cold start.
+     */
+    private fun passesStartupTripwire(): Boolean {
+        if (!SecurityWipe.startupVerdict.isCompleted) {
+            redirectedToUnlock = true
+            window.decorView.visibility = View.INVISIBLE
+            lifecycleScope.launch {
+                SecurityWipe.startupVerdict.await()
+                if (!isFinishing && !isDestroyed) recreate()
+            }
+            return false
+        }
+
+        // First screen to observe a startup wipe: tell the user, rebuild every graph (Mail and
+        // Contacts still hold DAO handles on the database SecurityWipe just closed) and restart
+        // into a coherent first-run state. The wipe reset the app lock, so MainActivity routes
+        // straight to pairing — UnlockActivity would prompt for a PIN that no longer exists. The
+        // CAS makes it exactly one screen: the others come up after the relaunch and carry on.
+        if (SecurityWipe.startupVerdict.getCompleted() && startupWipeHandled.compareAndSet(false, true)) {
+            redirectedToUnlock = true
+            android.widget.Toast.makeText(
+                applicationContext,
+                com.urlxl.mail.R.string.security_wiped_notice,
+                android.widget.Toast.LENGTH_LONG,
+            ).show()
+            AppRestart.relaunch(this)
+            return false
+        }
+
+        window.decorView.visibility = View.VISIBLE
+        return true
     }
 
     /** The resume-time half of the gate: the app can lock while this screen sits in the back
      *  stack, and `onCreate` does not run again on the way back. */
     override fun onStart() {
         super.onStart()
+        // Nothing to gate while we are standing down for the tripwire — this instance is about to
+        // be recreated or the task is about to be relaunched.
+        if (redirectedToUnlock) return
         redirectToUnlockIfLocked()
     }
 
@@ -65,5 +124,12 @@ abstract class LockedActivity : AppCompatActivity() {
         redirectedToUnlock = true
         startActivity(Intent(this, UnlockActivity::class.java))
         finish()
+    }
+
+    private companion object {
+        /** One-shot across the process: the first screen to observe a startup wipe rebuilds the
+         *  graphs and relaunches, and the screens that come up afterwards must not bounce the task
+         *  again on the same verdict. */
+        val startupWipeHandled = java.util.concurrent.atomic.AtomicBoolean(false)
     }
 }

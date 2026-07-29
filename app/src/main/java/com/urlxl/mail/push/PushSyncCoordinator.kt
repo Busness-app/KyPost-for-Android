@@ -41,7 +41,7 @@ class PushSyncCoordinator(
 
     suspend fun syncProvidedToken(
         token: String,
-        transport: String? = null,
+        transport: PushTransport? = null,
         p256dh: String? = null,
         auth: String? = null,
     ): NativeRegistrationResult {
@@ -70,7 +70,7 @@ class PushSyncCoordinator(
             syncAndPersist(
                 pairing = pairing,
                 token = endpoint,
-                transport = "unifiedpush",
+                transport = PushTransport.UNIFIED_PUSH,
                 p256dh = state.unifiedPushP256dh,
                 auth = state.unifiedPushAuth,
             )
@@ -82,7 +82,7 @@ class PushSyncCoordinator(
     private suspend fun syncAndPersist(
         pairing: PairingData,
         token: String,
-        transport: String? = null,
+        transport: PushTransport? = null,
         p256dh: String? = null,
         auth: String? = null,
     ): NativeRegistrationResult {
@@ -109,7 +109,7 @@ class PushSyncCoordinator(
                 // Gate on the transport we requested, not result.transport: older servers may
                 // not echo transport back (it's null in that case), which would otherwise wipe
                 // the endpoint/keys we just successfully registered right after setting them.
-                if (transport == "unifiedpush") {
+                if (transport == PushTransport.UNIFIED_PUSH) {
                     repository.updateUnifiedPushRegistration(endpoint = token, p256dh = p256dh, auth = auth)
                 } else {
                     repository.updateUnifiedPushRegistration(endpoint = null, p256dh = null, auth = null)

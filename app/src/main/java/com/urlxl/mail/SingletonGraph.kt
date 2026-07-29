@@ -28,4 +28,16 @@ class SingletonGraph<T>(private val factory: (Context) -> T) {
     fun invalidate() {
         synchronized(this) { instance = null }
     }
+
+    /**
+     * Atomically removes and returns the cached instance, or null if one was never built.
+     *
+     * For teardown that has to act on the *live* object rather than a replacement: closing a Room
+     * database is the case this exists for. `invalidate()` then `get()` would have built a brand-new
+     * instance and closed that one, leaving the database everything is actually using wide open.
+     *
+     * Taking it also means no later caller can be handed the instance that is about to be closed —
+     * which `invalidate()` alone only guarantees for callers that arrive after it returns.
+     */
+    fun take(): T? = synchronized(this) { instance.also { instance = null } }
 }

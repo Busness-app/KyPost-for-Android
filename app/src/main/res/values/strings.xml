@@ -57,6 +57,7 @@
     <string name="compose_send">Send</string>
     <string name="compose_attach">Attach</string>
     <string name="compose_attachments_too_large">Attachments too large (max 25 MB total)</string>
+    <string name="compose_attachment_unreadable">Couldn\'t read %1$s</string>
     <string name="email_attachments">Attachments</string>
     <string name="email_images_blocked_message">Images are blocked to protect your privacy.</string>
     <string name="email_show_images_button">Show images</string>
@@ -77,6 +78,7 @@
     <string name="attachment_saved">Saved %1$s to Downloads</string>
     <string name="attachment_save_failed">Couldn\'t save %1$s</string>
     <string name="attachment_open_with">Open attachment with</string>
+    <string name="attachment_too_many_open">Too many attachments are still open. Close one and try again.</string>
     <string name="forward_fetching_attachments">Fetching attachments to forward…</string>
     <string name="forward_attachments_failed">Couldn\'t fetch %1$d attachment(s) — they won\'t be forwarded</string>
     <string name="cancel">Cancel</string>
@@ -122,6 +124,22 @@
 
     <string name="push_pairing_title">Push Notifications</string>
     <string name="push_pairing_status_paired">Paired</string>
+    <string name="push_pairing_status_with_mode">%1$s • %2$s</string>
+    <string name="push_pairing_mode_pull">App Pull</string>
+    <string name="push_pairing_mode_push">Relay Push</string>
+    <string name="push_pairing_value_none">-</string>
+    <string name="push_pairing_server">Server: %1$s</string>
+    <string name="push_pairing_subscriber">Subscriber ID: %1$s</string>
+    <string name="push_pairing_device_id">Device ID: %1$s</string>
+    <string name="push_pairing_last_sync">Last token sync: %1$s</string>
+    <string name="push_pairing_sync_error">Sync error: %1$s</string>
+    <string name="push_pairing_transport">Notification method: %1$s</string>
+    <string name="push_pairing_latest_sender">Sender: %1$s</string>
+    <string name="push_pairing_latest_subject">Subject: %1$s</string>
+    <string name="push_pairing_latest_keywords">Keywords: %1$s</string>
+    <string name="push_pairing_notifications_denied">Notifications are off. Push still arrives in the in-app history.</string>
+    <string name="push_pairing_qr_scan_failed">QR scan was cancelled or failed.</string>
+    <string name="compose_fill_all_fields">Fill in the recipient, subject and message.</string>
     <string name="push_pairing_status_not_paired">Not paired</string>
     <string name="push_pairing_resync">Re-sync token</string>
     <string name="push_pairing_unpair">Unpair device</string>
@@ -332,6 +350,19 @@
     <string name="security_change_pin_title">Change PIN</string>
     <string name="security_change_pin_button">Change PIN</string>
     <string name="security_pin_incorrect">Incorrect PIN</string>
+
+    <!-- Shown when a PIN check anywhere in the app reaches the wrong-attempt threshold and the
+         destructive reset runs. Every PIN entry point can trigger it, not just the unlock screen,
+         so the user must be told what happened rather than seeing "Incorrect PIN". -->
+    <string name="security_wiped_notice">Too many wrong PIN attempts. Local data on this device has been erased.</string>
+    <string name="security_wipe_incomplete_notice">Too many wrong PIN attempts. Erasing local data did not finish; it will be retried when the app next starts.</string>
+    <string name="security_verifier_unavailable">This device\'s secure key store has changed, so your PIN can no longer be checked. This attempt was not counted. Reinstall the app to set it up again.</string>
+    <string name="security_change_pin_secret_unreadable">Your PIN was not changed. The paired credential could not be read with your current PIN, and changing it would make this device unable to reach the server. Unpair and pair again to fix this.</string>
+    <string name="security_hostile_location_confirm_enable_title">Turn on Hostile Location Protection?</string>
+    <string name="security_hostile_location_confirm_enable_body">This erases every message cached on this device, removes the contacts this app added to your phone, and restarts the app. Mail is kept in memory only from now on.</string>
+    <string name="security_hostile_location_confirm_disable_title">Turn off Hostile Location Protection?</string>
+    <string name="security_hostile_location_confirm_disable_body">This erases every message cached on this device and restarts the app. Mail is written to this device again from now on.</string>
+    <string name="security_hostile_location_confirm_positive">Continue</string>
 
     <string name="email_link_no_handler">No app can open that link</string>
     <string name="email_body_render_failed">This message could not be displayed. Try opening it in webmail.</string>

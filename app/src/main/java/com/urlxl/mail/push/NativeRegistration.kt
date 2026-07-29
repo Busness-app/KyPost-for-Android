@@ -74,6 +74,8 @@ fun resolvePullEndpoint(serverUrl: String, provided: String?): String {
     }
 }
 
+/** The wire boundary keeps `String` — this is the JSON contract, and [PushTransport] is what every
+ *  caller above it uses. */
 object NativeRegistrationRequestMapper {
     fun map(
         pairing: PairingData,
@@ -104,7 +106,9 @@ sealed class NativeRegistrationResult {
         val deviceSecret: String?,
         val deliveryMode: DeliveryMode = DeliveryMode.PUSH,
         val pullEndpoint: String? = null,
-        val transport: String? = null,
+        /** The transport the server confirmed, or null when it did not echo the field back (older
+         *  servers) or sent something this client does not recognise. */
+        val transport: PushTransport? = null,
         // TOFU (trust-on-first-use) SPKI pin of the leaf certificate seen on this successful
         // registration call's TLS handshake, paired with the host that handshake was with, or null
         // if the connection wasn't TLS or the handshake info wasn't available. Carrying the host
@@ -127,7 +131,7 @@ class NativeRegistrationClient(
         pairing: PairingData,
         token: String,
         nowEpochMs: Long = System.currentTimeMillis(),
-        transport: String? = null,
+        transport: PushTransport? = null,
         p256dh: String? = null,
         auth: String? = null,
     ): NativeRegistrationResult {
@@ -136,7 +140,7 @@ class NativeRegistrationClient(
         val request = NativeRegistrationRequestMapper.map(
             pairing = pairing,
             token = token,
-            transport = transport,
+            transport = transport?.wire,
             p256dh = p256dh,
             auth = auth,
         )
@@ -174,7 +178,7 @@ class NativeRegistrationClient(
                         deviceSecret = body.deviceSecret,
                         deliveryMode = DeliveryMode.fromWire(body.deliveryMode),
                         pullEndpoint = body.pullEndpoint,
-                        transport = body.transport,
+                        transport = PushTransport.fromWire(body.transport),
                         tlsPin = registrationHost?.let { host ->
                             handshake?.peerCertificates?.firstOrNull()?.let { TlsPin(host, SpkiPinner.pinFor(it)) }
                         },

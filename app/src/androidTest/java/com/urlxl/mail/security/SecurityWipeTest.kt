@@ -115,4 +115,96 @@ class SecurityWipeTest {
         val rebuilt = DataRuntime.graph(context).database
         assertTrue("DataRuntime should hand out a fresh, open database", rebuilt.openHelper.writableDatabase.isOpen)
     }
+
+    /**
+     * The wipe must not claim Complete when a step really failed.
+     *
+     * `SecurityWipe`'s own KDoc says it "must never report [WipeResult.Complete] unless every step
+     * really ran", and three steps could not fail at all: `deviceContacts`, `deregister` and
+     * `clearPairingState` each delegated to helpers whose every statement sat in its own
+     * `runCatching { }.onFailure { Log }`. The one that mattered most deletes the user's contacts
+     * out of the OS provider — outside this app's sandbox — and a failure there was reported as a
+     * clean wipe.
+     *
+     * Provoked through the shared-prefs enumeration, which is the step whose precondition a test
+     * can actually remove: with `shared_prefs` made unreadable there is no way to enumerate what
+     * needs deleting, and "I cannot see what to delete" must not read as "there was nothing".
+     */
+    @Test
+    fun wipeAndResetApp_reportsIncomplete_whenAStepFails() = runBlocking {
+        val sharedPrefsDir = File(context.dataDir, "shared_prefs")
+        // Make the directory unlistable. On a device where the test process can't chmod its own
+        // data dir this is a no-op and the assertion below would be vacuous, so skip rather than
+        // pass for the wrong reason.
+        val couldBlock = sharedPrefsDir.exists() && sharedPrefsDir.setReadable(false, false)
+        org.junit.Assume.assumeTrue("Could not make shared_prefs unreadable on this device", couldBlock)
+        try {
+            val result = SecurityWipe.wipeAndResetApp(context)
+            assertTrue("Expected Incomplete, got $result", result is WipeResult.Incomplete)
+            assertTrue((result as WipeResult.Incomplete).failedSteps.contains("sharedPrefs"))
+            // And the marker survives, so the next launch resumes it.
+            assertTrue(SecurityWipe.wipeInterrupted(context))
+        } finally {
+            sharedPrefsDir.setReadable(true, false)
+        }
+    }
+
+    /**
+     * An incomplete wipe must stop resuming eventually.
+     *
+     * The marker used to be cleared only on a fully clean run, with no ceiling — so a permanently
+     * failing step meant the app wiped itself at every launch, forever, with no way for the user to
+     * get past it. `clearWebViewState` recursively deleted `cacheDir` in a live process where
+     * OkHttp, WebView and ART were still creating files inside it; losing that race is routine.
+     */
+    @Test
+    fun anIncompleteWipe_stopsResumingAfterTheCeiling() = runBlocking {
+        val sharedPrefsDir = File(context.dataDir, "shared_prefs")
+        val couldBlock = sharedPrefsDir.exists() && sharedPrefsDir.setReadable(false, false)
+        org.junit.Assume.assumeTrue("Could not make shared_prefs unreadable on this device", couldBlock)
+        try {
+            var lastResult: WipeResult = WipeResult.Complete
+            repeat(6) { lastResult = SecurityWipe.wipeAndResetApp(context) }
+            // Still honestly reported as incomplete...
+            assertTrue(lastResult is WipeResult.Incomplete)
+            // ...but no longer scheduled to run again at every launch.
+            assertFalse(
+                "Wipe is still marked in progress; the app would re-wipe itself forever",
+                SecurityWipe.wipeInterrupted(context),
+            )
+        } finally {
+            sharedPrefsDir.setReadable(true, false)
+        }
+    }
+
+    /**
+     * Local push teardown must not sit behind the network call.
+     *
+     * The connector's SQLite database holds the WebPush ECDH private key and auth secret. It used
+     * to be deleted *after* the server deregister, inside a `withTimeoutOrNull(3s)` whose bound was
+     * set to exactly the deregister client's own 3s `callTimeout` — so the two raced, and an
+     * unreachable server (airplane mode: one swipe, before burning ten PINs) reliably cancelled the
+     * coroutine before any of it ran. This test has no server at all, which is the failing case.
+     */
+    @Test
+    fun wipeAndResetApp_removesTheUnifiedPushConnectorStore_evenWithNoReachableServer() = runBlocking {
+        // Stand in for the connector's own database, which lives in this app's sandbox.
+        context.openOrCreateDatabase("unifiedpush-connector", android.content.Context.MODE_PRIVATE, null).use {
+            it.execSQL("CREATE TABLE IF NOT EXISTS webpush_keys (secret TEXT)")
+            it.execSQL("INSERT INTO webpush_keys VALUES ('ecdh-private-key')")
+        }
+        assertTrue(context.databaseList().contains("unifiedpush-connector"))
+
+        PushRuntime.graph(context).repository.savePairing(
+            pairing.copy(serverUrl = "https://127.0.0.1:1", registrationUrl = "https://127.0.0.1:1/register"),
+        )
+
+        SecurityWipe.wipeAndResetApp(context)
+
+        assertFalse(
+            "The WebPush ECDH private key survived the wipe",
+            context.databaseList().contains("unifiedpush-connector"),
+        )
+    }
+
 }

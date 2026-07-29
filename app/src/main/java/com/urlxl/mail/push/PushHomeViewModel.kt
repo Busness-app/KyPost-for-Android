@@ -180,7 +180,7 @@ data class PushHomeUiState(
     val latestPayload: PushPayload? = null,
     val history: List<PushPayload> = emptyList(),
     val deliveryMode: DeliveryMode = DeliveryMode.PUSH,
-    val transport: String? = null,
+    val transport: PushTransport? = null,
     val isWorking: Boolean = false,
     val localMessage: String? = null,
 )

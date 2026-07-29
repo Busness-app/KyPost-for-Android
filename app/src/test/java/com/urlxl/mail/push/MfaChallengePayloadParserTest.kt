@@ -127,4 +127,55 @@ class MfaChallengePayloadParserTest {
         )
         assertNull(payload)
     }
+
+    /**
+     * The challenge id becomes a key in a SharedPreferences XML file, written with a synchronous
+     * `commit()` on the push-delivery thread, and every display field around it was already
+     * length-capped. `isBlank()` was the only check standing between a hostile relay and an
+     * arbitrary-length one — a disk-fill and a delivery-thread stall through an input path that was
+     * being validated for the fields that only reach a TextView.
+     */
+    @Test
+    fun parse_oversizedChallengeId_returnsNull() {
+        val payload = MfaChallengePayloadParser.parse(
+            mapOf("type" to "mfa_challenge", "challengeId" to "c".repeat(129)),
+        )
+        assertNull(payload)
+    }
+
+    @Test
+    fun parse_challengeIdWithUnexpectedCharacters_returnsNull() {
+        // Server-minted opaque ids are UUID-shaped. Anything else is not a challenge id we should
+        // be writing to disk under the attacker's choice of name.
+        listOf(
+            "../../etc/passwd",
+            "c 1",
+            // A NUL is the classic way to make a name read as one thing and resolve as
+            // another. Written as an escape, never as a literal byte in the source file.
+            "c\u00001",
+            "c/1",
+            "<script>",
+        ).forEach { hostileId ->
+            assertNull(
+                hostileId,
+                MfaChallengePayloadParser.parse(
+                    mapOf("type" to "mfa_challenge", "challengeId" to hostileId),
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun parse_acceptsTheIdShapesRealServersMint() {
+        listOf(
+            "c-1",
+            "9f8b1c2d-4e5a-6789-abcd-ef0123456789",
+            "chal_01HZY.MFA:7",
+        ).forEach { id ->
+            val payload = MfaChallengePayloadParser.parse(
+                mapOf("type" to "mfa_challenge", "challengeId" to id),
+            )
+            assertEquals(id, requireNotNull(payload).challengeId)
+        }
+    }
 }

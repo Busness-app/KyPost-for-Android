@@ -63,4 +63,57 @@ class MfaChallengeTrackerPersistenceTest {
 
         assertFalse(newTracker().isPending(id, nowEpochMs = now))
     }
+
+    /**
+     * A concurrent delivery must not resurrect a challenge that was just cleared.
+     *
+     * [MfaChallengeTracker.markDelivered] is a read-modify-write that rebuilds the whole file from
+     * a snapshot, and [MfaChallengeTracker.clear] removes one key. Unserialised, a `clear` landing
+     * between another thread's read and its rewrite was silently undone — which resurrects a
+     * challenge the user burned by mis-tapping the number, or one the server has already accepted
+     * an answer for, breaking "answered once, answerable once". It fires exactly during a challenge
+     * flood, i.e. during the MFA-fatigue attack the whole feature resists.
+     */
+    @Test
+    fun aClearedChallengeIsNotResurrectedByAConcurrentDelivery() {
+        repeat(30) { round ->
+            val answered = "answered-$round-${System.nanoTime()}"
+            val arriving = "arriving-$round-${System.nanoTime()}"
+            newTracker().markDelivered(answered)
+            assertTrue(newTracker().isPending(answered))
+
+            // The two operations that raced: one thread answering a challenge, another taking
+            // delivery of the next one in the flood.
+            val clearer = Thread { newTracker().clear(answered) }
+            val deliverer = Thread { newTracker().markDelivered(arriving) }
+            clearer.start()
+            deliverer.start()
+            clearer.join()
+            deliverer.join()
+
+            assertFalse(
+                "Cleared challenge $answered came back after a concurrent delivery",
+                newTracker().isPending(answered),
+            )
+            assertTrue(newTracker().isPending(arriving))
+        }
+    }
+
+    /**
+     * The alert cooldown shares this file so it survives process death — the reason the challenge
+     * records are persisted in the first place. Held in a process-scoped `var`, it reset on every
+     * FCM-driven process churn, so under a real flood every challenge alerted at IMPORTANCE_HIGH.
+     */
+    @Test
+    fun theAlertCooldownSurvivesANewTrackerInstanceAndOtherDeliveries() {
+        val cooldownMs = 5 * 60 * 1000L
+        // Reset the window by consuming whatever a previous test left, then take the alert.
+        newTracker().shouldSuppressAlert(cooldownMs)
+
+        assertTrue(newTracker().shouldSuppressAlert(cooldownMs))
+
+        // An unrelated delivery rewrites the whole file; the cooldown must be carried across it.
+        newTracker().markDelivered("cooldown-probe-${System.nanoTime()}")
+        assertTrue(newTracker().shouldSuppressAlert(cooldownMs))
+    }
 }

@@ -471,10 +471,19 @@ class EmailDetailActivity : LockedActivity() {
                     Toast.makeText(this, message, Toast.LENGTH_LONG).show()
                     return@runOnUiThread
                 }
-                rememberForForwarding(info.index, downloaded)
                 when (action) {
+                    // Deliberately NOT cached for forwarding on this path. rememberForForwarding
+                    // base64-encodes the plaintext into an immutable String that lives for the life
+                    // of this Activity — and, once forwarded, in the process-scoped
+                    // ForwardAttachmentHandoff. A String cannot be zeroed. That silently undid the
+                    // entire point of EphemeralAttachmentBytes, which goes to some trouble to
+                    // Arrays.fill(bytes, 0) on a timer, and it did so under Hostile Location
+                    // Protection specifically — the mode whose contract is that attachment
+                    // plaintext never persists anywhere. forwardMessage() already re-fetches
+                    // anything it does not have, so the cost is one extra download on a forward.
                     com.urlxl.mail.security.AttachmentAction.VIEW_EPHEMERAL -> viewAttachmentEphemerally(downloaded)
                     com.urlxl.mail.security.AttachmentAction.SAVE_TO_DOWNLOADS -> {
+                        rememberForForwarding(info.index, downloaded)
                         val saved = saveToDownloads(downloaded.name, downloaded.mimeType, downloaded.bytes)
                         val message = if (saved) getString(R.string.attachment_saved, info.name) else getString(R.string.attachment_save_failed, info.name)
                         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
@@ -488,7 +497,13 @@ class EmailDetailActivity : LockedActivity() {
      *  (never written to disk) and launches a viewer via ACTION_VIEW — nothing is saved anywhere. */
     private fun viewAttachmentEphemerally(downloaded: com.urlxl.mail.mail.DownloadedAttachment) {
         val mimeType = safeMimeType(downloaded.mimeType)
+        // Null when the held-plaintext ceiling is reached — say so rather than launching a chooser
+        // for a URI that will fail to open. See EphemeralAttachmentBytes.register.
         val uri = com.urlxl.mail.security.EphemeralAttachmentBytes.register(downloaded.bytes, mimeType)
+            ?: run {
+                Toast.makeText(this, R.string.attachment_too_many_open, Toast.LENGTH_LONG).show()
+                return
+            }
         val view = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, mimeType)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)

@@ -30,16 +30,20 @@ object MfaResponder {
      */
     suspend fun respond(
         context: Context,
-        challengeId: String,
+        payload: MfaChallengePayload,
         approve: Boolean,
         matchDigits: String = "",
     ): Boolean {
         val appContext = context.applicationContext
+        val challengeId = payload.challengeId
 
         val graph = PushRuntime.graph(appContext)
         val pairing = graph.repository.pairingForAuthenticatedCall()
         if (pairing == null) {
             showResultToast(appContext, appContext.getString(R.string.mfa_respond_not_paired))
+            // Nothing was sent, so the challenge is still open and the notification is still gone
+            // (autoCancel removed it on tap). Same reasoning as the Error branch below.
+            PushNotificationDispatcher.repostMfaChallenge(appContext, payload)
             return false
         }
 
@@ -48,7 +52,7 @@ object MfaResponder {
                 PushNotificationDispatcher.cancelMfaChallenge(appContext, challengeId)
                 // Answered once, answerable once: a replayed notification tap must not re-open a
                 // decision the user already made.
-                MfaChallengeTracker(appContext).clear(challengeId)
+                graph.mfaChallengeTracker.clear(challengeId)
                 showResultToast(
                     appContext,
                     appContext.getString(
@@ -58,12 +62,16 @@ object MfaResponder {
                 true
             }
             is MfaRespondResult.Error -> {
-                // Leave the challenge answerable and re-post the notification so the user has a
-                // way back to it inside the tracker's freshness window.
+                // Leave the challenge answerable AND put the notification back, which this comment
+                // used to claim while the code only showed a toast. `setAutoCancel(true)` removed
+                // the row when the user tapped it, so without the repost their only route back is
+                // the Activity they are standing on — walk away and a still-open sign-in is
+                // stranded for the rest of the tracker's freshness window with no UI anywhere.
                 showResultToast(
                     appContext,
                     appContext.getString(R.string.mfa_respond_failed, result.message),
                 )
+                PushNotificationDispatcher.repostMfaChallenge(appContext, payload)
                 false
             }
         }

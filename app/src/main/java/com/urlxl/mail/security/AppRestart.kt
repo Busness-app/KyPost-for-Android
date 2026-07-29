@@ -27,6 +27,13 @@ import com.urlxl.mail.push.PushRuntime
  */
 object AppRestart {
     fun relaunch(activity: Activity) {
+        // Statics do not die with the task. Invalidating the graph holders rebuilds everything
+        // *they* own, but every process-scoped `object` — the draft cache, the forward handoff, the
+        // ephemeral attachment plaintext, the PGP custody cache, the notification bookkeeping —
+        // survives untouched, because this no longer kills the process. Enumerating them by hand at
+        // each call site is what let EphemeralAttachmentBytes hold 64 MB of decrypted mail across a
+        // security wipe; the registry is the fix. See [com.urlxl.mail.ProcessScopedState].
+        com.urlxl.mail.ProcessState.resetAll()
         invalidateGraphs()
         activity.startActivity(
             Intent(activity, MainActivity::class.java)
