@@ -150,7 +150,6 @@ class MfaApprovalActivity : AppCompatActivity() {
         }
         contextText.text = listOf(
             getString(R.string.mfa_context_when, whenText),
-            getString(R.string.mfa_context_from, source.approxLocation.ifBlank { unknown }),
             getString(R.string.mfa_context_ip, source.ipAddress.ifBlank { unknown }),
             getString(R.string.mfa_context_device, source.userAgent.ifBlank { unknown }),
         ).joinToString("\n")

@@ -35,6 +35,22 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.KyPost" >
 
+        <!-- Which channel a system-tray notification lands on, for any FCM message that still
+             arrives carrying a `notification` payload. Without this, Play Services invents its own
+             fallback channel: not kypost_push, not kypost_mfa, so neither the IMPORTANCE_HIGH the
+             MFA channel is created with nor any per-channel choice the user has made applies to it,
+             and it can sit silenced while the relay reports every send as delivered.
+
+             Belt to the braces of the relay now sending data-only for Android (see
+             sendFcmMessage in kypost-server/worker/src/fcm.ts). Data-only messages route through
+             onMessageReceived, where the app picks the channel itself and this is never consulted;
+             the value only matters if that ever regresses. Literal rather than a reference to
+             PushNotificationDispatcher.CHANNEL_ID because the manifest cannot read Kotlin — keep
+             the two in step. -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="kypost_push" />
+
         <activity
             android:name=".ThemesActivity"
             android:exported="false" />

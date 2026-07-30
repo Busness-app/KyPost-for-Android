@@ -18,7 +18,6 @@ package com.urlxl.mail.push
 data class MfaChallengePayload(
     val challengeId: String,
     val ipAddress: String = "",
-    val approxLocation: String = "",
     val userAgent: String = "",
     val issuedAtEpochMs: Long = 0L,
     /** The digits the server is simultaneously showing in the browser that started the sign-in.
@@ -70,7 +69,6 @@ object MfaChallengePayloadParser {
             type = data["type"],
             challengeId = data["challengeId"],
             ipAddress = data["ipAddress"],
-            approxLocation = data["approxLocation"],
             userAgent = data["userAgent"],
             issuedAt = data["issuedAt"],
             matchDigits = data["matchDigits"],
@@ -82,7 +80,6 @@ object MfaChallengePayloadParser {
             type = bundle.getString("type"),
             challengeId = bundle.getString("challengeId"),
             ipAddress = bundle.getString("ipAddress"),
-            approxLocation = bundle.getString("approxLocation"),
             userAgent = bundle.getString("userAgent"),
             issuedAt = bundle.getString("issuedAt"),
             matchDigits = bundle.getString("matchDigits"),
@@ -93,7 +90,6 @@ object MfaChallengePayloadParser {
         type: String?,
         challengeId: String?,
         ipAddress: String?,
-        approxLocation: String?,
         userAgent: String?,
         issuedAt: String?,
         matchDigits: String?,
@@ -105,7 +101,6 @@ object MfaChallengePayloadParser {
         return MfaChallengePayload(
             challengeId = id,
             ipAddress = ipAddress.orEmpty().trim().take(MAX_CONTEXT_LENGTH),
-            approxLocation = approxLocation.orEmpty().trim().take(MAX_CONTEXT_LENGTH),
             userAgent = userAgent.orEmpty().trim().take(MAX_CONTEXT_LENGTH),
             issuedAtEpochMs = issuedAt?.trim()?.toLongOrNull()?.takeIf { it > 0L } ?: 0L,
             // Only well-formed digit runs: these drive tap targets, so neither the server nor

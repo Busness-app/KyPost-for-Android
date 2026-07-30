@@ -13,16 +13,27 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.urlxl.mail.MainActivity
 import com.urlxl.mail.R
-import com.urlxl.mail.security.SecurityRuntime
 
 object PushNotificationDispatcher : com.urlxl.mail.ProcessScopedState {
     private const val CHANNEL_ID = "kypost_push"
     private const val MFA_CHANNEL_ID = "kypost_mfa"
     private const val MFA_GROUP_KEY = "com.urlxl.mail.push.MFA"
 
-    /** Repeat MFA challenges inside this window post silently instead of alerting again — the
-     *  client-side half of MFA-fatigue resistance (the server caps minting rate). */
-    private const val MFA_ALERT_COOLDOWN_MS = 5 * 60 * 1000L
+    /**
+     * Repeat MFA challenges inside this window post silently instead of alerting again — the
+     * client-side half of MFA-fatigue resistance (the server caps push rate; see mfaPushLimiter).
+     *
+     * Thirty seconds, not the five minutes this used to be. Five minutes silenced the second
+     * genuine sign-in prompt of any session: combined with `VISIBILITY_SECRET`, which keeps MFA
+     * rows off the lock screen by design, a suppressed alert on a pocketed phone is no sound and
+     * nothing to see, i.e. indistinguishable from the notification never arriving. It was
+     * calibrated as if a retry and a flood were the same event. They are not — a flood arrives
+     * many times a second, and a human retrying a sign-in takes tens of seconds — so the window
+     * only has to be long enough to collapse the former. [MFA_BURST_THRESHOLD] remains the
+     * defence that actually bounds a flood, and it is the one that does not depend on the relay
+     * being honest.
+     */
+    private const val MFA_ALERT_COOLDOWN_MS = 30 * 1000L
 
     /**
      * Live challenges past which individual notifications stop being posted.
@@ -82,7 +93,6 @@ object PushNotificationDispatcher : com.urlxl.mail.ProcessScopedState {
 
     const val EXTRA_MFA_CHALLENGE_ID = "challengeId"
     const val EXTRA_MFA_IP = "mfaIpAddress"
-    const val EXTRA_MFA_LOCATION = "mfaApproxLocation"
     const val EXTRA_MFA_USER_AGENT = "mfaUserAgent"
     const val EXTRA_MFA_ISSUED_AT = "mfaIssuedAt"
     const val EXTRA_MFA_MATCH_DIGITS = "mfaMatchDigits"
@@ -91,10 +101,38 @@ object PushNotificationDispatcher : com.urlxl.mail.ProcessScopedState {
     const val EXTRA_SENDER = "com.urlxl.mail.push.EXTRA_SENDER"
     const val EXTRA_SUBJECT = "com.urlxl.mail.push.EXTRA_SUBJECT"
 
+    /**
+     * Channel ids this app posted to before the KyPost rename.
+     *
+     * A [NotificationChannel] outlives the constant that created it: the system keeps one until it
+     * is explicitly deleted or the app is uninstalled. So renaming `CHANNEL_ID`/`MFA_CHANNEL_ID`
+     * created the new pair and left the old pair registered — a user opening this app's Android
+     * notification settings to decide what it may interrupt them for is shown four channels, two of
+     * them Llama-branded, and the toggles on those two govern nothing because nothing posts to them.
+     */
+    private val LEGACY_CHANNEL_IDS = listOf("llama_labels_push", "llama_labels_mfa")
+
+    /** [pruneLegacyChannels] runs once per process — see its doc. */
+    private val legacyChannelsPruned = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * Deletes [LEGACY_CHANNEL_IDS].
+     *
+     * Needs no persisted "already done" flag: deleting a channel that is not there is a no-op, so
+     * repeating it is only ever wasted work, never wrong. It is still guarded to once per process,
+     * because both callers run on push-delivery threads and this is a binder call per id — the same
+     * reason those callers already return early when their own channel exists.
+     */
+    private fun pruneLegacyChannels(manager: NotificationManager) {
+        if (!legacyChannelsPruned.compareAndSet(false, true)) return
+        LEGACY_CHANNEL_IDS.forEach { manager.deleteNotificationChannel(it) }
+    }
+
     fun ensureChannel(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
 
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        pruneLegacyChannels(manager)
         if (manager.getNotificationChannel(CHANNEL_ID) != null) return
 
         val channel = NotificationChannel(
@@ -111,6 +149,7 @@ object PushNotificationDispatcher : com.urlxl.mail.ProcessScopedState {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
 
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        pruneLegacyChannels(manager)
         if (manager.getNotificationChannel(MFA_CHANNEL_ID) != null) return
 
         val channel = NotificationChannel(
@@ -124,22 +163,31 @@ object PushNotificationDispatcher : com.urlxl.mail.ProcessScopedState {
     }
 
     /**
-     * True when the app lock is engaged, i.e. the correct PIN/biometric has not been presented in
-     * this process. Notification *content* is gated on this: sender and subject on a lock screen
-     * defeat "Require Unlock to Open" entirely, and used to be posted with `BigTextStyle` and no
-     * visibility setting regardless of every security toggle the user had turned on.
+     * Posts a new-mail notification, with lock-screen redaction delegated to the framework.
+     *
+     * This used to decide redaction itself, from [com.urlxl.mail.security.AppLockManager.isLockedNow],
+     * and the result was that mail notifications were blanked permanently rather than "while
+     * locked". `AppLockManager._locked` is initialised to `isLockEnabled()`, so a fresh process
+     * starts out locked — and FCM delivery *is* routinely a fresh process. Anyone with "Require
+     * Unlock to Open" on therefore hit the redacted branch on essentially every delivery, and
+     * because the title and body are baked in at post time, unlocking afterwards never restored
+     * them: the row read "New activity — unlock to view" for its whole life.
+     *
+     * [NotificationCompat.Builder.setPublicVersion] is the framework's mechanism for exactly this
+     * decision, and it is a better one on both sides. The system swaps the two forms live off
+     * *keyguard* state, so the redacted form shows while the phone is locked (which is the threat
+     * the old branch was reaching for — app-lock state was only ever a proxy for it) and the real
+     * sender and subject appear in the shade once it is not.
+     *
+     * Nothing the user configured is weakened. "Require Unlock to Open" is enforced where it was
+     * always actually enforced, on the tap target: [MainActivity] extends
+     * [com.urlxl.mail.security.LockedActivity], which finishes it and shows the unlock screen. And
+     * the setting that genuinely means "no notification content while locked" — "Require unlock to
+     * receive push/MFA" — works by not delivering the push at all, upstream of here.
      */
-    private fun isLocked(context: Context): Boolean =
-        // Fails CLOSED, and uses isLockedNow() rather than locked.value: this runs on a
-        // push-delivery thread in a backgrounded process, the one place where the grace window may
-        // have expired with nothing having called lockNow() yet.
-        runCatching { SecurityRuntime.graph(context).appLockManager.isLockedNow() }.getOrDefault(true)
-
     fun show(context: Context, payload: PushPayload) {
         ensureChannel(context)
         if (!notificationsAllowed(context)) return
-
-        val locked = isLocked(context)
 
         val launchIntent = Intent(context, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
@@ -155,20 +203,35 @@ object PushNotificationDispatcher : com.urlxl.mail.ProcessScopedState {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-        val title = if (locked) context.getString(R.string.app_name) else PushPayloadParser.title(payload)
-        val body = if (locked) context.getString(R.string.notification_hidden_while_locked) else PushPayloadParser.body(payload)
+        val body = PushPayloadParser.body(payload)
 
-        val builder = NotificationCompat.Builder(context, CHANNEL_ID)
+        // What the lock screen gets: that something arrived, and nothing about what. Carries the
+        // same content intent so tapping it behaves identically — the unlock gate is on the
+        // Activity, not on which form of the row was tapped.
+        val redacted = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle(title)
+            .setContentTitle(context.getString(R.string.app_name))
+            .setContentText(context.getString(R.string.notification_hidden_while_locked))
+            .setAutoCancel(true)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setContentIntent(pendingIntent)
+            .build()
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle(PushPayloadParser.title(payload))
             .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-            .setVisibility(if (locked) NotificationCompat.VISIBILITY_SECRET else NotificationCompat.VISIBILITY_PRIVATE)
+            // PRIVATE, not SECRET: SECRET suppresses the row on the lock screen outright, which
+            // also suppresses the public version there and leaves nothing to swap in.
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(redacted)
             .setContentIntent(pendingIntent)
-        if (!locked) builder.setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .build()
 
-        postNotification(context, notificationId, builder.build())
+        postNotification(context, notificationId, notification)
     }
 
     /**
@@ -296,7 +359,6 @@ object PushNotificationDispatcher : com.urlxl.mail.ProcessScopedState {
         return MfaChallengePayload(
             challengeId = id,
             ipAddress = intent.getStringExtra(EXTRA_MFA_IP).orEmpty(),
-            approxLocation = intent.getStringExtra(EXTRA_MFA_LOCATION).orEmpty(),
             userAgent = intent.getStringExtra(EXTRA_MFA_USER_AGENT).orEmpty(),
             issuedAtEpochMs = intent.getLongExtra(EXTRA_MFA_ISSUED_AT, 0L),
             matchDigits = intent.getStringExtra(EXTRA_MFA_MATCH_DIGITS).orEmpty(),
@@ -320,7 +382,6 @@ object PushNotificationDispatcher : com.urlxl.mail.ProcessScopedState {
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             .putExtra(EXTRA_MFA_CHALLENGE_ID, payload.challengeId)
             .putExtra(EXTRA_MFA_IP, payload.ipAddress)
-            .putExtra(EXTRA_MFA_LOCATION, payload.approxLocation)
             .putExtra(EXTRA_MFA_USER_AGENT, payload.userAgent)
             .putExtra(EXTRA_MFA_ISSUED_AT, payload.issuedAtEpochMs)
             .putExtra(EXTRA_MFA_MATCH_DIGITS, payload.matchDigits)
