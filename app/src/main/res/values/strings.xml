@@ -163,7 +163,6 @@
     <string name="mfa_approval_approve">Approve</string>
     <string name="mfa_approval_deny">Deny</string>
     <string name="mfa_context_when">When: %1$s</string>
-    <string name="mfa_context_from">Location: %1$s</string>
     <string name="mfa_context_ip">IP address: %1$s</string>
     <string name="mfa_context_device">Device: %1$s</string>
     <string name="mfa_context_unknown">Unknown — your server didn\'t say</string>
@@ -369,7 +368,7 @@
     <string name="email_link_no_handler">No app can open that link</string>
     <string name="email_body_render_failed">This message could not be displayed. Try opening it in webmail.</string>
 
-    <!-- Notification redaction while the app lock is engaged -->
+    <!-- The public form of a mail notification: what the lock screen sees, via setPublicVersion -->
     <string name="notification_hidden_while_locked">New activity — unlock to view</string>
 
     <!-- MFA approval. The notification carries no detail and no inline actions: approving a

@@ -13,7 +13,6 @@ class MfaChallengePayloadParserTest {
                 "type" to "mfa_challenge",
                 "challengeId" to "c-1",
                 "ipAddress" to "203.0.113.7",
-                "approxLocation" to "Berlin, DE",
                 "userAgent" to "Firefox on Linux",
                 "issuedAt" to "1750000000000",
                 "matchDigits" to "42",
@@ -23,7 +22,6 @@ class MfaChallengePayloadParserTest {
 
         requireNotNull(payload)
         assertEquals("203.0.113.7", payload.ipAddress)
-        assertEquals("Berlin, DE", payload.approxLocation)
         assertEquals("Firefox on Linux", payload.userAgent)
         assertEquals(1750000000000L, payload.issuedAtEpochMs)
         assertEquals("42", payload.matchDigits)
