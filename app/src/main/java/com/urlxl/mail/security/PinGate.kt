@@ -40,7 +40,13 @@ suspend fun Activity.resolvePinAttempt(result: UnlockAttemptResult): Boolean = w
         false
     }
     is UnlockAttemptResult.WipeFailed -> {
-        announceWipeAndRelaunch(R.string.security_wipe_incomplete_notice, result.failedSteps)
+        // Two different messages: the wipe is only retried while SecurityWipe is still resuming it.
+        // Once MAX_WIPE_RESUMES is reached the marker is cleared and nothing will re-run, so
+        // promising a retry there tells the user their data will be erased when it will not be.
+        val message =
+            if (result.willRetry) R.string.security_wipe_incomplete_notice
+            else R.string.security_wipe_incomplete_final_notice
+        announceWipeAndRelaunch(message, result.failedSteps)
         false
     }
 }

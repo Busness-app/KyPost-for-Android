@@ -24,7 +24,8 @@ Owns the Android app module build, manifest, source sets, resources, and test ex
   backend removed entirely — no dual-auth fallback.)
 - Pairing proof material lives in a Keystore-backed `EncryptedSharedPreferences` file
   (`SecurePairingStore`), not plaintext DataStore — see `app/src/main/AGENTS.md` for the exact
-  storage split. Non-secret sync state (cursors, delivery mode, history) is plaintext DataStore.
+  storage split. Push delivery state and history are plaintext DataStore; the contact-sync cursor
+  lives in Room with the contact outbox so acknowledgement is atomic.
 - Deep-link contract for pairing is `kypost://native-pair` with required `sub`, `srv`, and
   `pt` params (`reg` optional). `hash` is no longer part of the contract — the per-device secret
   is issued only via the registration response, never carried in the pairing QR/deep-link. The
@@ -59,12 +60,9 @@ Owns the Android app module build, manifest, source sets, resources, and test ex
   /api/notifications/native/deregister` with the device's own credentials before clearing local
   state; the local clear (and periodic pull-worker cancellation) happens unconditionally even if
   that call fails (offline, already-removed).
-- Keep app behavior aligned with project goal: IMAP inbox read, SMTP send, keyword-based tab
-  filtering, PLUS an alternate backend-relay connection mode (`MailConnectionMode.RELAY` in
-  `MailSettings`, default `MANUAL_IMAP` so existing installs are unaffected) and two-way contact
-  sync (`contacts/` package). A local Room database (`data/AppDatabase`) is the UI's read model for
-  mail regardless of which connection mode supplied it, and the persistence layer for contacts.
-- Prefer one existing dependency for both IMAP and SMTP.
+- Keep app behavior aligned with project goal: paired backend-relay mail, keyword-based tab
+  filtering, and two-way contact sync (`contacts/` package). A local Room database
+  (`data/AppDatabase`) is the UI's read model for mail and the persistence layer for contacts.
 - Avoid hardcoded secrets in committed files.
 - For user-visible behavior changes, update this file or a closer child AGENTS.md.
 - Contact autocomplete (ContactAutocomplete.md): `ComposeActivity`'s TO/CC/BCC fields are
@@ -93,4 +91,3 @@ Owns the Android app module build, manifest, source sets, resources, and test ex
 - `app/src/main/` — Production Android code and resources. See [app/src/main/AGENTS.md](src/main/AGENTS.md).
 - `app/src/test/` — JVM unit tests for deterministic app logic. See [app/src/test/AGENTS.md](src/test/AGENTS.md).
 - `app/src/androidTest/` — Instrumented device/emulator tests. See [app/src/androidTest/AGENTS.md](src/androidTest/AGENTS.md).
-

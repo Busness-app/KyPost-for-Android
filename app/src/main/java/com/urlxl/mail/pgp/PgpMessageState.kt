@@ -58,6 +58,37 @@ fun pgpMessageStateOf(
 }
 
 /**
+ * Whether the relay could tie this message's OpenPGP signature to the sender.
+ *
+ * Kept separate from [PgpMessageState], which answers "can this content be read here?" — a message
+ * can be perfectly readable and still be signed by someone other than who it claims to be from, and
+ * that is precisely the case worth surfacing.
+ *
+ * The relay computes this and returns `pgpSigned`/`pgpVerified`/`pgpSignerFingerprint` per message.
+ * All three were parsed off the wire, mapped into [com.urlxl.mail.Email], and persisted to Room
+ * behind their own schema migration — and then never rendered anywhere on Android. An attacker who
+ * fetched the victim's published key, encrypted to it, signed with their own key and forged the
+ * `From` header got a message that displayed as ordinary encrypted mail, while the same message in
+ * webmail read "signature does not match sender".
+ */
+enum class PgpSignatureState {
+    /** Not signed, or the relay expressed no opinion. Nothing to say. */
+    NONE,
+
+    /** Signed, and the signature matches a key this account associates with the sender. */
+    VERIFIED,
+
+    /** Signed, and it does **not** match. The sender is not who the message claims. */
+    INVALID,
+}
+
+fun pgpSignatureStateOf(pgpSigned: Boolean, pgpVerified: Boolean): PgpSignatureState = when {
+    !pgpSigned -> PgpSignatureState.NONE
+    pgpVerified -> PgpSignatureState.VERIFIED
+    else -> PgpSignatureState.INVALID
+}
+
+/**
  * Marker for an inbox row, or null for no marker.
  *
  * Only the two states that yield no readable content are marked. DECRYPTED_BY_SERVER is
@@ -65,7 +96,17 @@ fun pgpMessageStateOf(
  * most rows in a server-mode mailbox carrying no information the user can act on — and the detail
  * view already discloses that the server decrypted it.
  */
-fun pgpRowMarker(state: PgpMessageState): String? = when (state) {
+fun pgpRowMarker(
+    state: PgpMessageState,
+    /** A failed signature outranks every readability marker: the row is readable, and that is
+     *  exactly what makes an unflagged impersonation dangerous. */
+    signature: PgpSignatureState = PgpSignatureState.NONE,
+): String? = when {
+    signature == PgpSignatureState.INVALID -> "⚠"
+    else -> pgpReadabilityMarker(state)
+}
+
+private fun pgpReadabilityMarker(state: PgpMessageState): String? = when (state) {
     PgpMessageState.CLIENT_PROTECTED -> "🔒"
     PgpMessageState.DECRYPT_FAILED -> "⚠"
     // BODY_UNAVAILABLE is unmarked: we do not know which state applies, and a lock glyph would be

@@ -47,7 +47,8 @@ class PullSyncCoordinator(
         syncPeriodicSchedule(state.deliveryMode)
         if (state.deliveryMode != DeliveryMode.PULL) return PullOutcome.NotPullMode
 
-        val endpoint = state.pullEndpoint ?: resolvePullEndpoint(pairing.serverUrl, null)
+        val endpoint = resolvePullEndpoint(pairing.serverUrl, state.pullEndpoint)
+        if (endpoint.isBlank()) return PullOutcome.Failed("Server URL is not valid")
         val cursor = repository.pullCursor(pairing.subscriberId)
 
         return when (val result = pullClient.pull(

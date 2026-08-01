@@ -79,4 +79,22 @@ class ContactDaoSearchTest {
 
         assertEquals(listOf("Amy test", "zack test"), results.map { it.fn })
     }
+
+    @Test
+    fun search_treatsLikeWildcardsLiterallyAndLimitsResults() = runBlocking {
+        dao.upsertAll(
+            (1..6).map { index ->
+                ContactEntity(
+                    uid = "$index",
+                    rev = 1,
+                    fn = "Person $index%",
+                    emailsJson = """[{"value":"person$index@example.com"}]""",
+                )
+            },
+        )
+
+        assertEquals(5, dao.search("Person").size)
+        assertEquals(listOf("Person 1%"), dao.search("Person 1%").map { it.fn })
+        assertTrue(dao.search("_").isEmpty())
+    }
 }

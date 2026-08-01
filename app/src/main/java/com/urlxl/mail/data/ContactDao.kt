@@ -36,13 +36,20 @@ interface ContactDao {
      *  see RecipientMatching.kt for why only the *primary* email is ever displayed even though
      *  this query can match on a secondary one. Contacts with no email at all
      *  (`emailsJson = '[]'`) are excluded — nothing to autocomplete to. */
+    suspend fun search(query: String): List<ContactEntity> = searchEscaped(query.escapeLikePattern())
+
     @Query(
         """
         SELECT * FROM contacts
-        WHERE (fn LIKE '%' || :query || '%' OR emailsJson LIKE '%' || :query || '%')
+        WHERE (fn LIKE '%' || :query || '%' ESCAPE '\'
+            OR emailsJson LIKE '%' || :query || '%' ESCAPE '\')
           AND emailsJson != '[]'
         ORDER BY fn COLLATE NOCASE
+        LIMIT 5
         """,
     )
-    suspend fun search(query: String): List<ContactEntity>
+    suspend fun searchEscaped(query: String): List<ContactEntity>
 }
+
+internal fun String.escapeLikePattern(): String =
+    replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")

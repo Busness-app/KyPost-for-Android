@@ -28,17 +28,30 @@ object MfaResponder {
      * Cancel-on-success still preserves the replay property that ordering was there for: a
      * decision that reached the server cannot be re-opened.
      */
+    /**
+     * [decisionKeys] are the credential keys the calling screen derived when it verified the PIN for
+     * *this* decision, or null when the credential gate is off (in which case the stored secret needs
+     * no key). They are passed in rather than read back through
+     * [com.urlxl.mail.security.AppLockManager.cachedCredentialKeys] because this runs while the app
+     * is still locked — a notification tap does not unlock the app — and that accessor deliberately
+     * returns null in exactly that state, which made every gated approve and deny unsendable.
+     */
     suspend fun respond(
         context: Context,
         payload: MfaChallengePayload,
         approve: Boolean,
         matchDigits: String = "",
+        decisionKeys: com.urlxl.mail.security.CredentialKeys? = null,
     ): Boolean {
         val appContext = context.applicationContext
         val challengeId = payload.challengeId
 
         val graph = PushRuntime.graph(appContext)
-        val pairing = graph.repository.pairingForAuthenticatedCall()
+        val pairing = if (decisionKeys != null) {
+            graph.repository.pairingForAuthenticatedCall(decisionKeys)
+        } else {
+            graph.repository.pairingForAuthenticatedCall()
+        }
         if (pairing == null) {
             showResultToast(appContext, appContext.getString(R.string.mfa_respond_not_paired))
             // Nothing was sent, so the challenge is still open and the notification is still gone

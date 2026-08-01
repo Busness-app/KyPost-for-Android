@@ -39,7 +39,15 @@ fun ContactDto.toEntity(
     // rotation check cannot fire — but ContactsContract has no per-account write ACL, so any app
     // holding WRITE_CONTACTS can swap the address the key is displayed beside, and that edit is
     // then uploaded to the paired server. Re-arm on the identity, not just on the key.
-    val identityRebound = !verifiedInPerson && identityChanged && !pgpKey.isNullOrBlank()
+    //
+    // Deliberately NOT suppressed by verifiedInPerson, unlike the two above. A QR ceremony attests
+    // to the *key*: the user compared a fingerprint. It says nothing about which addresses that key
+    // is bound to, and the save path builds its DTO from the current — possibly already tampered —
+    // Room row while the confirmation screen shows the addresses from the *scanned card*. So the
+    // ceremony was clearing an alarm raised about an address injection it never examined, and doing
+    // it as the user's own recommended remediation. A rotated key it does answer for; a rebound
+    // identity it does not.
+    val identityRebound = identityChanged && !pgpKey.isNullOrBlank()
 
     return ContactEntity(
         uid = uid,

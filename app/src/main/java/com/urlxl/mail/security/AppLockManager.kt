@@ -28,7 +28,7 @@ sealed class UnlockAttemptResult {
     /** The wipe threshold was reached and the wipe ran, but at least one step failed — so local
      *  data may still be on disk. Distinct from [Wiped] because the UI must not tell the user
      *  their data is gone when it might not be; see [WipeResult]. */
-    data class WipeFailed(val failedSteps: List<String>) : UnlockAttemptResult()
+    data class WipeFailed(val failedSteps: List<String>, val willRetry: Boolean) : UnlockAttemptResult()
 }
 
 /**
@@ -197,7 +197,7 @@ class AppLockManager(
         if (LockoutPolicy.shouldWipe(attempts)) {
             return when (val wipe = onWipe()) {
                 is WipeResult.Complete -> UnlockAttemptResult.Wiped
-                is WipeResult.Incomplete -> UnlockAttemptResult.WipeFailed(wipe.failedSteps)
+                is WipeResult.Incomplete -> UnlockAttemptResult.WipeFailed(wipe.failedSteps, wipe.willRetry)
             }
         }
         val delay = LockoutPolicy.delayMillisFor(attempts)
@@ -230,6 +230,26 @@ class AppLockManager(
         if (isLockedNow()) return null
         return credentialKeys
     }
+
+    /**
+     * The credential keys for **one decision taken on a foreground screen that has just verified the
+     * PIN itself**, without [cachedCredentialKeys]' lock check.
+     *
+     * That check is right for every background consumer — a sync worker must not use the credential
+     * while the app is locked, which is the whole point of the gate. It was wrong for
+     * [com.urlxl.mail.push.MfaApprovalActivity], which is deliberately not a [LockedActivity] and is
+     * reached from a notification tap on a locked (usually freshly started) process. There the user
+     * entered the correct PIN, [deriveAndCacheCredentialKeys] returned `Success` and cached the key,
+     * and the very next read through `cachedCredentialKeys()` returned null because `_locked` was
+     * still true — so the approve *and the deny* died in [com.urlxl.mail.push.MfaResponseClient]
+     * with "Device is not registered yet" and no request was ever made. A user who knew a sign-in
+     * was hostile could not deny it.
+     *
+     * Deliberately **not** an unlock: unlocking the app from a notification tap would hand the same
+     * key to background sync and open the mailbox, which is exactly what the gate withholds. The
+     * caller holds the result for the life of one authenticated decision and drops it in `onStop`.
+     */
+    fun credentialKeysForDecision(): CredentialKeys? = credentialKeys
 
     /** Drops the cached keys without locking. Needed when the credential gate is switched off: the
      *  keys otherwise stayed cached, and [com.urlxl.mail.push.PushRepository.savePairing] would

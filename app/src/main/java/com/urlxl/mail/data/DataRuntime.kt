@@ -27,6 +27,7 @@ class DataGraph(context: Context) {
                 AppDatabase.MIGRATION_5_6,
                 AppDatabase.MIGRATION_6_7,
                 AppDatabase.MIGRATION_7_8,
+                AppDatabase.MIGRATION_8_9,
             )
             .build()
     }
@@ -47,4 +48,9 @@ object DataRuntime {
      *  [com.urlxl.mail.security.SecurityWipe.closeAndDeleteDatabase], which has to close the
      *  database instance that is actually in use, not a freshly built stand-in. */
     fun takeGraph(): DataGraph? = holder.take()
+
+    /** See [com.urlxl.mail.SingletonGraph.peek] — used by
+     *  [com.urlxl.mail.push.PushRepository.purgeAccountScopedData], which must not resurrect a
+     *  database that [com.urlxl.mail.security.SecurityWipe] has already closed and deleted. */
+    fun peekGraph(): DataGraph? = holder.peek()
 }

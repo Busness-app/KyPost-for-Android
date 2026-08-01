@@ -14,6 +14,7 @@ import com.urlxl.mail.push.PushRuntime
 import com.urlxl.mail.security.AppLockSettings
 import com.urlxl.mail.security.SecurityRuntime
 import com.urlxl.mail.security.SecurityWipe
+import com.urlxl.mail.security.WipeResult
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -55,11 +56,15 @@ class KyPostApp : Application(), DefaultLifecycleObserver {
             // it. On failure the verdict still has to be published, or every screen in the app
             // waits forever on a gate that will never open; a graph that could not even be built
             // is treated as "wiped" so the app lands on a first-run screen rather than a live one.
-            val wiped = runCatching { SecurityWipe.enforceTripwire(this@KyPostApp) }
+            // The verdict carries the WipeResult, not a bare boolean: a wipe that failed steps must
+            // not be announced to the user as a completed erasure. A graph that could not even be
+            // built is reported as Incomplete for the same reason — the app still lands on a
+            // first-run screen, but it does not claim data was destroyed when nothing ran.
+            val verdict = runCatching { SecurityWipe.enforceTripwire(this@KyPostApp) }
                 .onFailure { android.util.Log.e("KyPostApp", "Startup tripwire check failed", it) }
-                .getOrDefault(true)
-            SecurityWipe.startupVerdict.complete(wiped)
-            if (wiped) return@launch
+                .getOrElse { WipeResult.Incomplete(listOf("startupTripwireCheck")) }
+            SecurityWipe.startupVerdict.complete(verdict)
+            if (verdict != null) return@launch
 
             runCatching { DeviceContactsRuntime.graph(this@KyPostApp).bootstrapIfEnabled() }
                 .onFailure { android.util.Log.e("KyPostApp", "Failed to bootstrap device contacts", it) }

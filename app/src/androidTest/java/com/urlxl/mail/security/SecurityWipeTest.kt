@@ -24,6 +24,18 @@ class SecurityWipeTest {
         deviceId = "device", deviceSecret = "secret", pairedAtEpochMs = 1L,
     )
 
+    /**
+     * The resume-attempt counter is deliberately sticky in production — clearing it along with the
+     * in-progress flag is what made MAX_WIPE_RESUMES a rolling window that bounded nothing — so it
+     * survives between tests in this class and has to be reset explicitly. Without this, whichever
+     * test ran fourth would hit the ceiling and see the marker cleared.
+     */
+    @org.junit.Before
+    fun resetWipeState() {
+        context.getSharedPreferences("com.urlxl.mail.wipe_state", android.content.Context.MODE_PRIVATE)
+            .edit().clear().commit()
+    }
+
     @Test
     fun wipeAndResetApp_clearsPinPairingAndLockState() = runBlocking {
         val appLockStore = AppLockStore(context)

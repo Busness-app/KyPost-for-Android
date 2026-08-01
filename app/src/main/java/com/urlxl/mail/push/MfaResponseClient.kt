@@ -46,7 +46,7 @@ data class MfaRespondResponse(
 
 /** Mirrors [resolvePullEndpoint] in NativeRegistration.kt — the respond endpoint has no server-provided override, it's always derived from the paired server URL. */
 fun resolveMfaRespondEndpoint(serverUrl: String): String =
-    "${serverUrl.trimEnd('/')}/api/mfa/push/respond"
+    pairingEndpoint(serverUrl, "/api/mfa/push/respond")?.toString().orEmpty()
 
 sealed class MfaRespondResult {
     data class Success(val status: String) : MfaRespondResult()
@@ -71,6 +71,8 @@ class MfaResponseClient(
         if (deviceId.isNullOrBlank() || deviceSecret.isNullOrBlank()) {
             return MfaRespondResult.Error("Device is not registered yet")
         }
+        val endpoint = resolveMfaRespondEndpoint(pairing.serverUrl)
+        if (endpoint.isBlank()) return MfaRespondResult.Error("Server URL is not valid")
 
         val request = MfaRespondRequest(
             challengeId = challengeId,
@@ -79,7 +81,7 @@ class MfaResponseClient(
             matchDigits = if (approve) matchDigits else "",
         )
         val httpRequest = Request.Builder()
-            .url(resolveMfaRespondEndpoint(pairing.serverUrl))
+            .url(endpoint)
             .post(json.encodeToString(request).toRequestBody(JSON_MEDIA_TYPE))
             .pairingAuthHeaders(deviceId, deviceSecret)
             .build()

@@ -8,6 +8,7 @@ import com.urlxl.mail.push.pinnedPairingCallFactory
 
 class ContactsGraph(context: Context) {
     private val appContext = context.applicationContext
+    private val database = DataRuntime.graph(appContext).database
 
     // Shared with both clients below — see finding C2 of the 2026-07-22 security-hardening
     // spec's final-review fix round: contact/group sync used to default to the plain unpinned
@@ -15,14 +16,14 @@ class ContactsGraph(context: Context) {
     private val pinnedCallFactory = pinnedPairingCallFactory(appContext)
 
     val repository = ContactSyncRepository(
-        db = DataRuntime.graph(appContext).database,
+        db = database,
         client = ContactSyncClient(callFactory = pinnedCallFactory),
-        cursorStore = ContactCursorStore(appContext),
+        cursorStore = ContactCursorStore(appContext, database),
         pairingProvider = { PushRuntime.graph(appContext).repository.pairingForAuthenticatedCall() },
     )
     val coordinator = ContactSyncCoordinator(repository)
     val groupSyncRepository = GroupSyncRepository(
-        db = DataRuntime.graph(appContext).database,
+        db = database,
         client = GroupsSyncClient(callFactory = pinnedCallFactory),
         pairingProvider = { PushRuntime.graph(appContext).repository.pairingForAuthenticatedCall() },
     )

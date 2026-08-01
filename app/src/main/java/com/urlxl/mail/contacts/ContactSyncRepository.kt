@@ -4,6 +4,7 @@ import com.urlxl.mail.data.AppDatabase
 import com.urlxl.mail.data.ContactEntity
 import com.urlxl.mail.data.PendingContactChangeEntity
 import com.urlxl.mail.push.PairingData
+import androidx.room.withTransaction
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -103,52 +104,64 @@ class ContactSyncRepository(
     suspend fun queueCreate(contact: ContactDto): String {
         val localUid = UUID.randomUUID().toString()
         val localCopy = contact.copy(uid = localUid)
-        db.contactDao().upsertAll(listOf(localCopy.toEntity()))
-        db.pendingContactChangeDao().enqueue(
-            PendingContactChangeEntity(
-                localUid = localUid,
-                rev = 0,
-                changeType = CHANGE_CREATE,
-                payloadJson = json.encodeToString(contact.copy(uid = "")),
-                createdAtEpochMs = System.currentTimeMillis(),
-            ),
-        )
+        db.withTransaction {
+            db.contactDao().upsertAll(listOf(localCopy.toEntity()))
+            db.pendingContactChangeDao().enqueue(
+                PendingContactChangeEntity(
+                    localUid = localUid,
+                    rev = 0,
+                    changeType = CHANGE_CREATE,
+                    payloadJson = json.encodeToString(contact.copy(uid = "")),
+                    createdAtEpochMs = System.currentTimeMillis(),
+                ),
+            )
+        }
         return localUid
     }
 
-    /** [verifiedInPerson] is passed only by the PGP QR flow, where the user has just compared this
-     *  fingerprint out-of-band. [identityChanged] is passed only by the device-contact merge, where
-     *  the addresses a stored key vouches for may have been rewritten by another app — see
-     *  [com.urlxl.mail.contacts.toEntity]. */
+    /**
+     * [verifiedInPerson] is passed only by the PGP QR flow, where the user has just compared this
+     * fingerprint out-of-band.
+     *
+     * [identityChanged] has **no default on purpose**. It used to default to false, and the
+     * device-contact merge was the only caller that passed it — so every other path (in-app edits,
+     * the PGP QR save) silently answered "no, this does not rebind identity" on behalf of a contact
+     * that may hold a pinned key. Whether an update moves the identity a key vouches for is a
+     * question each call site has to answer for itself; see [com.urlxl.mail.contacts.toEntity].
+     */
     suspend fun queueUpdate(
         contact: ContactDto,
+        identityChanged: Boolean,
         verifiedInPerson: Boolean = false,
-        identityChanged: Boolean = false,
     ) {
-        val previous = db.contactDao().getByUid(contact.uid)
-        db.contactDao().upsertAll(listOf(contact.toEntity(previous, verifiedInPerson, identityChanged)))
-        db.pendingContactChangeDao().enqueue(
-            PendingContactChangeEntity(
-                localUid = contact.uid,
-                rev = contact.rev,
-                changeType = CHANGE_UPDATE,
-                payloadJson = json.encodeToString(contact),
-                createdAtEpochMs = System.currentTimeMillis(),
-            ),
-        )
+        db.withTransaction {
+            val previous = db.contactDao().getByUid(contact.uid)
+            db.contactDao().upsertAll(listOf(contact.toEntity(previous, verifiedInPerson, identityChanged)))
+            db.pendingContactChangeDao().enqueue(
+                PendingContactChangeEntity(
+                    localUid = contact.uid,
+                    rev = contact.rev,
+                    changeType = CHANGE_UPDATE,
+                    payloadJson = json.encodeToString(contact),
+                    createdAtEpochMs = System.currentTimeMillis(),
+                ),
+            )
+        }
     }
 
     suspend fun queueDelete(uid: String, rev: Long) {
-        db.contactDao().deleteByUids(listOf(uid))
-        db.pendingContactChangeDao().enqueue(
-            PendingContactChangeEntity(
-                localUid = uid,
-                rev = rev,
-                changeType = CHANGE_DELETE,
-                payloadJson = "",
-                createdAtEpochMs = System.currentTimeMillis(),
-            ),
-        )
+        db.withTransaction {
+            db.contactDao().deleteByUids(listOf(uid))
+            db.pendingContactChangeDao().enqueue(
+                PendingContactChangeEntity(
+                    localUid = uid,
+                    rev = rev,
+                    changeType = CHANGE_DELETE,
+                    payloadJson = "",
+                    createdAtEpochMs = System.currentTimeMillis(),
+                ),
+            )
+        }
     }
 
     private fun toWireDto(change: PendingContactChangeEntity): ContactDto = when (change.changeType) {
@@ -172,37 +185,40 @@ class ContactSyncRepository(
             // since toWireDto sends an empty uid for a create, the server minted a fresh uid per
             // replay, duplicating the contact on both sides. The server applies pushed changes
             // before it computes tooOld, so they are already persisted and must be flushed.
-            cursorStore.resetCursor(subscriberId)
-            if (flushedChanges.isNotEmpty()) {
-                db.pendingContactChangeDao().clearFlushed(flushedChanges.map { it.id })
+            db.withTransaction {
+                cursorStore.resetCursor(subscriberId)
+                if (flushedChanges.isNotEmpty()) {
+                    db.pendingContactChangeDao().clearFlushed(flushedChanges.map { it.id })
+                }
             }
             return
         }
 
-        val pendingCreates = flushedChanges.filter { it.changeType == CHANGE_CREATE }
-        val reconciled = ContactSyncReconciliation.reconcile(pendingCreates, response.changed)
-        if (reconciled.isNotEmpty()) {
-            // The device link row keys on uid, so it has to follow this rename. Without it the
-            // server-assigned uid looks unlinked, pushRoomChangesToDevice inserts a SECOND raw
-            // contact, and the temp-uid link is orphaned forever (getByUid on a dead uid returns
-            // null, so pullDeviceChangesForOwnAccount can never reclaim the first row).
-            reconciled.forEach { (localUid, serverUid) ->
-                db.deviceContactLinkDao().remapUid(localUid, serverUid)
+        db.withTransaction {
+            val pendingCreates = flushedChanges.filter { it.changeType == CHANGE_CREATE }
+            val reconciled = ContactSyncReconciliation.reconcile(pendingCreates, response.changed)
+            if (reconciled.isNotEmpty()) {
+                // The device link row keys on uid, so it has to follow this rename. Without it the
+                // server-assigned uid looks unlinked, pushRoomChangesToDevice inserts a SECOND raw
+                // contact, and the temp-uid link is orphaned forever (getByUid on a dead uid returns
+                // null, so pullDeviceChangesForOwnAccount can never reclaim the first row).
+                reconciled.forEach { (localUid, serverUid) ->
+                    db.deviceContactLinkDao().remapUid(localUid, serverUid)
+                }
+                // Drop the temp-uid rows; the upsert below inserts the real, server-assigned rows.
+                db.contactDao().deleteByUids(reconciled.keys.toList())
             }
-            // Drop the temp-uid rows; the upsert below inserts the real, server-assigned rows.
-            db.contactDao().deleteByUids(reconciled.keys.toList())
-        }
 
-        val incomingEntities = response.changed.map { dto ->
-            dto.toEntity(previous = db.contactDao().getByUid(dto.uid))
+            val incomingEntities = response.changed.map { dto ->
+                dto.toEntity(previous = db.contactDao().getByUid(dto.uid))
+            }
+            db.contactDao().upsertAll(incomingEntities)
+            db.contactDao().deleteByUids(response.deleted.map { it.uid })
+            if (flushedChanges.isNotEmpty()) {
+                db.pendingContactChangeDao().clearFlushed(flushedChanges.map { it.id })
+            }
+            cursorStore.advanceCursor(subscriberId, response.cursor)
         }
-        db.contactDao().upsertAll(incomingEntities)
-        db.contactDao().deleteByUids(response.deleted.map { it.uid })
-
-        if (flushedChanges.isNotEmpty()) {
-            db.pendingContactChangeDao().clearFlushed(flushedChanges.map { it.id })
-        }
-        cursorStore.advanceCursor(subscriberId, response.cursor)
     }
 
     companion object {

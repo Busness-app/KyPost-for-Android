@@ -3,11 +3,11 @@ package com.urlxl.mail.contacts
 import com.urlxl.mail.executeSync
 import com.urlxl.mail.pairingAuthHeaders
 import com.urlxl.mail.pairingHttpClient
+import com.urlxl.mail.push.pairingEndpoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import okhttp3.Call
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
 
 sealed class GroupsSyncResult {
@@ -53,5 +53,5 @@ class GroupsSyncClient(
         }
     }
 
-    private fun groupsUrl(serverUrl: String) = "${serverUrl.trimEnd('/')}/api/groups".toHttpUrlOrNull()
+    private fun groupsUrl(serverUrl: String) = pairingEndpoint(serverUrl, "/api/groups")
 }

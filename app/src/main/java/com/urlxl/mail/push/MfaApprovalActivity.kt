@@ -69,6 +69,18 @@ class MfaApprovalActivity : AppCompatActivity() {
      *  user's finger mid-decision. */
     private var matchOptions: List<String> = emptyList()
 
+    /**
+     * The credential keys derived when the user verified their PIN for *this* decision, when the
+     * credential gate is on. Null when the gate is off, where the stored secret needs no key.
+     *
+     * Held here rather than re-read from [com.urlxl.mail.security.AppLockManager.cachedCredentialKeys]
+     * at send time: this screen runs on a locked app (a notification tap does not unlock anything),
+     * and that accessor returns null while locked by design — so the response died locally with
+     * "Device is not registered yet" and neither approve nor deny ever reached the server. Cleared
+     * in [onStop] alongside `authenticated`, so it lives exactly as long as the consent does.
+     */
+    private var decisionKeys: com.urlxl.mail.security.CredentialKeys? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
@@ -363,6 +375,12 @@ class MfaApprovalActivity : AppCompatActivity() {
                     authInFlight = false
                     pinDialog = null
                     if (ok) {
+                        // Captured for the life of this authenticated decision. Reading the key back
+                        // later through cachedCredentialKeys() returns null, because a notification
+                        // tap does not unlock the app and that accessor gates on lock state — which
+                        // is why every gated approve and deny used to fail with "Device is not
+                        // registered yet" without a request ever leaving the device.
+                        if (gateNeedsPin) decisionKeys = manager.credentialKeysForDecision()
                         authenticated = true
                         setButtonsEnabled(true)
                     } else {
@@ -395,6 +413,9 @@ class MfaApprovalActivity : AppCompatActivity() {
         super.onStop()
         authenticated = false
         authInFlight = false
+        // Dropped with the authentication that produced them: the key is consent for one decision
+        // taken on this screen, and it must not outlive the user's presence on it.
+        decisionKeys = null
         // Torn down with the authentication it belongs to. Leaving it up while clearing
         // `authInFlight` is what let [onStart] stack a second one on top of it.
         pinDialog?.dismiss()
@@ -430,7 +451,8 @@ class MfaApprovalActivity : AppCompatActivity() {
         val current = payload ?: return
         setButtonsEnabled(false)
         resolveJob = lifecycleScope.launch {
-            val delivered = MfaResponder.respond(applicationContext, current, approve, chosenDigits)
+            val delivered =
+                MfaResponder.respond(applicationContext, current, approve, chosenDigits, decisionKeys)
             if (delivered || burned) {
                 // A burned challenge is over on this device whether or not the deny landed; there
                 // is nothing left here for the user to do.

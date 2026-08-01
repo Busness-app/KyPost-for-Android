@@ -301,6 +301,36 @@ class PgpKeyActivity : LockedActivity() {
             .show()
     }
 
+    /**
+     * Last gate before a key is bound to an existing contact: shows the addresses that contact
+     * currently holds and waits for the user to accept them.
+     *
+     * The scan confirmation earlier in this flow lists the addresses from the *scanned card*, which
+     * on this branch are not the addresses the key ends up bound to — the DTO is built from the Room
+     * row. Those two can differ, and a third-party `WRITE_CONTACTS` write is exactly how.
+     */
+    private suspend fun confirmBinding(name: String, addresses: List<String>): Boolean =
+        kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
+            val body = if (addresses.isEmpty()) {
+                getString(R.string.pgp_qr_bind_confirm_body_no_addresses, name)
+            } else {
+                getString(R.string.pgp_qr_bind_confirm_body, name, addresses.joinToString("\n"))
+            }
+            AlertDialog.Builder(this)
+                .setTitle(R.string.pgp_qr_bind_confirm_title)
+                .setMessage(body)
+                .setPositiveButton(R.string.pgp_qr_bind_confirm_button) { _, _ ->
+                    if (continuation.isActive) continuation.resumeWith(Result.success(true))
+                }
+                .setNegativeButton(android.R.string.cancel) { _, _ ->
+                    if (continuation.isActive) continuation.resumeWith(Result.success(false))
+                }
+                .setOnCancelListener {
+                    if (continuation.isActive) continuation.resumeWith(Result.success(false))
+                }
+                .show()
+        }
+
     private fun launchContactPicker() {
         pickContactLauncher.launch(
             Intent(this, ContactsListActivity::class.java).putExtra(ContactsListActivity.EXTRA_PICK_MODE, true),
@@ -330,6 +360,12 @@ class PgpKeyActivity : LockedActivity() {
                 Toast.makeText(this@PgpKeyActivity, R.string.pgp_qr_scan_invalid, Toast.LENGTH_SHORT).show()
                 return@launch
             }
+            // The addresses the key is about to be bound to are the ones already on THIS contact —
+            // not the ones on the scanned card, which is what the confirmation screen showed. Any
+            // app holding WRITE_CONTACTS can have rewritten them, so they are restated here, at the
+            // point of commitment, before the binding is made.
+            val boundAddresses = entity.toDto().emails.map { it.value }.filter { it.isNotBlank() }
+            if (!confirmBinding(entity.fn, boundAddresses)) return@launch
             val dto = entity.toDto().copy(pgpKey = key.publicKey)
 
             val graph = ContactsRuntime.graph(this@PgpKeyActivity)
@@ -337,7 +373,11 @@ class PgpKeyActivity : LockedActivity() {
             // device, so this is a verified rotation, not a suspicious one. Without the flag the
             // mapper raised "Key changed" on the one path where reverification is provably
             // unnecessary, which trains users to dismiss the app's only TOFU alarm.
-            graph.repository.queueUpdate(dto, verifiedInPerson = true)
+            // identityChanged = false: this save changes only the key, never the addresses — the
+            // DTO is the existing row with pgpKey swapped. It is deliberately not a claim that the
+            // addresses are trustworthy; toEntity no longer lets verifiedInPerson clear an
+            // identity-rebind alarm, so one raised earlier survives this ceremony.
+            graph.repository.queueUpdate(dto, identityChanged = false, verifiedInPerson = true)
             graph.coordinator.syncNowAsync()
 
             Toast.makeText(this@PgpKeyActivity, R.string.pgp_qr_scan_saved, Toast.LENGTH_SHORT).show()

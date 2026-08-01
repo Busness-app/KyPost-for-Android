@@ -73,6 +73,13 @@
     <string name="email_pgp_no_webmail">Couldn\'t work out this server\'s web address — open this message in your browser.</string>
     <string name="email_pgp_no_handler">No app on this device can open that link — open this message in your browser.</string>
     <string name="email_row_pgp_locked_description">Encrypted, can\'t be read in this app: %1$s</string>
+    <string name="email_row_pgp_bad_signature_description">Signature does not match the sender: %1$s</string>
+    <string name="pgp_qr_bind_confirm_title">Bind this key to these addresses?</string>
+    <string name="pgp_qr_bind_confirm_body">This key will be used whenever you write to %1$s at:\n\n%2$s\n\nCheck these are the addresses you expect. Another app on this device can change a contact\'s addresses.</string>
+    <string name="pgp_qr_bind_confirm_body_no_addresses">%1$s has no email address on file, so this key will not be used for anything until you add one.</string>
+    <string name="pgp_qr_bind_confirm_button">Bind key</string>
+    <string name="email_pgp_signature_verified">Signature verified — this really is from the sender it names.</string>
+    <string name="email_pgp_signature_invalid">This message\'s signature does not match the sender it claims to be from. Treat its contents, links and attachments as untrusted.</string>
     <string name="email_row_pgp_failed_description">Encrypted, couldn\'t be decrypted: %1$s</string>
     <string name="attachment_downloading">Downloading %1$s…</string>
     <string name="attachment_opening">Opening %1$s…</string>
@@ -107,7 +114,8 @@
     <string name="compose_pickup_dialog_body">We don\'t have a PGP key for %1$s. They\'ll get an email with a one-time link instead.\n\nTo make that work, this message\'s contents are stored on your KyPost server — unencrypted — for up to 7 days or until the link is opened. Everyone else on this message still gets it encrypted.</string>
     <string name="compose_pickup_dialog_confirm">Send link anyway</string>
     <string name="compose_handoff_dialog_title">Finish this in webmail</string>
-    <string name="compose_handoff_dialog_body">This account\'s PGP key is held only by your browser, so neither this app nor your server can encrypt on your behalf. Your message has been saved as a draft — open webmail to finish sending it.</string>
+    <string name="compose_handoff_dialog_body">This account\'s PGP key is held only by your browser, so neither this app nor your server can encrypt on your behalf. Continuing saves this message as a draft on your KyPost server — unencrypted — so you can finish and send it in webmail.</string>
+    <string name="compose_send_needs_webmail">This account\'s PGP key is held only by your browser, so this app can\'t encrypt or sign. Use “Continue in webmail” to send it protected.</string>
     <string name="compose_handoff_dialog_confirm">Open webmail</string>
     <string name="compose_handoff_draft_failed">Couldn\'t save the draft, so webmail wouldn\'t have your message: %1$s</string>
     <string name="compose_handoff_no_webmail">Couldn\'t work out this server\'s web address — open your drafts in your browser.</string>
@@ -340,10 +348,10 @@
     <string name="security_hostile_location_intro">No mail, contacts, or attachments are cached on this device — everything is fetched fresh from the server each time. Turning this on immediately wipes what\'s cached now and restarts the app.</string>
     <string name="security_hostile_location_requires_lock">Requires Require Unlock to Open.</string>
     <string name="security_credential_gate_title">Require unlock to receive push/MFA</string>
-    <string name="security_credential_gate_intro">Off by default. When on, new-mail push notifications and MFA approval requests only arrive after you\'ve opened the app and unlocked it.</string>
+    <string name="security_credential_gate_intro">Off by default. When on, the credential this device sends mail and answers sign-ins with is locked behind your PIN, and new-mail notifications show no sender or subject until you unlock the app.</string>
     <string name="security_credential_gate_leak_warning">Push always sends the sender and subject through Google/UnifiedPush relay servers, even with this on. For zero leakage, ask your server admin to switch this device to Pull mode instead.</string>
-    <string name="security_credential_gate_warning_title">This disables background notifications while locked</string>
-    <string name="security_credential_gate_warning_body">While this is on, you will not receive new-mail push notifications or MFA approval requests until you open the app and enter your PIN. Turn this on only if you understand that tradeoff.</string>
+    <string name="security_credential_gate_warning_title">This hides notification content while locked</string>
+    <string name="security_credential_gate_warning_body">While this is on, new-mail notifications show only that something arrived — no sender and no subject — until you open the app and enter your PIN. Sign-in approvals still arrive, but answering one needs your PIN, not just a fingerprint. Turn this on only if you understand that tradeoff.</string>
     <string name="security_credential_gate_warning_confirm">Turn on anyway</string>
     <string name="security_credential_gate_pin_title">Enter your PIN to continue</string>
     <string name="security_confirm_pin_hint">Confirm PIN</string>
@@ -357,6 +365,7 @@
          so the user must be told what happened rather than seeing "Incorrect PIN". -->
     <string name="security_wiped_notice">Too many wrong PIN attempts. Local data on this device has been erased.</string>
     <string name="security_wipe_incomplete_notice">Too many wrong PIN attempts. Erasing local data did not finish; it will be retried when the app next starts.</string>
+    <string name="security_wipe_incomplete_final_notice">Erasing local data did not finish and will not be retried automatically. Some data may still be on this device — reinstall the app to remove it.</string>
     <string name="security_verifier_unavailable">This device\'s secure key store has changed, so your PIN can no longer be checked. This attempt was not counted. Reinstall the app to set it up again.</string>
     <string name="security_change_pin_secret_unreadable">Your PIN was not changed. The paired credential could not be read with your current PIN, and changing it would make this device unable to reach the server. Unpair and pair again to fix this.</string>
     <string name="security_hostile_location_confirm_enable_title">Turn on Hostile Location Protection?</string>

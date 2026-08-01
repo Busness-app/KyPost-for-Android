@@ -7,10 +7,6 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
-/** Only fail the build on a missing keystore when a release variant is actually being assembled —
- *  a debug build has no business tripping over release signing configuration. */
-val isBuildingRelease = gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) }
-
 val keystorePropertiesFile = rootProject.file("keystore.properties")
 val keystoreProperties = Properties().apply {
     if (keystorePropertiesFile.exists()) {
@@ -60,15 +56,8 @@ android {
             )
             if (keystorePropertiesFile.exists()) {
                 signingConfig = signingConfigs.getByName("release")
-            } else if (isBuildingRelease) {
-                // Previously this branch was simply absent, so a missing keystore.properties made
-                // the release build fall through to the debug signing key — silently, with a
-                // green build. An APK signed with the public debug key must never be produced by
-                // accident.
-                throw GradleException(
-                    "keystore.properties is missing: a release build must not fall back to the debug signing key.",
-                )
             }
+            // The missing-keystore check is NOT here — see the androidComponents block below.
         }
     }
     buildFeatures {
@@ -101,6 +90,36 @@ android {
         getByName("androidTest").assets.srcDirs("$projectDir/schemas")
     }
 
+}
+
+/**
+ * Fails the build when a **release variant** is configured without signing material.
+ *
+ * Gated on the variant, not on the command line. The previous guard tested
+ * `gradle.startParameter.taskNames.any { it.contains("Release") }`, which is a property of how the
+ * build was invoked rather than of what it builds, and it was wrong in both directions:
+ * `./gradlew :app:assemble` runs `minifyReleaseWithR8` → `packageRelease` → `assembleRelease`
+ * without the token "Release" ever appearing in taskNames, so the guard never fired and the build
+ * emitted `app-release-unsigned.apk` on a green run; while `--configuration releaseRuntimeClasspath`
+ * contains "release" and aborted a read-only dependency query.
+ *
+ * The comment that guard carried was also wrong about the failure mode: AGP does not fall back to
+ * the debug keystore when no signingConfig is assigned — `apksigner verify` on the artifact it
+ * produced reports `DOES NOT VERIFY / Missing META-INF/MANIFEST.MF`, i.e. unsigned.
+ */
+// Exactly the tasks that emit a signable artifact — `packageRelease` (APK) and `signReleaseBundle`
+// (AAB). Matching `startsWith("package") && contains("Release")` also caught
+// `packageReleaseResources`, which is a resource-merge step in the *compile* chain, so it failed
+// release compilation and dependency-metadata generation rather than only artifact production.
+tasks.matching { it.name == "packageRelease" || it.name == "signReleaseBundle" }.configureEach {
+    doFirst {
+        if (!keystorePropertiesFile.exists()) {
+            throw GradleException(
+                "keystore.properties is missing: a release variant cannot be signed. " +
+                    "Add it, or build only the debug variant.",
+            )
+        }
+    }
 }
 
 configurations.all {

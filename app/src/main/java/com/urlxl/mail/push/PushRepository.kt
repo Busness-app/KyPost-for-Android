@@ -75,8 +75,29 @@ class PushRepository(
      *  null if "require unlock to receive push/MFA" is on and the app isn't currently unlocked via
      *  PIN; callers already treat a blank/missing deviceSecret as an auth failure, so this fails
      *  the same way a real 401 would. */
+    /**
+     * Whether a pairing exists right now, read straight from the store.
+     *
+     * For callers that need the answer synchronously *before* anything has subscribed to [state] —
+     * notably the deep-link confirmation dialog, which has to say whether accepting will replace an
+     * existing pairing. Reading that from the `WhileSubscribed` UI flow returned its initialValue on
+     * the cold path, so every replacement was presented to the user as a first pairing.
+     */
+    fun isPairedNow(): Boolean = securePairingStore.pairing.value != null
+
     fun pairingForAuthenticatedCall(): PairingData? =
         securePairingStore.pairingSnapshot(SecurityRuntime.graph(context).appLockManager.cachedCredentialKeys())
+
+    /**
+     * Pairing data for a call authorised by a PIN the caller has just verified on a foreground
+     * screen, using keys from [com.urlxl.mail.security.AppLockManager.credentialKeysForDecision].
+     *
+     * Exists for [MfaApprovalActivity], where the app is legitimately still locked at the moment the
+     * decision is submitted — see that method's KDoc for why routing it through
+     * `cachedCredentialKeys()` made every gated MFA response unsendable.
+     */
+    fun pairingForAuthenticatedCall(keys: com.urlxl.mail.security.CredentialKeys?): PairingData? =
+        securePairingStore.pairingSnapshot(keys)
 
     /** The TOFU TLS pin captured right after the first successful pairing, with the host it came
      *  from, or null if none has been captured yet. Read fresh on every call — never cached by the
@@ -186,14 +207,37 @@ class PushRepository(
      * was paired *next*, uploading one account's contacts to another.
      */
     private suspend fun purgeAccountScopedData() {
+        // The rows this app published into the OS contacts provider go FIRST, while the link table
+        // that indexes them still exists. Unpair used to clear the links and stop there, so the
+        // previous account's whole address book stayed in ContactsContract — readable by every app
+        // holding READ_CONTACTS and by the phone's own Contacts app — with the app's only route back
+        // to those rows deleted in the same breath. Removing the account is what makes CP2
+        // hard-delete them (ContactsProvider2.removeDataOfAccount); the explicit row delete covers
+        // the window before the account removal lands.
+        // DeviceContactPurge, not DeviceContactsRuntime.graph(...).repository: building that graph
+        // constructs DataRuntime.graph(...), which during a wipe rebuilds the database this is
+        // running after the deletion of.
+        com.urlxl.mail.contacts.device.DeviceContactPurge.deleteSyncedRows(context)
         runCatching {
-            val db = com.urlxl.mail.data.DataRuntime.graph(context).database
-            db.emailDao().clearAll()
-            db.contactDao().clearAll()
-            db.pendingContactChangeDao().clearAll()
-            db.groupDao().clearAll()
-            db.groupLinkDao().clearAll()
-            db.deviceContactLinkDao().deleteAll()
+            com.urlxl.mail.contacts.device.DeviceContactAccountManager(context).removeAccountBlocking()
+        }.onFailure { android.util.Log.e(TAG, "Failed to remove the device contacts account", it) }
+        runCatching { com.urlxl.mail.contacts.device.DeviceContactSyncScheduler.cancelPeriodic(context) }
+            .onFailure { android.util.Log.e(TAG, "Failed to cancel the device contact worker", it) }
+
+        runCatching {
+            // peek, not graph: during a security wipe the database has already been closed and
+            // deleted, and building a new one here recreated `kypost_mail.db` on disk — with the
+            // hostile-location flag file also already deleted, it recreated it *disk-backed*, in
+            // the one mode that promises nothing touches disk. Nothing to purge means nothing to do.
+            val db = com.urlxl.mail.data.DataRuntime.peekGraph()?.database
+            if (db != null) {
+                db.emailDao().clearAll()
+                db.contactDao().clearAll()
+                db.pendingContactChangeDao().clearAll()
+                db.groupDao().clearAll()
+                db.groupLinkDao().clearAll()
+                db.deviceContactLinkDao().deleteAll()
+            }
         }.onFailure {
             // This one silently swallowed the exact failure the function's own KDoc describes:
             // a purge that does not happen leaves the previous account's cached mail readable and
@@ -206,6 +250,14 @@ class PushRepository(
             .onFailure { android.util.Log.e(TAG, "Failed to disable device contact sync", it) }
         runCatching { context.deleteSharedPreferences(com.urlxl.mail.KeywordSettings.PREFS_NAME) }
             .onFailure { android.util.Log.e(TAG, "Failed to delete keyword settings", it) }
+        // The mail and contact cursor stores are scoped by subscriber, but scoping only makes a
+        // stale value unreadable — it does not remove it. Leaving them behind kept a hashed map of
+        // the previous account's folder set and its per-folder read timestamps on disk after an
+        // unpair, and the shared-scope-key defect made one of them readable again.
+        listOf("mail_sync_state", "contacts_state").forEach { name ->
+            runCatching { java.io.File(context.filesDir, "datastore/$name.preferences_pb").delete() }
+                .onFailure { android.util.Log.e(TAG, "Failed to delete datastore $name", it) }
+        }
         // Every process-static holder at once, via the registry rather than by name: an unsent
         // draft cached under the previous account would otherwise be restored by the next Compose
         // inside the new account's session and sent through the new account's relay; the PGP

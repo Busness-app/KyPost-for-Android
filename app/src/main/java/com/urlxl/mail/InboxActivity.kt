@@ -282,6 +282,13 @@ class InboxActivity : LockedActivity() {
         intent.putExtra("email_has_attachments", email.hasAttachments)
         intent.putExtra("email_pgp_encrypted", email.pgpEncrypted)
         intent.putExtra("email_pgp_decrypt_error", email.pgpDecryptError)
+        // Signature state is the only signal that separates an authentic signed message from an
+        // impersonation. The relay computes it and it was persisted to Room behind its own
+        // migration, but it stopped here — so a forged-signature message rendered with the
+        // reassuring "this message was encrypted" bar and nothing else.
+        intent.putExtra("email_pgp_signed", email.pgpSigned)
+        intent.putExtra("email_pgp_verified", email.pgpVerified)
+        intent.putExtra("email_pgp_signer_fingerprint", email.pgpSignerFingerprint)
         // The $Phishing IMAP keyword the server sets on mail that impersonates
         // KyPost. See mail/PhishingFlag.kt for why the match is
         // case-insensitive.

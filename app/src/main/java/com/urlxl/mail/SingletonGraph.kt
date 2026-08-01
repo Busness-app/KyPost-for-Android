@@ -40,4 +40,14 @@ class SingletonGraph<T>(private val factory: (Context) -> T) {
      * which `invalidate()` alone only guarantees for callers that arrive after it returns.
      */
     fun take(): T? = synchronized(this) { instance.also { instance = null } }
+
+    /**
+     * The cached instance if one exists, without building it.
+     *
+     * For code that wants to act on a graph only when the process already has one. A plain [get]
+     * during a security wipe rebuilt the graph the wipe had just torn down — and rebuilt it against
+     * settings the wipe had already deleted, so [com.urlxl.mail.data.DataGraph] read Hostile
+     * Location Protection as off and recreated `kypost_mail.db` on disk.
+     */
+    fun peek(): T? = instance
 }

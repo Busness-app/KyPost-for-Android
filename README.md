@@ -1,11 +1,11 @@
 # KyPost for Android
 
-KyPost is an Android email client. It reads an IMAP inbox, sends mail through SMTP, and shows keyword-based inbox tabs driven by IMAP user flags. It also supports a backend-relay connection mode that keeps no IMAP or SMTP credentials on the device. A two-way contact sync works against a self-hosted KyPost server. Native-push pairing (`sub` and `hash`) authenticates both the relay mode and the contact sync. The app gets push notifications through native backend pairing and FCM. The client does not use Novu. The backend owns any Novu integration behind its own registration endpoint.
+KyPost is an Android email client backed by a self-hosted KyPost relay. It shows keyword-based inbox tabs and synchronizes contacts in both directions. Native-push pairing authenticates relay access and contact sync. The app gets push notifications through native backend pairing and FCM. The client does not use Novu. The backend owns any Novu integration behind its own registration endpoint.
 
 ## Features
 
-- **Mail**: IMAP inbox read and SMTP send in Manual IMAP mode. Relay mode proxies mail through the paired KyPost server and stores no mail credentials on the device.
-- **Keyword tabs**: Inbox tabs come from IMAP user flags in Manual IMAP mode, or from server tab and label fields in Relay mode. Tune the tabs in the Keywords screen.
+- **Mail**: The paired KyPost relay proxies mail; the app stores no mail credentials on the device.
+- **Keyword tabs**: Inbox tabs come from server tab and label fields. Tune the tabs in the Keywords screen.
 - **Compose**: The To, Cc, and Bcc fields complete recipients from local contacts. An address-book picker adds recipients directly.
 - **Contacts**: A two-way contact sync runs against a self-hosted KyPost server. Open it from the Inbox overflow menu.
 - **PGP key signing**: One screen shows your own PGP public-key QR code. The same screen scans the QR code of another person and saves that key onto an existing contact.

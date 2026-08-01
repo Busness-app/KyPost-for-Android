@@ -15,8 +15,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         DeviceContactLinkEntity::class,
         GroupEntity::class,
         GroupLinkEntity::class,
+        ContactSyncStateEntity::class,
     ],
-    version = 8,
+    version = 9,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -28,6 +29,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun deviceContactLinkDao(): DeviceContactLinkDao
     abstract fun groupDao(): GroupDao
     abstract fun groupLinkDao(): GroupLinkDao
+    abstract fun contactSyncStateDao(): ContactSyncStateDao
 
     companion object {
         val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -103,6 +105,16 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE `emails` ADD COLUMN `pgpVerified` INTEGER NOT NULL DEFAULT 0")
                 db.execSQL("ALTER TABLE `emails` ADD COLUMN `pgpSignerFingerprint` TEXT NOT NULL DEFAULT ''")
                 db.execSQL("ALTER TABLE `emails` ADD COLUMN `pgpDecryptError` TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `contact_sync_state` (" +
+                        "`subscriberId` TEXT NOT NULL, `cursor` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`subscriberId`))",
+                )
             }
         }
     }
