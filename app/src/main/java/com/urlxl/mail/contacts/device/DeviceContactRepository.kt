@@ -120,13 +120,21 @@ class DeviceContactRepository(
                 val link = linksByRawContactId[rawContactId]
 
                 if (deleted && link != null) {
-                    // Never let a device-side delete tombstone our own identity card. Any app with
-                    // WRITE_CONTACTS can set DELETED=1 on a row under our account type, and the
-                    // server's tombstone clears the contact's PGPKey — for the self contact that is
-                    // the user's own published key. Edits to self still flow (and re-arm the
-                    // reverification flag below); only the destructive direction is refused.
-                    if (db.contactDao().getByUid(link.uid)?.isSelf == true) {
-                        clearDirtyFlag(rawContactId)
+                    // A device-side delete is a PROPOSAL, not an instruction. Any app holding
+                    // WRITE_CONTACTS can set DELETED=1 on a row under our account type — CP2 has no
+                    // per-account write ACL — and queueDelete drops the Room row *before* the
+                    // tombstone is sent, so the contact's pgpKey, its fingerprint and its
+                    // reverification flag are all destroyed locally, and the server's tombstone then
+                    // clears PGPKey on its side too. One resolver.delete() per row therefore stripped
+                    // every in-person-verified key pin on the device and on the server, silently,
+                    // with no confirmation anywhere — while the in-app delete has one.
+                    //
+                    // So a contact holding a key (and the self contact, whose key is the user's own
+                    // published one) is restored rather than tombstoned. Everything else still flows:
+                    // an ordinary contact deleted on the phone is a delete the user meant.
+                    val existing = db.contactDao().getByUid(link.uid)
+                    if (existing?.isSelf == true || !existing?.pgpKey.isNullOrBlank()) {
+                        restoreDeletedRawContact(rawContactId)
                     } else {
                         syncRepository.queueDelete(link.uid, 0)
                         db.deviceContactLinkDao().deleteByUid(link.uid)
@@ -280,8 +288,14 @@ class DeviceContactRepository(
                 // under our account type, and this merge then uploads the result to the paired
                 // server. The key itself is carried over untouched, so the rotation check in
                 // toEntity cannot see it — re-arm on the identity instead.
-                val identityChanged = mergedEmails != roomDto.emails || mergedFn != roomDto.fn
-                syncRepository.queueUpdate(mergedDto, identityChanged = identityChanged)
+                //
+                // `changed`, not a two-field comparison. Restricting this to emails and fn left
+                // phone, organisation, notes, websites, IMs, postal addresses, relations, events,
+                // department and the phonetic names all rewritable under a pinned key with the trust
+                // badge intact — and the rewritten phone is a live tel: tap target and the rewritten
+                // website a live ACTION_VIEW. Any device-side change to a keyed contact is a change
+                // to who that key is displayed beside.
+                syncRepository.queueUpdate(mergedDto, identityChanged = changed)
             }
 
             clearDirtyFlag(rawContactId)
@@ -298,6 +312,38 @@ class DeviceContactRepository(
             name.contains("voicemail") || name.contains("support") ||
             name.contains("carrier") || name.contains("emergency") ||
             name.startsWith("*") || name.startsWith("#"))
+    }
+
+    /**
+     * Undoes a device-side delete of a row we refuse to tombstone.
+     *
+     * Clearing DIRTY alone — which is what the self-contact guard used to do — leaves `DELETED = 1`
+     * and `CONTACT_ID = NULL` in place forever: `ContactsProvider2.markRawContactAsDeleted` sets all
+     * three, and `deleteContactIfSingleton` removes the parent aggregate, so the card stays gone
+     * from the phone's address book, this loop re-runs on it every cycle, and
+     * `pushRoomChangesToDevice` never recreates it because the link row still exists. Clearing
+     * DELETED and re-enabling aggregation is what actually restores the row.
+     */
+    private suspend fun restoreDeletedRawContact(rawContactId: Long) = withContext(Dispatchers.IO) {
+        val uri = ContactsContract.RawContacts.CONTENT_URI.buildUpon()
+            .appendQueryParameter(ContactsContract.CALLER_IS_SYNCADAPTER, "true")
+            .build()
+        val ops = arrayListOf(
+            android.content.ContentProviderOperation.newUpdate(uri)
+                .withSelection("${ContactsContract.RawContacts._ID} = ?", arrayOf(rawContactId.toString()))
+                .withValue(ContactsContract.RawContacts.DELETED, 0)
+                .withValue(ContactsContract.RawContacts.DIRTY, 0)
+                .withValue(
+                    ContactsContract.RawContacts.AGGREGATION_MODE,
+                    ContactsContract.RawContacts.AGGREGATION_MODE_DEFAULT,
+                )
+                .build(),
+        )
+        runCatching { contentResolver.applyBatch(ContactsContract.AUTHORITY, ops) }
+            .onFailure {
+                android.util.Log.e("DeviceContactSync", "Could not restore raw contact $rawContactId", it)
+            }
+        Unit
     }
 
     private suspend fun clearDirtyFlag(rawContactId: Long) = withContext(Dispatchers.IO) {
@@ -420,10 +466,19 @@ class DeviceContactRepository(
         candidateEmails: List<String>,
         candidatePhones: List<String>,
     ): Boolean {
-        val existingEmails = existingContact.emails.map { DeviceContactMatcher.normalizeEmail(it.value) }.toSet()
-        val existingPhones = existingContact.phones.map { DeviceContactMatcher.normalizePhone(it.value) }.toSet()
-        return candidateEmails.any { DeviceContactMatcher.normalizeEmail(it) in existingEmails } ||
-            candidatePhones.any { DeviceContactMatcher.normalizePhone(it) in existingPhones }
+        // Blank normalized values are dropped on both sides, for the same reason
+        // [DeviceContactMatcher.Index] drops them: a placeholder like "n/a" normalizes to the empty
+        // string and would otherwise make every blank-valued candidate look like a match, silently
+        // suppressing its import.
+        val existingEmails = existingContact.emails
+            .mapNotNull { DeviceContactMatcher.normalizeEmail(it.value).takeIf(String::isNotBlank) }.toSet()
+        val existingPhones = existingContact.phones
+            .mapNotNull { DeviceContactMatcher.normalizePhone(it.value).takeIf(String::isNotBlank) }.toSet()
+        return candidateEmails.any {
+            DeviceContactMatcher.normalizeEmail(it).let { v -> v.isNotBlank() && v in existingEmails }
+        } || candidatePhones.any {
+            DeviceContactMatcher.normalizePhone(it).let { v -> v.isNotBlank() && v in existingPhones }
+        }
     }
 
     private suspend fun pushRoomChangesToDevice() = withContext(Dispatchers.IO) {

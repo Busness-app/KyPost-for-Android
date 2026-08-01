@@ -500,7 +500,10 @@ class ContactEditActivity : LockedActivity() {
             if (existingUid.isBlank()) {
                 graph.repository.queueCreate(dto)
             } else {
-                graph.repository.queueUpdate(dto)
+                // The user is editing this contact themselves, in this app, behind the app lock.
+                // Their own edit to an address is not the silent third-party rebind that
+                // pgpKeyNeedsReverification exists to catch.
+                graph.repository.queueUpdate(dto, identityChanged = false)
             }
             graph.coordinator.syncNowAsync()
             DeviceContactsRuntime.graph(this@ContactEditActivity).coordinator.syncNowAsync()

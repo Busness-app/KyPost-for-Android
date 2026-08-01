@@ -159,15 +159,32 @@ class ContactMappersTest {
     }
 
     @Test
-    fun toEntity_identityChangedButVerifiedInPerson_notFlagged() {
-        // The QR ceremony is the one path where the user just confirmed this key against this
-        // person, so it must still clear rather than raise.
+    fun toEntity_keyRotationVerifiedInPerson_isCleared() {
+        // The QR ceremony attests to the KEY: the user compared this fingerprint against the other
+        // person's device, so a rotation it confirms must clear rather than raise — otherwise the
+        // app's only TOFU alarm fires on the one path where reverification is provably unnecessary,
+        // and users learn to dismiss it.
         val previous = ContactEntity(uid = "uid-10", rev = 1, fn = "Carol", pgpKeyFingerprint = "AAAA BBBB")
         val dto = ContactDto(uid = "uid-10", rev = 2, fn = "Carol", pgpKey = TEST_KEY)
 
-        val entity = dto.toEntity(previous, verifiedInPerson = true, identityChanged = true)
+        val entity = dto.toEntity(previous, verifiedInPerson = true, identityChanged = false)
 
         assertFalse(entity.pgpKeyNeedsReverification)
+    }
+
+    @Test
+    fun toEntity_identityReboundSurvivesVerifiedInPerson() {
+        // ...but it attests to nothing about WHICH ADDRESSES that key is bound to. The QR save path
+        // builds its DTO from the current Room row, while the confirmation screen shows the
+        // addresses from the scanned card — so a WRITE_CONTACTS app could inject an address, and the
+        // user's own recommended remediation (scan the key again) would clear the alarm that
+        // injection raised. A rebind is a different claim from a rotation and outlives the ceremony.
+        val previous = ContactEntity(uid = "uid-11", rev = 1, fn = "Carol", pgpKeyFingerprint = TEST_KEY_FINGERPRINT)
+        val dto = ContactDto(uid = "uid-11", rev = 2, fn = "Carol", pgpKey = TEST_KEY)
+
+        val entity = dto.toEntity(previous, verifiedInPerson = true, identityChanged = true)
+
+        assertTrue(entity.pgpKeyNeedsReverification)
     }
 
     @Test

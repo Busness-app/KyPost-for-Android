@@ -26,6 +26,7 @@ import com.urlxl.mail.mail.QuotedHtmlSanitizer
 import com.urlxl.mail.mail.addressFromHeader
 import com.urlxl.mail.mail.userFacingMessage
 import com.urlxl.mail.pgp.PgpMessageState
+import com.urlxl.mail.pgp.PgpSignatureState
 import com.urlxl.mail.pgp.openWebmail
 import com.urlxl.mail.pgp.pgpMessageStateOf
 import com.urlxl.mail.pgp.webmailMessageUrl
@@ -52,6 +53,10 @@ class EmailDetailActivity : LockedActivity() {
     /** The message's real body, once the background fetch has answered. Reply/Forward quote this;
      *  see [quoteForReply] for why the 140-character preview was never an acceptable substitute. */
     private var fetchedBodyHtml: String? = null
+
+    /** The relay's verdict on this message's OpenPGP signature, from the detail Intent. Rendered by
+     *  [renderPgpBar] — see [PgpSignatureState] for why it is separate from [PgpMessageState]. */
+    private var pgpSignatureState: PgpSignatureState = PgpSignatureState.NONE
 
     /** Attachments downloaded on this screen, keyed by their listing index, so Forward can carry
      *  them. Populated lazily — only what the user actually opened is here, which is the honest
@@ -84,6 +89,10 @@ class EmailDetailActivity : LockedActivity() {
         val hasAttachments = intent.getBooleanExtra("email_has_attachments", false)
         val pgpEncrypted = intent.getBooleanExtra("email_pgp_encrypted", false)
         val pgpDecryptError = intent.getStringExtra("email_pgp_decrypt_error").orEmpty()
+        pgpSignatureState = com.urlxl.mail.pgp.pgpSignatureStateOf(
+            pgpSigned = intent.getBooleanExtra("email_pgp_signed", false),
+            pgpVerified = intent.getBooleanExtra("email_pgp_verified", false),
+        )
         val phishingFlagged = intent.getBooleanExtra("email_suspicious", false)
 
         setTitle(R.string.email_title)
@@ -135,21 +144,25 @@ class EmailDetailActivity : LockedActivity() {
             runMailActionAndFinish(getString(R.string.action_junk), emailId) { it.spam(emailId, emailFolder) }
         }
         actionReply.setOnClickListener {
-            openCompose(
-                to = extractAddress(emailSender),
-                subject = withPrefix(emailSubject, "Re:"),
-                bodyHtml = quoteForReply(emailSender, emailPreview),
-            )
+            quotedBodyHtmlAsync(emailPreview) { quoted ->
+                openCompose(
+                    to = extractAddress(emailSender),
+                    subject = withPrefix(emailSubject, "Re:"),
+                    bodyHtml = quoteForReply(emailSender, quoted),
+                )
+            }
         }
         actionReplyAll.setOnClickListener {
             val recipients = (listOf(extractAddress(emailSender)) + toRecipients.map(::extractAddress) + ccRecipients.map(::extractAddress))
                 .distinct()
                 .filter { it.isNotBlank() }
-            openCompose(
-                to = recipients.joinToString(", "),
-                subject = withPrefix(emailSubject, "Re:"),
-                bodyHtml = quoteForReply(emailSender, emailPreview),
-            )
+            quotedBodyHtmlAsync(emailPreview) { quoted ->
+                openCompose(
+                    to = recipients.joinToString(", "),
+                    subject = withPrefix(emailSubject, "Re:"),
+                    bodyHtml = quoteForReply(emailSender, quoted),
+                )
+            }
         }
         actionForward.setOnClickListener {
             forwardMessage(emailId, emailFolder, emailSender, emailSubject, emailPreview)
@@ -315,12 +328,14 @@ class EmailDetailActivity : LockedActivity() {
     ) {
         val missing = attachmentInfos.filter { it.index !in downloadedAttachments }
         if (missing.isEmpty()) {
-            openCompose(
-                to = "",
-                subject = withPrefix(emailSubject, "Fwd:"),
-                bodyHtml = quoteForForward(emailSender, emailSubject, emailPreview),
-                attachments = orderedForwardAttachments(),
-            )
+            quotedBodyHtmlAsync(emailPreview) { quoted ->
+                openCompose(
+                    to = "",
+                    subject = withPrefix(emailSubject, "Fwd:"),
+                    bodyHtml = quoteForForward(emailSender, emailSubject, quoted),
+                    attachments = orderedForwardAttachments(),
+                )
+            }
             return
         }
 
@@ -382,8 +397,21 @@ class EmailDetailActivity : LockedActivity() {
         serverUrl: String?,
         webmailUrl: String?,
     ) {
+        // A message can be perfectly readable and still be signed by someone other than who it
+        // claims to be from, so the signature verdict is rendered even when there is no encryption
+        // state to report. This was computed by the relay, carried through every layer and written
+        // to Room behind its own migration — and then never shown, so a forged-signature message
+        // displayed as ordinary mail while webmail flagged it.
+        val signatureNotice = when (pgpSignatureState) {
+            PgpSignatureState.INVALID -> getString(R.string.email_pgp_signature_invalid)
+            PgpSignatureState.VERIFIED -> getString(R.string.email_pgp_signature_verified)
+            PgpSignatureState.NONE -> null
+        }
+
         if (state == PgpMessageState.NONE) {
-            pgpBar.visibility = View.GONE
+            pgpBar.visibility = if (signatureNotice == null) View.GONE else View.VISIBLE
+            btnOpenInWebmail.visibility = View.GONE
+            pgpText.text = signatureNotice.orEmpty()
             return
         }
         pgpBar.visibility = View.VISIBLE
@@ -421,6 +449,12 @@ class EmailDetailActivity : LockedActivity() {
             PgpMessageState.BODY_UNAVAILABLE ->
                 pgpText.text = getString(R.string.email_pgp_body_unavailable)
             PgpMessageState.NONE -> Unit
+        }
+
+        // Prepended, not appended: a signature that does not match the sender is the more urgent of
+        // the two facts, and it should not sit below a paragraph about decryption.
+        if (signatureNotice != null) {
+            pgpText.text = signatureNotice + "\n\n" + pgpText.text
         }
     }
 
@@ -546,6 +580,10 @@ class EmailDetailActivity : LockedActivity() {
             val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
                 ?: return false
             resolver.openOutputStream(uri)?.use { it.write(bytes) } ?: return false
+            // Recorded so a later security wipe can delete it. This file is outside the app
+            // sandbox, so nothing the wipe deletes reaches it — and the screen after a wipe tells
+            // the user their local data has been erased.
+            com.urlxl.mail.security.DownloadedAttachmentLedger.record(this, uri)
             true
         }.getOrDefault(false)
     }
@@ -645,25 +683,50 @@ class EmailDetailActivity : LockedActivity() {
      * `setHtml` assigns to `innerHTML`, so an `onerror` attribute in a quoted message would execute
      * with the user's outgoing mail in reach — see [com.urlxl.mail.mail.QuotedHtmlSanitizer].
      */
-    private fun quotedBodyHtml(preview: String): String =
-        fetchedBodyHtml?.takeIf { it.isNotBlank() }?.let { QuotedHtmlSanitizer.sanitize(it) }
-            ?: TextUtils.htmlEncode(preview)
+    /**
+     * Sanitizes the quoted original off the UI thread, and refuses to try past a size bound.
+     *
+     * Both properties are load-bearing, and neither was present. `Jsoup.clean` costs time quadratic
+     * in the sender's chosen nesting depth: measured against this exact function, 10k nested `<div>`
+     * (50 KB) took 122 ms, 40k took 2.2 s, 80k (400 KB) took 12.7 s and 200k (1 MB) took 156 s, with
+     * the output amplified up to 14.6x. This ran straight from the Reply/Reply-All/Forward click
+     * listeners with no cap at all, so a message whose body is `"<div>".repeat(80000)` plus "please
+     * reply to confirm" reliably ANR'd the app on a single natural tap, repeatable with every
+     * message. The body is bounded only by the 32 MB response cap, so the tail is unbounded too.
+     *
+     * Run-2 found and fixed this same class in this same file — two quadratic regexes, closed with a
+     * bounded pattern and a 512 KB cap — and the new sanitizer reintroduced it on the *main* thread.
+     * The sibling jsoup call in this file, [stripImportant], was already on [ioExecutor]; now both
+     * are. Past the cap the quote degrades to the escaped preview, which is the same fallback this
+     * already used when the body is genuinely unavailable.
+     */
+    private fun quotedBodyHtmlAsync(preview: String, then: (String) -> Unit) {
+        val body = fetchedBodyHtml?.takeIf { it.isNotBlank() }
+        if (body == null || body.length > REMOTE_IMAGE_SCAN_MAX_LENGTH) {
+            then(TextUtils.htmlEncode(preview))
+            return
+        }
+        ioExecutor.execute {
+            val sanitized = runCatching { QuotedHtmlSanitizer.sanitize(body) }
+                .getOrElse { TextUtils.htmlEncode(preview) }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                then(sanitized)
+            }
+        }
+    }
 
-    private fun quoteForReply(sender: String, preview: String): String {
-        val quoted = quotedBodyHtml(preview)
-        return "<br><br><div>${TextUtils.htmlEncode(sender)} wrote:</div>" +
+    private fun quoteForReply(sender: String, quoted: String): String =
+        "<br><br><div>${TextUtils.htmlEncode(sender)} wrote:</div>" +
             "<blockquote style=\"margin:0 0 0 0.8ex;border-left:1px solid #ccc;padding-left:1ex\">" +
             quoted +
             "</blockquote>"
-    }
 
-    private fun quoteForForward(sender: String, subject: String, preview: String): String {
-        val quoted = quotedBodyHtml(preview)
-        return "<br><br><div>---------- Forwarded message ----------</div>" +
+    private fun quoteForForward(sender: String, subject: String, quoted: String): String =
+        "<br><br><div>---------- Forwarded message ----------</div>" +
             "<div>From: ${TextUtils.htmlEncode(sender)}</div>" +
             "<div>Subject: ${TextUtils.htmlEncode(subject)}</div><br>" +
             quoted
-    }
 
     private fun withPrefix(subject: String, prefix: String): String {
         return if (subject.trim().startsWith(prefix, ignoreCase = true)) subject else "$prefix $subject"

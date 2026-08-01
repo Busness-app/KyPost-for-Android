@@ -179,43 +179,41 @@ object PushNotificationDispatcher : com.urlxl.mail.ProcessScopedState {
      * the old branch was reaching for — app-lock state was only ever a proxy for it) and the real
      * sender and subject appear in the shade once it is not.
      *
-     * Nothing the user configured is weakened. "Require Unlock to Open" is enforced where it was
-     * always actually enforced, on the tap target: [MainActivity] extends
-     * [com.urlxl.mail.security.LockedActivity], which finishes it and shows the unlock screen. And
-     * the setting that genuinely means "no notification content while locked" — "Require unlock to
-     * receive push/MFA" — works by not delivering the push at all, upstream of here.
+     * "Require Unlock to Open" is enforced where it was always actually enforced, on the tap target:
+     * [MainActivity] extends [com.urlxl.mail.security.LockedActivity], which finishes it and shows
+     * the unlock screen.
+     *
+     * The stronger setting — "Require unlock to receive push/MFA" — is enforced *here*, by
+     * [contentSuppressedWhileLocked]. Its KDoc used to say it "works by not delivering the push at
+     * all, upstream of here"; no such upstream check existed anywhere in the app, so the setting
+     * suppressed nothing and sender plus subject were posted in full whenever the phone's keyguard
+     * was unlocked but the app lock was engaged — the exact window the user turned it on to close.
      */
     fun show(context: Context, payload: PushPayload) {
         ensureChannel(context)
         if (!notificationsAllowed(context)) return
 
-        val launchIntent = Intent(context, MainActivity::class.java)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            .putExtra(EXTRA_MESSAGE_ID, payload.messageId)
-            .putExtra(EXTRA_SENDER, payload.senderName)
-            .putExtra(EXTRA_SUBJECT, payload.emailSubject)
+        // Post the redacted form as the *whole* notification, not just its public version: with the
+        // credential gate on, the user has explicitly accepted losing notification content until
+        // they unlock the app, and the framework's public/private swap keys off the keyguard, which
+        // says nothing about this app's own lock. Unlike the branch this replaces, the row is
+        // re-posted with real content by the next delivery after unlocking, and the id is stable so
+        // it updates in place rather than stacking.
+        if (contentSuppressedWhileLocked(context)) {
+            postNotification(
+                context,
+                stableNotificationId("mail-${payload.messageId}"),
+                redactedNotification(context, payload),
+            )
+            return
+        }
 
         val notificationId = stableNotificationId("mail-${payload.messageId}")
-        val pendingIntent = PendingIntent.getActivity(
-            context,
-            notificationId,
-            launchIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
+        val pendingIntent = mailPendingIntent(context, payload, notificationId)
 
         val body = PushPayloadParser.body(payload)
 
-        // What the lock screen gets: that something arrived, and nothing about what. Carries the
-        // same content intent so tapping it behaves identically — the unlock gate is on the
-        // Activity, not on which form of the row was tapped.
-        val redacted = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle(context.getString(R.string.app_name))
-            .setContentText(context.getString(R.string.notification_hidden_while_locked))
-            .setAutoCancel(true)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setContentIntent(pendingIntent)
-            .build()
+        val redacted = redactedNotification(context, payload)
 
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
@@ -232,6 +230,56 @@ object PushNotificationDispatcher : com.urlxl.mail.ProcessScopedState {
             .build()
 
         postNotification(context, notificationId, notification)
+    }
+
+    /** The tap target for a mail notification. Both forms of the row carry the same one — the
+     *  unlock gate is on the Activity, not on which form was tapped. */
+    private fun mailPendingIntent(context: Context, payload: PushPayload, notificationId: Int): PendingIntent {
+        val launchIntent = Intent(context, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            .putExtra(EXTRA_MESSAGE_ID, payload.messageId)
+            .putExtra(EXTRA_SENDER, payload.senderName)
+            .putExtra(EXTRA_SUBJECT, payload.emailSubject)
+        return PendingIntent.getActivity(
+            context,
+            notificationId,
+            launchIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
+    /** That something arrived, and nothing about what. Used as the lock-screen public version
+     *  always, and as the entire notification when [contentSuppressedWhileLocked]. */
+    private fun redactedNotification(context: Context, payload: PushPayload): android.app.Notification {
+        val notificationId = stableNotificationId("mail-${payload.messageId}")
+        return NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle(context.getString(R.string.app_name))
+            .setContentText(context.getString(R.string.notification_hidden_while_locked))
+            .setAutoCancel(true)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setContentIntent(mailPendingIntent(context, payload, notificationId))
+            .build()
+    }
+
+    /**
+     * True when the user turned on "Require unlock to receive push/MFA" and the app is currently
+     * locked, so no message metadata may be shown until they enter their PIN.
+     *
+     * Reads [com.urlxl.mail.security.AppLockManager.isLockedNow] rather than the `locked` flow, for
+     * the same reason every other security decision does: a background grace window that has expired
+     * without `lockNow()` having fired yet is still locked.
+     *
+     * Failing closed on an exception is deliberate. This runs on the delivery path in a process that
+     * may have just started, and the alternative to "redact" is "print the sender and subject of a
+     * message to the shade" — the wrong way to resolve a question about the user's security posture.
+     */
+    private fun contentSuppressedWhileLocked(context: Context): Boolean = runCatching {
+        val graph = com.urlxl.mail.security.SecurityRuntime.graph(context)
+        graph.appLockStore.isCredentialPinGateEnabled() && graph.appLockManager.isLockedNow()
+    }.getOrElse {
+        android.util.Log.e("PushNotificationDispatcher", "Could not read the credential gate; redacting", it)
+        true
     }
 
     /**

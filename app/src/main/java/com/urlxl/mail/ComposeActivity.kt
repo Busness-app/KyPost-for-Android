@@ -43,6 +43,7 @@ import java.io.IOException
 import java.io.InputStream
 import java.util.concurrent.Executors
 import com.urlxl.mail.security.LockedActivity
+import com.urlxl.mail.security.showSecurely
 
 class ComposeActivity : LockedActivity() {
 
@@ -70,6 +71,10 @@ class ComposeActivity : LockedActivity() {
     private lateinit var keylessWarning: android.widget.TextView
     private val pgpController by lazy { ComposePgpController.from(this) }
     private var sendMenuItem: MenuItem? = null
+
+    /** True once the PGP bootstrap has reported this account's key is held only by the browser. The
+     *  Send action is withdrawn while it holds — see [applyPgpComposeState]. */
+    private var handoffOnlyAccount = false
     private val ioExecutor = Executors.newSingleThreadExecutor()
     private val attachments = mutableListOf<OutgoingAttachment>()
 
@@ -252,13 +257,28 @@ class ComposeActivity : LockedActivity() {
         item.setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
         sendMenuItem = item
         applySendMenuItemTheme()
+        // The menu is created after the bootstrap may already have answered, so the availability
+        // decision has to be re-applied here as well as when the state arrives.
+        applySendAvailability()
         return super.onCreateOptionsMenu(menu)
+    }
+
+    /** Withdraws Send on an account this app cannot encrypt for. See [applyPgpComposeState]. */
+    private fun applySendAvailability() {
+        sendMenuItem?.isVisible = !handoffOnlyAccount
+        sendMenuItem?.isEnabled = !handoffOnlyAccount
     }
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         return when (item.itemId) {
             MENU_SEND -> {
-                sendEmail()
+                // Belt and braces against a stale menu: the item is hidden for a handoff-only
+                // account, but a send that reached here would be a silent cleartext downgrade.
+                if (handoffOnlyAccount) {
+                    Toast.makeText(this, R.string.compose_send_needs_webmail, Toast.LENGTH_LONG).show()
+                } else {
+                    sendEmail()
+                }
                 true
             }
             else -> super.onOptionsItemSelected(item)
@@ -305,6 +325,16 @@ class ComposeActivity : LockedActivity() {
         encryptChip.visibility = if (state.canEncrypt) View.VISIBLE else View.GONE
         signChip.visibility = if (state.canSign) View.VISIBLE else View.GONE
         webmailChip.visibility = if (state.handoffToWebmail) View.VISIBLE else View.GONE
+        // On a client-custody account the key lives only in the user's browser, so this app cannot
+        // encrypt or sign — and because both chips are GONE, sendEmail's
+        // `isChecked && visibility == VISIBLE` computes both wire flags as false. The relay's own
+        // client-custody guard is nested inside `if (sign || encrypt)`, so a flagless send skipped
+        // it entirely and went out as plain MIME: a silent downgrade to cleartext on the one account
+        // type configured for end-to-end encryption. Refuse instead, exactly as the web client does
+        // ("quietly sending in the clear instead would be worse than failing") and route the user to
+        // the handoff, which is the only outbound path that can actually protect this message.
+        handoffOnlyAccount = state.handoffToWebmail
+        applySendAvailability()
         pgpChips.visibility =
             if (state.canEncrypt || state.canSign || state.handoffToWebmail) View.VISIBLE else View.GONE
 
@@ -615,7 +645,11 @@ class ComposeActivity : LockedActivity() {
                 // no re-encoded attachments, no second preflight.
                 dispatchSend(draft.copy(allowPickupFallback = true))
             }
-            .show()
+            // FLAG_SECURE on the dialog's own window. This one enumerates recipient addresses and is
+            // the consent gate for storing the message plaintext on the server for seven days; the
+            // Activity's own flag does not extend to a separate dialog window.
+            .create()
+            .showSecurely()
     }
 
     /**
@@ -623,9 +657,15 @@ class ComposeActivity : LockedActivity() {
      * PWA or the user's browser opens it with the session it already has. Never an in-app WebView:
      * that shares no session and would put an account-password field inside this app.
      *
-     * The draft save has to succeed first — opening a browser onto a draft that is not there loses
-     * the user's message. The draft is saved without the PGP flags, since [MailDraft]'s sign/encrypt
-     * only apply to /api/mail/send, not the plain /api/mail/draft endpoint.
+     * **Consent comes first.** `/api/mail/draft` writes plain MIME into the relay's IMAP store, so
+     * this is the moment the message leaves the device unencrypted — on the one account type whose
+     * configuration exists to stop exactly that. Saving first and asking afterwards, as this used to
+     * do, meant the plaintext was already on the server before the dialog was drawn and Cancel
+     * removed nothing (there is no delete path). The dialog now names the cost and the save only
+     * happens if the user accepts it.
+     *
+     * The draft is saved without the PGP flags, since [MailDraft]'s sign/encrypt only apply to
+     * /api/mail/send, not the plain /api/mail/draft endpoint.
      *
      * Always built from the *current* fields, never from [sentDraft]: unlike the post-409 re-send
      * (where byte-identity with what the relay already evaluated is the whole point), a failed send
@@ -653,54 +693,68 @@ class ComposeActivity : LockedActivity() {
                 mode = "html",
                 attachments = attachments.toList(),
             )
+            // Resolve the destination before asking, so the dialog is not offered when there is
+            // nowhere to send the user — but do not save anything yet.
             ioExecutor.execute {
-                val saved = MailRuntime.graph(this).repository.saveDraft(draft)
                 val serverUrl = PushRuntime.graph(this).repository.pairingForAuthenticatedCall()?.serverUrl
                 val url = serverUrl?.let { webmailDraftsUrl(it) }
                 runOnUiThread {
                     // See dispatchSend's identical guard: this callback can also fire after the
                     // Activity has finished (app lock) or been destroyed.
                     if (isFinishing || isDestroyed) return@runOnUiThread
-                    when {
-                        saved !is MailOutcome.Success -> {
+                    if (serverUrl == null || url == null) {
+                        webmailChip.isEnabled = true
+                        Toast.makeText(this, R.string.compose_handoff_no_webmail, Toast.LENGTH_LONG).show()
+                        return@runOnUiThread
+                    }
+                    confirmHandoff(serverUrl, url, draft)
+                }
+            }
+        }
+    }
+
+    /** Asks before the plaintext leaves the device, then saves and opens webmail on acceptance. */
+    private fun confirmHandoff(serverUrl: String, url: String, draft: MailDraft) {
+        activeDialog = AlertDialog.Builder(this)
+            .setTitle(R.string.compose_handoff_dialog_title)
+            .setMessage(R.string.compose_handoff_dialog_body)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.compose_handoff_dialog_confirm) { _, _ ->
+                ioExecutor.execute {
+                    val saved = MailRuntime.graph(this).repository.saveDraft(draft)
+                    runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        if (saved !is MailOutcome.Success) {
                             webmailChip.isEnabled = true
                             Toast.makeText(
                                 this,
                                 getString(R.string.compose_handoff_draft_failed, saved.userFacingMessage().orEmpty()),
                                 Toast.LENGTH_LONG,
                             ).show()
+                            return@runOnUiThread
                         }
-                        serverUrl == null || url == null -> {
-                            webmailChip.isEnabled = true
-                            Toast.makeText(this, R.string.compose_handoff_no_webmail, Toast.LENGTH_LONG).show()
-                        }
-                        else -> showHandoffDialog(serverUrl, url)
+                        openHandoffTarget(serverUrl, url)
                     }
                 }
             }
-        }
+            // FLAG_SECURE on the dialog's own window: it names the account's protection posture and
+            // the recipients, and the Activity's flag does not cover a separate dialog window.
+            .setOnDismissListener { if (activeDialog != null) webmailChip.isEnabled = true }
+            .create()
+            .showSecurely()
     }
 
-    private fun showHandoffDialog(serverUrl: String, url: String) {
-        activeDialog = AlertDialog.Builder(this)
-            .setTitle(R.string.compose_handoff_dialog_title)
-            .setMessage(R.string.compose_handoff_dialog_body)
-            .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton(R.string.compose_handoff_dialog_confirm) { _, _ ->
-                // Prefers the installed PWA, then an in-app Custom Tab, which carries the browser
-                // session webmail already holds, so the user is not asked to log in again just to
-                // press send. Falls back to an external browser where no Custom Tabs-capable
-                // browser exists. Still no resolveActivity: see WebmailTab.launchExternalBrowser.
-                if (openWebmail(this, serverUrl, url)) {
-                    finish()
-                } else {
-                    Toast.makeText(this, R.string.compose_handoff_no_handler, Toast.LENGTH_LONG).show()
-                }
-            }
-            // Re-enables the chip after Cancel and after both positive-button outcomes above —
-            // the successful launch doesn't care since finish() is already underway.
-            .setOnDismissListener { webmailChip.isEnabled = true }
-            .show()
+    private fun openHandoffTarget(serverUrl: String, url: String) {
+        // Prefers the installed PWA, then an in-app Custom Tab, which carries the browser session
+        // webmail already holds, so the user is not asked to log in again just to press send. Falls
+        // back to an external browser where no Custom Tabs-capable browser exists. Still no
+        // resolveActivity: see WebmailTab.launchExternalBrowser.
+        if (openWebmail(this, serverUrl, url)) {
+            finish()
+        } else {
+            webmailChip.isEnabled = true
+            Toast.makeText(this, R.string.compose_handoff_no_handler, Toast.LENGTH_LONG).show()
+        }
     }
 
     /**

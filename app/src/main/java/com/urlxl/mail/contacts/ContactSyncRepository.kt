@@ -116,14 +116,20 @@ class ContactSyncRepository(
         return localUid
     }
 
-    /** [verifiedInPerson] is passed only by the PGP QR flow, where the user has just compared this
-     *  fingerprint out-of-band. [identityChanged] is passed only by the device-contact merge, where
-     *  the addresses a stored key vouches for may have been rewritten by another app — see
-     *  [com.urlxl.mail.contacts.toEntity]. */
+    /**
+     * [verifiedInPerson] is passed only by the PGP QR flow, where the user has just compared this
+     * fingerprint out-of-band.
+     *
+     * [identityChanged] has **no default on purpose**. It used to default to false, and the
+     * device-contact merge was the only caller that passed it — so every other path (in-app edits,
+     * the PGP QR save) silently answered "no, this does not rebind identity" on behalf of a contact
+     * that may hold a pinned key. Whether an update moves the identity a key vouches for is a
+     * question each call site has to answer for itself; see [com.urlxl.mail.contacts.toEntity].
+     */
     suspend fun queueUpdate(
         contact: ContactDto,
+        identityChanged: Boolean,
         verifiedInPerson: Boolean = false,
-        identityChanged: Boolean = false,
     ) {
         val previous = db.contactDao().getByUid(contact.uid)
         db.contactDao().upsertAll(listOf(contact.toEntity(previous, verifiedInPerson, identityChanged)))

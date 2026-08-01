@@ -10,8 +10,10 @@ import android.widget.TextView
 import androidx.cardview.widget.CardView
 import androidx.recyclerview.widget.RecyclerView
 import com.urlxl.mail.pgp.PgpMessageState
+import com.urlxl.mail.pgp.PgpSignatureState
 import com.urlxl.mail.pgp.pgpMessageStateOf
 import com.urlxl.mail.pgp.pgpRowMarker
+import com.urlxl.mail.pgp.pgpSignatureStateOf
 
 class EmailAdapter(
     private var emails: List<Email>,
@@ -29,14 +31,22 @@ class EmailAdapter(
             // A message this app can't render is worth knowing before tapping it — otherwise the
             // only signal is opening it and finding nothing there.
             val pgpState = pgpMessageStateOf(email.pgpEncrypted, email.pgpDecryptError, email.body)
-            val markers = listOfNotNull(pgpRowMarker(pgpState), if (email.hasAttachments) "📎" else null)
+            val signatureState = pgpSignatureStateOf(email.pgpSigned, email.pgpVerified)
+            val markers = listOfNotNull(
+                pgpRowMarker(pgpState, signatureState),
+                if (email.hasAttachments) "📎" else null,
+            )
             subjectTextView.text = (markers + email.subject).joinToString(" ")
             // The markers are emoji, which screen readers announce inconsistently or not at all,
-            // so spell the state out instead of relying on them being read.
-            subjectTextView.contentDescription = when (pgpState) {
-                PgpMessageState.CLIENT_PROTECTED ->
+            // so spell the state out instead of relying on them being read. A failed signature is
+            // announced ahead of readability for the same reason it outranks it in the marker: the
+            // row opens and reads normally, which is what makes an unflagged forgery dangerous.
+            subjectTextView.contentDescription = when {
+                signatureState == PgpSignatureState.INVALID ->
+                    itemView.context.getString(R.string.email_row_pgp_bad_signature_description, email.subject)
+                pgpState == PgpMessageState.CLIENT_PROTECTED ->
                     itemView.context.getString(R.string.email_row_pgp_locked_description, email.subject)
-                PgpMessageState.DECRYPT_FAILED ->
+                pgpState == PgpMessageState.DECRYPT_FAILED ->
                     itemView.context.getString(R.string.email_row_pgp_failed_description, email.subject)
                 else -> null
             }

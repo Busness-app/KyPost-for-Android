@@ -292,7 +292,13 @@ class PushPairingActivity : LockedActivity() {
      *  copyable, photographable, and re-postable, so "physical action" is not proof of trust in
      *  the destination. */
     private fun confirmAndApplyPairing(pairing: PairingData) {
-        val alreadyPaired = viewModel.uiState.value.pairing != null
+        // Read from the store, not from uiState. uiState is a `stateIn(WhileSubscribed(5_000))`
+        // flow, so before anything subscribes it serves its initialValue — whose `pairing` is null.
+        // consumeDeepLink runs in onCreate ahead of the lifecycle collector, so on the cold,
+        // web-driven path (the one an attacker uses) every replacement looked like a first pairing
+        // and the user was shown "This link wants to pair this device with: …" instead of the
+        // warning that their current server is about to be replaced.
+        val alreadyPaired = PushRuntime.graph(this).repository.isPairedNow()
         val messageRes = if (alreadyPaired) R.string.pairing_confirm_replace_message else R.string.pairing_confirm_message
         // The parsed host, never the raw `srv` string. A raw URL in a trust prompt is a phishing
         // surface: `https://mail.trusted-corp.com@evil.tld/` reads as the trusted host on a

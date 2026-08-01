@@ -92,9 +92,20 @@ class MailCursorStore(
         valueKey = stringPreferencesKey("inbox_cursor_value_${folderKey(folder)}"),
     )
 
+    /**
+     * Its **own** scope key, not the cursor's.
+     *
+     * [ScopedValue.set] writes the scope alongside its value, so sharing one key meant writing the
+     * resync stamp re-stamped the scope over a *stale cursor* and re-authorised it for the new
+     * subscriber — precisely the opposite of ScopedValue's stated guarantee that "a change of scope
+     * reads back null instead of the previous scope's stale value". After re-pairing, a relay that
+     * answered the first `/api/inbox` with a blank cursor (a supported case the repo's own tests
+     * exercise) skipped `saveCursor` while `recordFullResync` re-stamped the scope, and the next
+     * refresh 90 seconds later put the *previous* relay's cursor token on the wire to the new one.
+     */
     private fun resyncValue(folder: String) = ScopedValue(
         dataStore = context.mailSyncDataStore,
-        scopeKey = stringPreferencesKey("inbox_cursor_scope_${folderKey(folder)}"),
+        scopeKey = stringPreferencesKey("inbox_resync_scope_${folderKey(folder)}"),
         valueKey = longPreferencesKey("inbox_last_full_resync_${folderKey(folder)}"),
     )
 

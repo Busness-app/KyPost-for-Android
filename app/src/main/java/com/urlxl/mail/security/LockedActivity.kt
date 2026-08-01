@@ -94,11 +94,25 @@ abstract class LockedActivity : AppCompatActivity() {
         // into a coherent first-run state. The wipe reset the app lock, so MainActivity routes
         // straight to pairing — UnlockActivity would prompt for a PIN that no longer exists. The
         // CAS makes it exactly one screen: the others come up after the relaunch and carry on.
-        if (SecurityWipe.startupVerdict.getCompleted() && startupWipeHandled.compareAndSet(false, true)) {
+        val verdict = SecurityWipe.startupVerdict.getCompleted()
+        if (verdict != null && startupWipeHandled.compareAndSet(false, true)) {
             redirectedToUnlock = true
+            // Which message depends on whether the wipe actually finished. Announcing a completed
+            // erasure over an incomplete one is the failure this branch used to have: it took a
+            // bare `true` from enforceTripwire and always said "has been erased", including when
+            // every step failed or when the security graph could not be built at all. In a coercive
+            // hand-over that claim is what the user acts on.
+            val message = when (verdict) {
+                is WipeResult.Complete -> com.urlxl.mail.R.string.security_wiped_notice
+                is WipeResult.Incomplete -> {
+                    android.util.Log.e("LockedActivity", "Startup wipe incomplete: ${verdict.failedSteps}")
+                    if (verdict.willRetry) com.urlxl.mail.R.string.security_wipe_incomplete_notice
+                    else com.urlxl.mail.R.string.security_wipe_incomplete_final_notice
+                }
+            }
             android.widget.Toast.makeText(
                 applicationContext,
-                com.urlxl.mail.R.string.security_wiped_notice,
+                message,
                 android.widget.Toast.LENGTH_LONG,
             ).show()
             AppRestart.relaunch(this)

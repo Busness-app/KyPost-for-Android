@@ -32,7 +32,7 @@ object DeviceContactMatcher {
         private data class Match(val uid: String, val ordinal: Int)
 
         fun findMatch(candidateEmails: List<String>, candidatePhones: List<String>): String? {
-            val keys = candidateEmails.map { emailKey(it) } + candidatePhones.map { phoneKey(it) }
+            val keys = candidateEmails.mapNotNull { emailKey(it) } + candidatePhones.mapNotNull { phoneKey(it) }
             return keys.mapNotNull { byValue[it] }.minByOrNull { it.ordinal }?.uid
         }
 
@@ -41,7 +41,10 @@ object DeviceContactMatcher {
                 val byValue = HashMap<String, Match>()
                 existing.forEachIndexed { ordinal, contact ->
                     val match = Match(contact.uid, ordinal)
-                    (contact.emails.map { emailKey(it.value) } + contact.phones.map { phoneKey(it.value) })
+                    (
+                        contact.emails.mapNotNull { emailKey(it.value) } +
+                            contact.phones.mapNotNull { phoneKey(it.value) }
+                        )
                         .forEach { key ->
                             val current = byValue[key]
                             if (current == null || ordinal < current.ordinal) byValue[key] = match
@@ -52,10 +55,21 @@ object DeviceContactMatcher {
         }
     }
 
-    /** Emails and phones share one map, so they are namespaced to keep a phone-shaped email from
-     *  matching a phone. */
-    private fun emailKey(value: String) = "e:${normalizeEmail(value)}"
-    private fun phoneKey(value: String) = "p:${normalizePhone(value)}"
+    /**
+     * Emails and phones share one map, so they are namespaced to keep a phone-shaped email from
+     * matching a phone.
+     *
+     * Null for a value that normalizes to nothing, which identifies nobody. `normalizePhone` strips
+     * every non-digit, so placeholders like "n/a", "-" and "+" all collapse to the empty string, and
+     * `ContactFieldDto.value` defaults to empty server-side. Indexing those made one stored
+     * placeholder a bucket that every later blank-valued candidate matched, so unrelated device
+     * contacts were reported as already-known and silently skipped from import.
+     */
+    private fun emailKey(value: String): String? =
+        normalizeEmail(value).takeIf { it.isNotBlank() }?.let { "e:$it" }
+
+    private fun phoneKey(value: String): String? =
+        normalizePhone(value).takeIf { it.isNotBlank() }?.let { "p:$it" }
 
     fun findMatch(
         candidateEmails: List<String>,
