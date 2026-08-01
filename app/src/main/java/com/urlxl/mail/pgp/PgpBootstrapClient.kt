@@ -3,12 +3,12 @@ package com.urlxl.mail.pgp
 import com.urlxl.mail.executeSync
 import com.urlxl.mail.pairingAuthHeaders
 import com.urlxl.mail.pairingHttpClient
+import com.urlxl.mail.push.pairingEndpoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import okhttp3.Call
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
 
 /**
@@ -48,7 +48,7 @@ class PgpBootstrapClient(
     private val callFactory: Call.Factory = pairingHttpClient(),
 ) {
     suspend fun fetch(serverUrl: String, deviceId: String, deviceSecret: String): PgpBootstrapResult {
-        val url = "${serverUrl.trimEnd('/')}/api/pgp/bootstrap".toHttpUrlOrNull()
+        val url = pairingEndpoint(serverUrl, "/api/pgp/bootstrap")
             ?: return PgpBootstrapResult.Failed("Server URL is not valid")
         val request = Request.Builder().url(url).get()
             .pairingAuthHeaders(deviceId, deviceSecret)

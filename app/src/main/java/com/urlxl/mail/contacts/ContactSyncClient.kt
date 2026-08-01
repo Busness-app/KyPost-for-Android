@@ -3,12 +3,12 @@ package com.urlxl.mail.contacts
 import com.urlxl.mail.executeSync
 import com.urlxl.mail.pairingAuthHeaders
 import com.urlxl.mail.pairingHttpClient
+import com.urlxl.mail.push.pairingEndpoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import okhttp3.Call
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -101,9 +101,9 @@ class ContactSyncClient(
         }
     }
 
-    private fun syncUrl(serverUrl: String) = "${serverUrl.trimEnd('/')}/api/contacts/sync".toHttpUrlOrNull()
+    private fun syncUrl(serverUrl: String) = pairingEndpoint(serverUrl, "/api/contacts/sync")
 
-    private fun dedupeUrl(serverUrl: String) = "${serverUrl.trimEnd('/')}/api/contacts/dedupe".toHttpUrlOrNull()
+    private fun dedupeUrl(serverUrl: String) = pairingEndpoint(serverUrl, "/api/contacts/dedupe")
 
     private suspend fun execute(request: Request): ContactSyncResult {
         return when (

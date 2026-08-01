@@ -3,6 +3,8 @@ package com.urlxl.mail.push
 import java.net.URI
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 /**
  * Deliberately **not** `@Serializable`.
@@ -173,4 +175,10 @@ internal fun pairingUrlHost(value: String): String? {
     if (!parsed.scheme.equals("https", ignoreCase = true)) return null
     if (parsed.rawUserInfo != null) return null
     return parsed.host?.takeIf { it.isNotBlank() }
+}
+
+/** Builds an endpoint that may receive this device's pairing credential. */
+internal fun pairingEndpoint(serverUrl: String, path: String): HttpUrl? {
+    if (pairingUrlHost(serverUrl) == null) return null
+    return "${serverUrl.trimEnd('/')}$path".toHttpUrlOrNull()
 }

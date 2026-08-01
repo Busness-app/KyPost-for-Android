@@ -3,6 +3,7 @@ package com.urlxl.mail.contacts
 import com.urlxl.mail.data.AppDatabase
 import com.urlxl.mail.data.GroupEntity
 import com.urlxl.mail.push.PairingData
+import androidx.room.withTransaction
 
 sealed class GroupSyncOutcome {
     object Success : GroupSyncOutcome()
@@ -43,7 +44,9 @@ class GroupSyncRepository(
 
     private suspend fun applyFullRefresh(groups: List<GroupDto>) {
         val entities = groups.map { GroupEntity(id = it.id, name = it.name, rev = it.rev) }
-        db.groupDao().upsertAll(entities)
-        db.groupDao().deleteNotIn(entities.map { it.id })
+        db.withTransaction {
+            db.groupDao().upsertAll(entities)
+            db.groupDao().deleteNotIn(entities.map { it.id })
+        }
     }
 }

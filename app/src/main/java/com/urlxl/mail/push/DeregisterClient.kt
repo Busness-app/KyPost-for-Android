@@ -23,7 +23,7 @@ data class DeregisterResponse(
 
 /** Mirrors [resolvePullEndpoint]/[resolveMfaRespondEndpoint] — always derived from the paired server URL. */
 fun resolveDeregisterEndpoint(serverUrl: String): String =
-    "${serverUrl.trimEnd('/')}/api/notifications/native/deregister"
+    pairingEndpoint(serverUrl, "/api/notifications/native/deregister")?.toString().orEmpty()
 
 sealed class DeregisterResult {
     object Success : DeregisterResult()
@@ -48,9 +48,11 @@ class DeregisterClient(
         if (deviceId.isNullOrBlank() || deviceSecret.isNullOrBlank()) {
             return DeregisterResult.Error("Device is not registered")
         }
+        val endpoint = resolveDeregisterEndpoint(pairing.serverUrl)
+        if (endpoint.isBlank()) return DeregisterResult.Error("Server URL is not valid")
 
         val httpRequest = Request.Builder()
-            .url(resolveDeregisterEndpoint(pairing.serverUrl))
+            .url(endpoint)
             .post(EMPTY_JSON_BODY)
             .pairingAuthHeaders(deviceId, deviceSecret)
             .build()

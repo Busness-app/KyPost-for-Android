@@ -38,6 +38,22 @@ class PairingUrlHostTest {
     }
 
     @Test
+    fun pairingEndpoint_rechecksPersistedServerUrlBeforeBuildingCredentialDestination() {
+        assertEquals(
+            "https://relay.example.com/api/contacts/sync",
+            pairingEndpoint("https://relay.example.com", "/api/contacts/sync")?.toString(),
+        )
+        assertNull(pairingEndpoint("http://relay.example.com", "/api/contacts/sync"))
+        assertNull(pairingEndpoint("https://trusted.example@evil.example", "/api/contacts/sync"))
+    }
+
+    @Test
+    fun sameOrigin_requiresTheSameEffectivePort() {
+        assertTrue(sameOrigin("https://relay.example.com:8443/api", "https://relay.example.com:8443"))
+        assertTrue(!sameOrigin("https://relay.example.com:8443/api", "https://relay.example.com"))
+    }
+
+    @Test
     fun deepLinkParserRefusesAUserinfoServerUrl() {
         val link = "kypost://native-pair?sub=s1&pt=t1&srv=" +
             java.net.URLEncoder.encode("https://mail.trusted-corp.com@evil.tld/", "UTF-8")

@@ -33,6 +33,18 @@ class PullNotificationTest {
     }
 
     @Test
+    fun resolvePullEndpoint_rejectsDifferentPortAndUnsafeUrl() {
+        assertEquals(
+            "https://server.example.com/api/notifications/native/pull",
+            resolvePullEndpoint("https://server.example.com", "https://server.example.com:8443/pull"),
+        )
+        assertEquals(
+            "https://server.example.com/api/notifications/native/pull",
+            resolvePullEndpoint("https://server.example.com", "http://server.example.com/pull"),
+        )
+    }
+
+    @Test
     fun toPushPayload_usesTitleAndBody_andFallsBackToData() {
         val n = PullNotification(
             seq = 42,

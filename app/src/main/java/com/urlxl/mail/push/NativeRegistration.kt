@@ -63,11 +63,9 @@ data class NativeRegistrationResponse(
  * Mirrors [NativeRegistrationEndpointResolver] for the register endpoint.
  */
 fun resolvePullEndpoint(serverUrl: String, provided: String?): String {
-    val fallback = "${serverUrl.trimEnd('/')}/api/notifications/native/pull"
+    val fallback = pairingEndpoint(serverUrl, "/api/notifications/native/pull")?.toString() ?: return ""
     val candidate = provided?.takeIf { it.isNotBlank() } ?: return fallback
-    val candidateUrl = candidate.toHttpUrlOrNull() ?: return fallback
-    val serverHttpUrl = serverUrl.toHttpUrlOrNull() ?: return fallback
-    return if (candidateUrl.scheme == serverHttpUrl.scheme && candidateUrl.host == serverHttpUrl.host) {
+    return if (pairingUrlHost(candidate) != null && sameOrigin(candidate, serverUrl)) {
         candidate
     } else {
         fallback
@@ -136,6 +134,12 @@ class NativeRegistrationClient(
         auth: String? = null,
     ): NativeRegistrationResult {
         if (token.isBlank()) return NativeRegistrationResult.Error("FCM token is empty")
+        if (pairingUrlHost(pairing.serverUrl) == null ||
+            pairingUrlHost(pairing.registrationUrl) == null ||
+            !sameOrigin(pairing.registrationUrl, pairing.serverUrl)
+        ) {
+            return NativeRegistrationResult.Error("Registration URL is not valid")
+        }
 
         val request = NativeRegistrationRequestMapper.map(
             pairing = pairing,

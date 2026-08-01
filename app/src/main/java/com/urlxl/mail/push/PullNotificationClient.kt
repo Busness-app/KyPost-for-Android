@@ -46,7 +46,7 @@ class PullNotificationClient(
         deviceSecret: String,
         afterCursor: Long,
     ): PullResult {
-        val base = pullEndpoint.toHttpUrlOrNull()
+        val base = pullEndpoint.takeIf { pairingUrlHost(it) != null }?.toHttpUrlOrNull()
             ?: return PullResult.BadRequest("Pull endpoint is not a valid URL")
 
         val url = base.newBuilder()

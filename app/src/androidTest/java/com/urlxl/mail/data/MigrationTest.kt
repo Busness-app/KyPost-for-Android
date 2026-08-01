@@ -143,6 +143,19 @@ class MigrationTest {
         }
     }
 
+    @Test
+    fun migrate8To9_createsContactSyncStateTable() {
+        helper.createDatabase(TEST_DB, 8).close()
+
+        val migrated = helper.runMigrationsAndValidate(TEST_DB, 9, true, AppDatabase.MIGRATION_8_9)
+
+        migrated.execSQL("INSERT INTO contact_sync_state (subscriberId, cursor) VALUES ('sub-1', 42)")
+        migrated.query("SELECT cursor FROM contact_sync_state WHERE subscriberId = 'sub-1'").use { cursor ->
+            assertEquals(true, cursor.moveToFirst())
+            assertEquals(42L, cursor.getLong(cursor.getColumnIndexOrThrow("cursor")))
+        }
+    }
+
     private companion object {
         const val TEST_DB = "migration-test"
     }

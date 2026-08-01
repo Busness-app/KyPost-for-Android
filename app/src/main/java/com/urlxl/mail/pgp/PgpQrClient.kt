@@ -3,11 +3,11 @@ package com.urlxl.mail.pgp
 import com.urlxl.mail.executeSync
 import com.urlxl.mail.pairingAuthHeaders
 import com.urlxl.mail.pairingHttpClient
+import com.urlxl.mail.push.pairingEndpoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import okhttp3.Call
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
 
 /** Outcome of `GET /api/pgp/qr/token` (pairing-authenticated via X-Kypost-Device-Id/X-Kypost-Device-Secret headers). */
@@ -105,9 +105,9 @@ class PgpQrClient(
         }
     }
 
-    private fun tokenUrl(serverUrl: String) = "${serverUrl.trimEnd('/')}/api/pgp/qr/token".toHttpUrlOrNull()
+    private fun tokenUrl(serverUrl: String) = pairingEndpoint(serverUrl, "/api/pgp/qr/token")
 
-    private fun keyUrl(serverUrl: String) = "${serverUrl.trimEnd('/')}/api/pgp/qr/key".toHttpUrlOrNull()
+    private fun keyUrl(serverUrl: String) = pairingEndpoint(serverUrl, "/api/pgp/qr/key")
 
     private suspend fun executeRequest(request: Request): Result<Pair<Int, String>> = withContext(Dispatchers.IO) {
         callFactory.executeSync(request) { response -> response.code to response.body?.string().orEmpty() }

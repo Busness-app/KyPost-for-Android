@@ -3,13 +3,13 @@ package com.urlxl.mail.pgp
 import com.urlxl.mail.executeSync
 import com.urlxl.mail.pairingAuthHeaders
 import com.urlxl.mail.pairingHttpClient
+import com.urlxl.mail.push.pairingEndpoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import okhttp3.Call
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -74,7 +74,7 @@ class RecipientKeyClient(
     ): RecipientKeyResult {
         // No addresses is a local answer, not a round trip.
         if (addresses.isEmpty()) return RecipientKeyResult.Success(emptyList())
-        val url = "${serverUrl.trimEnd('/')}/api/pgp/recipients/check".toHttpUrlOrNull()
+        val url = pairingEndpoint(serverUrl, "/api/pgp/recipients/check")
             ?: return RecipientKeyResult.Failed("Server URL is not valid")
         val payload = json.encodeToString(RecipientCheckRequestDto(addresses))
         val request = Request.Builder().url(url).post(payload.toRequestBody(JSON_MEDIA_TYPE))
