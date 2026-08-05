@@ -108,11 +108,16 @@ biometric-enrollment change destroys the key without any code of ours running, s
 would survive and the Security page would tell the user a device can read their mail when it can
 read nothing.
 
-**Unverified assumption, flagged deliberately.** The exact exception behaviour of `Cipher.init`
-against a per-use auth-bound key needs confirming on real hardware and may differ between
-StrongBox and TEE. Test 10 exists to settle it. If `init` demands auth on some configuration, the
-fallback is to probe where possible and treat a cached `true` as unverified rather than
-authoritative — never the reverse.
+**Assumption — verified on TEE, still open on StrongBox (updated 2026-08-05).** `Cipher.init`
+against a per-use auth-bound key succeeds with no user authentication and no prompt, and reports a
+healthy-but-locked key as `ENROLLED`. Confirmed by `healthyLockedKeyReportsEnrolledWithoutAPrompt`
+in `EnrollmentStateTest` (commit `bda8826`), running headless with no auth UI invoked.
+
+**That run was TEE-backed** — the emulator logged `StrongBox unavailable, falling back to TEE`, so
+the StrongBox path this section originally warned about is still unverified. It needs one run on
+hardware with a dedicated secure element before this is considered settled. If `init` demands auth
+there, the fallback is unchanged: probe where possible and treat a cached `true` as unverified
+rather than authoritative — never the reverse.
 
 ### 5. Enrollment state rides a dedicated device-authed endpoint
 
