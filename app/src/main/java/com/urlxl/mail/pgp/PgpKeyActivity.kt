@@ -65,6 +65,7 @@ class PgpKeyActivity : LockedActivity() {
     // sites are well after onCreate) avoids a NullPointerException here. See finding C2 of the
     // 2026-07-22 security-hardening spec's final-review fix round.
     private val client by lazy { PgpQrClient(callFactory = pinnedPairingCallFactory(this)) }
+    private val bootstrapClient by lazy { PgpBootstrapClient(callFactory = pinnedPairingCallFactory(this)) }
     private var pendingKey: PgpQrKeyDto? = null
 
     private val pickContactLauncher = registerForActivityResult(
@@ -129,7 +130,7 @@ class PgpKeyActivity : LockedActivity() {
             }
 
             when (val result = client.mintToken(pairing.serverUrl, deviceId, deviceSecret)) {
-                is PgpQrTokenResult.Success -> renderQr(result.token, pairing.serverUrl)
+                is PgpQrTokenResult.Success -> renderQr(result.token, pairing.serverUrl, deviceId, deviceSecret)
                 is PgpQrTokenResult.NoIdentity -> qrStatusText.text = getString(R.string.pgp_qr_my_code_no_identity)
                 is PgpQrTokenResult.Unauthorized -> qrStatusText.text = getString(R.string.pgp_qr_my_code_unauthorized)
                 is PgpQrTokenResult.ServiceUnavailable -> qrStatusText.text = getString(R.string.pgp_qr_my_code_unavailable)
@@ -138,7 +139,7 @@ class PgpKeyActivity : LockedActivity() {
         }
     }
 
-    private fun renderQr(token: PgpQrTokenDto, serverUrl: String) {
+    private fun renderQr(token: PgpQrTokenDto, serverUrl: String, deviceId: String, deviceSecret: String) {
         // Build the URL locally against the paired origin rather than encoding the server-supplied
         // `token.url`. That field was rendered verbatim, so a tampered token response could point
         // the counterparty's unauthenticated fetch at any host — outside the TLS pin — and have
@@ -153,16 +154,24 @@ class PgpKeyActivity : LockedActivity() {
         qrImage.visibility = View.VISIBLE
         qrStatusText.text = ""
         qrExpiresText.text = getString(R.string.pgp_qr_my_code_expires, token.expiresAt)
-        renderOwnFingerprint()
+        renderOwnFingerprint(serverUrl, deviceId, deviceSecret)
     }
 
-    /** Shows the user their own fingerprint beside the QR, so that when the other device asks them
-     *  to "confirm this fingerprint matches", they have something on screen to compare it to. */
-    private fun renderOwnFingerprint() {
+    /**
+     * Shows the user their own fingerprint beside the QR, so that when the other device asks them
+     * to "confirm this fingerprint matches", they have something on screen to compare it to.
+     *
+     * Sourced from `GET /api/pgp/bootstrap` and hashed locally — see [ownFingerprintFromBootstrap]
+     * for why the self-contact's `pgpKey` column, which this used to read, is empty for essentially
+     * every user and made this line read "unavailable" always. Not sourced from the QR token just
+     * minted either: `/api/pgp/qr/key` is single-use server-side, so fetching our own key with it
+     * would burn the code the other person is about to scan.
+     */
+    private fun renderOwnFingerprint(serverUrl: String, deviceId: String, deviceSecret: String) {
         lifecycleScope.launch {
-            val ownKey = DataRuntime.graph(this@PgpKeyActivity).database.contactDao()
-                .getSelf()?.pgpKey
-            val fingerprint = ownKey?.takeIf { it.isNotBlank() }?.let { PgpFingerprint.compute(it) }
+            val fingerprint = ownFingerprintFromBootstrap(
+                bootstrapClient.fetch(serverUrl, deviceId, deviceSecret),
+            )
             qrMyFingerprintText.text = if (fingerprint != null) {
                 getString(R.string.pgp_qr_my_fingerprint_label, fingerprint)
             } else {

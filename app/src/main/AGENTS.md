@@ -47,6 +47,18 @@ Owns production Android app code and resources.
   a marker would sit on most rows of a server-mode mailbox carrying nothing actionable. `EmailAdapter`
   also sets a spelled-out `contentDescription` for those two, because screen readers announce emoji
   inconsistently.
+- **The account's own PGP identity is never in the contacts database.** `ContactEntity.pgpKey` — even
+  on the self-contact (`isSelf = 1`) — is an ordinary contact field, written only when a key is
+  attached to a contact by hand or by the QR scan; the account's real identity lives server-side.
+  Two helpers exist because of this and are the only correct readers: `contactHasLinkedPgpKey`
+  (badge: self also counts as linked when `pgp.hasPgpIdentity` says so) and
+  `pgp.ownFingerprintFromBootstrap` (the fingerprint `PgpKeyActivity` shows beside the user's own
+  QR, from `GET /api/pgp/bootstrap`'s `publicKey`, hashed locally by `PgpFingerprint`). Reading
+  `contactDao().getSelf()?.pgpKey` for either is the bug both replaced — it is empty for
+  essentially every user. Do not source that fingerprint from the QR token instead: `/api/pgp/qr/key`
+  is single-use server-side, so fetching our own key with it burns the code being displayed.
+  Never render the server's own `fingerprint` field for either side of the exchange; it is a claim
+  beside the key with no cryptographic tie to it.
 - Client-protected messages offer "Open in webmail" via `pgp.webmailMessageUrl`, which builds
   `{serverUrl}/read?mailbox=&message=` — the same route a web push click uses, so no server change
   backs it. INBOX is sent as an absent `mailbox` param, matching the links the web app builds for

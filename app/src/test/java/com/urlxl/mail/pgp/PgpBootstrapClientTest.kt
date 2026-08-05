@@ -22,7 +22,10 @@ class PgpBootstrapClientTest {
 
         val result = client.fetch("https://relay.example.com/", "device-1", "secret-1")
 
-        assertEquals(PgpBootstrapResult.Success(hasIdentity = true, protection = "client"), result)
+        assertEquals(
+            PgpBootstrapResult.Success(hasIdentity = true, protection = "client", publicKey = ""),
+            result,
+        )
         val sent = callFactory.requests.single()
         assertEquals("https://relay.example.com/api/pgp/bootstrap", sent.url.toString())
         assertEquals("GET", sent.method)
@@ -39,7 +42,25 @@ class PgpBootstrapClientTest {
 
         val result = client.fetch("https://relay.example.com", "device-1", "secret-1")
 
-        assertEquals(PgpBootstrapResult.Success(hasIdentity = false, protection = "server"), result)
+        assertEquals(
+            PgpBootstrapResult.Success(hasIdentity = false, protection = "server", publicKey = ""),
+            result,
+        )
+    }
+
+    /** The PGP QR screen shows the user their own fingerprint beside the code they present, and
+     *  computes it from these bytes rather than from the response's `fingerprint` claim. */
+    @Test
+    fun parsesTheOwnPublicKey() = runBlocking {
+        val body = """{"hasIdentity":true,"protection":"client","publicKey":"-----BEGIN PGP PUBLIC KEY BLOCK-----\nabc\n-----END PGP PUBLIC KEY BLOCK-----"}"""
+        val client = PgpBootstrapClient(callFactory = FakeCallFactory { request -> response(request, body, 200) })
+
+        val result = client.fetch("https://relay.example.com", "device-1", "secret-1")
+
+        assertEquals(
+            "-----BEGIN PGP PUBLIC KEY BLOCK-----\nabc\n-----END PGP PUBLIC KEY BLOCK-----",
+            (result as PgpBootstrapResult.Success).publicKey,
+        )
     }
 
     /** A failed bootstrap must be distinguishable from a successful "no identity", or the compose

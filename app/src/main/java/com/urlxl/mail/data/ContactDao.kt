@@ -14,10 +14,9 @@ interface ContactDao {
     @Query("SELECT * FROM contacts WHERE uid = :uid")
     suspend fun getByUid(uid: String): ContactEntity?
 
-    /** The account owner's own contact. Used to show the user their own PGP fingerprint next to
-     *  the QR they present, so the other side's "confirm this matches" has something to match. */
-    @Query("SELECT * FROM contacts WHERE isSelf = 1 LIMIT 1")
-    suspend fun getSelf(): ContactEntity?
+    // Deliberately no getSelf(): the account's own PGP identity is NOT in this table — the
+    // self-contact's pgpKey is an ordinary contact field — so a "fetch my own row" helper only ever
+    // served an answer this database cannot give. See pgp.ownFingerprintFromBootstrap.
 
     @Upsert
     suspend fun upsertAll(contacts: List<ContactEntity>)

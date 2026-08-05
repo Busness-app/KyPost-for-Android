@@ -95,18 +95,7 @@ class PgpFingerprintTest {
     }
 
     private companion object {
-        const val TEST_KEY_FINGERPRINT = "164D 5B83 4E7F E927 2DC7 293B 6D78 ABF3 D917 9534"
-        val TEST_KEY = """
-            -----BEGIN PGP PUBLIC KEY BLOCK-----
-
-            mDMEalxKSBYJKwYBBAHaRw8BAQdAaLBvayt/AqeBFCxDOrvjb36gwol5tI+JU+6p
-            vOR9sTO0KVBncEZpbmdlcnByaW50VGVzdCA8dGVzdEBleGFtcGxlLmludmFsaWQ+
-            iJAEExYKADgWIQQWTVuDTn/pJy3HKTtteKvz2ReVNAUCalxKSAIbAwULCQgHAgYV
-            CgkICwIEFgIDAQIeAQIXgAAKCRBteKvz2ReVNAUoAQCi9uhyZCB8aY/iupXHv0j9
-            3HOkEbVmB1B/xRn+xdcu4gEAn2JbiIts/RVYYk8RXwTVp3zrksdrTZ1zBiBUC/ZH
-            TQ8=
-            =+uqe
-            -----END PGP PUBLIC KEY BLOCK-----
-        """.trimIndent()
+        const val TEST_KEY_FINGERPRINT = TestPgpKey.FINGERPRINT
+        val TEST_KEY = TestPgpKey.ARMORED
     }
 }

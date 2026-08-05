@@ -21,19 +21,29 @@ import okhttp3.Request
 sealed class PgpBootstrapResult {
     /** [protection] is `"server"`, `"client"`, or `""` for an account with no identity. Passed
      *  through as the raw string; [pgpComposeStateOf] decides what it means, and treats anything
-     *  unrecognized as "not server". */
-    data class Success(val hasIdentity: Boolean, val protection: String) : PgpBootstrapResult()
+     *  unrecognized as "not server". [publicKey] is the account's own armored public key, `""`
+     *  when it has no identity — the only device-reachable source for it, and what
+     *  [ownFingerprintFromBootstrap] hashes to show the user their own fingerprint. */
+    data class Success(
+        val hasIdentity: Boolean,
+        val protection: String,
+        val publicKey: String,
+    ) : PgpBootstrapResult()
 
     data class Failed(val message: String) : PgpBootstrapResult()
 }
 
-/** The two fields this app needs. The endpoint returns considerably more — wrappedPrivateKey,
+/** The three fields this app needs. The endpoint returns considerably more — wrappedPrivateKey,
  *  unlockRequired, signerPublicKeys, payloadEndpoint — all of it for the browser, none of it
- *  usable here, which is why the [Json] instance ignores unknown keys. */
+ *  usable here, which is why the [Json] instance ignores unknown keys. The response's own
+ *  `fingerprint` field is deliberately NOT among them: it is a claim sitting beside `publicKey`
+ *  with no cryptographic tie to it, and [PgpFingerprint] exists precisely so the app hashes the
+ *  key bytes itself instead of rendering a server-supplied label. */
 @Serializable
 private data class PgpBootstrapDto(
     val hasIdentity: Boolean = false,
     val protection: String = "",
+    val publicKey: String = "",
 )
 
 /**
@@ -64,6 +74,10 @@ class PgpBootstrapClient(
         if (code != 200) return PgpBootstrapResult.Failed("PGP bootstrap failed ($code)")
         val parsed = runCatching { json.decodeFromString<PgpBootstrapDto>(rawBody) }.getOrNull()
             ?: return PgpBootstrapResult.Failed("Malformed PGP bootstrap response")
-        return PgpBootstrapResult.Success(hasIdentity = parsed.hasIdentity, protection = parsed.protection)
+        return PgpBootstrapResult.Success(
+            hasIdentity = parsed.hasIdentity,
+            protection = parsed.protection,
+            publicKey = parsed.publicKey,
+        )
     }
 }
