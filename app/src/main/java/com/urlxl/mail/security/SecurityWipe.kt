@@ -358,10 +358,19 @@ object SecurityWipe {
         val prefs = appContext.getSharedPreferences(WIPE_STATE_PREFS, Context.MODE_PRIVATE)
         val alreadyRecorded = prefs.getBoolean(KEY_HOSTILE_LOCATION_WAS_ENABLED, false)
         val posture = hostileLocationEnabled || alreadyRecorded
+        // The attempt counter belongs to ONE wipe, not to the install. A set marker means this run is
+        // resuming an episode already under way, so the count climbs and MAX_WIPE_RESUMES bounds it.
+        // A clear marker means this is a new wipe, which gets the full budget — otherwise the counter
+        // is monotonic for the life of the install, and since ordinary user actions trigger wipes
+        // (turning off "Require Unlock to Open" with the credential gate on runs one), the budget is
+        // spent long before the wipe that matters: a thief burning PIN attempts, which would then
+        // abandon itself on its first failed step and tell the user to reinstall.
+        val resuming = prefs.getBoolean(KEY_WIPE_IN_PROGRESS, false)
+        val attempts = if (resuming) prefs.getInt(KEY_WIPE_ATTEMPTS, 0) + 1 else 1
         prefs.edit()
             .putBoolean(KEY_WIPE_IN_PROGRESS, true)
             .putBoolean(KEY_HOSTILE_LOCATION_WAS_ENABLED, posture)
-            .putInt(KEY_WIPE_ATTEMPTS, prefs.getInt(KEY_WIPE_ATTEMPTS, 0) + 1)
+            .putInt(KEY_WIPE_ATTEMPTS, attempts)
             .commit()
         return posture
     }
@@ -371,7 +380,12 @@ object SecurityWipe {
      *
      * Deliberately not `clear()`. That dropped [KEY_WIPE_ATTEMPTS] along with the in-progress flag,
      * so reaching [MAX_WIPE_RESUMES] reset the budget to zero and the ceiling bounded nothing —
-     * measured across seven consecutive failing wipes, the counter cycled 1, 2, 0, 1, 2, 0, 1. The
+     * measured across seven consecutive failing wipes, the counter cycled 1, 2, 0, 1, 2, 0, 1.
+     *
+     * The count is left here on purpose and reset by [markWipeInProgress] instead, when it observes
+     * a clear marker. Resetting in both places would re-open the cycling bug the moment either one
+     * changed; resetting only at episode start keeps "the ceiling bounds one wipe" true even if this
+     * method is edited later. The
      * posture flag goes with the marker: it belongs to the wipe that recorded it, and a later,
      * unrelated wipe must observe the setting as it stands then.
      */
