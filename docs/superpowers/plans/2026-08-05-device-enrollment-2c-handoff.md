@@ -126,12 +126,20 @@ enrollment envelope".
   direction.
 - Add it in `push/NativeRegistration.kt` alongside `deviceToken` (`@SerialName`, line ~26).
 
-### Two server behaviours worth relying on
+### Three server behaviours worth relying on
 
 - **The published key survives re-registration.** `upsertNativeDeviceTx` carries the
   enrollment columns forward on both re-registration branches (by device id, and by push
   token + platform). Publish once; an ordinary push-token rotation will not erase it.
   Regression-tested both branches.
+- **The published key does NOT survive an identity change.** Any write or delete of the
+  account's PGP identity clears `enrollmentPublicKey`, `enrollmentKeyAt` and
+  `encryptionEnrolled` on every device — the key was published against a superseded
+  identity, and every sealing made under it is void. **So the device must publish its key
+  as part of starting enrollment, not only once at pairing.** A device that publishes only
+  at pairing will find its key gone after the user rotates, and enrollment will fail with
+  nothing on screen explaining why. The pairing itself is untouched: push, sync and the
+  push-MFA approver flag all keep working across a rotation.
 - **Publishing to an unknown device is an error, not a silent no-op.** Expect a `500` if
   the device row has been removed server-side while the credential still exists.
 
@@ -155,37 +163,57 @@ written in parallel.
 
 ---
 
-## Unresolved spec gaps — pin these BEFORE writing code
+## The wire format — SETTLED, and binding on this client
 
-These are genuine holes, not nitpicks. Three independent implementations (browser,
-Android, Qt) must agree **bit-for-bit** or the ceremony fails in the field with no useful
-error — the user sees "the codes don't match" and concludes the server is hostile.
+These were open holes when this handoff was first written. They are now normative in
+`kypost-server/docs/superpowers/specs/2026-08-04-device-enrollment-design.md`, under the
+three `NORMATIVE:` headings, and implemented in the browser. **Read those headings — this
+is a summary, not the contract.**
 
-1. **The public key's wire encoding is unspecified.** Raw uncompressed point? DER
-   `SubjectPublicKeyInfo`? Base64 of which? The server stores an opaque string and the
-   4 KiB cap is the only constraint. The verification code hashes this value, so 2b and
-   2c hashing different encodings of the same key produces a mismatch on every honest
-   enrollment.
+Three implementations must agree bit-for-bit. A disagreement does not fail loudly: it
+fails as "the codes do not match" on every honest enrollment, which to a user is
+indistinguishable from a hostile server.
 
-2. **The code derivation is under-specified.** The design gives
-   `truncate(SHA-256(devicePublicKey ‖ deviceId ‖ timeBucket), 50 bits)` → ten Crockford
-   base32 characters as `XXXXX-XXXXX`, two-minute validity. Not stated: what `‖` is in
-   bytes (any separator? length prefixes?); how `timeBucket` is encoded (unix seconds
-   divided by 120, as what width and endianness?); *which* 50 bits of the digest and how
-   they pack into base32. Also unhandled: a device and browser on opposite sides of a
-   bucket boundary — accepting the adjacent bucket doubles the window and needs to be a
-   stated decision, not an accident.
+**Public key encoding.** Base64 (standard alphabet, padded) of the uncompressed SEC1
+point: `0x04 || X || Y`, X and Y each left-padded to exactly 32 bytes. 65 bytes raw, 88
+characters encoded. From `ECPublicKey.getW()`, pad each coordinate to 32 bytes — do not
+use `getEncoded()`, which gives DER.
 
-3. **The GCM AAD binding from the rejection is not in the server design.** The rejection
-   requires binding the device id and the PGP key fingerprint into the envelope's AAD, so
-   a substituted or replayed envelope fails authentication rather than decrypting into the
-   wrong account's key. The server treats the envelope as opaque and says nothing about
-   this, so it is purely a 2b/2c contract — and it is a **condition of the rejection being
-   liftable**, not an optimisation. If 2c proceeds without it, objection 2 is not actually
-   resolved.
+**Code derivation.** Hash the **raw 65 bytes**, never the base64 text.
 
-Gaps 1 and 2 belong in the server design doc as normative wire format, with test vectors,
-before either client is written. Gap 3 belongs in a joint 2b/2c section.
+```
+bucket   = floor(unixSeconds / 120)
+preimage = rawKey(65) || uint16BE(len(deviceIdUtf8)) || deviceIdUtf8 || uint64BE(bucket)
+H        = SHA-256(preimage)
+code     = first 50 bits of H, MSB-first, as 10 Crockford base32 chars
+           (alphabet 0123456789ABCDEFGHJKMNPQRSTVWXYZ), displayed XXXXX-XXXXX
+```
+
+**Test vector — assert this exact string.** With `deviceId = "test-device"`,
+`bucket = 14000000`, and a key of `0x04` then X = `0x01`×32, Y = `0x02`×32:
+
+```
+5R9K6FWA18        displayed as 5R9K6-FWA18
+```
+
+That key is a valid encoding but not a point on P-256, deliberately: the derivation hashes
+bytes and must not need a curve operation, so the vector is reproducible before ECDH is
+wired up. `frontend/src/lib/deviceEnrollment.test.ts` holds it as an inline snapshot and is
+**authoritative if it and the design doc ever disagree** — it runs on every frontend build,
+the document does not.
+
+**Envelope.** JSON, `{"v":1,"alg":"ECDH-P256+HKDF-SHA256+A256GCM","epk":…,"iv":…,"ct":…}`.
+HKDF-SHA256 with `ikm` = the ECDH shared secret, `salt` = the device's raw 65-byte public
+key, `info` = UTF-8 `"kypost-device-envelope/v1"`, length 32. IV is 12 bytes; `ct` carries
+the 16-byte GCM tag appended.
+
+**AAD** = UTF-8 of `kypost-device-envelope/v1|<deviceId>|<pgpFingerprint>`, fingerprint
+uppercase hex, no spaces. This is the binding this repo required before withdrawing its
+rejection — device id stops replay at another device, fingerprint stops an envelope
+outliving an identity rotation.
+
+**Changing any of this is a wire-format break**, not a fix. It moves the `v1` tag, the HKDF
+`info` and the AAD prefix together, and strands every enrolled device until it re-enrolls.
 
 ---
 
