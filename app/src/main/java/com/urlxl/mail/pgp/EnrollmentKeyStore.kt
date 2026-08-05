@@ -53,7 +53,9 @@ internal object EnrollmentKeyStore {
     fun rawPublicKey(): ByteArray? = runCatching {
         val cert = keyStore().getCertificate(ALIAS) ?: return null
         val w = (cert.publicKey as ECPublicKey).w
-        byteArrayOf(0x04) + pad32(w.affineX) + pad32(w.affineY)
+        // Encoding lives in Sec1Point.kt, pure and Android-free, so both padding branches are
+        // unit-testable. A generated-key test here can only ever assert the overall length.
+        sec1UncompressedPoint(w.affineX, w.affineY)
     }.getOrNull()
 
     fun encodedPublicKey(): String? = rawPublicKey()?.let { Base64.getEncoder().encodeToString(it) }
@@ -80,10 +82,6 @@ internal object EnrollmentKeyStore {
         runCatching { keyStore().deleteEntry(ALIAS) }
     }
 
-    private fun pad32(v: BigInteger): ByteArray {
-        val b = v.toByteArray().let { if (it.size > 32) it.copyOfRange(it.size - 32, it.size) else it }
-        return ByteArray(32 - b.size) + b
-    }
 
     private fun keyStore(): KeyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
 }
