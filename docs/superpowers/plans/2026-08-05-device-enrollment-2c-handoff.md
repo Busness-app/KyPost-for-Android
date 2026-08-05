@@ -82,7 +82,7 @@ Assert the normative vector. One test, no dependencies, an hour of work:
 deviceId  = "test-device"
 bucket    = 14000000                    (unixSeconds 1680000000)
 rawKey    = 0x04 ‖ X(0x01 × 32) ‖ Y(0x02 × 32)      // valid encoding, NOT on the curve
-expected  = "5R9K6FWA18"                             // displayed 5R9K6-FWA18
+expected  = "5R9K6FWA18A8YP"                         // displayed 5R9K6FW-A18A8YP
 ```
 
 **This vector has only ever been verified in the browser.** If Android disagrees, the failure mode
@@ -115,9 +115,9 @@ X and Y left-padded to exactly 32 bytes. 65 bytes raw, 88 characters encoded. An
 bucket   = floor(unixSeconds / 120)      // integer division, UTC, no leap smear
 preimage = rawKey(65) ‖ uint16BE(byteLength(deviceIdUtf8)) ‖ deviceIdUtf8 ‖ uint64BE(bucket)
 H        = SHA-256(preimage)
-code     = first 50 bits of H, MSB first, ten Crockford base32 chars
+code     = first 70 bits of H, MSB first, fourteen Crockford base32 chars
            alphabet 0123456789ABCDEFGHJKMNPQRSTVWXYZ, char i = bits [5i, 5i+5)
-display  = XXXXX-XXXXX
+display  = XXXXXXX-XXXXXXX
 ```
 
 **`deviceId` is charset-bounded (added 2026-08-05, after 2b).** New ids must be **1–128 characters
@@ -148,6 +148,20 @@ withdrawing its rejection. Binding `deviceId` stops an envelope minted for one d
 replayed at another; binding the fingerprint stops one surviving an identity rotation and
 decrypting into a key the account no longer advertises. **If AAD verification fails, treat it as
 hostile, not as a retry.**
+
+> **BREAKING CHANGE, 2026-08-05 — the code widened from 50 to 70 bits.** Security audit run-5 found
+> the 50-bit code **offline-forgeable**: there is no commitment in the preimage, so every input is
+> fixed, public or attacker-chosen and the search is a work factor rather than a per-attempt
+> probability. An adversary who can write the relay's device table — explicitly in this design's
+> threat model — grinds a colliding key (or `deviceId`) for a chosen future bucket at roughly 2^50
+> SHA-256 compressions: about 14 GPU-hours and a few dollars per 120-second window. **The browser and
+> any other client MUST be updated to 14 characters, or no honest enrollment will ever match.**
+> The 10-character code is a prefix of the 14-character one, so a mismatched client fails silently as
+> "the codes never match" — which is reported to the user as an active attack.
+>
+> The principled fix is a commitment, not length: Matrix's SAS is *shorter* (36–39 bits) and sound
+> because `m.key.verification.accept` carries a required hash commitment to the peer's ephemeral key.
+> That needs a browser-to-device channel this protocol does not have. See spec decision 8.
 
 **Changing any of this is a wire-format break**, not a fix. It moves the `v1` tag, the HKDF `info`
 and the AAD prefix together, and strands every enrolled device until it re-enrolls.

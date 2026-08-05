@@ -1,6 +1,8 @@
 package com.urlxl.mail.pgp
 
-import org.json.JSONObject
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.Mac
@@ -40,24 +42,52 @@ internal fun hkdfSha256(ikm: ByteArray, salt: ByteArray, info: ByteArray, length
 
 internal data class DeviceEnvelopeFields(val epk: ByteArray, val iv: ByteArray, val ct: ByteArray)
 
-/** Parses the envelope, returning null for anything malformed, unsupported, or wrong-sized. The
- *  caller treats null as "re-run the ceremony", never as a retry. */
+/**
+ * Parses the envelope, returning null for anything malformed, unsupported, or wrong-sized. The
+ * caller treats null as "re-run the ceremony", never as a retry.
+ *
+ * Parsed with kotlinx.serialization rather than `org.json`, deliberately. `org.json` on the unit-test
+ * classpath resolves to the stubbed `android.jar`, and with `isReturnDefaultValues = true` every stub
+ * method returns a default — so this function returned null for *every* input under test, including
+ * well-formed envelopes, and all of its tests passed vacuously. Replacing the whole body with
+ * `= null` left the suite green. This file is meant to be pure JVM; `org.json` was the one thing
+ * making it not.
+ */
 internal fun parseDeviceEnvelope(json: String): DeviceEnvelopeFields? = runCatching {
-    val o = JSONObject(json)
-    if (o.optInt("v") != 1) return null
-    if (o.optString("alg") != ENVELOPE_ALG) return null
+    val o = Json.parseToJsonElement(json).jsonObject
+    if (o["v"]?.jsonPrimitive?.content != "1") return null
+    if (o["alg"]?.jsonPrimitive?.content != ENVELOPE_ALG) return null
     val decoder = Base64.getDecoder()
-    val epk = decoder.decode(o.getString("epk"))
-    val iv = decoder.decode(o.getString("iv"))
-    val ct = decoder.decode(o.getString("ct"))
+    val epk = decoder.decode(o.getValue("epk").jsonPrimitive.content)
+    val iv = decoder.decode(o.getValue("iv").jsonPrimitive.content)
+    val ct = decoder.decode(o.getValue("ct").jsonPrimitive.content)
+    // Match the browser, which requires exactly 65 bytes with an 0x04 prefix before it will import
+    // the point. Rejecting compressed markers, the point at infinity and trailing junk here means
+    // the ECDH layer is not the only thing standing between an attacker-supplied blob and the key.
+    if (epk.size != 65 || epk[0] != 0x04.toByte()) return null
     if (iv.size != 12 || ct.size <= GCM_TAG_BITS / 8) return null
     DeviceEnvelopeFields(epk = epk, iv = iv, ct = ct)
 }.getOrNull()
 
-/** Binds the sealing to this device and this identity. [pgpFingerprint] must be uppercase hex with
- *  no spaces. */
-internal fun deviceEnvelopeAad(deviceId: String, pgpFingerprint: String): ByteArray =
-    "$ENVELOPE_INFO|$deviceId|$pgpFingerprint".toByteArray(Charsets.UTF_8)
+/**
+ * Binds the sealing to this device and this identity.
+ *
+ * Normalises and validates [pgpFingerprint] rather than trusting the caller. The requirement used to
+ * be a KDoc comment, and the repository's only fingerprint producer — [PgpFingerprint.compute], via
+ * `ownFingerprintFromBootstrap` — returns *space-grouped* hex, while the browser strips whitespace
+ * before building its AAD. So the natural implementation of the caller produced an AAD that could
+ * never authenticate, and the design's error table turns that into "hostile or stale, no retry",
+ * which the browser reports to the user as *"the key this server gave the browser is not the key on
+ * that device"*. A formatting bug arriving as a substituted-key alarm trains users to dismiss the one
+ * alarm this feature has. A doc comment is not a contract across three implementations.
+ */
+internal fun deviceEnvelopeAad(deviceId: String, pgpFingerprint: String): ByteArray {
+    val fingerprint = pgpFingerprint.uppercase().filterNot { it.isWhitespace() }
+    require(fingerprint.isNotEmpty() && fingerprint.all { it in "0123456789ABCDEF" }) {
+        "pgpFingerprint must be hex; got '${pgpFingerprint.take(24)}'"
+    }
+    return "$ENVELOPE_INFO|$deviceId|$fingerprint".toByteArray(Charsets.UTF_8)
+}
 
 /**
  * Opens the envelope, or returns null if GCM authentication fails.

@@ -52,4 +52,35 @@ class EnrollmentStateTest {
 
         assertEquals(EnrollmentStatus.NO_KEY, probeEnrollment(vault))
     }
+
+    /**
+     * The regression that matters: a fresh key must never coexist with a blob it cannot open.
+     *
+     * Cipher.init on GCM touches no ciphertext, so it succeeds against ANY key — the probe therefore
+     * cannot tell "this key opens this blob" from "a key exists and a blob exists". Before the fix,
+     * the OS destroying the vault key (which a user removing and re-adding their lock screen is
+     * enough to do) followed by any re-seal left a new key beside the old blob, and the probe
+     * reported ENROLLED for a device that could decrypt nothing. The server renders that to the user
+     * as "this device can read your encrypted mail" — the exact lie the marker exists to prevent,
+     * in the unsafe direction.
+     */
+    @Test
+    fun regeneratingTheKeyDiscardsABlobItCannotOpen() {
+        vault.ensureKey()
+        vault.store(ByteArray(12) { 7 }, ByteArray(48) { 8 })
+        assertEquals(EnrollmentStatus.ENROLLED, probeEnrollment(vault))
+
+        // Exactly what the OS does when the lock screen is removed: the alias goes, the blob stays.
+        java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+            .deleteEntry(EnrollmentVault.ALIAS)
+        assertEquals(EnrollmentStatus.NO_KEY, probeEnrollment(vault))
+
+        vault.ensureKey()
+
+        assertEquals(
+            "a newly minted key must not inherit a blob sealed under the destroyed one",
+            EnrollmentStatus.NO_BLOB,
+            probeEnrollment(vault),
+        )
+    }
 }

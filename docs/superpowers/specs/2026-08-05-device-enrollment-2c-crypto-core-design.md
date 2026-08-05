@@ -23,7 +23,8 @@ spec; only the pairing-prompt path belongs to spec 2. It also means the HLP and 
 get designed alongside the key they destroy, rather than bolted on after a screen exists.
 
 Already landed on this branch: `e0f23a8` implements the enrollment code derivation and pins the
-normative vector `5R9K6FWA18`, mutation-proven three ways.
+normative vector, mutation-proven three ways. **The vector changed on 2026-08-05** when the code
+widened from 50 to 70 bits (decision 8): it is now `5R9K6FWA18A8YP`, displayed `5R9K6FW-A18A8YP`.
 
 ## What this design is for, and what it cannot do
 
@@ -48,7 +49,8 @@ What this cannot fix, and must not claim in any copy:
 
 ## Decisions
 
-Seven decisions were settled before this spec was written. Each is recorded with its reasoning,
+Eight decisions are recorded. Seven were settled before this spec was written; decision 8 was
+forced by security audit run-5 and corrects an argument the original draft got wrong. Each is recorded with its reasoning,
 because the reasoning is what a future reader needs when an edge case argues the other way.
 
 ### 1. Two specs, split at the UI boundary
@@ -171,6 +173,43 @@ client-custody path for that user. Implement as a single named constant with the
 comment pointing at HLP. If a real user ever asks, it is a one-line change plus a re-enrollment
 prompt — cheap later, expensive to carry now for nobody.
 
+### 8. The code is 70 bits, and the missing commitment is recorded as owed
+
+**Added 2026-08-05 after security audit run-5.** The original 50-bit code was **offline-forgeable**.
+
+The preimage contains nothing the verifier contributes, so every input is fixed, public or
+attacker-chosen and the search is a *work factor*, not a per-attempt probability. An adversary who
+can write the relay's device table — explicitly this design's stated threat model, "a compromised
+database" — grinds a key, or the `deviceId`, whose code collides with the honest device's at a
+**chosen future bucket**, then waits for that bucket to arrive. Roughly 2^50 SHA-256 compressions:
+about 14 GPU-hours and five to seven dollars per 120-second window.
+
+**The security argument in the original draft was the bug.** It read "2^47 in 120 seconds, short of
+2^50 with margin", which assumes an *online* bound. Refusing future buckets — which the browser does,
+deliberately — does not prevent precomputing *into* one. Two further errors in the same paragraph:
+the claim that "the attacker must generate real keypairs, so the figure is conservative" is false,
+because `deviceId` is served from the same attacker-writable row and grinding it needs zero
+elliptic-curve work; and the key was long-lived (see decision 2's fix), so the precompute window was
+unbounded.
+
+**Immediate fix, implemented: 70 bits** — 14 Crockford characters, displayed `XXXXXXX-XXXXXXX`. The
+same search becomes ~2^70, roughly a million GPU-years per window. This is a **wire-format break**:
+the browser and every other client must widen to 14 characters or no honest enrollment will match,
+and because the 10-character code is a prefix of the 14-character one, a mismatched client fails
+silently as "the codes never match" — which the browser reports to the user as an active attack.
+
+**The right fix, owed: a commitment.** Matrix's SAS is *shorter* than even the original code — 36 to
+39 bits — and is sound, because `m.key.verification.accept` carries a required SHA-256 commitment to
+the peer's ephemeral key, so an attacker gets exactly one online guess. The Matrix spec says so in as
+many words: "an attacker essentially only has one attempt... hence we can verify fewer bits." Adding
+that here means the browser mints a fresh 128-bit challenge at ceremony start, delivers it to the
+device, and it enters the preimage.
+
+**Why it is not implemented yet:** there is no browser-to-device channel. The publish step is
+device-to-server POST only, so the challenge needs a new transport leg across two repositories. Until
+it exists, length is what carries the property. Do not treat 70 bits as making the commitment
+unnecessary — it makes it *not urgent*, which is different.
+
 ## Server addition (kypost-server)
 
 `POST /api/pgp/device/enrollment-state`
@@ -220,6 +259,7 @@ If both proceed they share the vault and must be sequenced, not written in paral
 alias  kypost_device_enrollment_agree      EC P-256, PURPOSE_AGREE_KEY
        setIsStrongBoxBacked(true), fallback on StrongBoxUnavailableException
        NO user authentication required
+       ROTATED PER CEREMONY — newKeyPair() deletes then generates; deleteKeyPair() on both exits
 
 alias  kypost_device_envelope_seal          AES-256-GCM, PURPOSE_ENCRYPT | PURPOSE_DECRYPT
        setUserAuthenticationRequired(true)
@@ -230,7 +270,16 @@ alias  kypost_device_envelope_seal          AES-256-GCM, PURPOSE_ENCRYPT | PURPO
 
 **Two keys, deliberately.** The `AGREE_KEY` pair carries no user-auth requirement: it only ever
 opens the server's 7-day transport copy, during a foreground ceremony, and gating it would add a
-prompt that protects nothing durable. The re-seal key carries the full requirement, because it is
+prompt that protects nothing durable.
+
+**That justification only holds if the key really does live for one ceremony**, which the first
+implementation got wrong: `ensureKeyPair` returned early when the alias existed, making the key
+permanent. A permanent unauthenticated key is a standing path to every envelope the relay has
+retained — openable with no prompt at all by an attacker holding the database *and* code execution
+under this app's UID — which defeats the vault key's per-use authentication by a parallel route. It
+also handed an attacker unbounded lead time to precompute against a stable public key. Corrected
+2026-08-05 after audit run-5: `newKeyPair()` deletes then generates, and the ceremony must call
+`deleteKeyPair()` on both its success and failure exits. The re-seal key carries the full requirement, because it is
 what stands between an extracted device image and the user's mail. Conflating them would force the
 weaker requirement onto the durable key.
 

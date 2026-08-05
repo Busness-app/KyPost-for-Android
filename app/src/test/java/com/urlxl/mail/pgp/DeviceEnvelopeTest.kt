@@ -1,6 +1,8 @@
 package com.urlxl.mail.pgp
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 import javax.crypto.Cipher
@@ -37,20 +39,97 @@ class DeviceEnvelopeTest {
         assertEquals("kypost-device-envelope/v1|dev-1|ABCD1234", String(aad, Charsets.UTF_8))
     }
 
+    /**
+     * The positive case, which did not exist before. Its absence is what let every other parse test
+     * pass vacuously: under `org.json` from the stubbed `android.jar` the function returned null for
+     * *every* input, so three assertions of `null` held against an implementation that validated
+     * nothing. Replacing the whole body with `= null` left the suite green.
+     */
+    @Test
+    fun parse_acceptsAWellFormedEnvelope() {
+        val fields = parseDeviceEnvelope(envelopeJson())
+
+        assertNotNull(fields)
+        assertEquals(65, fields!!.epk.size)
+        assertEquals(12, fields.iv.size)
+        assertEquals(32, fields.ct.size)
+    }
+
     @Test
     fun parse_rejectsAnUnsupportedVersion() {
-        assertNull(parseDeviceEnvelope("""{"v":2,"alg":"ECDH-P256+HKDF-SHA256+A256GCM","epk":"AA==","iv":"AA==","ct":"AA=="}"""))
+        assertNull(parseDeviceEnvelope(envelopeJson(v = "2")))
     }
 
     @Test
     fun parse_rejectsAnUnsupportedAlg() {
-        assertNull(parseDeviceEnvelope("""{"v":1,"alg":"something-else","epk":"AA==","iv":"AA==","ct":"AA=="}"""))
+        assertNull(parseDeviceEnvelope(envelopeJson(alg = "something-else")))
     }
 
     @Test
     fun parse_rejectsGarbage() {
         assertNull(parseDeviceEnvelope("not json"))
     }
+
+    /** A non-96-bit IV does not throw — GCMParameterSpec accepts any length and derives J0 by GHASH
+     *  — so it silently changes the key schedule and desynchronises this client from the browser.
+     *  This check is the only thing that catches it. */
+    @Test
+    fun parse_rejectsAWrongLengthIv() {
+        assertNull(parseDeviceEnvelope(envelopeJson(iv = b64(ByteArray(8)))))
+    }
+
+    @Test
+    fun parse_rejectsACiphertextShorterThanTheGcmTag() {
+        assertNull(parseDeviceEnvelope(envelopeJson(ct = b64(ByteArray(16)))))
+    }
+
+    /** Matches the browser, which requires exactly 65 bytes with an 0x04 prefix. Without this the
+     *  ECDH layer is the only thing between an attacker-supplied blob and the enrollment key. */
+    @Test
+    fun parse_rejectsAnEpkThatIsNotAnUncompressedPoint() {
+        assertNull(parseDeviceEnvelope(envelopeJson(epk = b64(ByteArray(65).also { it[0] = 0x02 }))))
+        assertNull(parseDeviceEnvelope(envelopeJson(epk = b64(ByteArray(64).also { it[0] = 0x04 }))))
+        assertNull(parseDeviceEnvelope(envelopeJson(epk = b64(ByteArray(200).also { it[0] = 0x04 }))))
+    }
+
+    /**
+     * The repository's only fingerprint producer, [PgpFingerprint.compute], returns space-grouped
+     * hex, while the browser strips whitespace before building its AAD. Normalising here is what
+     * stops the natural implementation of the caller from producing an AAD that can never
+     * authenticate — a failure the design classifies as hostile, and the browser reports to the user
+     * as a substituted key.
+     */
+    @Test
+    fun aad_normalisesASpaceGroupedFingerprint() {
+        assertArrayEquals(
+            deviceEnvelopeAad("dev-1", "164D5B834E7FE9272DC7293B6D78ABF3D9179534"),
+            deviceEnvelopeAad("dev-1", "164D 5B83 4E7F E927 2DC7 293B 6D78 ABF3 D917 9534"),
+        )
+    }
+
+    @Test
+    fun aad_lowercaseHexIsNormalisedToUppercase() {
+        assertArrayEquals(
+            deviceEnvelopeAad("dev-1", "ABCD1234"),
+            deviceEnvelopeAad("dev-1", "abcd1234"),
+        )
+    }
+
+    /** Fails loudly at the call site rather than silently producing an AAD that will never open. */
+    @Test(expected = IllegalArgumentException::class)
+    fun aad_rejectsANonHexFingerprint() {
+        deviceEnvelopeAad("dev-1", "not-a-fingerprint")
+    }
+
+    private fun b64(bytes: ByteArray): String = java.util.Base64.getEncoder().encodeToString(bytes)
+
+    private fun envelopeJson(
+        v: String = "1",
+        alg: String = "ECDH-P256+HKDF-SHA256+A256GCM",
+        epk: String = b64(ByteArray(65).also { it[0] = 0x04 }),
+        iv: String = b64(ByteArray(12)),
+        ct: String = b64(ByteArray(32)),
+    ): String = """{"v":$v,"alg":"$alg","epk":"$epk","iv":"$iv","ct":"$ct"}"""
 
     /** Opening must succeed with the right AAD... */
     @Test

@@ -26,8 +26,27 @@ internal object EnrollmentKeyStore {
 
     const val ALIAS = "kypost_device_enrollment_agree"
 
-    fun ensureKeyPair(): Boolean {
-        if (keyStore().containsAlias(ALIAS)) return true
+    /**
+     * Mints a **fresh** keypair for one ceremony, destroying any previous one.
+     *
+     * This used to be `ensureKeyPair`, which returned early when the alias already existed. That
+     * made the key permanent, and permanence broke two things at once:
+     *
+     * - It contradicted the justification for this key carrying no authentication requirement. The
+     *   claim is that it "only ever opens the server's transport copy, during a foreground ceremony
+     *   with the user present" — but a key that outlives every ceremony is a standing, unauthenticated
+     *   path to every envelope the relay has ever retained, which defeats [EnrollmentVault]'s
+     *   per-use authentication via a parallel route. An attacker with the relay database and code
+     *   execution under this app's UID could open the envelope with no prompt of any kind.
+     * - It gave an attacker unbounded lead time to precompute against a known, stable public key,
+     *   which is what makes grinding the enrollment code affordable at all.
+     *
+     * The design already publishes the public half at the start of *every* ceremony rather than once
+     * at pairing, so rotating here costs nothing. Call [deleteKeyPair] on both the success and the
+     * failure exit of a ceremony so the window is one ceremony, not one install.
+     */
+    fun newKeyPair(): Boolean {
+        deleteKeyPair()
         return generate(strongBox = true) || generate(strongBox = false)
     }
 

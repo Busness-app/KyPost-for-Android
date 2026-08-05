@@ -44,6 +44,21 @@ internal class EnrollmentVault(context: Context) {
         return generate(strongBox = true) || generate(strongBox = false)
     }
 
+    /**
+     * Generates the vault key, and **clears any stored blob in the same breath**.
+     *
+     * A newly minted key can never open an envelope sealed under a previous one, so retaining the
+     * blob across a regeneration is never correct — and it is actively harmful, because
+     * [probeEnrollment] establishes only that *a* key exists and that *a* blob exists. `Cipher.init`
+     * on GCM touches no ciphertext, so it succeeds against the wrong key, and the probe then reports
+     * ENROLLED for a blob nothing in the world can decrypt. The server renders that to the user as
+     * "this device can read your encrypted mail", which is the exact lie the marker exists to
+     * prevent, and it is the unsafe direction: a user may decommission the device that actually
+     * holds a working copy.
+     *
+     * Reachable whenever the OS destroys the key without any of our code running — the user removing
+     * and re-adding the device lock screen is enough.
+     */
     private fun generate(strongBox: Boolean): Boolean = runCatching {
         val spec = KeyGenParameterSpec.Builder(
             ALIAS,
@@ -61,6 +76,11 @@ internal class EnrollmentVault(context: Context) {
             )
             .apply { if (strongBox) setIsStrongBoxBacked(true) }
             .build()
+        // Before anything else: a blob sealed under a previous key is unopenable by the key we are
+        // about to mint, and keeping it makes probeEnrollment report ENROLLED for a device that can
+        // decrypt nothing. Clear it first so an interruption between here and generateKey leaves
+        // "no key, no blob" rather than "new key, stale blob".
+        prefs.edit().clear().commit()
         KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
             .apply { init(spec) }
             .generateKey()

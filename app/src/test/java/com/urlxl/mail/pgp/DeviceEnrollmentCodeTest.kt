@@ -1,6 +1,7 @@
 package com.urlxl.mail.pgp
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -36,6 +37,31 @@ class DeviceEnrollmentCodeTest {
 
         val code = deviceEnrollmentCode(rawPublicKey = rawKey, deviceId = "test-device", bucket = 14_000_000L)
 
-        assertEquals("5R9K6FWA18", code)
+        assertEquals("5R9K6FWA18A8YP", code)
+    }
+
+    /**
+     * The code is 70 bits, not 50, and the length is load-bearing rather than cosmetic.
+     *
+     * With no commitment in the preimage the attacker's search is offline, so the only thing setting
+     * its cost is the output width. At 50 bits a collision is ~2^50 SHA-256 compressions — about 14
+     * GPU-hours and a few dollars per 120-second window — which is affordable for an adversary who
+     * can write the relay's device table. A silent regression to a shorter code would not fail any
+     * other test here, because the shorter code is a prefix of the longer one.
+     */
+    @Test
+    fun codeIsSeventyBitsWide() {
+        val code = deviceEnrollmentCode(ByteArray(65).also { it[0] = 0x04 }, "any-device", 1L)
+
+        assertEquals("14 Crockford characters at 5 bits each = 70 bits", 14, code.length)
+    }
+
+    /** Every character must come from the Crockford alphabet, which excludes I, L, O and U so the
+     *  user cannot mistype the code by confusing them with 1 and 0. */
+    @Test
+    fun codeUsesOnlyTheCrockfordAlphabet() {
+        val code = deviceEnrollmentCode(ByteArray(65).also { it[0] = 0x04 }, "any-device", 99L)
+
+        assertTrue(code, code.all { it in "0123456789ABCDEFGHJKMNPQRSTVWXYZ" })
     }
 }

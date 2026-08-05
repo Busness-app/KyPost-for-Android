@@ -3,6 +3,7 @@ package com.urlxl.mail.pgp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -18,7 +19,7 @@ class EnrollmentKeyStoreTest {
 
     @Test
     fun generatesAnUncompressedSec1Point() {
-        assertTrue(EnrollmentKeyStore.ensureKeyPair())
+        assertTrue(EnrollmentKeyStore.newKeyPair())
 
         val raw = EnrollmentKeyStore.rawPublicKey()
         assertNotNull(raw)
@@ -31,7 +32,7 @@ class EnrollmentKeyStoreTest {
      *  obtain the key that opens it. */
     @Test
     fun thePrivateHalfCannotBeExported() {
-        EnrollmentKeyStore.ensureKeyPair()
+        EnrollmentKeyStore.newKeyPair()
 
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         val entry = ks.getEntry(EnrollmentKeyStore.ALIAS, null) as KeyStore.PrivateKeyEntry
@@ -40,22 +41,31 @@ class EnrollmentKeyStoreTest {
         assertEquals(null, entry.privateKey.encoded)
     }
 
+    /**
+     * The key must ROTATE, not persist. It used to be idempotent — `ensureKeyPair` returned early
+     * when the alias existed — and that made it a permanent, unauthenticated Keystore key.
+     *
+     * Two consequences, both real. It became a standing path to every envelope the relay has ever
+     * retained, openable with no prompt of any kind, which defeats [EnrollmentVault]'s per-use
+     * authentication by a parallel route. And it gave an attacker unbounded lead time to precompute
+     * against a stable, known public key, which is what makes grinding the enrollment code
+     * affordable.
+     */
     @Test
-    fun ensureKeyPairIsIdempotent() {
-        EnrollmentKeyStore.ensureKeyPair()
-        val first = EnrollmentKeyStore.rawPublicKey()!!
-        EnrollmentKeyStore.ensureKeyPair()
+    fun newKeyPairRotatesRatherThanReusing() {
+        EnrollmentKeyStore.newKeyPair()
+        val first = EnrollmentKeyStore.rawPublicKey()!!.joinToString("") { "%02x".format(it) }
 
-        assertEquals(
-            first.joinToString("") { "%02x".format(it) },
-            EnrollmentKeyStore.rawPublicKey()!!.joinToString("") { "%02x".format(it) },
-        )
+        EnrollmentKeyStore.newKeyPair()
+        val second = EnrollmentKeyStore.rawPublicKey()!!.joinToString("") { "%02x".format(it) }
+
+        assertNotEquals("a second ceremony must not reuse the first ceremony's key", first, second)
     }
 
     /** Both sides of an ECDH must land on the same secret, or nothing decrypts. */
     @Test
     fun sharedSecretAgreesWithAPeer() {
-        EnrollmentKeyStore.ensureKeyPair()
+        EnrollmentKeyStore.newKeyPair()
         val peer = java.security.KeyPairGenerator.getInstance("EC").apply {
             initialize(java.security.spec.ECGenParameterSpec("secp256r1"))
         }.generateKeyPair()

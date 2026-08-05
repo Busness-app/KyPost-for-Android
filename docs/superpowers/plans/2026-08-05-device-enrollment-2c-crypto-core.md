@@ -318,7 +318,7 @@ git commit -m "enrollment: open the device envelope, with the AAD binding enforc
 - Consumes: nothing from earlier tasks.
 - Produces:
   - `internal object EnrollmentKeyStore`
-  - `fun ensureKeyPair(): Boolean` — generates if absent; false if generation is impossible
+  - `fun newKeyPair(): Boolean` — generates if absent; false if generation is impossible
   - `fun rawPublicKey(): ByteArray?` — the 65-byte SEC1 point, null if absent
   - `fun encodedPublicKey(): String?` — base64 of the above, 88 chars
   - `fun sharedSecret(epk: ByteArray): ByteArray?` — ECDH against the ephemeral key
@@ -352,7 +352,7 @@ class EnrollmentKeyStoreTest {
 
     @Test
     fun generatesAnUncompressedSec1Point() {
-        assertTrue(EnrollmentKeyStore.ensureKeyPair())
+        assertTrue(EnrollmentKeyStore.newKeyPair())
 
         val raw = EnrollmentKeyStore.rawPublicKey()
         assertNotNull(raw)
@@ -365,7 +365,7 @@ class EnrollmentKeyStoreTest {
      *  obtain the key that opens it. */
     @Test
     fun thePrivateHalfCannotBeExported() {
-        EnrollmentKeyStore.ensureKeyPair()
+        EnrollmentKeyStore.newKeyPair()
 
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         val entry = ks.getEntry(EnrollmentKeyStore.ALIAS, null) as KeyStore.PrivateKeyEntry
@@ -376,9 +376,9 @@ class EnrollmentKeyStoreTest {
 
     @Test
     fun ensureKeyPairIsIdempotent() {
-        EnrollmentKeyStore.ensureKeyPair()
+        EnrollmentKeyStore.newKeyPair()
         val first = EnrollmentKeyStore.rawPublicKey()!!
-        EnrollmentKeyStore.ensureKeyPair()
+        EnrollmentKeyStore.newKeyPair()
 
         assertEquals(
             first.joinToString("") { "%02x".format(it) },
@@ -389,7 +389,7 @@ class EnrollmentKeyStoreTest {
     /** Both sides of an ECDH must land on the same secret, or nothing decrypts. */
     @Test
     fun sharedSecretAgreesWithAPeer() {
-        EnrollmentKeyStore.ensureKeyPair()
+        EnrollmentKeyStore.newKeyPair()
         val peer = java.security.KeyPairGenerator.getInstance("EC").apply {
             initialize(java.security.spec.ECGenParameterSpec("secp256r1"))
         }.generateKeyPair()
@@ -449,7 +449,7 @@ internal object EnrollmentKeyStore {
 
     const val ALIAS = "kypost_device_enrollment_agree"
 
-    fun ensureKeyPair(): Boolean {
+    fun newKeyPair(): Boolean {
         if (keyStore().containsAlias(ALIAS)) return true
         return generate(strongBox = true) || generate(strongBox = false)
     }
@@ -1219,7 +1219,7 @@ class EnrollmentTeardownTest {
     fun destroysBothKeysAndTheBlob() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val vault = EnrollmentVault(context)
-        EnrollmentKeyStore.ensureKeyPair()
+        EnrollmentKeyStore.newKeyPair()
         vault.ensureKey()
         vault.store(ByteArray(12), ByteArray(48))
 
@@ -1403,7 +1403,7 @@ Assert that after enabling HLP with an active enrollment, both keys and the blob
 ```kotlin
 @Test
 fun enablingProtectionDestroysEnrollmentButKeepsThePairing() {
-    // ... seed a pairing, EnrollmentKeyStore.ensureKeyPair(), vault.ensureKey(), vault.store(...)
+    // ... seed a pairing, EnrollmentKeyStore.newKeyPair(), vault.ensureKey(), vault.store(...)
     // ... invoke the same teardown sequence applyHostileLocationProtection runs
     assertFalse(ks.containsAlias(EnrollmentKeyStore.ALIAS))
     assertFalse(ks.containsAlias(EnrollmentVault.ALIAS))
