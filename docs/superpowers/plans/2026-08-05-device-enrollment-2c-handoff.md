@@ -129,17 +129,22 @@ because an NFC/NFD disagreement between two clients would surface to the user as
 **Envelope** (browser → server → you), all fields base64:
 
 ```json
-{ "v": 1,
+{ "v": 2,
   "alg": "ECDH-P256+HKDF-SHA256+A256GCM",
   "epk": "<raw ephemeral public key, 65 bytes, same encoding as above>",
   "iv":  "<12 bytes>",
   "ct":  "<AES-256-GCM ciphertext, 16-byte tag appended>" }
 ```
 
+`epk` must be **exactly 65 bytes with an `0x04` prefix**; anything else is rejected before any
+crypto runs, matching what the browser already enforces.
+
 - **Shared secret:** ECDH(your private, `epk`) → 32 bytes.
 - **KDF:** HKDF-SHA256, `ikm` = shared secret, **`salt` = your own raw 65-byte public key**,
-  `info` = UTF-8 `"kypost-device-envelope/v1"`, length 32.
-- **AAD** = UTF-8 of `kypost-device-envelope/v1|<deviceId>|<pgpFingerprint>`, fingerprint
+  `info` = UTF-8 `"kypost-device-envelope/v2"`, length 32.
+- **AAD** = `info || uint16BE(len(deviceId)) || deviceId || uint16BE(len(fp)) || fp`,
+  all UTF-8, `info` = `"kypost-device-envelope/v2"`. **Length-prefixed, not
+  pipe-delimited** — see the v2 note below. Fingerprint
   **uppercase hex, no spaces**.
 - **Plaintext** = the armored PGP private key, UTF-8.
 
@@ -162,6 +167,16 @@ hostile, not as a retry.**
 > The principled fix is a commitment, not length: Matrix's SAS is *shorter* (36–39 bits) and sound
 > because `m.key.verification.accept` carries a required hash commitment to the peer's ephemeral key.
 > That needs a browser-to-device channel this protocol does not have. See spec decision 8.
+
+> **BREAKING CHANGE, 2026-08-05 — the envelope moved to v2.** Security audit run-5 found the AAD
+> built by unescaped pipe concatenation, which is ambiguous: `(deviceId "dev|BADC0FFEE", fp "0123…")`
+> and `(deviceId "dev", fp "BADC0FFEE|0123…")` produce byte-identical AAD and each opens under the
+> other. Not exploitable as it stood — cross-device replay already fails at the HKDF, whose salt is
+> the device's own public key, and two fixed-length hex fingerprints cannot collide across the
+> boundary — but Matrix uses a structured transcript precisely because this class produced real
+> key-binding CVEs. The fields are now length-prefixed, which removes the class instead of arguing
+> about reachability. The `v` tag, the HKDF `info` and the AAD prefix all moved together, as this
+> section requires. **The browser must move with them.**
 
 **Changing any of this is a wire-format break**, not a fix. It moves the `v1` tag, the HKDF `info`
 and the AAD prefix together, and strands every enrolled device until it re-enrolls.

@@ -9,6 +9,7 @@ import com.urlxl.mail.data.DataRuntime
 import com.urlxl.mail.push.PushRuntime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
@@ -256,11 +257,15 @@ object SecurityWipe {
             }
         }
         step("fcmToken") {
-            com.google.firebase.messaging.FirebaseMessaging.getInstance().deleteToken()
+            // Awaited, because both return Tasks. Firing and forgetting made this step succeed
+            // unconditionally, so the Fid below survived whenever the delete failed — offline most
+            // obviously, which is one swipe away and exactly the state a thief leaves the device in.
+            com.google.firebase.messaging.FirebaseMessaging.getInstance().deleteToken().await()
             // Rotating the messaging token leaves the Firebase *installation* — and its stable Fid
             // in `files/PersistedInstallation.<app>.json` — in place, so a device this wipe has just
             // decided is hostile stays linkable across the wipe and a subsequent re-pair.
-            com.google.firebase.installations.FirebaseInstallations.getInstance().delete()
+            // delete() needs a round trip; on failure it leaves that file behind.
+            com.google.firebase.installations.FirebaseInstallations.getInstance().delete().await()
         }
         step("downloadedAttachments") {
             // Files this app wrote into shared MediaStore Downloads are outside the sandbox, so no

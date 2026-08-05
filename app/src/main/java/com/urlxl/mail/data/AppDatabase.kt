@@ -17,7 +17,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         GroupLinkEntity::class,
         ContactSyncStateEntity::class,
     ],
-    version = 9,
+    version = 10,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -105,6 +105,21 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE `emails` ADD COLUMN `pgpVerified` INTEGER NOT NULL DEFAULT 0")
                 db.execSQL("ALTER TABLE `emails` ADD COLUMN `pgpSignerFingerprint` TEXT NOT NULL DEFAULT ''")
                 db.execSQL("ALTER TABLE `emails` ADD COLUMN `pgpDecryptError` TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        /**
+         * Splits the identity alarm out of `pgpKeyNeedsReverification`. Additive and defaulted, so
+         * existing rows keep their key alarm and start with no identity alarm — the safe direction:
+         * a missing identity alarm is re-raised by the next sync that observes a rebind, whereas
+         * migrating every existing key alarm into both columns would show every user a review prompt
+         * they cannot action.
+         */
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `contacts` ADD COLUMN `identityNeedsReview` INTEGER NOT NULL DEFAULT 0",
+                )
             }
         }
 

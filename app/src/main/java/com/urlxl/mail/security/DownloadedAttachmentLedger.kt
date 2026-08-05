@@ -39,27 +39,53 @@ object DownloadedAttachmentLedger {
     }
 
     /**
-     * Deletes every recorded row and clears the ledger.
+     * Deletes every recorded row, keeps the ones it could not delete, and throws if any remain.
      *
-     * Throws if any row is still resolvable and refused deletion, so the wipe records the step as
-     * failed rather than reporting a complete erasure over files that are still there. A row the
-     * user has already deleted themselves resolves to zero rows affected and is not an error.
+     * Three things were wrong here, each of which let the wipe report a complete erasure over
+     * attachment plaintext still sitting in shared Downloads:
+     *
+     * - `Result.getOrDefault(0)` mapped a **thrown** delete to `0`, which is not `< 0`, so every
+     *   exception read as a successful deletion.
+     * - `0` was treated as "already gone". MediaProvider also returns `0` for a row that exists and
+     *   that this package may not touch — after an `_id` reassignment from an OS update or a Media
+     *   Storage "Clear storage", for instance. Verified: a delete returned `0` with the file still
+     *   on disk. So the count alone cannot distinguish the two; the row has to be re-queried.
+     * - The ledger was cleared **before** the throw, and the `sharedPrefs` step deletes the ledger
+     *   file regardless of outcome, so the `willRetry = true` the user was promised was
+     *   unfulfillable: a resumed wipe found an empty ledger and reported the step as succeeded.
+     *
+     * Only successfully deleted URIs are removed, so a resume has exactly the remaining work.
      */
     fun deleteAll(context: Context) {
         val appContext = context.applicationContext
         val store = prefs(appContext)
         val recorded = store.getStringSet(KEY_URIS, emptySet()).orEmpty()
-        val undeleted = mutableListOf<String>()
+        val undeleted = LinkedHashSet<String>()
         recorded.forEach { raw ->
-            val result = runCatching { appContext.contentResolver.delete(Uri.parse(raw), null, null) }
-            result.onFailure { android.util.Log.w(TAG, "Could not delete $raw", it) }
-            // A negative count is the provider reporting it did not act; zero means the row is
-            // already gone, which is the outcome we wanted.
-            if (result.getOrDefault(0) < 0) undeleted += raw
+            val uri = Uri.parse(raw)
+            val deleted = runCatching { appContext.contentResolver.delete(uri, null, null) }
+                .onFailure { android.util.Log.w(TAG, "Could not delete $raw", it) }
+                .getOrNull()
+            when {
+                // A thrown delete is a failure, never a success.
+                deleted == null -> undeleted += raw
+                deleted > 0 -> Unit
+                // Zero rows affected is ambiguous. It is only "already gone" if the row really is
+                // gone, so ask the provider rather than assuming the outcome we wanted.
+                stillResolves(appContext, uri) -> undeleted += raw
+            }
         }
-        store.edit().remove(KEY_URIS).commit()
+        // Keep what is still there so a resumed wipe has work to do; drop only what is really gone.
+        store.edit().putStringSet(KEY_URIS, undeleted).commit()
         if (undeleted.isNotEmpty()) {
             throw java.io.IOException("Downloads provider refused to delete: $undeleted")
         }
     }
+
+    /** True when the row is still readable, i.e. the delete did not actually remove anything. */
+    private fun stillResolves(appContext: Context, uri: Uri): Boolean = runCatching {
+        appContext.contentResolver.query(uri, arrayOf("_id"), null, null, null)
+            ?.use { it.moveToFirst() } ?: false
+    }.getOrDefault(false)
 }
+

@@ -1,6 +1,7 @@
 package com.urlxl.mail.pgp
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertNull
@@ -34,9 +35,33 @@ class DeviceEnvelopeTest {
     /** The AAD is a three-implementation contract; its exact bytes stop an envelope minted for one
      *  device being replayed at another, and stop one surviving an identity rotation. */
     @Test
-    fun aad_isTheExactContractString() {
+    fun aad_isTheExactContractBytes() {
         val aad = deviceEnrollmentAadFixture()
-        assertEquals("kypost-device-envelope/v1|dev-1|ABCD1234", String(aad, Charsets.UTF_8))
+
+        val expected = "kypost-device-envelope/v2".toByteArray() +
+            byteArrayOf(0, 5) + "dev-1".toByteArray() +
+            byteArrayOf(0, 8) + "ABCD1234".toByteArray()
+        assertArrayEquals(expected, aad)
+    }
+
+    /**
+     * The reason the fields are length-prefixed rather than pipe-joined.
+     *
+     * With `info|deviceId|fingerprint`, an envelope sealed under (deviceId "dev|BADC0FFEE",
+     * fingerprint "0123456789ABCDEF") produced byte-identical AAD to one sealed under (deviceId
+     * "dev", fingerprint "BADC0FFEE|0123456789ABCDEF"), so each opened under the other. Length
+     * prefixes make the framing unambiguous, which removes the class instead of arguing about
+     * whether today's inputs can reach it.
+     */
+    @Test
+    fun aad_isUnambiguousAcrossAFieldBoundary() {
+        val shifted = deviceEnvelopeAad("dev", "BADC0FFEE0123456789ABCDEF")
+        val plain = deviceEnvelopeAad("devBADC0FFEE", "0123456789ABCDEF")
+
+        assertFalse(
+            "field boundaries must not be shiftable between deviceId and fingerprint",
+            shifted.contentEquals(plain),
+        )
     }
 
     /**
@@ -56,8 +81,8 @@ class DeviceEnvelopeTest {
     }
 
     @Test
-    fun parse_rejectsAnUnsupportedVersion() {
-        assertNull(parseDeviceEnvelope(envelopeJson(v = "2")))
+    fun parse_rejectsTheSupersededV1Envelope() {
+        assertNull(parseDeviceEnvelope(envelopeJson(v = "1")))
     }
 
     @Test
@@ -124,7 +149,7 @@ class DeviceEnvelopeTest {
     private fun b64(bytes: ByteArray): String = java.util.Base64.getEncoder().encodeToString(bytes)
 
     private fun envelopeJson(
-        v: String = "1",
+        v: String = "2",
         alg: String = "ECDH-P256+HKDF-SHA256+A256GCM",
         epk: String = b64(ByteArray(65).also { it[0] = 0x04 }),
         iv: String = b64(ByteArray(12)),
@@ -135,8 +160,8 @@ class DeviceEnvelopeTest {
     @Test
     fun open_returnsThePlaintext() {
         val f = sealedFixture(aad = deviceEnrollmentAadFixture())
-        assertEquals(
-            "-----BEGIN PGP PRIVATE KEY BLOCK-----",
+        assertArrayEquals(
+            "-----BEGIN PGP PRIVATE KEY BLOCK-----".toByteArray(),
             openDeviceEnvelope(FIXTURE_SECRET, FIXTURE_SALT, f, deviceEnrollmentAadFixture()),
         )
     }
@@ -164,7 +189,7 @@ class DeviceEnvelopeTest {
     /** Seals with the same KDF the implementation derives, so the test exercises the real key
      *  schedule rather than a hand-picked key. */
     private fun sealedFixture(aad: ByteArray): DeviceEnvelopeFields {
-        val key = hkdfSha256(FIXTURE_SECRET, FIXTURE_SALT, "kypost-device-envelope/v1".toByteArray(), 32)
+        val key = hkdfSha256(FIXTURE_SECRET, FIXTURE_SALT, "kypost-device-envelope/v2".toByteArray(), 32)
         val iv = ByteArray(12) { it.toByte() }
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, iv))

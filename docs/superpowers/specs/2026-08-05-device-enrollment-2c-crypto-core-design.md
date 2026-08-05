@@ -49,9 +49,10 @@ What this cannot fix, and must not claim in any copy:
 
 ## Decisions
 
-Eight decisions are recorded. Seven were settled before this spec was written; decision 8 was
-forced by security audit run-5 and corrects an argument the original draft got wrong. Each is recorded with its reasoning,
-because the reasoning is what a future reader needs when an edge case argues the other way.
+Nine decisions are recorded. Seven were settled before this spec was written; decisions 8 and 9
+were forced by security audit run-5, and 8 corrects an argument the original draft got wrong.
+Each carries its reasoning, because the reasoning is what a future reader needs when an edge case
+argues the other way.
 
 ### 1. Two specs, split at the UI boundary
 
@@ -210,6 +211,32 @@ device-to-server POST only, so the challenge needs a new transport leg across tw
 it exists, length is what carries the property. Do not treat 70 bits as making the commitment
 unnecessary — it makes it *not urgent*, which is different.
 
+### 9. The envelope is v2: the AAD is length-prefixed, and `open` returns bytes
+
+**Added 2026-08-05 after security audit run-5**, alongside decision 8's code widening.
+
+**The AAD was unescaped pipe concatenation.** `info|deviceId|fingerprint` is ambiguous: an envelope
+sealed under `(deviceId "dev|BADC0FFEE", fp "0123…")` produces byte-identical AAD to one sealed
+under `(deviceId "dev", fp "BADC0FFEE|0123…")`, and each opens under the other — demonstrated by a
+cross-open, not merely by comparing strings. It was **not exploitable as it stood**: the two
+properties the AAD carries are both already covered elsewhere — cross-device replay fails at the HKDF, whose
+salt is the device's own 65-byte public key, and an identity rotation cannot be collided because
+fingerprints are fixed-length hex, so a boundary shift would need a literal `|` inside one. It is
+fixed anyway because the class is worth removing rather than re-arguing every time a field's charset
+changes, and because Matrix moved to a structured transcript for exactly this reason after real
+key-binding CVEs. Fields are now `uint16BE(len) || bytes`, the same framing the enrollment-code
+preimage already used.
+
+**`openDeviceEnvelope` returns `ByteArray?`, not `String?`.** Decision 3 requires the caller to hold
+the armored key only until the app locks and then clear it, which a JVM `String` cannot do — its
+backing array is immutable and shared. `String(bytes, UTF_8)` was also silently lossy: malformed
+bytes become U+FFFD and the function returned non-null, reading as success while handing back
+different bytes than were sealed. The HKDF-derived key is now zeroed in a `finally`; the plaintext's
+lifetime belongs to the caller.
+
+**Both move the `v` tag, the HKDF `info` and the AAD prefix together**, per this spec's own rule, so
+the envelope is `v2`. The browser must move with it.
+
 ## Server addition (kypost-server)
 
 `POST /api/pgp/device/enrollment-state`
@@ -316,7 +343,9 @@ explicitly preserves.
    the derivation and bucket handling are here.)
 5. Browser verifies, seals, `PUT`s.
 6. `GET /api/pgp/device/envelope` → ECDH inside the secure element → HKDF-SHA256 → AES-256-GCM open
-   with AAD `kypost-device-envelope/v1|<deviceId>|<pgpFingerprint>`, fingerprint uppercase hex, no
+   with AAD `info || uint16BE(len(deviceId)) || deviceId || uint16BE(len(fp)) || fp`, `info` =
+   `"kypost-device-envelope/v2"` — length-prefixed rather than pipe-delimited since v2 (see
+   decision 9). Fingerprint uppercase hex, no
    spaces.
 7. Re-seal the plaintext under the vault key, then report `true` via `EnrollmentStateClient`. From
    here the server's copy is dead weight — fetch it, re-seal locally, and stop depending on it.

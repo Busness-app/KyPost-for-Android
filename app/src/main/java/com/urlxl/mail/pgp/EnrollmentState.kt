@@ -20,8 +20,12 @@ internal fun EnrollmentStatus.isEnrolled(): Boolean = this == EnrollmentStatus.E
  * invalidated one throws.
  */
 internal fun probeEnrollment(vault: EnrollmentVault): EnrollmentStatus {
-    val stored = vault.stored()
     return try {
+        // Inside the try: vault.stored() forces the lazy EncryptedSharedPreferences, and this
+        // function's whole contract is that it reports rather than throws. It runs from a background
+        // worker where a throw means the marker is never restated and freezes at its last value —
+        // and a stale `true` is the specific lie the marker exists to prevent.
+        val stored = vault.stored()
         vault.secretKey()
         if (stored == null) EnrollmentStatus.NO_BLOB
         else if (vault.openCipher(stored.first) == null) EnrollmentStatus.KEY_INVALIDATED

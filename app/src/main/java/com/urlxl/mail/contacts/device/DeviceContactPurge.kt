@@ -35,14 +35,24 @@ object DeviceContactPurge {
             .appendQueryParameter(ContactsContract.RawContacts.ACCOUNT_NAME, DeviceContactAccount.ACCOUNT_NAME)
             .appendQueryParameter(ContactsContract.RawContacts.ACCOUNT_TYPE, DeviceContactAccount.ACCOUNT_TYPE)
             .build()
-        return runCatching {
+        return try {
             context.applicationContext.contentResolver.delete(
                 uri,
                 "${ContactsContract.RawContacts.ACCOUNT_TYPE} = ?",
                 arrayOf(DeviceContactAccount.ACCOUNT_TYPE),
             )
-        }.onFailure {
-            android.util.Log.e(TAG, "Failed to delete synced raw contacts", it)
-        }.getOrDefault(-1)
+        } catch (e: SecurityException) {
+            // No WRITE_CONTACTS means this app never published a row, so there is nothing to delete
+            // and this is a success, not a refusal. Conflating the two made EVERY wipe on a device
+            // that never enabled device-contact sync -- the default, since the permission is
+            // requested only from DeviceContactSyncEnabler -- report Incomplete. The user was told
+            // their data might still be present when every byte was gone, the destructive wipe then
+            // re-ran on the next launches, and it finally advised a reinstall.
+            android.util.Log.i(TAG, "No contacts permission, so no synced rows can exist", e)
+            0
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "Failed to delete synced raw contacts", e)
+            -1
+        }
     }
 }

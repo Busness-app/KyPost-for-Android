@@ -143,7 +143,10 @@ class ContactMappersTest {
         val entity = dto.toEntity(previous, identityChanged = true)
 
         assertEquals(TEST_KEY_FINGERPRINT, entity.pgpKeyFingerprint)
-        assertTrue(entity.pgpKeyNeedsReverification)
+        // The IDENTITY alarm, not the key alarm. The key did not change, and saying it did sends the
+        // user to a QR fingerprint comparison that cannot answer the question.
+        assertTrue(entity.identityNeedsReview)
+        assertFalse(entity.pgpKeyNeedsReverification)
     }
 
     @Test
@@ -184,7 +187,38 @@ class ContactMappersTest {
 
         val entity = dto.toEntity(previous, verifiedInPerson = true, identityChanged = true)
 
-        assertTrue(entity.pgpKeyNeedsReverification)
+        assertTrue(entity.identityNeedsReview)
+    }
+
+    /**
+     * The attack the split exists for, replaying the exact production call sequence.
+     *
+     * A WRITE_CONTACTS app rewrites Alice's phone number. The next sync raises the alarm. The user
+     * does the obvious thing for a contact-trust warning — meets Alice, scans her QR, compares the
+     * fingerprint — and `PgpKeyActivity` saves with `identityChanged = false, verifiedInPerson =
+     * true`. With one shared column that cleared the alarm, leaving the attacker's phone number
+     * beside a just-verified key with no warning anywhere, on the device and on the relay.
+     *
+     * Note the previous regression test passed `identityChanged = true` alongside
+     * `verifiedInPerson = true` — a combination no production call site ever produces — which is why
+     * the suite reported this property as covered when it was not.
+     */
+    @Test
+    fun toEntity_identityAlarmSurvivesTheQrCeremonyThatNeverExaminedIt() {
+        val afterRebind = ContactEntity(
+            uid = "uid-12", rev = 2, fn = "Alice",
+            pgpKeyFingerprint = TEST_KEY_FINGERPRINT,
+            identityNeedsReview = true,
+        )
+        // Exactly what PgpKeyActivity.confirmBinding builds: the current Room row, plus the key.
+        val dto = ContactDto(uid = "uid-12", rev = 3, fn = "Alice", pgpKey = TEST_KEY)
+
+        val entity = dto.toEntity(afterRebind, verifiedInPerson = true, identityChanged = false)
+
+        assertTrue(
+            "a fingerprint comparison attests to the key, not to the addresses beside it",
+            entity.identityNeedsReview,
+        )
     }
 
     @Test

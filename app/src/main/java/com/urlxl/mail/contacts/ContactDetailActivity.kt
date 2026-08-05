@@ -106,11 +106,16 @@ class ContactDetailActivity : LockedActivity() {
             // contact's badge is fully determined by its own pgpKey field. See ContactAdapter's
             // contactHasLinkedPgpKey doc for why pgpKey alone isn't enough for the self-contact.
             val selfHasPgpIdentity = if (dto.isSelf) hasPgpIdentity(this@ContactDetailActivity) else null
-            render(dto, selfHasPgpIdentity, entity.pgpKeyNeedsReverification)
+            render(dto, selfHasPgpIdentity, entity.pgpKeyNeedsReverification, entity.identityNeedsReview)
         }
     }
 
-    private fun render(dto: ContactDto, selfHasPgpIdentity: Boolean?, pgpKeyNeedsReverification: Boolean = false) {
+    private fun render(
+        dto: ContactDto,
+        selfHasPgpIdentity: Boolean?,
+        pgpKeyNeedsReverification: Boolean = false,
+        identityNeedsReview: Boolean = false,
+    ) {
         applyThemedTitle(this, dto.fn.ifBlank { getString(R.string.contacts_edit_title) })
         bindAvatar(this, avatarView, dto.fn, sizeDp = 64)
         nameView.text = dto.fn
@@ -131,10 +136,13 @@ class ContactDetailActivity : LockedActivity() {
         val hasKey = contactHasLinkedPgpKey(dto.pgpKey, dto.isSelf, selfHasPgpIdentity)
         pgpBadge.visibility = if (hasKey) View.VISIBLE else View.GONE
         if (hasKey) {
-            pgpBadge.text = if (pgpKeyNeedsReverification) {
-                getString(R.string.contact_status_key_changed)
-            } else {
-                getString(R.string.contacts_pgp_badge_visible)
+            // "Key changed" must not be shown for an identity rebind: it sends the user to a QR
+            // fingerprint comparison, which attests to the key and says nothing about the addresses
+            // that actually changed.
+            pgpBadge.text = when {
+                pgpKeyNeedsReverification -> getString(R.string.contact_status_key_changed)
+                identityNeedsReview -> getString(R.string.contact_status_identity_changed)
+                else -> getString(R.string.contacts_pgp_badge_visible)
             }
             applyStatusBadgeTheme(this, pgpBadge, active = true)
         }

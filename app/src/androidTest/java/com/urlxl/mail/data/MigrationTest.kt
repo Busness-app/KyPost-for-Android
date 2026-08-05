@@ -156,6 +156,33 @@ class MigrationTest {
         }
     }
 
+    /**
+     * Additive and defaulted, so existing rows keep their key alarm and start with no identity
+     * alarm. That is the safe direction: a missing identity alarm is re-raised by the next sync that
+     * observes a rebind, whereas migrating every existing key alarm into both columns would show
+     * users a review prompt they cannot action.
+     */
+    @Test
+    fun migrate9To10_addsTheIdentityAlarmColumnWithoutDisturbingTheKeyAlarm() {
+        helper.createDatabase(TEST_DB, 9).use { db ->
+            db.execSQL(
+                "INSERT INTO contacts (uid, rev, fn, emailsJson, phonesJson, addressesJson, " +
+                    "pgpKeyNeedsReverification) " +
+                    "VALUES ('uid-mig', 1, 'Alice', '[]', '[]', '[]', 1)",
+            )
+        }
+
+        val migrated = helper.runMigrationsAndValidate(TEST_DB, 10, true, AppDatabase.MIGRATION_9_10)
+
+        migrated.query(
+            "SELECT pgpKeyNeedsReverification, identityNeedsReview FROM contacts WHERE uid = 'uid-mig'",
+        ).use { cursor ->
+            assertEquals(true, cursor.moveToFirst())
+            assertEquals(1, cursor.getInt(cursor.getColumnIndexOrThrow("pgpKeyNeedsReverification")))
+            assertEquals(0, cursor.getInt(cursor.getColumnIndexOrThrow("identityNeedsReview")))
+        }
+    }
+
     private companion object {
         const val TEST_DB = "migration-test"
     }

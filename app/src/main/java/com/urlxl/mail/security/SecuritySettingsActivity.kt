@@ -252,6 +252,19 @@ class SecuritySettingsActivity : LockedActivity() {
                     // metadata stores, not just the database — push_state alone held sender and
                     // subject for the last 30 messages.
                     SecurityWipe.deletePlaintextMetadataStores(this@SecuritySettingsActivity)
+                    // ...and the attachments the user tapped while protection was off, which are
+                    // written to shared Downloads with no prompt and sit OUTSIDE the sandbox. The
+                    // confirmation the user just read says "No mail, contacts, or attachments are
+                    // cached on this device... Turning this on immediately wipes what's cached now".
+                    // The full wipe learned to clear these; this sibling path had not.
+                    runCatching { DownloadedAttachmentLedger.deleteAll(this@SecuritySettingsActivity) }
+                        .onFailure {
+                            android.util.Log.e(
+                                "SecuritySettings",
+                                "Could not erase downloaded attachments while enabling protection",
+                                it,
+                            )
+                        }
                 }
                 settings.setEnabled(enable)
             }

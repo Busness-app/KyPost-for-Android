@@ -20,8 +20,10 @@ class EnrollmentVaultTest {
 
     private val vault = EnrollmentVault(ApplicationProvider.getApplicationContext())
 
-    @Before fun clean() = vault.destroy()
-    @After fun cleanup() = vault.destroy()
+    // Block body, not an expression body: destroy() returns the steps it could not
+    // complete, and JUnit requires @Before/@After to return void.
+    @Before fun clean() { vault.destroy() }
+    @After fun cleanup() { vault.destroy() }
 
     /** The property the whole re-seal buys. If this key could be used without the device lock
      *  screen, an extracted device image would open the envelope. */

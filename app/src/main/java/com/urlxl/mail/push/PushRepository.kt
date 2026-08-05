@@ -237,6 +237,10 @@ class PushRepository(
                 db.groupDao().clearAll()
                 db.groupLinkDao().clearAll()
                 db.deviceContactLinkDao().deleteAll()
+                // The contact-sync cursor lives here now, not in the contacts_state DataStore the
+                // file deletion below still targets. Without this a re-pair to the same account
+                // resumes from the old cursor and the address book never repopulates.
+                db.contactSyncStateDao().clearAll()
             }
         }.onFailure {
             // This one silently swallowed the exact failure the function's own KDoc describes:
@@ -254,6 +258,8 @@ class PushRepository(
         // stale value unreadable — it does not remove it. Leaving them behind kept a hashed map of
         // the previous account's folder set and its per-folder read timestamps on disk after an
         // unpair, and the shared-scope-key defect made one of them readable again.
+        // contacts_state is legacy: the cursor moved into the contact_sync_state table (cleared
+        // above). It stays in this list so installs that predate the move do not keep the old file.
         listOf("mail_sync_state", "contacts_state").forEach { name ->
             runCatching { java.io.File(context.filesDir, "datastore/$name.preferences_pb").delete() }
                 .onFailure { android.util.Log.e(TAG, "Failed to delete datastore $name", it) }
