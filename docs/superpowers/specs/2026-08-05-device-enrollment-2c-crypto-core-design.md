@@ -375,12 +375,16 @@ See `1c74842` and `00feae6` in kypost-server.
 
 ## Build note
 
-`./gradlew testDebugUnitTest` fails at configuration time with the configuration cache enabled:
-dependency verification has no entry for `kotlinx-coroutines-bom-1.6.4.pom`, pulled into a detached
-KSP configuration. `--no-configuration-cache` avoids it and the suite runs clean (512 tests as of
-`e0f23a8`). Fixing `gradle/verification-metadata.xml` properly is worth doing, but it is not this
-spec's job and the entry must not be added without checking the artifact — that file is a
-supply-chain control.
+**Resolved 2026-08-05.** `gradle/verification-metadata.xml` was missing ten BOM and parent-POM
+metadata artifacts, which failed the build at configuration time and made the KSP configuration-cache
+error look like a separate defect — it was a consequence, not a cause. Each artifact was downloaded
+from Maven Central, checked against Central's own published `.sha1`, cross-checked against the bytes
+Gradle had resolved, and only then recorded. No workaround flags are needed now.
+
+Separately, ten instrumented tests fail on the Android 17 emulator with `PepperUnavailableException`
+from `CredentialCipher`'s HMAC pepper key. Confirmed pre-existing at `cdd7dbd`, before any 2c work.
+Unrelated to this spec, but it means the credential gate is broken on that platform and wants its own
+investigation.
 
 ## Out of scope
 

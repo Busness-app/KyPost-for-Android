@@ -15,7 +15,8 @@
 ## Global Constraints
 
 - Working directory: `/home/yoshi/git/kypost-android`. Branch: `feat/device-enrollment-2c`.
-- **Run tests with `--no-configuration-cache`.** `./gradlew testDebugUnitTest` fails at configuration time otherwise: dependency verification has no entry for `kotlinx-coroutines-bom-1.6.4.pom`, pulled into a detached KSP configuration. Do not "fix" this by adding a checksum to `gradle/verification-metadata.xml` — that file is a supply-chain control and the artifact has not been verified.
+- **No workaround flags are needed.** The dependency-verification gap that used to require `--no-configuration-cache` was closed properly: ten BOM/parent metadata artifacts were verified against Maven Central's published SHA-1 and recorded in `gradle/verification-metadata.xml`. The configuration cache works. Do not add entries to that file without verifying the artifact — it is a supply-chain control.
+- **Ten instrumented tests fail on this emulator for a pre-existing reason**, confirmed at baseline `cdd7dbd`: `PepperUnavailableException` from `CredentialCipher`'s HMAC pepper key on Android 17. Unrelated to 2c. Do not "fix" it as part of this plan, and do not treat it as a regression you caused.
 - **Add no new dependencies.** HKDF is built from `javax.crypto.Mac`; there is no third-party crypto library in this app and this work does not introduce one.
 - `minSdk = 31` (`app/build.gradle.kts:27`), so `PURPOSE_AGREE_KEY` is available on every supported device.
 - **Never derive the enrollment code from a server-supplied value.** It comes from the keystore key only. This is the whole control.

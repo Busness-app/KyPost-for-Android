@@ -307,11 +307,12 @@ someone mutated the code and re-ran them. See `1c74842` and `00feae6` in kypost-
 
 ## Build note for whoever picks this up
 
-`./gradlew testDebugUnitTest` fails at configuration time with the configuration cache enabled:
-dependency verification has no entry for `kotlinx-coroutines-bom-1.6.4.pom`, pulled into a detached
-KSP configuration. `--no-configuration-cache` avoids it and the suite runs clean (511 tests as of
-`d4768db`). Worth fixing properly in `gradle/verification-metadata.xml` rather than working around
-forever, but it is not 2c's job and the entry should not be added without checking the artifact.
+**Fixed 2026-08-05.** The dependency-verification gap is closed: ten BOM/parent metadata artifacts
+were verified against Maven Central's published `.sha1` and recorded in
+`gradle/verification-metadata.xml`. The configuration cache works and no workaround flags are needed.
+
+Still open, and not 2c's: ten instrumented tests fail on Android 17 with `PepperUnavailableException`
+from `CredentialCipher`'s HMAC pepper key. Pre-existing at `cdd7dbd`.
 
 ## Open question for 2d (Qt)
 
