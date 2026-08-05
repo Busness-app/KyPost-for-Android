@@ -228,12 +228,17 @@ passphrase, a password reset stops touching the key.
 a prerequisite discussion with the server side, because shipping password entry on
 the phone without it is the part of this design that genuinely weakens something.
 
-## Rejected alternative: a device-sealed envelope
+## Accepted, gated: a device-sealed envelope
 
-Raised 2026-08-04 and recorded here so it is not re-proposed as though it were new.
+Raised 2026-08-04, rejected the same day, and **accepted on 2026-08-05 as a user-visible
+choice gated behind Hostile Location Protection.** The original rejection and the reasoning
+that overturned it are both kept below, because the objection was not wrong — it was
+outweighed, and a later reader needs to see the trade rather than assume the concern was
+never raised.
+
 It is the design a hardware keystore invites, and it is more interesting than the
 naive "store the key in `EncryptedSharedPreferences`" version this spec already
-rejects — but it loses on the same argument.
+rejects.
 
 **The shape.** The phone generates an EC P-256 keypair with `PURPOSE_AGREE_KEY`,
 `setIsStrongBoxBacked(true)` where the hardware allows, private half non-extractable
@@ -248,24 +253,55 @@ device, and revocation is per-device.
 `minSdk = 31` makes this buildable: `PURPOSE_AGREE_KEY` landed in API 31, so ECDH
 in the Keystore is available on every supported device.
 
-**Why it is rejected.** It fails the same test as the design in "The constraint
-that shapes everything", and the argument there is worth re-reading rather than
-re-deriving: biometrics and device credentials *authorise access to a key that
+**The objection, which stands on its own terms.** It fails the same test as the design in
+"The constraint that shapes everything", and the argument there is worth re-reading rather
+than re-deriving: biometrics and device credentials *authorise access to a key that
 already exists*; they do not reconstitute one from a secret only the user knows.
 An envelope openable by the secure element is openable by anyone who can satisfy
 the device's own unlock — a shoulder-surfed PIN, a compelled fingerprint, a
-coerced unlock at a border. Cold start stops being a full reload, which is the
-property this whole mode exists to provide. The audience is, in this document's own
-words, "the people least willing to accept a posture downgrade in exchange for
-convenience", and this is precisely that trade.
+coerced unlock at a border. Cold start stops being a full reload.
 
-**Lever C is the better answer to the same problem.** The device envelope exists to
-avoid typing the *account password* on a phone. Rewrapping under a separate PGP
-passphrase removes that objection without giving up cold-start, and it pays for
-itself on the server side too. Prefer it.
+**Why it is accepted anyway (2026-08-05).** The objection describes a real downgrade, but
+it was being weighed against the wrong baseline. The alternative to a device envelope is
+not "the user has client custody and types a passphrase" — it is "the user never leaves
+server custody at all", because the friction is what keeps them there. Measured against a
+**server-held secret**, a secure-element envelope the user controls is a large improvement,
+and it is the one that makes removing server custody adoptable. Preserving cold-start
+purity for the few who would accept the friction, at the cost of leaving the many on
+server-held keys, is the worse trade.
 
-**If it is ever revisited, the handshake needs a user-verified short authentication
-string, and that is not polish.** In client-custody mode the server is the
+So the downgrade becomes an explicit user choice rather than a designed-in default, and
+the threat the objection describes gets its own switch.
+
+**The gate: Hostile Location Protection.** The coerced-unlock and border-stop scenarios the
+objection names *are* the hostile-location case, and this app already has a control for it.
+
+- **HLP off (the default):** the device envelope is available. The user may enroll, and may
+  un-enroll at any time.
+- **HLP on:** no device envelope. Enrollment is unavailable, and **enabling HLP must destroy
+  any envelope that already exists**, alongside the on-disk database it already deletes.
+
+That last clause is load-bearing and easy to miss. `HostileLocationSettings.setEnabled`
+is deliberately written *after* the on-disk database has been deleted, and uses `commit()`
+rather than `apply()` so a process death cannot leave the flag off while the user believes
+protection is on. The enrollment envelope and its keystore key must join that same teardown
+and obey the same ordering. An envelope surviving the switch would leave the account's
+private key openable by device unlock on a device whose owner has just declared they are
+somewhere hostile — precisely the disclosure HLP exists to prevent, and worse than the one
+this section originally objected to.
+
+**Lever C remains the better answer for users who want both.** The device envelope exists
+to avoid typing the *account password* on a phone. Rewrapping under a separate PGP
+passphrase removes that objection without giving up cold-start. It is complementary here
+rather than superseded: it is what an HLP-on user should be offered.
+
+**The handshake needs a user-verified short authentication string, and that is not
+polish.** This was a condition of revisiting; it is now a condition of shipping. The
+server-side design (kypost-server, `2026-08-04-device-enrollment-design.md`) specifies one
+— ten Crockford base32 characters, device displays, browser verifies, browser refuses to
+seal on mismatch — which satisfies the first half of what follows. The AAD binding in the
+second half is **not** yet specified anywhere and remains outstanding. In client-custody
+mode the server is the
 adversary. If the browser trusts the server's copy of "this device's public key",
 a malicious server substitutes its own, receives the sealed envelope, and opens the
 key the mode exists to withhold — silently, with every client behaving correctly.
