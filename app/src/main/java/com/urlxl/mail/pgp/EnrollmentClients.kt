@@ -2,7 +2,6 @@ package com.urlxl.mail.pgp
 
 import com.urlxl.mail.executeSync
 import com.urlxl.mail.pairingAuthHeaders
-import com.urlxl.mail.pairingHttpClient
 import com.urlxl.mail.push.pairingEndpoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -50,10 +49,17 @@ internal sealed class EnrollmentCallResult {
  * tests still pass. That trap already cost this plan one green-but-empty suite in `DeviceEnvelope`.
  */
 internal class EnrollmentClients(
-    private val json: Json = Json { ignoreUnknownKeys = true },
     // Call.Factory (not the concrete OkHttpClient) so tests can inject a fake without a real network
     // call or a MockWebServer dependency. Mirrors MfaResponseClient.
-    private val callFactory: Call.Factory = pairingHttpClient(),
+    //
+    // **Deliberately not defaulted.** It used to default to `pairingHttpClient()`, which pins only
+    // when both a SPKI and a host are passed — so omitting the argument silently produced an
+    // *unpinned* client for the one request that carries the device bearer credential, and
+    // EnrollmentStateWorker omitted it. Every other credentialed client in the app is handed
+    // `pinnedPairingCallFactory`. Making the parameter required means a future call site cannot opt
+    // out of pinning by forgetting: it has to say so, and the compiler asks.
+    private val callFactory: Call.Factory,
+    private val json: Json = Json { ignoreUnknownKeys = true },
 ) {
 
     suspend fun publishKey(

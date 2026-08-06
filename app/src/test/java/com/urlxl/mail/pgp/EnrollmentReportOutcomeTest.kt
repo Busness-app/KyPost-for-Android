@@ -22,6 +22,35 @@ class EnrollmentReportOutcomeTest {
         )
     }
 
+    /**
+     * Retrying is bounded.
+     *
+     * WorkManager applies no attempt ceiling of its own — verified against work-runtime 2.10.1,
+     * which only clamps the backoff at five hours — so an unbounded RETRY is a work item that never
+     * terminates, waking for the life of the install against a relay that may have been
+     * decommissioned years earlier.
+     */
+    @Test
+    fun retryingStopsAtTheAttemptCeiling() {
+        assertEquals(
+            EnrollmentReportOutcome.RETRY,
+            enrollmentReportOutcome(EnrollmentCallResult.Failed("no network"), MAX_REPORT_ATTEMPTS - 1),
+        )
+        assertEquals(
+            EnrollmentReportOutcome.GIVE_UP,
+            enrollmentReportOutcome(EnrollmentCallResult.Failed("no network"), MAX_REPORT_ATTEMPTS),
+        )
+    }
+
+    /** The ceiling must not turn a success into a failure — it only bounds retrying. */
+    @Test
+    fun theCeilingDoesNotAffectSuccess() {
+        assertEquals(
+            EnrollmentReportOutcome.DONE,
+            enrollmentReportOutcome(EnrollmentCallResult.Ok, MAX_REPORT_ATTEMPTS + 5),
+        )
+    }
+
     @Test
     fun rateLimitingRetries() {
         assertEquals(

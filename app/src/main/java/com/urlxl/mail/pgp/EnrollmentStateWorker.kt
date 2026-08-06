@@ -10,6 +10,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.urlxl.mail.push.PushRuntime
+import com.urlxl.mail.push.pinnedPairingCallFactory
 import java.util.concurrent.TimeUnit
 
 /** What to do after one attempt at reporting. Kept apart from `ListenableWorker.Result` so the
@@ -17,17 +18,33 @@ import java.util.concurrent.TimeUnit
 internal enum class EnrollmentReportOutcome { DONE, RETRY, GIVE_UP }
 
 /**
+ * How many times a report may be retried before it is abandoned.
+ *
+ * WorkManager imposes no ceiling of its own — it only clamps the exponential backoff at five hours —
+ * so a RETRY with no bound is a work item that never terminates. With the 30-second base delay this
+ * spans roughly a day and a half of real attempts, which is generous for "the network came back"
+ * and finite for "this relay is never answering again".
+ */
+internal const val MAX_REPORT_ATTEMPTS = 8
+
+/**
  * Whether a failed report is worth another attempt.
  *
  * Retry is the answer whenever the server's marker is wrong in the *unsafe* direction — the
  * Security page telling the user this device can read their mail after the envelope is gone. Give
  * up only where another attempt cannot change the answer: a credential the server refuses will not
- * start working, and a device row that is gone will not come back.
+ * start working, a device row that is gone will not come back, and past [MAX_REPORT_ATTEMPTS] the
+ * evidence is that nothing is going to.
  */
-internal fun enrollmentReportOutcome(result: EnrollmentCallResult): EnrollmentReportOutcome =
+internal fun enrollmentReportOutcome(
+    result: EnrollmentCallResult,
+    runAttemptCount: Int = 0,
+): EnrollmentReportOutcome =
     when (result) {
         is EnrollmentCallResult.Ok -> EnrollmentReportOutcome.DONE
-        is EnrollmentCallResult.RateLimited, is EnrollmentCallResult.Failed -> EnrollmentReportOutcome.RETRY
+        is EnrollmentCallResult.RateLimited, is EnrollmentCallResult.Failed ->
+            if (runAttemptCount >= MAX_REPORT_ATTEMPTS) EnrollmentReportOutcome.GIVE_UP
+            else EnrollmentReportOutcome.RETRY
         is EnrollmentCallResult.Unauthorized, is EnrollmentCallResult.NotFound -> EnrollmentReportOutcome.GIVE_UP
         // Only fetchEnvelope produces this; reportState cannot. Not a retry: a response this route
         // has no way to send means the client is talking to something that is not this API.
@@ -50,23 +67,34 @@ internal class EnrollmentStateWorker(
     override suspend fun doWork(): Result {
         // Read at run time, never carried in inputData: WorkManager writes input to its own
         // database in plaintext, and this is the credential every authenticated call uses.
-        val pairing = PushRuntime.graph(applicationContext).securePairingStore.pairingSnapshot(null)
+        //
+        // Through pairingForAuthenticatedCall, so the credential keys are supplied when they are
+        // cached. This used to call pairingSnapshot(null), which cannot unwrap a gated secret under
+        // ANY circumstances — so with the credential gate on, the branch below was taken on every
+        // run forever, and the comment claiming "a later run, after an unlock, can deliver it" was
+        // false: unlock state does not change what pairingSnapshot(null) returns.
+        val pairing = PushRuntime.graph(applicationContext).repository.pairingForAuthenticatedCall()
             // Unpaired: there is no device row left to correct. SecurityWipe's path lands here.
             ?: return Result.success()
         val deviceId = pairing.deviceId
         val deviceSecret = pairing.deviceSecret
         if (deviceId.isNullOrBlank() || deviceSecret.isNullOrBlank()) {
-            // Paired, but the secret is wrapped under the credential gate and this process has not
-            // been PIN-unlocked. Distinct from unpaired, and a retry rather than a success: the
-            // report is still owed and a later run, after an unlock, can deliver it. Treating it as
-            // success would leave the server saying this device can read mail it can no longer open.
-            return Result.retry()
+            // Gated and currently locked, so the secret cannot be unwrapped in this run. Retrying
+            // cannot help — only a PIN unlock can, and the unlock path re-enqueues us (see
+            // UnlockActivity). Succeeding here releases the work slot instead of occupying it with
+            // a job that can never make progress.
+            return Result.success()
         }
 
         val enrolled = probeEnrollment(EnrollmentVault(applicationContext)).isEnrolled()
 
-        val result = EnrollmentClients().reportState(pairing.serverUrl, deviceId, deviceSecret, enrolled)
-        return when (enrollmentReportOutcome(result)) {
+        // The pinned factory, exactly as every other client that carries the device credential does.
+        // The bare default was unpinned, which made this the only credentialed request in the app
+        // outside the TOFU pin — and the only thing that triggers it is the user declaring the
+        // network hostile, which is the worst possible moment to be trusting the system CA set.
+        val clients = EnrollmentClients(callFactory = pinnedPairingCallFactory(applicationContext))
+        val result = clients.reportState(pairing.serverUrl, deviceId, deviceSecret, enrolled)
+        return when (enrollmentReportOutcome(result, runAttemptCount)) {
             EnrollmentReportOutcome.DONE -> Result.success()
             EnrollmentReportOutcome.RETRY -> Result.retry()
             EnrollmentReportOutcome.GIVE_UP -> Result.failure()
