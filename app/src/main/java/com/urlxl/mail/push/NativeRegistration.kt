@@ -3,6 +3,7 @@ package com.urlxl.mail.push
 import android.os.Build
 import com.urlxl.mail.APP_VERSION
 import com.urlxl.mail.executeSync
+import com.urlxl.mail.pairingAuthHeaders
 import com.urlxl.mail.pairingHttpClient
 import com.urlxl.mail.security.SpkiPinner
 import kotlinx.coroutines.Dispatchers
@@ -151,6 +152,22 @@ class NativeRegistrationClient(
         val httpRequest = Request.Builder()
             .url(pairing.registrationUrl)
             .post(json.encodeToString(request).toRequestBody(JSON_MEDIA_TYPE))
+            // Re-registration REBINDS an existing device row, and the server refuses that with 409
+            // unless the current credential is presented: without the check, a stolen session could
+            // take over a device row, keep its MFAApprover status and redirect that user's push.
+            // The FCM-token-refresh flow re-registers, so this is the ordinary path.
+            //
+            // Both halves or neither. A first pairing has no secret yet — this call is what mints
+            // one — and a device id sent alone reads to the server as a rebind attempt with no
+            // credential, which is exactly the request it is designed to refuse. The credential gate
+            // produces that shape whenever the app is locked.
+            .apply {
+                val deviceId = pairing.deviceId
+                val deviceSecret = pairing.deviceSecret
+                if (!deviceId.isNullOrBlank() && !deviceSecret.isNullOrBlank()) {
+                    pairingAuthHeaders(deviceId, deviceSecret)
+                }
+            }
             .build()
         // The host this call's handshake will be with — the pin below is only meaningful together
         // with it, since it is this URL, not pairing.serverUrl, that the certificate belongs to.
@@ -197,6 +214,11 @@ class NativeRegistrationClient(
                 expiredPairingToken = true,
             )
             503 -> NativeRegistrationResult.Error("Pairing not configured on backend")
+            // The device row exists and belongs to a credential this call did not present. Not a
+            // transport failure and not a retry: re-pairing is the only thing that resolves it.
+            409 -> NativeRegistrationResult.Error(
+                "This device is already registered with a different credential — re-pair it",
+            )
             else -> NativeRegistrationResult.Error("Failed to register device ($code)")
         }
     }
