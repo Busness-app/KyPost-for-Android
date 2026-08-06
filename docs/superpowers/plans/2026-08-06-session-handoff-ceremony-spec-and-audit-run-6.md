@@ -146,3 +146,55 @@ against suites that already pass, and every task after it benefits from a gate t
   `findings.json`, `architecture.md`
 - Prior audit runs 1–5: same directory, `run-1` … `run-5`. **109 confirmed findings across them** —
   read `findings.json` before reporting anything as new.
+
+## Update — the ceremony plan is implemented
+
+`docs/superpowers/plans/2026-08-06-device-enrollment-ceremony.md` executed. CI landed first and both
+jobs are green locally: unit `627/627` (0 failures, 0 errors), lint `0 errors / 366 warnings`,
+instrumented `113/113`, confirmed on `emulator-5554` (Pixel_10, API 37) with a secure lock screen and
+the keyguard dismissed. **Neither job has ever run on GitHub Actions** — the branch has not been
+pushed and no PR exists, so `ci-unit` and `ci-instrumented` are unproven in their real environment.
+That gap does not close until someone pushes and watches the run.
+
+**Still owed, and unchanged by this work:**
+
+- **On-device decryption is still deferred.** A user who completes the ceremony gets a device that
+  HOLDS a key it does not yet USE, and every string on these screens says so. The gate remains the
+  measurement in `docs/superpowers/specs/2026-07-29-on-device-pgp-decryption-design.md` — whether
+  context-switch friction survived the Custom Tabs change at `e42ad96`. Nobody has taken it.
+  `EnrollmentSession` still has no writer, deliberately.
+- **The browser-minted 128-bit challenge (spec 1's decision 8) is still not built.** It needs a
+  browser-to-device channel this protocol does not have, so it is a new transport leg and its own
+  piece of work. 70 bits makes it *not urgent*, not unnecessary.
+- **The `BiometricPrompt` interaction itself is not automated,** and this plan did not claim
+  otherwise. `VaultSealer` is an interface so everything around it is a JVM test; the prompt
+  appearing and being satisfied is Task 12's manual checklist.
+- **Deviations from the spec are listed at the top of the plan,** with reasons. Two are worth
+  carrying forward: the spec named four injected ports where five are needed (the keystore has no
+  fake otherwise, and "`deleteKeyPair()` on every exit" is the property most needing one), and its
+  row table has no entry for "could not check" even though its own decision 10 requires one.
+- **The server half of the code-grouping change was never made.** `kypost-server`'s
+  `frontend/src/lib/deviceEnrollment.ts` still groups the enrollment code 7-7 (`CODE_LENGTH / 2`),
+  while this client now groups it 4-3-4-3. Cosmetic today — the helper has no production call site,
+  only its own test imports it, and `normalizeEnrollmentCode` strips separators before comparing —
+  but the two clients now disagree about how the same value is displayed. Deferred because
+  `kypost-server` had uncommitted work in flight on another branch when this task executed. See the
+  spec's "Server-side change required — still outstanding" section for the exact edits owed
+  (`formatEnrollmentCode`, its test at `deviceEnrollment.test.ts:149`, and the normative vector's
+  displayed form in the 2c design doc and this handoff).
+- **All six manual checks from Task 12 are unperformed.** No live backend, account, browser session,
+  or enrolled biometric was available. In particular, the end-to-end enrollment against a real
+  browser has never been done — the phone-and-browser code agreement is verified only by a shared
+  normative vector and unit tests, never by a real ceremony. Whoever picks this up needs a running
+  `kypost-server` backend, a test account with a client-protected PGP identity, a browser session
+  against it, and a device with an enrolled biometric.
+- **A latent bug in `EnrollmentVault`:** it caches its `EncryptedSharedPreferences` in a `by lazy`
+  per instance (`EnrollmentVault.kt:40`), while `EnrollmentTeardown.destroy` (`EnrollmentTeardown.kt`)
+  runs against whatever instance is handed to it — a *different* instance than the one a caller might
+  be holding. An instance held across a teardown performed through another instance reports stale
+  state — reading a destroyed enrollment as still present, which is the unsafe direction. Not
+  reachable today: all four production call sites construct a fresh `EnrollmentVault` at the point of
+  use (`EnrollmentStateWorker.kt:89`, `DeviceEnrollmentActivity.kt:128`, `EnrollmentTeardown.kt:26`,
+  `SecuritySettingsActivity.kt:324`), so no long-lived instance is ever held across a teardown in
+  production. Found by Task 12's instrumented test. Fixing it means either dropping the `by lazy`
+  cache or giving `EnrollmentVault` a way to invalidate it on `destroy()`.

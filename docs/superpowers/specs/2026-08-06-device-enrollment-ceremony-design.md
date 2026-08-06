@@ -336,7 +336,14 @@ it is verifiable against the suites that already exist and pass (558 unit, 105 i
 every task after it benefits from an automated gate that is already green. The implementation plan
 should sequence it as task 1 rather than folding it into the feature.
 
-## Server-side change required
+## Server-side change required — still outstanding
+
+Not landed. `formatEnrollmentCode` in `kypost-server/frontend/src/lib/deviceEnrollment.ts` still
+groups the code 7-7 (`CODE_LENGTH / 2`), while `EnrollmentCodeFormat.kt` in this repository now
+groups 4-3-4-3. Deferred because `kypost-server` had uncommitted work in flight on another branch
+when Task 14 closed out this plan. The two clients now disagree about how the same value is
+displayed; the paragraphs below, written when this section was opened, still describe exactly what
+is owed.
 
 `kypost-server`, `frontend/src/lib/deviceEnrollment.ts`: `formatEnrollmentCode` groups the code 7-7
 (`XXXXXXX-XXXXXXX`). Decision 8 moves the phone to 4-3-4-3. Change the browser helper to match and
