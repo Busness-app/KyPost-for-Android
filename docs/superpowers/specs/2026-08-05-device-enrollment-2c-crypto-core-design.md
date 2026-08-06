@@ -24,7 +24,7 @@ get designed alongside the key they destroy, rather than bolted on after a scree
 
 Already landed on this branch: `e0f23a8` implements the enrollment code derivation and pins the
 normative vector, mutation-proven three ways. **The vector changed on 2026-08-05** when the code
-widened from 50 to 70 bits (decision 8): it is now `5R9K6FWA18A8YP`, displayed `5R9K6FW-A18A8YP`.
+widened from 50 to 70 bits (decision 8): it is now `5R9K6FWA18A8YP`, displayed `5R9K-6FW-A18A-8YP`.
 
 ## What this design is for, and what it cannot do
 

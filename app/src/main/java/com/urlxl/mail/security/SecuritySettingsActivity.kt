@@ -1,5 +1,6 @@
 package com.urlxl.mail.security
 
+import android.content.Intent
 import android.os.Bundle
 import android.view.View
 import android.widget.Button
@@ -12,12 +13,27 @@ import androidx.appcompat.widget.SwitchCompat
 import androidx.lifecycle.lifecycleScope
 import com.urlxl.mail.R
 import com.urlxl.mail.addViewSpaced
+import com.urlxl.mail.applyDangerButtonTheme
+import com.urlxl.mail.applyPrimaryButtonTheme
+import com.urlxl.mail.applySectionEyebrowLabel
 import com.urlxl.mail.applyThemeToActivity
 import com.urlxl.mail.applyTopInsetWithHeader
 import com.urlxl.mail.applyWarningCalloutTheme
 import com.urlxl.mail.contacts.device.DeviceContactSyncScheduler
 import com.urlxl.mail.contacts.device.DeviceContactsRuntime
 import com.urlxl.mail.dpToPx
+import com.urlxl.mail.pgp.AndroidIdentitySource
+import com.urlxl.mail.pgp.DeviceEnrollmentActivity
+import com.urlxl.mail.pgp.EnrollmentRow
+import com.urlxl.mail.pgp.EnrollmentStatus
+import com.urlxl.mail.pgp.EnrollmentTeardown
+import com.urlxl.mail.pgp.EnrollmentVault
+import com.urlxl.mail.pgp.IdentityCheck
+import com.urlxl.mail.pgp.enrollmentRowFor
+import com.urlxl.mail.pgp.hasSecureLockScreen
+import com.urlxl.mail.pgp.openWebmail
+import com.urlxl.mail.pgp.probeEnrollment
+import com.urlxl.mail.pgp.webmailHomeUrl
 import com.urlxl.mail.push.PushRuntime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -75,6 +91,9 @@ class SecuritySettingsActivity : LockedActivity() {
     private lateinit var hostileLocationSwitch: SwitchCompat
     private lateinit var hostileLocationIntro: TextView
     private lateinit var credentialGateSwitch: SwitchCompat
+    private lateinit var encryptionSectionLabel: TextView
+    private lateinit var encryptionRowText: TextView
+    private lateinit var encryptionActionButton: Button
     private var suppressLockToggleListener = false
     private var suppressCredentialGateListener = false
     private var suppressHostileLocationListener = false
@@ -117,6 +136,14 @@ class SecuritySettingsActivity : LockedActivity() {
             if (isFinishing || isDestroyed) return@launch
             buildViews(snapshot)
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (redirectedToUnlock) return
+        // ::isInitialized guards the window between onCreate's launch starting and buildViews
+        // running — onResume can fire first, and these are lateinit.
+        if (::encryptionRowText.isInitialized) refreshEncryptionRow()
     }
 
     private fun buildViews(snapshot: SettingsSnapshot) {
@@ -253,9 +280,201 @@ class SecuritySettingsActivity : LockedActivity() {
             lifecycleScope.launch { withContext(SecurityWork) { appLockStore.setBiometricEnabled(checked) } }
         }
 
+        // Encrypted mail. Built hidden and filled in asynchronously: deciding the row needs a
+        // Keystore probe and (usually) one authenticated request, neither of which may run on the
+        // main thread or block the rest of this screen from appearing.
+        encryptionSectionLabel = TextView(this).apply {
+            text = getString(R.string.security_encryption_section)
+            visibility = View.GONE
+        }
+        container.addViewSpaced(encryptionSectionLabel, topDp = 8, bottomDp = 8)
+        encryptionRowText = TextView(this).apply {
+            textSize = 13f
+            visibility = View.GONE
+        }
+        container.addViewSpaced(encryptionRowText, bottomDp = 8)
+        encryptionActionButton = Button(this).apply { visibility = View.GONE }
+        container.addViewSpaced(encryptionActionButton, bottomDp = 16)
+
         scrollView.addView(container)
         setContentView(scrollView)
         applyThemeToActivity(this)
+        refreshEncryptionRow()
+    }
+
+    /**
+     * Recomputes the encrypted-mail row.
+     *
+     * The identity request is skipped whenever a local fact already decides the row. That is not
+     * only an optimisation: under Hostile Location Protection the user has just declared this
+     * network hostile, and this screen must not answer that by making a request over it.
+     */
+    private fun refreshEncryptionRow() {
+        lifecycleScope.launch {
+            val activity = this@SecuritySettingsActivity
+            val local = withContext(SecurityWork) {
+                val pairing = PushRuntime.graph(activity).repository.pairingForAuthenticatedCall()
+                Triple(
+                    pairing != null && !pairing.deviceId.isNullOrBlank(),
+                    SecurityRuntime.graph(activity).hostileLocationSettings.isEnabled(),
+                    hasSecureLockScreen(activity),
+                )
+            }
+            val (paired, hostileLocation, lockScreen) = local
+            val status = withContext(SecurityWork) {
+                probeEnrollment(EnrollmentVault(activity))
+            }
+            // SecurityWork, like the reads above: check() calls pairingForAuthenticatedCall()
+            // before its own withContext(Dispatchers.IO), and that pairing read is several
+            // EncryptedSharedPreferences decrypts plus a CredentialCipher.unwrap AES operation —
+            // the same class of Keystore work SecurityWork's own KDoc exists to keep off the main
+            // thread, wrapping only the network fetch inside check() would have missed it.
+            //
+            // `status` is part of the guard, not just the three booleans: enrollmentRowFor decides
+            // on KEY_INVALIDATED and ENROLLED *before* it ever looks at `identity`, so on an
+            // already-enrolled device the request below was made on every visit to this screen and
+            // its answer thrown away.
+            val statusDecides = status == EnrollmentStatus.KEY_INVALIDATED ||
+                status == EnrollmentStatus.ENROLLED
+            val identity = if (paired && !hostileLocation && lockScreen && !statusDecides) {
+                withContext(SecurityWork) { AndroidIdentitySource(activity).check() }
+            } else {
+                IdentityCheck.CouldNotCheck
+            }
+            if (isFinishing || isDestroyed) return@launch
+            renderEncryptionRow(
+                enrollmentRowFor(
+                    paired = paired,
+                    hostileLocation = hostileLocation,
+                    hasSecureLockScreen = lockScreen,
+                    status = status,
+                    identity = identity,
+                ),
+            )
+        }
+    }
+
+    private fun renderEncryptionRow(row: EnrollmentRow) {
+        if (row is EnrollmentRow.Hidden) {
+            encryptionSectionLabel.visibility = View.GONE
+            encryptionRowText.visibility = View.GONE
+            encryptionActionButton.visibility = View.GONE
+            return
+        }
+        encryptionSectionLabel.visibility = View.VISIBLE
+        applySectionEyebrowLabel(this, encryptionSectionLabel)
+        encryptionRowText.visibility = View.VISIBLE
+        encryptionRowText.setText(encryptionRowCopy(row))
+
+        val action: Pair<Int, () -> Unit>? = when (row) {
+            EnrollmentRow.ServerHeldKey,
+            EnrollmentRow.NoIdentity,
+            -> R.string.security_encryption_open_webmail to { openAccountWebmail() }
+
+            EnrollmentRow.NotEnrolled ->
+                R.string.security_encryption_set_up to { launchEnrollmentCeremony() }
+
+            EnrollmentRow.KeyInvalidated ->
+                R.string.security_encryption_set_up_again to { launchEnrollmentCeremony() }
+
+            EnrollmentRow.Enrolled ->
+                R.string.security_encryption_remove to { confirmRemoveEnrollment() }
+
+            // Nothing the user can do from here fixes any of these.
+            EnrollmentRow.HostileLocation,
+            EnrollmentRow.NoSecureLockScreen,
+            EnrollmentRow.CouldNotCheck,
+            EnrollmentRow.Hidden,
+            -> null
+        }
+
+        if (action == null) {
+            encryptionActionButton.visibility = View.GONE
+            return
+        }
+        encryptionActionButton.visibility = View.VISIBLE
+        encryptionActionButton.setText(action.first)
+        encryptionActionButton.setOnClickListener { action.second() }
+        if (row is EnrollmentRow.Enrolled) {
+            applyDangerButtonTheme(this, encryptionActionButton)
+        } else {
+            applyPrimaryButtonTheme(this, encryptionActionButton)
+        }
+    }
+
+    private fun encryptionRowCopy(row: EnrollmentRow): Int = when (row) {
+        EnrollmentRow.Hidden -> R.string.empty_string
+        EnrollmentRow.HostileLocation -> R.string.security_encryption_hostile_location
+        EnrollmentRow.NoSecureLockScreen -> R.string.security_encryption_no_lock_screen
+        EnrollmentRow.KeyInvalidated -> R.string.security_encryption_invalidated
+        EnrollmentRow.Enrolled -> R.string.security_encryption_enrolled
+        EnrollmentRow.ServerHeldKey -> R.string.security_encryption_server_held
+        EnrollmentRow.NoIdentity -> R.string.security_encryption_no_identity
+        EnrollmentRow.CouldNotCheck -> R.string.security_encryption_could_not_check
+        EnrollmentRow.NotEnrolled -> R.string.security_encryption_not_enrolled
+    }
+
+    private fun launchEnrollmentCeremony() {
+        startActivity(Intent(this, DeviceEnrollmentActivity::class.java))
+    }
+
+    /** Built from the pairing's own `serverUrl`, never from anything a response supplied —
+     *  `openWebmail` refuses a non-first-party URL rather than degrading to a browser launch. */
+    private fun openAccountWebmail() {
+        lifecycleScope.launch {
+            val serverUrl = withContext(SecurityWork) {
+                PushRuntime.graph(this@SecuritySettingsActivity)
+                    .repository.pairingForAuthenticatedCall()?.serverUrl
+            }
+            val url = serverUrl?.let { webmailHomeUrl(it) }
+            val opened = url != null &&
+                openWebmail(this@SecuritySettingsActivity, serverUrl, url)
+            if (!opened) {
+                Toast.makeText(
+                    this@SecuritySettingsActivity,
+                    R.string.security_encryption_webmail_failed,
+                    Toast.LENGTH_SHORT,
+                ).show()
+            }
+        }
+    }
+
+    /**
+     * Confirmed, because it is destructive and not obviously reversible from the user's side: the
+     * envelope goes, and getting it back means another two-device ceremony.
+     */
+    private fun confirmRemoveEnrollment() {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.security_encryption_remove_title)
+            .setMessage(R.string.security_encryption_remove_body)
+            .setPositiveButton(R.string.security_encryption_remove_confirm) { _, _ ->
+                lifecycleScope.launch {
+                    // SecurityWork, like every other destructive step on this screen: this is a
+                    // Keystore deletion plus a commit()-backed prefs clear.
+                    val leftBehind = withContext(SecurityWork) {
+                        EnrollmentTeardown.destroyAndReport(
+                            this@SecuritySettingsActivity,
+                        )
+                    }
+                    if (leftBehind.isNotEmpty()) {
+                        android.util.Log.e(
+                            "SecuritySettings",
+                            "Enrollment removal left $leftBehind behind",
+                        )
+                    }
+                    if (isFinishing || isDestroyed) return@launch
+                    // The enqueued report probes live state, so a half-failed teardown is reported
+                    // honestly rather than as a removal that did not happen.
+                    Toast.makeText(
+                        this@SecuritySettingsActivity,
+                        R.string.security_encryption_removed,
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    refreshEncryptionRow()
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     /** Same re-entrancy hazard as [revertLockSwitch], guarded the same way. */

@@ -27,4 +27,23 @@ internal object EnrollmentTeardown {
         if (!EnrollmentKeyStore.deleteKeyPair()) failed += "deleteAgreementKey"
         return failed
     }
+
+    /**
+     * [destroy] plus the correction to the server, for the user-initiated "Remove from this device".
+     *
+     * The report goes through [EnrollmentStateWorker] rather than a direct `reportState(false)`
+     * because the worker re-probes live state on every run and retries when offline — so if the
+     * teardown half-failed, the server is told this device is still enrolled rather than being told
+     * a comforting lie. A direct call would be a second reporting path that can fail silently.
+     *
+     * `SecuritySettingsActivity.tearDownEnrollmentForHostileLocation` performs the same two steps
+     * for the protection toggle. It is deliberately left alone rather than routed through here: it
+     * is driven by an instrumented test that exists to keep the toggle and the teardown in step, and
+     * a refactor of that path buys nothing this function needs.
+     */
+    fun destroyAndReport(context: Context): List<String> {
+        val leftBehind = destroy(context)
+        EnrollmentStateWorker.enqueue(context)
+        return leftBehind
+    }
 }

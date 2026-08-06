@@ -50,3 +50,22 @@ fun webmailDraftsUrl(serverUrl: String): String? {
     val base = "${serverUrl.trimEnd('/')}/read".toHttpUrlOrNull() ?: return null
     return base.newBuilder().addQueryParameter("mailbox", DRAFTS).build().toString()
 }
+
+/**
+ * The account's webmail home.
+ *
+ * Used by the Security page's "open webmail" actions, where the destination is "your account in the
+ * browser" rather than one message — creating a PGP identity and choosing client custody are both
+ * web-session-only actions on the backend.
+ *
+ * The path is replaced rather than appended: the stored `serverUrl` is the pairing's origin, but a
+ * value carrying a path would otherwise produce `…/read/` and land nowhere. `isFirstPartyWebmailUrl`
+ * still gates the launch on the origin.
+ *
+ * The query and fragment are cleared alongside the path: `encodedPath` alone leaves any `?...` or
+ * `#...` on the input untouched, so a stored URL carrying one (there is no reason one would, but
+ * nothing rules it out) would otherwise survive into the handoff target the same way a path would.
+ */
+fun webmailHomeUrl(serverUrl: String): String? =
+    serverUrl.toHttpUrlOrNull()?.newBuilder()?.encodedPath("/")?.query(null)?.fragment(null)
+        ?.build()?.toString()

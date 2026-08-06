@@ -1,8 +1,8 @@
 package com.urlxl.mail.pgp
 
 /** The two `protection` values this app understands. Anything else degrades to "not server". */
-private const val PROTECTION_SERVER = "server"
-private const val PROTECTION_CLIENT = "client"
+internal const val PROTECTION_SERVER = "server"
+internal const val PROTECTION_CLIENT = "client"
 
 /**
  * Which PGP controls the compose screen offers, as a pure function of what

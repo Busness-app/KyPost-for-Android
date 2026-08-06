@@ -84,7 +84,7 @@ Assert the normative vector. One test, no dependencies, an hour of work:
 deviceId  = "test-device"
 bucket    = 14000000                    (unixSeconds 1680000000)
 rawKey    = 0x04 ‖ X(0x01 × 32) ‖ Y(0x02 × 32)      // valid encoding, NOT on the curve
-expected  = "5R9K6FWA18A8YP"                         // displayed 5R9K6FW-A18A8YP
+expected  = "5R9K6FWA18A8YP"                         // displayed 5R9K-6FW-A18A-8YP
 ```
 
 **This vector has only ever been verified in the browser.** If Android disagrees, the failure mode

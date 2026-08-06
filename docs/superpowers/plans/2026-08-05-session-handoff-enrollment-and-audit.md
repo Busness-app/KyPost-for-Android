@@ -1,5 +1,15 @@
 # Session Handoff — device enrollment 2c, security audit run-5, and the wire v2 break
 
+> **SUPERSEDED 2026-08-06** by `2026-08-06-session-handoff-ceremony-spec-and-audit-run-6.md`.
+>
+> **The cliff below is resolved. Do not act on it.** Both halves of the wire break shipped:
+> `kypost-server` PR #83 and `kypost-android` PR #14 are both on `main`, so the 70-bit code and the
+> v2 envelope agree. This document is kept for the run-5 history and the traps section; its "must
+> ship together" warning and its branch table are stale.
+>
+> Note also that a stale local clone makes the warning below look live — Android `main` was 25
+> commits behind and server `main` 79 behind when this was re-read. `git fetch` first.
+
 **Written:** 2026-08-05. **Spans two repos.** Read this before picking any of it up; the two halves
 must ship together and one of them is currently a correctness cliff.
 
