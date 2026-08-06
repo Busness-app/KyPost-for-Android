@@ -92,6 +92,10 @@ class AppLockManager(
         lockDeadlineElapsedMs = 0L
         if (state.isLockEnabled()) _locked.value = true
         credentialKeys = null
+        // Unconditional, exactly like credentialKeys above: the opened PGP private key is plaintext
+        // held for the unlock session, and "the app locked" is the whole of its lifetime. Gating it
+        // on isLockEnabled() would keep it alive on the path where the lock was just turned off.
+        com.urlxl.mail.pgp.EnrollmentSession.clear()
     }
 
     /**
