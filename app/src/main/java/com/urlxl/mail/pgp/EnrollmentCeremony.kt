@@ -58,11 +58,30 @@ internal class EnrollmentCeremony(
     private fun emit(state: EnrollmentUiState) = onState(state)
 
     /**
+     * True whenever no polling window is running — the ceremony is finished, blocked, timed out, or
+     * waiting for the user after a cancelled prompt.
+     *
+     * The Activity offers "Check again" on this, rather than on the state alone: `ShowingCode` means
+     * two different things depending on whether a window is still open behind it.
+     */
+    var isIdle: Boolean = true
+        private set
+
+    /**
      * Runs the ceremony from the gate to a terminal state.
      *
      * Every path out of this function is one row of the spec's exit table.
      */
     suspend fun run() {
+        isIdle = false
+        try {
+            runInner()
+        } finally {
+            isIdle = true
+        }
+    }
+
+    private suspend fun runInner() {
         emit(EnrollmentUiState.CheckingIdentity)
 
         // Local declarations first, and in this order. Hostile Location Protection means the user
@@ -155,7 +174,12 @@ internal class EnrollmentCeremony(
      */
     suspend fun checkAgain() {
         if (!keyPairLive) return
-        poll()
+        isIdle = false
+        try {
+            poll()
+        } finally {
+            isIdle = true
+        }
     }
 
     private suspend fun poll() {
@@ -208,9 +232,100 @@ internal class EnrollmentCeremony(
         emit(EnrollmentUiState.Failed(reason))
     }
 
-    /** Task 5 replaces this stub. */
     private suspend fun openAndSeal(envelopeJson: String) {
         emit(EnrollmentUiState.Opening)
+
+        val fields = parseDeviceEnvelope(envelopeJson)
+        if (fields == null) {
+            failAndDestroy(FailureReason.ENVELOPE_MALFORMED)
+            return
+        }
+
+        // The AAD is built from this device's id and the fingerprint the identity check returned —
+        // never from anything in the envelope. deviceEnvelopeAad normalises and validates the
+        // fingerprint itself; a throw here is a programming error, not a user condition, but it is
+        // caught rather than crashed because the alternative is a crash on a security screen.
+        val aad = runCatching {
+            deviceEnvelopeAad(requireNotNull(deviceId), requireNotNull(fingerprint))
+        }.getOrNull()
+        if (aad == null) {
+            failAndDestroy(FailureReason.ENVELOPE_MALFORMED)
+            return
+        }
+
+        val ownPoint = keys.rawPublicKey()
+        if (ownPoint == null) {
+            failAndDestroy(FailureReason.NO_DEVICE_KEY)
+            return
+        }
+
+        val sharedSecret = keys.sharedSecret(fields.epk)
+        if (sharedSecret == null) {
+            // The ECDH itself failed — a malformed peer point that got past the parse, or a key the
+            // Keystore will no longer agree with. Indistinguishable from a hostile envelope from
+            // here, and treated the same: no retry.
+            failAndDestroy(FailureReason.COULD_NOT_OPEN)
+            return
+        }
+
+        val plaintext = try {
+            // ownPoint is the HKDF salt — this device's own point, not the ephemeral one in the
+            // envelope.
+            openDeviceEnvelope(sharedSecret, ownPoint, fields, aad)
+        } finally {
+            sharedSecret.fill(0)
+        }
+        if (plaintext == null) {
+            failAndDestroy(FailureReason.COULD_NOT_OPEN)
+            return
+        }
+
+        try {
+            sealAndReport(plaintext)
+        } finally {
+            // The armored private key, zeroed in place on every path out — including the throw the
+            // sealer is not supposed to produce. It never enters EnrollmentSession: that holder has
+            // no reader until the deferred decryption work lands.
+            plaintext.fill(0)
+        }
+    }
+
+    private suspend fun sealAndReport(plaintext: ByteArray) {
+        emit(EnrollmentUiState.AwaitingAuth)
+
+        // Re-checked here as well as at the gate: the user can remove the lock screen between the
+        // two, and EnrollmentVault.ensureKey() would then fail behind a prompt that never appears.
+        if (!hasSecureLockScreen()) {
+            failAndDestroy(FailureReason.NO_SECURE_LOCK_SCREEN)
+            return
+        }
+
+        when (sealer.seal(plaintext)) {
+            is SealOutcome.Sealed -> report()
+            is SealOutcome.NoSecureLockScreen -> failAndDestroy(FailureReason.NO_SECURE_LOCK_SCREEN)
+            is SealOutcome.Failed -> failAndDestroy(FailureReason.SEAL_FAILED)
+            is SealOutcome.Cancelled ->
+                // Back to the code with the window closed. The envelope stays on the relay for
+                // seven days, so "Check again" picks it straight back up; re-prompting from inside
+                // the poll loop would put the dialog back three seconds after the user dismissed
+                // it, over and over, for the rest of the window.
+                emit(EnrollmentUiState.ShowingCode(shownCode, shownExpiresAtEpochMs))
+        }
+    }
+
+    /**
+     * Tells the server this device is enrolled, and stops depending on the answer.
+     *
+     * A failed report is **not** a failed enrollment: the local seal is real, only the marker is
+     * stale, and `EnrollmentStateWorker` re-probes live state and retries. The agreement key is spent
+     * either way — its life is one ceremony.
+     */
+    private suspend fun report() {
+        if (transport.reportEnrolled(true) !is EnrollmentCallResult.Ok) {
+            transport.enqueueDurableReport()
+        }
+        teardown()
+        emit(EnrollmentUiState.Enrolled)
     }
 
     /**
