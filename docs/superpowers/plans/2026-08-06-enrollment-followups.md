@@ -50,9 +50,29 @@ call sites and zero tests, and is currently unreachable from tests because `Fake
 `FakeEnrollmentKeys()` with no `minting` override. One defaulted constructor parameter plus one test
 closes it, and the cost only grows as call sites accumulate.
 
-## 3. Awaiting a decision: `SealOutcome.Cancelled` re-emits a possibly-stale code
+## 3. ~~Awaiting a decision~~ DECIDED: `SealOutcome.Cancelled` no longer shows a code at all
 
-Not a defect to fix on sight — the final reviewer asked for an explicit ruling.
+**Ruled and fixed.** Investigating the staleness turned up a larger error underneath it: `Cancelled`
+is only reachable *after* `fetchEnvelope` returned an envelope, which means the browser has already
+read the code and sealed. So re-emitting `ShowingCode` did not merely risk a stale value — it
+instructed the user to redo a step they had finished, while polling had stopped so retyping it
+achieved nothing.
+
+The branch now emits a new `EnrollmentUiState.ReadyToFinish`, which carries **no code**: the
+outstanding action is a fingerprint, not a transcription. That dissolves the staleness question
+rather than patching it — there is no bucket to expire and no countdown to freeze.
+
+Two things fell out of it that the original framing missed:
+
+- The Activity started its **live per-second countdown** for any `ShowingCode`. `render()` already
+  carried a comment explaining that a ticking label behind a closed window "would count a dead bucket
+  down past zero and then sit on 'about to change' forever" — reasoned through for `WaitingTimedOut`,
+  while `Cancelled` reached the same condition through a different state and got the countdown.
+- `checkAgainButton` keyed off `ShowingCode || WaitingTimedOut`, so a naive new state would have
+  rendered with **no way to resume** — and the screen's only other exit destroys the published key.
+  That decision is now the pure, tested `offersCheckAgain(state, idle)`.
+
+The reasoning that follows is kept as the record of what was originally found.
 
 `EnrollmentCeremony`'s `Cancelled` branch re-emits `ShowingCode` with the code and expiry captured
 *before* the biometric prompt appeared. If the 120-second bucket rolled while the prompt was up — an

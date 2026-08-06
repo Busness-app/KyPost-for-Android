@@ -433,13 +433,21 @@ class DeviceEnrollmentActivity : LockedActivity() {
         countdown?.cancel()
         countdown = null
 
-        val showingCode = state is EnrollmentUiState.ShowingCode ||
-            state is EnrollmentUiState.WaitingTimedOut
+        // FLAG_KEEP_SCREEN_ON wherever the ceremony is waiting on the user with a live keypair.
+        // Without it the screen times out while the user is typing into their browser, which
+        // backgrounds the app, which starts the lock grace — and the user comes back to an unlock
+        // prompt with the ceremony destroyed.
+        //
+        // ReadyToFinish is in this set even though it shows no code: it is one tap from completing,
+        // and it is where a user who stepped away to fetch a fingerprint lands. Letting the screen
+        // sleep there would destroy a ceremony whose envelope had already arrived. It is the same
+        // set as [offersCheckAgain] minus the transient states — both answer "is the ceremony
+        // waiting on a person right now".
+        val awaitingTheUser = state is EnrollmentUiState.ShowingCode ||
+            state is EnrollmentUiState.WaitingTimedOut ||
+            state is EnrollmentUiState.ReadyToFinish
 
-        // FLAG_KEEP_SCREEN_ON while the code is up. Without it the screen times out while the user
-        // is typing into their browser, which backgrounds the app, which starts the lock grace —
-        // and the user comes back to an unlock prompt with the ceremony destroyed.
-        if (showingCode) {
+        if (awaitingTheUser) {
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         } else {
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -468,7 +476,8 @@ class DeviceEnrollmentActivity : LockedActivity() {
         headline.setText(headlineFor(state))
         detail.setText(detailFor(state))
 
-        checkAgainButton.visibility = if (idle && showingCode) View.VISIBLE else View.GONE
+        checkAgainButton.visibility =
+            if (offersCheckAgain(state, idle)) View.VISIBLE else View.GONE
         closeButton.setText(
             if (state is EnrollmentUiState.Enrolled) R.string.enrollment_done
             else R.string.enrollment_cancel,
@@ -509,6 +518,7 @@ class DeviceEnrollmentActivity : LockedActivity() {
         is EnrollmentUiState.WaitingTimedOut -> R.string.enrollment_waiting_timed_out
         EnrollmentUiState.Opening -> R.string.enrollment_opening
         EnrollmentUiState.AwaitingAuth -> R.string.enrollment_awaiting_auth
+        EnrollmentUiState.ReadyToFinish -> R.string.enrollment_ready_to_finish
         EnrollmentUiState.Enrolled -> R.string.enrollment_enrolled
         is EnrollmentUiState.Unavailable -> unavailableCopy(state.reason)
         is EnrollmentUiState.Failed -> failureCopy(state.reason)
@@ -517,6 +527,7 @@ class DeviceEnrollmentActivity : LockedActivity() {
     private fun detailFor(state: EnrollmentUiState): Int = when (state) {
         is EnrollmentUiState.ShowingCode -> R.string.enrollment_code_intro
         is EnrollmentUiState.WaitingTimedOut -> R.string.enrollment_timed_out
+        EnrollmentUiState.ReadyToFinish -> R.string.enrollment_ready_to_finish_detail
         EnrollmentUiState.Enrolled -> R.string.enrollment_enrolled_detail
         else -> R.string.empty_string
     }
