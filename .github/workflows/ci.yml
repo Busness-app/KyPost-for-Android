@@ -118,11 +118,18 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           script: |
-            # THIS BLOCK RUNS UNDER /usr/bin/sh (dash), NOT bash, and the action collapses it.
-            # A multi-line `|| { ... }` brace group is a syntax error here — dash reports
-            # "line 1: Syntax error: end of file unexpected" and the job dies before a single
-            # test runs. That is exactly how this workflow failed on its first real execution.
-            # Keep every construct POSIX and on ONE line.
+            # THE ACTION RUNS EACH LINE BELOW AS ITS OWN `/usr/bin/sh -c` INVOCATION —
+            # dash, not bash, and a separate process per line. Two rules follow, and the
+            # run log of 31128861943 shows the `[command]/usr/bin/sh -c ...` lines proving it.
+            #
+            # 1. No construct may span lines. A multi-line `|| { ... }` brace group reaches
+            #    dash as just `grep ... || {`, which is "Syntax error: end of file unexpected
+            #    (expecting \"}\")". That is precisely how this workflow died on its first
+            #    real execution, before a single test ran.
+            # 2. NO SHELL STATE SURVIVES BETWEEN LINES. A variable assigned on one line is
+            #    gone on the next, as is any `cd`. That is why the lock-screen check below
+            #    goes through a file in /tmp rather than a variable — it is the only way the
+            #    `verify` output reaches the `grep`.
 
             # The action reports the boot complete before adb is reliably answering — the first
             # run logged "Unable to connect to adb daemon" and three adb exit-code-1s during
