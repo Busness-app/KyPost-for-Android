@@ -41,9 +41,11 @@ internal class DeviceEnrollmentViewModel(application: Application) : AndroidView
         transport = AndroidEnrollmentTransport(application),
         keys = AndroidEnrollmentKeys,
         // A proxy, not the Activity itself: the ViewModel outlives the Activity, and a captured
-        // reference would keep a destroyed one alive and prompt on a dead window. A rotation while
-        // the prompt is up destroys it, BiometricPrompt reports the cancellation, and the ceremony
-        // treats it exactly as a user cancel — code back on screen, nothing destroyed.
+        // reference would keep a destroyed one alive and prompt on a dead window. With none
+        // installed, seal() resolves straight to Cancelled. On a configuration change, the
+        // outgoing Activity's own onDestroy cancels its live prompt and resumes this call as
+        // Cancelled itself — androidx.biometric resets its callback to a no-op on destroy, so the
+        // library will not report the rotation on its own.
         sealer = object : VaultSealer {
             override suspend fun seal(plaintext: ByteArray): SealOutcome =
                 activitySealer?.seal(plaintext) ?: SealOutcome.Cancelled
