@@ -8,6 +8,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Manual trigger. Present because this workflow could not be made to fire on its own
+  # events when it first landed — push and pull_request both produced no run at all,
+  # in a repository where no user-defined workflow had ever run (`.github` was
+  # gitignored until the commit that added this file). A dispatchable workflow is worth
+  # having regardless, and it is the one trigger that can be invoked deliberately when
+  # the automatic ones are not behaving.
+  workflow_dispatch:
 
 permissions:
   contents: read
