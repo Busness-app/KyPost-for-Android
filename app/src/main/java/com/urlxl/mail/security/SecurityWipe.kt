@@ -29,12 +29,20 @@ private val DATASTORE_NAMES = listOf("push_state", "contacts_state", "mail_sync_
  * after `unifiedPushUnregister` because it holds the distributor selection that
  * `UnifiedPush.unregister` needs to actually unsubscribe. That step is what makes excluding it here
  * safe; the exclusion previously rested on the unregister step deleting it, which it never did.
+ *
+ * The downloaded-attachment ledger is retained for the same reason as the wipe marker: it is the
+ * record of work still owed. `downloadedAttachments` keeps the rows it could not delete and throws,
+ * which promises the user a retry — and this sweep, eleven steps later, used to delete the ledger
+ * anyway, so the resumed wipe iterated an empty set and reported success over attachment plaintext
+ * still in shared Downloads. [DownloadedAttachmentLedger.deleteAll] removes the file itself once
+ * there is nothing left to retry.
  */
 private val PREFS_NAMES_RETAINED = setOf(
     "app_lock_secure",
     "app_lock_tripwire",
     "com.urlxl.mail.wipe_state",
     "unifiedpush.connector",
+    DownloadedAttachmentLedger.PREFS_NAME,
 )
 
 /**
