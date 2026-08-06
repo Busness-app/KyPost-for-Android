@@ -109,7 +109,7 @@ Each of these cost real time. They are not hypotheticals.
 
 ## Verification state
 
-- Android: **unit 553/553, instrumented 102/102**, no workaround flags. Emulator `Pixel_10`, Android
+- Android: **unit 558/558, instrumented 103/103**, no workaround flags. Emulator `Pixel_10`, Android
   17, TEE-backed. The ten pre-existing `PepperUnavailableException` failures the 2c plan warned
   about are gone — `33dae86` establishes the pepper before reading it — so a failure on this
   emulator is now genuinely yours.
@@ -131,6 +131,39 @@ Each of these cost real time. They are not hypotheticals.
   in `applyHostileLocationProtection` would not turn them red. Instrumenting the toggle needs the UI
   work in spec 2. The `SecurityWipe` side has no such gap — `WipeResurrectionTest` runs the real
   `wipeAndResetApp`.
+
+## Security audit run-5 → run-6
+
+**Run-6** (`~/security-audit-skill/kypost-android/run-6/`) audited the tasks 5–9 delta. Five findings
+— 2 MEDIUM, 3 LOW, no HIGH — **all fixed** in `d410827`, `8bf9b44`, `0ecee8e`, `2bcf38e`. Two of the
+five were defects in the code written the session before, which is the point of running the audit
+against your own fresh work:
+
+- The state report was the **only** device-authenticated request outside the TOFU TLS pin, and it
+  fired on the Hostile Location Protection toggle. `EnrollmentClients.callFactory` lost its default
+  rather than gaining a better one: a default is what let the omission happen silently.
+- `pairingSnapshot(null)` **cannot** unwrap a gated device secret, so the worker's retry branch was
+  taken forever with the credential gate on — and the comment saying an unlock would fix it was
+  false. The report is now re-driven from the PIN unlock, the only event that makes the secret usable.
+- `AppRestart.relaunch` sat outside the `NonCancellable` block in three places, so a Back press
+  during the HLP toggle committed the flag and skipped the process reset. Pre-existing since
+  `8f37efc`, and now guarded by `runSecurityChangeThenReset` plus a test that cancels mid-change.
+- `EnrollmentSession` had not joined the `ProcessScopedState` registry, and `resetAll()` reports only
+  registered holders — so the wipe announced Complete over it.
+- Unpair and re-pair did not tear the enrollment down; only the wipe and HLP did.
+
+**Three things run-6 rejected, so nobody re-derives them:** `EnrollmentVault.destroy()`'s dead
+failure detector is real but harmless (a clean return proves the key alias is gone, so residue is
+dead ciphertext); the WorkManager database surviving the wipe discloses nothing that
+`hostile_location_settings.xml` does not state more plainly on purpose; and `deviceEnvelopeAad`
+accepting U+FB00 is not a bypass, since the AAD is built from the uppercased string.
+
+**Still owed from run-5, and confirmed still open:** run-5 finding 3's second half. `36e7e62` fixed
+the "structurally cannot fail" part of the downloaded-attachment step but not the retry part — the
+`sharedPrefs` step still deletes `com.urlxl.mail.downloaded_attachments` eleven steps later, so a
+resumed wipe finds an empty ledger, passes, and reports **Complete** after having promised a retry.
+Reproduced on the emulator. The fix run-5 asked for is still the right one: add the ledger to
+`PREFS_NAMES_RETAINED` and delete it explicitly only after the step has succeeded.
 
 ## Closed this session, for the record
 
