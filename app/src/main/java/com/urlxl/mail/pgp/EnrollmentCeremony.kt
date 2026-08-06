@@ -1,5 +1,25 @@
 package com.urlxl.mail.pgp
 
+/** The code's validity window, and the browser's. `deviceEnrollmentCode`'s bucket is
+ *  `unixSeconds / 120`; changing this alone strands every honest enrollment. */
+private const val BUCKET_SECONDS = 120L
+
+/** How often the phone asks whether the browser has sealed yet. There is no browser-to-device
+ *  channel — the publish step is device-to-server POST only — so polling is the only discovery
+ *  mechanism this protocol has. */
+private const val POLL_INTERVAL_MS = 3_000L
+
+/**
+ * How long one polling window lasts.
+ *
+ * **A background completion is impossible, not merely undesirable:** the re-seal uses a key with
+ * `setUserAuthenticationRequired(true)` and per-use auth, so it needs a live `BiometricPrompt`. The
+ * ceremony's tail requires the user present and the app foregrounded, which means an unbounded loop
+ * would be a screen holding a published key and a spoken-aloud code until the process dies. Five
+ * minutes also means the code has rotated at least twice, so the screen has had to refresh it anyway.
+ */
+private const val POLL_WINDOW_MS = 5 * 60 * 1_000L
+
 /**
  * The device-enrollment state machine.
  *
@@ -80,7 +100,117 @@ internal class EnrollmentCeremony(
             }
         }
 
-        // Task 4 replaces this line with publishAndPoll().
+        publishAndPoll()
+    }
+
+    /** The code currently on screen, so [checkAgain] can resume without re-deriving from a bucket
+     *  that has since moved — and so [EnrollmentUiState.WaitingTimedOut] can carry it. */
+    private var shownCode: String = ""
+    private var shownExpiresAtEpochMs: Long = 0L
+    private var shownBucket: Long = Long.MIN_VALUE
+
+    private suspend fun publishAndPoll() {
+        emit(EnrollmentUiState.PublishingKey)
+
+        // Mints a FRESH keypair, destroying any previous one. A key that outlives a ceremony is a
+        // standing unauthenticated path to every envelope the relay has retained.
+        //
+        // Marked live BEFORE the check, not after. `newKeyPair()` deletes the previous key and then
+        // generates — attempting StrongBox first and falling back to the TEE — so a `false` can
+        // still leave something behind. Treating a failed mint as "nothing was created" is how a
+        // half-generated key survives a ceremony.
+        keyPairLive = true
+        if (!keys.newKeyPair()) {
+            failAndDestroy(FailureReason.NO_DEVICE_KEY)
+            return
+        }
+
+        val encoded = keys.encodedPublicKey()
+        if (encoded == null) {
+            failAndDestroy(FailureReason.NO_DEVICE_KEY)
+            return
+        }
+
+        when (transport.publishKey(encoded)) {
+            is EnrollmentCallResult.Ok -> Unit
+            is EnrollmentCallResult.Unauthorized -> return failAndDestroy(FailureReason.UNAUTHORIZED)
+            is EnrollmentCallResult.RateLimited -> return failAndDestroy(FailureReason.RATE_LIMITED)
+            // NotFound (the device row is gone), Failed, and an Envelope this route cannot send.
+            // None is retryable, and all leave a minted key that must not survive.
+            is EnrollmentCallResult.NotFound,
+            is EnrollmentCallResult.Failed,
+            is EnrollmentCallResult.Envelope,
+            -> return failAndDestroy(FailureReason.PUBLISH_REJECTED)
+        }
+
+        poll()
+    }
+
+    /**
+     * Reopens a five-minute window against the **same** keypair.
+     *
+     * The key is not republished and `newKeyPair()` is not called again: a restart would rotate the
+     * key, invalidating the code the user may already have typed into the browser. Leaving the
+     * screen and re-entering is the restart, and that path does rotate.
+     */
+    suspend fun checkAgain() {
+        if (!keyPairLive) return
+        poll()
+    }
+
+    private suspend fun poll() {
+        val deadline = clock.elapsedRealtimeMs() + POLL_WINDOW_MS
+
+        while (clock.elapsedRealtimeMs() < deadline) {
+            val bucket = clock.epochSeconds() / BUCKET_SECONDS
+            if (bucket != shownBucket) {
+                // Re-read from the keystore on every recomputation rather than caching the point.
+                // The code must describe the key material actually in hand.
+                val raw = keys.rawPublicKey()
+                if (raw == null) {
+                    failAndDestroy(FailureReason.NO_DEVICE_KEY)
+                    return
+                }
+                shownBucket = bucket
+                shownCode = deviceEnrollmentCode(raw, requireNotNull(deviceId), bucket)
+                shownExpiresAtEpochMs = (bucket + 1) * BUCKET_SECONDS * 1_000L
+                emit(EnrollmentUiState.ShowingCode(shownCode, shownExpiresAtEpochMs))
+            }
+
+            when (val result = transport.fetchEnvelope()) {
+                is EnrollmentCallResult.Envelope -> {
+                    openAndSeal(result.envelope)
+                    return
+                }
+                // 401 is the one polling answer that cannot improve: the credential this device
+                // holds is not accepted, and no amount of waiting changes that.
+                is EnrollmentCallResult.Unauthorized -> return failAndDestroy(FailureReason.UNAUTHORIZED)
+                // 404 covers "never sealed" and "expired", indistinguishable by design and both
+                // meaning keep waiting. A 429 or a dropped connection mid-window is not a reason to
+                // tear down a ceremony the user is halfway through typing. `Ok` cannot occur on this
+                // route.
+                is EnrollmentCallResult.NotFound,
+                is EnrollmentCallResult.RateLimited,
+                is EnrollmentCallResult.Failed,
+                is EnrollmentCallResult.Ok,
+                -> Unit
+            }
+
+            clock.sleep(POLL_INTERVAL_MS)
+        }
+
+        // The one exit that KEEPS the keypair — "Check again" resumes against it.
+        emit(EnrollmentUiState.WaitingTimedOut(shownCode, shownExpiresAtEpochMs))
+    }
+
+    private fun failAndDestroy(reason: FailureReason) {
+        teardown()
+        emit(EnrollmentUiState.Failed(reason))
+    }
+
+    /** Task 5 replaces this stub. */
+    private suspend fun openAndSeal(envelopeJson: String) {
+        emit(EnrollmentUiState.Opening)
     }
 
     /**
