@@ -80,13 +80,11 @@ against suites that already pass, and every task after it benefits from a gate t
    never pass `--write-verification-metadata` (it would defeat the 600-component pinning this repo
    already paid for), and give the CI emulator a lock screen or `EnrollmentVault` tests fail
    confusingly.
-2. **Patch the browser's `formatEnrollmentCode` to 4-3-4-3.** `kypost-server`,
-   `frontend/src/lib/deviceEnrollment.ts`, plus its test at `deviceEnrollment.test.ts:149`. Cosmetic
-   only today — the helper has no production call site and `normalizeEnrollmentCode` strips
-   separators before comparing — but a display helper ready to be wired up is a future disagreement
-   between two screens showing the same code. Also update the *displayed* normative vector in the 2c
-   design doc and the previous handoff: `5R9K6FW-A18A8YP` → `5R9K-6FW-A18A-8YP`. The underlying value
-   `5R9K6FWA18A8YP` is unchanged; grouping never enters the hash.
+2. ~~**Patch the browser's `formatEnrollmentCode` to 4-3-4-3.**~~ **Done** — `kypost-server` PR #89,
+   merge commit `097af72`. Both clients now group `5R9K6FWA18A8YP` as `5R9K-6FW-A18A-8YP`. The
+   *displayed* normative vector is corrected in the ceremony design and in
+   `2026-08-05-session-handoff-enrollment-and-audit.md`; occurrences that read `X, not Y` were left
+   alone, since they are contrasting the two forms rather than asserting the old one.
 3. **Test 7 from the original 2b handoff needs a home** — re-registration sending the device secret.
    It belongs to the registration path rather than the ceremony, so the ceremony spec records it as
    unplaced rather than quietly absorbing it.
