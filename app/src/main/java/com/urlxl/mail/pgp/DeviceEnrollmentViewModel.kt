@@ -87,10 +87,14 @@ internal class DeviceEnrollmentViewModel(application: Application) : AndroidView
     /**
      * The "user leaves" row of the exit table.
      *
-     * `viewModelScope` is already cancelled by the time this runs, so any suspended poll or prompt
-     * is gone; this destroys the agreement key it left behind. It is idempotent and destroys nothing
-     * if the ceremony never minted anything, because `EnrollmentKeyStore.deleteKeyPair()`'s boolean
-     * feeds a `SecurityWipe.step` elsewhere and a deletion that never happened must not be reported.
+     * `viewModelScope` has been cancelled by the time this runs, but cancellation is cooperative, not
+     * immediate: a suspended poll or a live `BiometricPrompt` may still be unwinding when `teardown()`
+     * executes. That is fine to proceed through regardless — the agreement key must not survive the
+     * screen either way, and deleting it cannot corrupt an in-flight seal, because the seal
+     * authenticates against the vault key, which `teardown()` never touches. It is idempotent and
+     * destroys nothing if the ceremony never minted anything, because `EnrollmentKeyStore.deleteKeyPair()`'s
+     * boolean feeds a `SecurityWipe.step` elsewhere and a deletion that never happened must not be
+     * reported.
      */
     override fun onCleared() {
         ceremony.teardown()
