@@ -186,6 +186,16 @@ internal class EnrollmentCeremony(
     }
 
     private suspend fun poll() {
+        // Every window opens on a freshly derived code. [shownBucket] is instance state that
+        // survives each exit from the loop below, so without this reset a window reopened after a
+        // timeout — or after a cancelled prompt — would find the bucket unchanged, emit nothing, and
+        // leave whatever code was last on screen sitting there while the browser has already moved
+        // on to the next bucket. A code that outlived its bucket is not an inconvenience: the
+        // browser refuses to seal on a mismatch, and a mismatch is this feature's one alarm, so a
+        // stale code turns an entirely honest enrollment into the signal reserved for an attack.
+        // Re-deriving costs one keystore read against a key that has not changed.
+        shownBucket = Long.MIN_VALUE
+
         val deadline = clock.elapsedRealtimeMs() + POLL_WINDOW_MS
 
         while (clock.elapsedRealtimeMs() < deadline) {

@@ -25,6 +25,7 @@ import com.urlxl.mail.dpToPx
 import com.urlxl.mail.pgp.AndroidIdentitySource
 import com.urlxl.mail.pgp.DeviceEnrollmentActivity
 import com.urlxl.mail.pgp.EnrollmentRow
+import com.urlxl.mail.pgp.EnrollmentStatus
 import com.urlxl.mail.pgp.EnrollmentTeardown
 import com.urlxl.mail.pgp.EnrollmentVault
 import com.urlxl.mail.pgp.IdentityCheck
@@ -328,7 +329,14 @@ class SecuritySettingsActivity : LockedActivity() {
             // EncryptedSharedPreferences decrypts plus a CredentialCipher.unwrap AES operation —
             // the same class of Keystore work SecurityWork's own KDoc exists to keep off the main
             // thread, wrapping only the network fetch inside check() would have missed it.
-            val identity = if (paired && !hostileLocation && lockScreen) {
+            //
+            // `status` is part of the guard, not just the three booleans: enrollmentRowFor decides
+            // on KEY_INVALIDATED and ENROLLED *before* it ever looks at `identity`, so on an
+            // already-enrolled device the request below was made on every visit to this screen and
+            // its answer thrown away.
+            val statusDecides = status == EnrollmentStatus.KEY_INVALIDATED ||
+                status == EnrollmentStatus.ENROLLED
+            val identity = if (paired && !hostileLocation && lockScreen && !statusDecides) {
                 withContext(SecurityWork) { AndroidIdentitySource(activity).check() }
             } else {
                 IdentityCheck.CouldNotCheck

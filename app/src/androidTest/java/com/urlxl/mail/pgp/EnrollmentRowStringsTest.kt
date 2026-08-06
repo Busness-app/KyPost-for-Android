@@ -65,7 +65,19 @@ class EnrollmentRowStringsTest {
             context.getString(R.string.enrollment_enrolled_detail),
             context.getString(R.string.enrollment_code_intro),
         )
-        val banned = listOf("can read", "can now read", "able to read", "decrypt")
+        // "use encrypted mail on this device" and not the shorter "use encrypted mail": the
+        // account-level rows legitimately say "your account doesn't use encrypted mail yet", which
+        // is a fact about the account and not a claim about what this device does. What is banned is
+        // the device-scoped promise — security_encryption_no_lock_screen used to read "Set a screen
+        // lock to use encrypted mail on this device", and a user who followed it through the whole
+        // ceremony was then told "You'll still read your encrypted mail in your browser for now".
+        val banned = listOf(
+            "can read",
+            "can now read",
+            "able to read",
+            "decrypt",
+            "use encrypted mail on this device",
+        )
         for (text in all) {
             for (phrase in banned) {
                 assertFalse(

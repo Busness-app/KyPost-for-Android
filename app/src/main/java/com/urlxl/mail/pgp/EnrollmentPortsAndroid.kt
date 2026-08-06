@@ -4,7 +4,9 @@ import android.content.Context
 import android.os.SystemClock
 import com.urlxl.mail.push.PushRuntime
 import com.urlxl.mail.push.pinnedPairingCallFactory
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 /** [EnrollmentKeyStore] behind the port, so the ceremony's cleanup rule is testable on the JVM. */
 internal object AndroidEnrollmentKeys : EnrollmentKeys {
@@ -29,19 +31,26 @@ internal object AndroidEnrollmentKeys : EnrollmentKeys {
 internal class AndroidIdentitySource(context: Context) : IdentitySource {
     private val appContext = context.applicationContext
 
-    override suspend fun check(): IdentityCheck {
+    // withContext(IO) covers the whole body, not just the fetch: pairingForAuthenticatedCall() is
+    // roughly eight EncryptedSharedPreferences decrypts plus a CredentialCipher.unwrap, and on the
+    // first call it also forces the lazy EncryptedSharedPreferences/Tink construction and a MasterKey
+    // Keystore round trip. The ceremony runs on viewModelScope's Dispatchers.Main.immediate, so
+    // without this that lands on the UI thread. PgpBootstrapClient.fetch nests its own
+    // withContext(IO), which costs nothing when we are already there. See SecuritySettingsActivity,
+    // where the same call was wrapped for the same reason.
+    override suspend fun check(): IdentityCheck = withContext(Dispatchers.IO) {
         val pairing = PushRuntime.graph(appContext).repository.pairingForAuthenticatedCall()
         val deviceId = pairing?.deviceId
         val deviceSecret = pairing?.deviceSecret
         if (pairing == null || deviceId.isNullOrBlank() || deviceSecret.isNullOrBlank()) {
             // Not "no identity". The credential may simply be gated and the app currently locked.
-            return IdentityCheck.CouldNotCheck
+            return@withContext IdentityCheck.CouldNotCheck
         }
 
         // The pinned factory, not PgpBootstrapClient's unpinned default. This request carries the
         // device bearer credential, like every other credentialed call in this app.
         val client = PgpBootstrapClient(callFactory = pinnedPairingCallFactory(appContext))
-        return identityCheckFrom(client.fetch(pairing.serverUrl, deviceId, deviceSecret))
+        identityCheckFrom(client.fetch(pairing.serverUrl, deviceId, deviceSecret))
     }
 }
 
@@ -86,25 +95,40 @@ internal class AndroidEnrollmentTransport(context: Context) : EnrollmentTranspor
     // d410827. The bare default was unpinned, on the one request carrying the device credential.
     private val clients = EnrollmentClients(callFactory = pinnedPairingCallFactory(appContext))
 
+    /**
+     * Blocking, and never to be called from the main thread: one call is roughly eight
+     * `EncryptedSharedPreferences` decrypts plus a `CredentialCipher.unwrap`, and the first one also
+     * forces the lazy `EncryptedSharedPreferences`/Tink construction and a MasterKey Keystore round
+     * trip. Every method below therefore opens with `withContext(Dispatchers.IO)` — the port is the
+     * Android edge, and it is where this belongs.
+     *
+     * Wrapping only the client call underneath would not have been enough: the client switches to IO
+     * *after* this has already run, so on the ceremony's `Dispatchers.Main.immediate` this landed on
+     * the UI thread — from [fetchEnvelope] roughly a hundred times per five-minute window, on a
+     * screen that also holds `FLAG_KEEP_SCREEN_ON` and runs a 1 Hz countdown. The clients' own
+     * nested `withContext(IO)` costs nothing once we are already on IO.
+     */
     private fun pairing() = PushRuntime.graph(appContext).repository.pairingForAuthenticatedCall()
         ?.takeIf { !it.deviceId.isNullOrBlank() && !it.deviceSecret.isNullOrBlank() }
 
-    override suspend fun deviceId(): String? = pairing()?.deviceId
+    override suspend fun deviceId(): String? = withContext(Dispatchers.IO) { pairing()?.deviceId }
 
-    override suspend fun publishKey(encodedPublicKey: String): EnrollmentCallResult {
-        val p = pairing() ?: return EnrollmentCallResult.Unauthorized
-        return clients.publishKey(p.serverUrl, p.deviceId!!, p.deviceSecret!!, encodedPublicKey)
+    override suspend fun publishKey(encodedPublicKey: String): EnrollmentCallResult =
+        withContext(Dispatchers.IO) {
+            val p = pairing() ?: return@withContext EnrollmentCallResult.Unauthorized
+            clients.publishKey(p.serverUrl, p.deviceId!!, p.deviceSecret!!, encodedPublicKey)
+        }
+
+    override suspend fun fetchEnvelope(): EnrollmentCallResult = withContext(Dispatchers.IO) {
+        val p = pairing() ?: return@withContext EnrollmentCallResult.Unauthorized
+        clients.fetchEnvelope(p.serverUrl, p.deviceId!!, p.deviceSecret!!)
     }
 
-    override suspend fun fetchEnvelope(): EnrollmentCallResult {
-        val p = pairing() ?: return EnrollmentCallResult.Unauthorized
-        return clients.fetchEnvelope(p.serverUrl, p.deviceId!!, p.deviceSecret!!)
-    }
-
-    override suspend fun reportEnrolled(enrolled: Boolean): EnrollmentCallResult {
-        val p = pairing() ?: return EnrollmentCallResult.Unauthorized
-        return clients.reportState(p.serverUrl, p.deviceId!!, p.deviceSecret!!, enrolled)
-    }
+    override suspend fun reportEnrolled(enrolled: Boolean): EnrollmentCallResult =
+        withContext(Dispatchers.IO) {
+            val p = pairing() ?: return@withContext EnrollmentCallResult.Unauthorized
+            clients.reportState(p.serverUrl, p.deviceId!!, p.deviceSecret!!, enrolled)
+        }
 
     override fun enqueueDurableReport() = EnrollmentStateWorker.enqueue(appContext)
 }

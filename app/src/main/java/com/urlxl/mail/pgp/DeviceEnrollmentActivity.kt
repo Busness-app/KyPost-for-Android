@@ -53,6 +53,21 @@ class DeviceEnrollmentActivity : LockedActivity() {
     private var countdown: Job? = null
 
     /**
+     * True once `onCreate` ran past [LockedActivity]'s gate — i.e. once [viewModel] has actually
+     * been dereferenced and the sealer installed. Read by [onDestroy], which is the only method here
+     * that must distinguish "this screen was never set up" from "this screen is going away".
+     *
+     * Deliberately **not** `redirectedToUnlock`, which `onCreate` and `onResume` use: that flag is
+     * also set from `LockedActivity.onStart`, long after `onCreate` has run to completion, on the
+     * ordinary "the app locked while this screen was backgrounded" exit. On that path the ViewModel
+     * really does exist and a live `BiometricPrompt` really may need resolving, so keying
+     * [onDestroy] off `redirectedToUnlock` would skip the seal resolution on a path that needs it —
+     * leaving a `NonCancellable` continuation suspended forever with the armored private key never
+     * zeroed. This flag is only ever false when `onCreate` itself bailed.
+     */
+    private var created = false
+
+    /**
      * Where the AES-GCM `doFinal` and the `commit()`-backed store run.
      *
      * Not the main thread — `EnrollmentVault.store` is a Keystore round trip plus a synchronous
@@ -311,6 +326,8 @@ class DeviceEnrollmentActivity : LockedActivity() {
                     .collect { (state, idle) -> render(scope, state, idle) }
             }
         }
+
+        created = true
     }
 
     override fun onResume() {
@@ -322,6 +339,34 @@ class DeviceEnrollmentActivity : LockedActivity() {
     }
 
     override fun onDestroy() {
+        // InboxActivity, EmailDetailActivity and ComposeActivity each note that their onDestroy
+        // needs no guard, because it only touches property initializers, which exist even when
+        // onCreate bailed. This one is different: it dereferences `viewModel`, and when onCreate
+        // bailed at LockedActivity's gate nothing above ever has. `by viewModels()` resolves lazily,
+        // so `viewModel.installSealer(null)` below would be the FIRST get on the store — and by then
+        // ComponentActivity has already cleared it (on API >= 29 ON_DESTROY is dispatched from
+        // dispatchActivityPreDestroyed(), before this method is even entered). ViewModelStore has no
+        // "cleared" flag, so a get after clear() simply constructs a new ViewModel into a map
+        // nothing will clear again: a whole DeviceEnrollmentViewModel whose init launches
+        // ceremony.run(), with onCleared() — teardown()'s only caller — never running. With the
+        // credential gate off (the default) that mints a P-256 agreement key and publishes its
+        // public half to the relay with no screen, no user and no code ever shown, polls for five
+        // minutes from a destroyed Activity, and exits at WaitingTimedOut, which by design KEEPS the
+        // keypair. EnrollmentKeyStore's KDoc names exactly that outcome: the agreement key carries
+        // no user-authentication requirement, justified solely by its life being one foreground
+        // ceremony, so one that survives is a standing unauthenticated path to every envelope the
+        // relay has retained. Reachable by backgrounding this screen, having the process reclaimed,
+        // and returning past the lock grace — the restored task recreate()s for the startup
+        // tripwire, and the second onCreate redirects and finishes.
+        //
+        // `created` and not `redirectedToUnlock` — see that property's KDoc. sealExecutor IS a
+        // property initializer, so it exists here and must still be shut down or its thread leaks.
+        if (!created) {
+            sealExecutor.shutdown()
+            super.onDestroy()
+            return
+        }
+
         // Only clear the slot if this Activity is still the one in it. On a rotation the new
         // Activity's onCreate runs BEFORE the old one's onDestroy, and isChangingConfigurations()
         // is true for exactly that case — so skipping the clear there is what stops an
@@ -408,10 +453,11 @@ class DeviceEnrollmentActivity : LockedActivity() {
         codeText.visibility = if (code == null) View.GONE else View.VISIBLE
         if (code != null) codeText.text = formatEnrollmentCode(code)
 
-        // The countdown runs only for ShowingCode. WaitingTimedOut's own detail line already says
-        // "the code above is still the right one" — a live countdown next to it claiming the code
-        // is "about to change" would contradict that about the one value the user must transcribe,
-        // and nothing is refreshing this expiry once the poll loop has stopped anyway.
+        // The countdown runs only for ShowingCode. In WaitingTimedOut the poll loop has stopped, so
+        // nothing refreshes this expiry: a ticking label would count a dead bucket down past zero
+        // and then sit on "about to change" forever. That state's detail line sends the user to
+        // "Check again" — which reopens a window and re-derives the code — rather than to the
+        // stale value beside it.
         if (state is EnrollmentUiState.ShowingCode) {
             expiryText.visibility = View.VISIBLE
             startCountdown(scope, state.expiresAtEpochMs)
