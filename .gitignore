@@ -44,7 +44,6 @@ app/google-services.json
 .claude/worktrees/
 .worktrees/
 .superpowers/
-.github
 .scratch/
 
 # Deploy-walkthrough artifacts: real-device screenshots of a live inbox, home screen
