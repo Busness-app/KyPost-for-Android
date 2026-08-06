@@ -35,11 +35,25 @@ class WipeResurrectionTest {
     private fun pushStateFile() = File(context.filesDir, "datastore/push_state.preferences_pb")
     private fun hostilePrefsFile() =
         File(File(context.dataDir, "shared_prefs"), "com.urlxl.mail.hostile_location_settings.xml")
+    private fun ledgerFile() =
+        File(File(context.dataDir, "shared_prefs"), "com.urlxl.mail.downloaded_attachments.xml")
+
+    /** True once the ledger's apply()-backed write has reached disk, or false after ~2s. */
+    private fun awaitLedgerFile(): Boolean {
+        repeat(40) {
+            if (ledgerFile().exists()) return true
+            Thread.sleep(50)
+        }
+        return false
+    }
 
     @Before
     fun clean() {
         context.getSharedPreferences("com.urlxl.mail.wipe_state", android.content.Context.MODE_PRIVATE)
             .edit().clear().commit()
+        // The attachment ledger is deliberately retained across a wipe now, so an undeletable entry
+        // left by one test would otherwise fail the next one's sweep.
+        context.deleteSharedPreferences("com.urlxl.mail.downloaded_attachments")
         HostileLocationSettings(context).setEnabled(false)
         DataRuntime.invalidate()
         PushRuntime.invalidate()
@@ -187,6 +201,64 @@ class WipeResurrectionTest {
         } finally {
             dir.setReadable(true, false)
         }
+    }
+
+    /**
+     * A wipe that promises a retry must leave the retry something to do.
+     *
+     * `step("downloadedAttachments")` keeps the URIs it could not delete and throws, producing
+     * `Incomplete(willRetry = true)` and the notice "it will be retried when the app next starts".
+     * But `step("sharedPrefs")` runs eleven steps later and used to delete the ledger file along
+     * with everything else, so the resumed wipe read an empty set, passed the step, and reported
+     * **Complete** — telling the user their local data was erased while the attachment plaintext
+     * was still sitting in shared Downloads.
+     *
+     * The undeletable entry is a `content://` URI with an authority no provider claims, so
+     * `ContentResolver.delete` throws. That is the same shape as the real case the ledger was
+     * hardened for: a MediaStore row this package created and can no longer touch.
+     */
+    @Test
+    fun wipe_keepsTheAttachmentLedgerWhenItsStepFailed(): Unit = runBlocking {
+        DownloadedAttachmentLedger.record(
+            context,
+            android.net.Uri.parse("content://com.urlxl.mail.no.such.provider/1"),
+        )
+
+        val result = SecurityWipe.wipeAndResetApp(context)
+
+        assertTrue(
+            "precondition: the attachment step must have failed, got $result",
+            result is WipeResult.Incomplete && result.failedSteps.contains("downloadedAttachments"),
+        )
+        assertTrue(
+            "the ledger must survive so the promised retry has work",
+            ledgerFile().exists(),
+        )
+        assertTrue(
+            "the undeleted URI must still be recorded",
+            context.getSharedPreferences("com.urlxl.mail.downloaded_attachments", android.content.Context.MODE_PRIVATE)
+                .getStringSet("uris", emptySet()).orEmpty().isNotEmpty(),
+        )
+    }
+
+    /** ...and once the step genuinely succeeds, the ledger goes: retained is not the same as kept
+     *  forever, and a stale file would make the next wipe re-try work that is already done. */
+    @Test
+    fun aSuccessfulAttachmentSweepRemovesTheLedger(): Unit = runBlocking {
+        // A media URI for a row that does not exist: the delete affects 0 rows and the re-query
+        // finds nothing, so it is correctly treated as already gone.
+        DownloadedAttachmentLedger.record(
+            context,
+            android.net.Uri.parse("content://media/external/downloads/999999999"),
+        )
+        // record() uses apply(), so the file appears on a background thread. Wait for it rather
+        // than racing it — otherwise the assertion below could pass against a file that was never
+        // written in the first place.
+        assertTrue("precondition: ledger written", awaitLedgerFile())
+
+        DownloadedAttachmentLedger.deleteAll(context)
+
+        assertFalse("a completed sweep must not leave its ledger behind", ledgerFile().exists())
     }
 
     /**
