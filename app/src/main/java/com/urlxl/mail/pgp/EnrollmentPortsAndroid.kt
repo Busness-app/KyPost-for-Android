@@ -41,24 +41,35 @@ internal class AndroidIdentitySource(context: Context) : IdentitySource {
         // The pinned factory, not PgpBootstrapClient's unpinned default. This request carries the
         // device bearer credential, like every other credentialed call in this app.
         val client = PgpBootstrapClient(callFactory = pinnedPairingCallFactory(appContext))
-        return when (val result = client.fetch(pairing.serverUrl, deviceId, deviceSecret)) {
-            is PgpBootstrapResult.Failed -> IdentityCheck.CouldNotCheck
-            is PgpBootstrapResult.Success -> when {
-                !result.hasIdentity -> IdentityCheck.NoIdentity
-                result.protection == PROTECTION_CLIENT ->
-                    ownFingerprintFromBootstrap(result)
-                        ?.let { IdentityCheck.ClientProtected(it) }
-                    // An identity whose key will not parse is not an identity this device can bind
-                    // an AAD to. Reporting it as "could not check" rather than "no identity" keeps
-                    // the user's own key from being described as absent.
-                        ?: IdentityCheck.CouldNotCheck
-                result.protection == PROTECTION_SERVER -> IdentityCheck.ServerHeld
-                // Degrade, never guess — the same rule pgpComposeStateOf follows. Guessing "client"
-                // here starts a ceremony that can only end at a failed GCM open, which is this
-                // feature's one alarm.
-                else -> IdentityCheck.CouldNotCheck
-            }
-        }
+        return identityCheckFrom(client.fetch(pairing.serverUrl, deviceId, deviceSecret))
+    }
+}
+
+/**
+ * The pure "degrade, never guess" mapping from one bootstrap response to an [IdentityCheck].
+ *
+ * Pulled out of [AndroidIdentitySource.check] so the rule is testable on the JVM, without a network
+ * fetch or a device — [pgpComposeStateOf] is a standalone pure function for exactly this reason, and
+ * its own KDoc says why: "the rule is testable without instrumentation." A future edit that collapses
+ * the `else` branch, or lets an unrecognised `protection` fall through to [IdentityCheck.ClientProtected],
+ * must fail a test here rather than only being reachable through a real network round trip.
+ */
+internal fun identityCheckFrom(result: PgpBootstrapResult): IdentityCheck = when (result) {
+    is PgpBootstrapResult.Failed -> IdentityCheck.CouldNotCheck
+    is PgpBootstrapResult.Success -> when {
+        !result.hasIdentity -> IdentityCheck.NoIdentity
+        result.protection == PROTECTION_CLIENT ->
+            ownFingerprintFromBootstrap(result)
+                ?.let { IdentityCheck.ClientProtected(it) }
+            // An identity whose key will not parse is not an identity this device can bind
+            // an AAD to. Reporting it as "could not check" rather than "no identity" keeps
+            // the user's own key from being described as absent.
+                ?: IdentityCheck.CouldNotCheck
+        result.protection == PROTECTION_SERVER -> IdentityCheck.ServerHeld
+        // Degrade, never guess — the same rule pgpComposeStateOf follows. Guessing "client"
+        // here starts a ceremony that can only end at a failed GCM open, which is this
+        // feature's one alarm.
+        else -> IdentityCheck.CouldNotCheck
     }
 }
 
