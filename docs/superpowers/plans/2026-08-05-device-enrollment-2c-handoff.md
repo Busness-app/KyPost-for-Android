@@ -1,7 +1,9 @@
 # Device Enrollment 2c (Android) — Handoff
 
 **Repo:** `kypost-android` (this one). **Server (2a) + browser (2b):** PR #80 on `kypost-server`,
-branch `perf/bound-lockout-tests` — **open and unmerged as of 2026-08-05**.
+**merged 2026-08-05**. The wire-format breaks below (70-bit code, envelope v2) landed after it, on
+`kypost-server` branch `feat/device-enrollment-wire-v2` — that branch must ship, or no honest
+enrollment can succeed.
 **Normative spec:** `kypost-server/docs/superpowers/specs/2026-08-04-device-enrollment-design.md`.
 
 This merges the two handoffs that existed in parallel: the Android copy (which held the Hostile
