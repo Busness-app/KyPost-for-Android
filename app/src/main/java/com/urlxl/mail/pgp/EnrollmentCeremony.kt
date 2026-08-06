@@ -338,11 +338,17 @@ internal class EnrollmentCeremony(
             is SealOutcome.NoSecureLockScreen -> failAndDestroy(FailureReason.NO_SECURE_LOCK_SCREEN)
             is SealOutcome.Failed -> failAndDestroy(FailureReason.SEAL_FAILED)
             is SealOutcome.Cancelled ->
-                // Back to the code with the window closed. The envelope stays on the relay for
-                // seven days, so "Check again" picks it straight back up; re-prompting from inside
-                // the poll loop would put the dialog back three seconds after the user dismissed
-                // it, over and over, for the rest of the window.
-                emit(EnrollmentUiState.ShowingCode(shownCode, shownExpiresAtEpochMs))
+                // NOT back to the code. Reaching here means fetchEnvelope already returned one, so
+                // the browser has read the code and sealed: re-showing it would instruct a step the
+                // user has finished, and would show a value that dies on the next bucket boundary
+                // with no window left running to refresh it — a stale code is this feature's one
+                // alarm fired at an entirely honest enrollment.
+                //
+                // The envelope stays on the relay for seven days, so "Check again" picks it straight
+                // back up. Re-prompting from inside the poll loop instead would put the dialog back
+                // three seconds after the user dismissed it, over and over, for the rest of the
+                // window.
+                emit(EnrollmentUiState.ReadyToFinish)
         }
     }
 

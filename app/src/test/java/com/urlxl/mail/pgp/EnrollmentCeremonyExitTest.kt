@@ -256,7 +256,12 @@ class EnrollmentCeremonyExitTest {
 
         ceremony.run()
 
-        assertTrue(ports.states.last() is EnrollmentUiState.ShowingCode)
+        assertTrue(
+            "a dismissed prompt must not send the user back to the code: this path is only reachable " +
+                "because the browser already read it and sealed, and the value would go stale on the " +
+                "next bucket with no window left to refresh it",
+            ports.states.last() is EnrollmentUiState.ReadyToFinish,
+        )
         assertTrue(ports.sealer.handedArrays.single().all { it == 0.toByte() })
         assertEquals("a cancel destroys nothing", 0, ports.keys.deleteCalls)
         assertEquals("the window must run with isIdle false", false, idleDuringTheWindow)
@@ -319,8 +324,13 @@ class EnrollmentCeremonyExitTest {
         // The one exit that keeps it — "Check again" resumes against the same key.
         is EnrollmentUiState.WaitingTimedOut -> Cleanup.KEEPS_THE_KEYPAIR
 
-        // A cancelled seal lands back here with the window closed; the key is still needed.
-        is EnrollmentUiState.ShowingCode -> Cleanup.KEEPS_THE_KEYPAIR
+        // A ShowingCode left as the LAST state means a window closed without reaching any exit —
+        // the cancelled seal now lands on ReadyToFinish instead, so nothing legitimately stops here.
+        is EnrollmentUiState.ShowingCode -> Cleanup.NOT_A_TERMINAL_STATE
+
+        // The cancelled seal. The envelope is already on the relay and the key is what opens it, so
+        // "Check again" must find both still in place.
+        EnrollmentUiState.ReadyToFinish -> Cleanup.KEEPS_THE_KEYPAIR
 
         // Success spends the key exactly as failure does. A key that outlives every ceremony is a
         // standing unauthenticated path to every envelope the relay has retained.

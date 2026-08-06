@@ -95,7 +95,37 @@ internal sealed class EnrollmentUiState {
 
     object AwaitingAuth : EnrollmentUiState()
 
+    /**
+     * The prompt was dismissed with the envelope already in hand.
+     *
+     * Carries **no code, deliberately.** This state is only reachable after `fetchEnvelope` returned
+     * one, which means the browser has already read the code and sealed — so re-showing it would
+     * instruct a step the user has already completed, and would do it with a value that goes stale
+     * on the next 120-second boundary with no window left running to refresh it. What is actually
+     * outstanding is the fingerprint, and "Check again" is what asks for it: the envelope sits on the
+     * relay for seven days, so resuming picks it straight back up.
+     */
+    object ReadyToFinish : EnrollmentUiState()
+
     object Enrolled : EnrollmentUiState()
 
     data class Failed(val reason: FailureReason) : EnrollmentUiState()
 }
+
+/**
+ * Whether the screen should offer "Check again".
+ *
+ * Pure, and tested on the JVM, because it is the only way forward from every state that stops with
+ * the keypair still live. Omit a state that needs it and the user is stranded: the screen's only
+ * other exit is Close, which tears the ceremony down and destroys the published key, turning a
+ * dismissed fingerprint prompt into a full restart.
+ *
+ * Takes [idle] rather than reading the state alone because `ShowingCode` means two different things
+ * depending on whether a polling window is still open behind it — see [EnrollmentCeremony.isIdle].
+ */
+internal fun offersCheckAgain(state: EnrollmentUiState, idle: Boolean): Boolean =
+    idle && (
+        state is EnrollmentUiState.ShowingCode ||
+            state is EnrollmentUiState.WaitingTimedOut ||
+            state is EnrollmentUiState.ReadyToFinish
+        )

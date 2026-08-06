@@ -445,6 +445,13 @@
          which re-derives the code, so that is what the copy points at. -->
     <string name="enrollment_timed_out">Nothing has arrived in the last five minutes. Codes change every couple of minutes, so choose “Check again” for a current one, then type that in your browser.</string>
     <string name="enrollment_check_again">Check again</string>
+    <!-- Shown after the user dismisses the confirmation prompt. Must NOT show the code or ask for it
+         to be typed again: this state is only reachable because the browser already read the code and
+         sent the key, so repeating that instruction sends the user to redo a finished step — and the
+         code it would display goes stale on the next bucket with no window left refreshing it.
+         Describes capability, not behaviour: the key is held, not yet used to read anything. -->
+    <string name="enrollment_ready_to_finish">Almost done</string>
+    <string name="enrollment_ready_to_finish_detail">Your browser has already sent the key to this device. Choose “Check again” and confirm it\'s you to finish setting it up.</string>
     <string name="enrollment_opening">Opening the key that was sent to this device…</string>
     <string name="enrollment_awaiting_auth">Confirm it\'s you to finish setting up this device.</string>
     <string name="enrollment_auth_title">Confirm it\'s you</string>
