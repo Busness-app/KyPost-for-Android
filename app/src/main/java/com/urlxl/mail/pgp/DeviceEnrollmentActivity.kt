@@ -66,7 +66,15 @@ class DeviceEnrollmentActivity : LockedActivity() {
     private class LiveSeal(
         val prompt: BiometricPrompt,
         val continuation: CancellableContinuation<SealOutcome>,
-    )
+    ) {
+        /**
+         * True once [sealExecutor] has been handed the `doFinal` + `vault.store` work — set inside
+         * the same `synchronized(sealLock)` critical section that submits the task, so [onDestroy]
+         * can never observe "the executor has it" and "committing is still false" as different
+         * states. Only ever read or written while holding [sealLock].
+         */
+        var committing: Boolean = false
+    }
 
     /**
      * The in-flight `BiometricPrompt` and the continuation waiting on it, if any.
@@ -79,7 +87,9 @@ class DeviceEnrollmentActivity : LockedActivity() {
      * rotates while "Confirm it's you" is showing and then authenticates would see the prompt
      * dismiss with its result delivered to the now-no-op callback: the continuation this Activity
      * is holding would never be resumed, and the ceremony would hang on "Confirm it's you…"
-     * forever. [onDestroy] resolves this itself instead of relying on the library. `@Volatile`
+     * forever. [onDestroy] resolves this itself instead of relying on the library — except when
+     * [LiveSeal.committing] is true, in which case [sealExecutor] already owns delivering the true
+     * outcome and [onDestroy] must leave the continuation alone; see [onDestroy]. `@Volatile`
      * because [resolveSeal] can run from [sealExecutor]'s thread as well as the main thread.
      */
     @Volatile
@@ -91,7 +101,9 @@ class DeviceEnrollmentActivity : LockedActivity() {
      * Resolves [continuation] with [outcome] exactly once, racing safely against [onDestroy]
      * resolving the same wait from a different thread: whichever of the two clears [liveSeal]
      * first — inside the synchronized block, by continuation identity — is the one that actually
-     * calls `resume`.
+     * calls `resume`. Used only for outcomes [sealExecutor] itself produces or a failure to reach
+     * it; [onDestroy]'s own cancel-on-destroy path resolves directly, because it must additionally
+     * check [LiveSeal.committing] before deciding to resolve at all.
      */
     private fun resolveSeal(continuation: CancellableContinuation<SealOutcome>, outcome: SealOutcome) {
         val claimed = synchronized(sealLock) {
@@ -171,12 +183,36 @@ class DeviceEnrollmentActivity : LockedActivity() {
                                 )
                                 return
                             }
+                            // Mark committing in the same critical section onDestroy claims
+                            // liveSeal in, so the two decisions cannot interleave: either
+                            // onDestroy's synchronized block already ran first and this no longer
+                            // matches liveSeal (handoff below is false — nothing to commit to,
+                            // the continuation is already resolved as Cancelled), or this marks
+                            // first and onDestroy will then see committing == true and leave the
+                            // continuation alone. Without this, onDestroy could resolve Cancelled
+                            // over a write already handed to sealExecutor: the ceremony would zero
+                            // the plaintext array while doFinal is still reading it, or report
+                            // "cancelled" over a blob sealExecutor in fact stored — the exact lie
+                            // EnrollmentVault's own KDoc says the enrollment marker must never
+                            // tell, and the unsafe direction, since the user could then
+                            // decommission the device that actually holds a working copy.
+                            val handoff = synchronized(sealLock) {
+                                val current = liveSeal
+                                if (current?.continuation === continuation) {
+                                    current.committing = true
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
+                            if (!handoff) return
                             // Unreachable in practice once onDestroy has run: androidx.biometric
                             // resets this callback to a no-op on ON_DESTROY before it could ever
-                            // fire again (see onDestroy and liveSeal's KDoc), and this dispatch and
-                            // sealExecutor.shutdown() both run on the main thread, so they cannot
-                            // interleave either. Kept as defence in depth. If it ever did fire post-
-                            // shutdown, the right outcome is a cancel — nothing was written — not a
+                            // fire again (see onDestroy and liveSeal's KDoc), and this dispatch,
+                            // the handoff above, and sealExecutor.shutdown() all run on the main
+                            // thread with no suspension between them, so they cannot interleave
+                            // either. Kept as defence in depth. If it ever did fire post-shutdown,
+                            // the right outcome is a cancel — nothing was written — not a
                             // destructive SealOutcome.Failed, which would tear down the agreement
                             // key via failAndDestroy.
                             try {
@@ -227,12 +263,17 @@ class DeviceEnrollmentActivity : LockedActivity() {
                 // between authenticate() and this assignment would find nothing to cancel.
                 liveSeal = LiveSeal(prompt, continuation)
 
+                prompt.authenticate(info, BiometricPrompt.CryptoObject(cipher))
+
+                // Registered after authenticate(), not before: if the continuation were already
+                // cancelled on entry, an earlier registration would fire this handler immediately
+                // — clearing liveSeal and calling cancelAuthentication() on a prompt not yet shown
+                // — and the authenticate() call above would then leave a system dialog nothing
+                // will ever dismiss.
                 continuation.invokeOnCancellation {
                     synchronized(sealLock) { if (liveSeal?.continuation === continuation) liveSeal = null }
                     runCatching { prompt.cancelAuthentication() }
                 }
-
-                prompt.authenticate(info, BiometricPrompt.CryptoObject(cipher))
             }
         }
     }
@@ -293,17 +334,46 @@ class DeviceEnrollmentActivity : LockedActivity() {
         }
 
         // Unconditionally — including on a configuration change — resolve any seal still waiting
-        // on a live BiometricPrompt. See liveSeal's KDoc for why androidx.biometric will not do
-        // this on its own across a rotation: without it, the continuation this Activity is holding
-        // would never be resumed, and the screen would sit on "Confirm it's you…" forever with no
-        // prompt and no way forward except Cancel (which destroys the agreement key). Resolving it
-        // here instead gives back exactly what onAuthenticationError already gives an ordinary
-        // dismissal: the code back on screen, envelope still on the relay for seven days,
-        // recoverable via "Check again".
-        val seal = synchronized(sealLock) { liveSeal.also { liveSeal = null } }
+        // on a live BiometricPrompt, UNLESS sealExecutor already has the doFinal + store work for
+        // it (LiveSeal.committing — see onAuthenticationSucceeded, which sets it in the same
+        // critical section this reads it in). See liveSeal's KDoc for why androidx.biometric will
+        // not resolve the non-committing case on its own across a rotation: without this, the
+        // continuation this Activity is holding would never be resumed, and the screen would sit
+        // on "Confirm it's you…" forever with no prompt and no way forward except Cancel (which
+        // destroys the agreement key). Resolving it here instead gives back exactly what
+        // onAuthenticationError already gives an ordinary dismissal: the code back on screen,
+        // envelope still on the relay for seven days, recoverable via "Check again".
+        //
+        // The committing case must NOT resolve, and this is not just belt-and-braces: sealExecutor
+        // is deliberately independent of this Activity's lifetime and its running task is not
+        // interrupted by shutdown() below, so the write proceeds regardless of what happens here.
+        // If this resumed Cancelled anyway, the ceremony — on Dispatchers.Main.immediate — would
+        // continue INLINE inside this call: sealAndReport's Cancelled branch runs, and
+        // openAndSeal's finally zeroes the same plaintext array authenticated.doFinal(plaintext)
+        // may still be reading on sealExecutor's thread, while the executor either stores a valid
+        // blob the ceremony believes does not exist, or stores one built from a plaintext array
+        // that is being zeroed out from under it mid-read. Leaving liveSeal in place instead means
+        // sealExecutor's own resolveSeal call, once doFinal + store finish, is the only thing that
+        // ever resumes this continuation — with the true outcome.
+        val (seal, shouldResolve) = synchronized(sealLock) {
+            val current = liveSeal
+            when {
+                current == null -> null to false
+                current.committing -> current to false
+                else -> {
+                    liveSeal = null
+                    current to true
+                }
+            }
+        }
         if (seal != null) {
+            // Ask the prompt to dismiss either way — cosmetic (the OS has typically already
+            // dismissed it on a real success), and harmless to call again — but only the
+            // non-committing path also touches the continuation.
             runCatching { seal.prompt.cancelAuthentication() }
-            if (seal.continuation.isActive) seal.continuation.resume(SealOutcome.Cancelled)
+            if (shouldResolve && seal.continuation.isActive) {
+                seal.continuation.resume(SealOutcome.Cancelled)
+            }
         }
 
         sealExecutor.shutdown()
