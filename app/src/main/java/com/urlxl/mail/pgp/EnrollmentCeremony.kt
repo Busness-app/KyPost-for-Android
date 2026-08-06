@@ -301,7 +301,15 @@ internal class EnrollmentCeremony(
         }
 
         when (sealer.seal(plaintext)) {
-            is SealOutcome.Sealed -> report()
+            is SealOutcome.Sealed -> {
+                // Zeroed here rather than waiting for openAndSeal's outer finally: it is durably
+                // sealed by now and has no further reader, and report() is a suspending network
+                // round trip that can run to a full timeout. Zeroing again in that finally is
+                // harmless — it just covers the failure, cancel and throw paths this branch doesn't
+                // take.
+                plaintext.fill(0)
+                report()
+            }
             is SealOutcome.NoSecureLockScreen -> failAndDestroy(FailureReason.NO_SECURE_LOCK_SCREEN)
             is SealOutcome.Failed -> failAndDestroy(FailureReason.SEAL_FAILED)
             is SealOutcome.Cancelled ->

@@ -159,6 +159,24 @@ class EnrollmentCeremonyExitTest {
         )
     }
 
+    /** The ECDH itself can fail — a malformed peer point that got past the parse, or a key the
+     *  Keystore will no longer agree with. Indistinguishable from a hostile envelope from here, and
+     *  treated the same: no retry. */
+    @Test
+    fun anEcdhFailureIsCouldNotOpenAndDestroysTheKeypairWithNoSecondAttempt() = runBlocking {
+        val ports = portsWithEnvelope()
+        ports.keys.sharedSecretResult = null
+
+        ports.ceremony().run()
+
+        assertEquals(
+            EnrollmentUiState.Failed(FailureReason.COULD_NOT_OPEN),
+            ports.states.last(),
+        )
+        assertEquals(1, ports.keys.deleteCalls)
+        assertEquals("no second attempt", 1, ports.transport.fetchCalls)
+    }
+
     @Test
     fun aMalformedEnvelopeIsItsOwnReasonAndDestroysTheKeypair() = runBlocking {
         val ports = FakePorts(
@@ -206,18 +224,42 @@ class EnrollmentCeremonyExitTest {
      * and a way to try again — and the plaintext does not survive the round trip.
      *
      * The window ends rather than re-prompting three seconds later; see deviation 8 in this plan.
+     *
+     * Also binds [EnrollmentCeremony.isIdle] to the window rather than to the state alone: `run()`'s
+     * `finally` sets it back to `true` on every path including a throw, so asserting it only after
+     * `run()` returns is true by construction and cannot fail. Reading it from *inside* `onState` —
+     * the moment the window's `ShowingCode` is emitted, before the cancel — is what actually exercises
+     * the `isIdle = false` at the top of `run()`.
      */
     @Test
     fun aCancelledBiometricReturnsToTheCodeWithThePlaintextZeroed() = runBlocking {
         val ports = portsWithEnvelope()
         ports.sealer.outcome = SealOutcome.Cancelled
 
-        val ceremony = ports.ceremony()
+        lateinit var ceremony: EnrollmentCeremony
+        var idleDuringTheWindow: Boolean? = null
+        ceremony = EnrollmentCeremony(
+            identity = ports.identity,
+            transport = ports.transport,
+            keys = ports.keys,
+            sealer = ports.sealer,
+            clock = ports.clock,
+            hostileLocationEnabled = { false },
+            hasSecureLockScreen = { true },
+            onState = { state ->
+                ports.states += state
+                if (state is EnrollmentUiState.ShowingCode && idleDuringTheWindow == null) {
+                    idleDuringTheWindow = ceremony.isIdle
+                }
+            },
+        )
+
         ceremony.run()
 
         assertTrue(ports.states.last() is EnrollmentUiState.ShowingCode)
         assertTrue(ports.sealer.handedArrays.single().all { it == 0.toByte() })
         assertEquals("a cancel destroys nothing", 0, ports.keys.deleteCalls)
+        assertEquals("the window must run with isIdle false", false, idleDuringTheWindow)
         assertTrue("the user must be able to try again", ceremony.isIdle)
     }
 
