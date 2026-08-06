@@ -33,7 +33,7 @@ Normative vector, asserted on both sides:
 
 ```
 deviceId "test-device", bucket 14000000,
-rawKey 0x04 ‖ 0x01×32 ‖ 0x02×32   ->   5R9K6FWA18A8YP   (displayed 5R9K6FW-A18A8YP)
+rawKey 0x04 ‖ 0x01×32 ‖ 0x02×32   ->   5R9K6FWA18A8YP   (displayed 5R9K-6FW-A18A-8YP)
 ```
 
 ## What happened, in order

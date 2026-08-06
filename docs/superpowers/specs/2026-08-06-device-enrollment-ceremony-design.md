@@ -336,28 +336,32 @@ it is verifiable against the suites that already exist and pass (558 unit, 105 i
 every task after it benefits from an automated gate that is already green. The implementation plan
 should sequence it as task 1 rather than folding it into the feature.
 
-## Server-side change required — still outstanding
+## Server-side change required — landed
 
-Not landed. `formatEnrollmentCode` in `kypost-server/frontend/src/lib/deviceEnrollment.ts` still
-groups the code 7-7 (`CODE_LENGTH / 2`), while `EnrollmentCodeFormat.kt` in this repository now
-groups 4-3-4-3. Deferred because `kypost-server` had uncommitted work in flight on another branch
-when Task 14 closed out this plan. The two clients now disagree about how the same value is
-displayed; the paragraphs below, written when this section was opened, still describe exactly what
-is owed.
+Landed in `kypost-server` as PR #89, merge commit `097af72` (the change itself is `a52a6fd`,
+`fix(enrollment): group the displayed code 4-3-4-3, matching Android`). Both clients now group the
+same value identically: `5R9K6FWA18A8YP` displays as `5R9K-6FW-A18A-8YP` on the phone and in the
+browser.
 
-`kypost-server`, `frontend/src/lib/deviceEnrollment.ts`: `formatEnrollmentCode` groups the code 7-7
-(`XXXXXXX-XXXXXXX`). Decision 8 moves the phone to 4-3-4-3. Change the browser helper to match and
-update `frontend/src/lib/deviceEnrollment.test.ts:149`, which pins `ABCDEFG-HJKMNPQ`.
+What was done, for the record. `formatEnrollmentCode` in
+`kypost-server/frontend/src/lib/deviceEnrollment.ts` grouped the code 7-7 (`CODE_LENGTH / 2`) while
+`EnrollmentCodeFormat.kt` in this repository grouped 4-3-4-3. Decision 8 moved the phone; the browser
+was deferred because `kypost-server` had uncommitted work in flight on another branch when Task 14
+closed out this plan. The browser helper now carries the same `CODE_GROUPS = [4, 3, 4, 3]` and the
+same append-the-tail rule, so a future width change cannot silently truncate on either side.
 
-**This is cosmetic-only today and cannot break the ceremony:** the helper has no production call site
-— only tests import it — and `normalizeEnrollmentCode` strips separators before comparing. The
-alternative is to delete the helper as unused. It is recorded because a display helper sitting ready
-to be wired up is a future disagreement between the two screens showing the same code.
+**It was cosmetic-only and could not break the ceremony:** the helper has no production call site —
+only tests import it — and `normalizeEnrollmentCode` strips separators before comparing. It was
+changed rather than deleted because a display helper sitting ready to be wired up is a future
+disagreement between the two screens showing the same code.
 
-Also update the normative vector's *displayed* form in
-`2026-08-05-device-enrollment-2c-crypto-core-design.md` and the session handoff, which record
-`5R9K6FW-A18A8YP`. The underlying value `5R9K6FWA18A8YP` is unchanged — grouping never enters the
-hash.
+One trap, recorded because it would have shipped a broken test. The browser's `never drops
+characters` test stripped with `.replace("-", "")`, which removes only the **first** occurrence —
+correct with one hyphen, wrong with three. It now strips every separator the way
+`normalizeEnrollmentCode` does.
+
+The *displayed* normative vector is corrected throughout: `5R9K6FW-A18A8YP` → `5R9K-6FW-A18A-8YP`.
+The underlying value `5R9K6FWA18A8YP` is unchanged — grouping never enters the hash.
 
 ## Out of scope
 

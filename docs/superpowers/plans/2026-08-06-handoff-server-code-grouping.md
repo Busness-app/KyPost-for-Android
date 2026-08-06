@@ -1,12 +1,20 @@
 # Handoff: the browser half of the enrollment code's 4-3-4-3 grouping
 
-**Repository:** `kypost-server` (not this one). **Status:** not started. **Size:** two functions, one
-file each, plus a verification run. Perhaps twenty minutes.
+**Repository:** `kypost-server` (not this one). **Status: done** — landed as PR #89, merge commit
+`097af72`, change `a52a6fd`. Nothing below is owed any more; it is kept as the record of what was
+asked for and why. **Size:** two functions, one file each, plus a verification run. Perhaps twenty
+minutes — which is roughly what it took.
 
-This is the only unfinished piece of `docs/superpowers/plans/2026-08-06-device-enrollment-ceremony.md`.
+This was the only unfinished piece of `docs/superpowers/plans/2026-08-06-device-enrollment-ceremony.md`.
 The Android half landed on `feat/device-enrollment-ceremony` in commit `f555e51`; the browser half was
-deferred because `kypost-server` had uncommitted work in flight on another branch at the time. That
-repo is clean now.
+deferred because `kypost-server` had uncommitted work in flight on another branch at the time.
+
+Executed as written, with the `.replace("-", "")` trap called out below confirmed real: the old test
+would have passed against a broken implementation and failed against a correct one. Verification came
+out at 56 passing in the enrollment file (the `formatEnrollmentCode` block at 3, every other block
+unchanged), 603 across the full frontend suite, with `tsc --noEmit` and `npm run build` clean.
+
+The two items under "What this does not cover" are still open.
 
 ## What is wrong today
 
