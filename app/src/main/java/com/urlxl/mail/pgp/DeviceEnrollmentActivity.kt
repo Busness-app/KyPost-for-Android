@@ -18,11 +18,15 @@ import com.urlxl.mail.applyPrimaryButtonTheme
 import com.urlxl.mail.applyThemeToActivity
 import com.urlxl.mail.applyTopInsetWithHeader
 import com.urlxl.mail.security.LockedActivity
+import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import kotlin.coroutines.resume
@@ -59,6 +63,48 @@ class DeviceEnrollmentActivity : LockedActivity() {
      */
     private val sealExecutor = Executors.newSingleThreadExecutor()
 
+    private class LiveSeal(
+        val prompt: BiometricPrompt,
+        val continuation: CancellableContinuation<SealOutcome>,
+    )
+
+    /**
+     * The in-flight `BiometricPrompt` and the continuation waiting on it, if any.
+     *
+     * Exists because androidx.biometric 1.1.0 does **not** treat a configuration-change destroy the
+     * way this screen needs it to: it resets its client callback to a no-op on `ON_DESTROY`
+     * (`BiometricPrompt`'s internal `ResetCallbackObserver`), and on API ≥ Q it does not cancel the
+     * system prompt when that destroy is a rotation — the dialog stays up and reconnects to the
+     * activity-scoped `BiometricViewModel` that survives the recreation. Left alone, a user who
+     * rotates while "Confirm it's you" is showing and then authenticates would see the prompt
+     * dismiss with its result delivered to the now-no-op callback: the continuation this Activity
+     * is holding would never be resumed, and the ceremony would hang on "Confirm it's you…"
+     * forever. [onDestroy] resolves this itself instead of relying on the library. `@Volatile`
+     * because [resolveSeal] can run from [sealExecutor]'s thread as well as the main thread.
+     */
+    @Volatile
+    private var liveSeal: LiveSeal? = null
+
+    private val sealLock = Any()
+
+    /**
+     * Resolves [continuation] with [outcome] exactly once, racing safely against [onDestroy]
+     * resolving the same wait from a different thread: whichever of the two clears [liveSeal]
+     * first — inside the synchronized block, by continuation identity — is the one that actually
+     * calls `resume`.
+     */
+    private fun resolveSeal(continuation: CancellableContinuation<SealOutcome>, outcome: SealOutcome) {
+        val claimed = synchronized(sealLock) {
+            if (liveSeal?.continuation === continuation) {
+                liveSeal = null
+                true
+            } else {
+                false
+            }
+        }
+        if (claimed && continuation.isActive) continuation.resume(outcome)
+    }
+
     /**
      * The `VaultSealer` handed to the ViewModel.
      *
@@ -66,19 +112,47 @@ class DeviceEnrollmentActivity : LockedActivity() {
      * `internal`, and a public class may not widen an internal supertype.
      */
     private val vaultSealer = object : VaultSealer {
-        override suspend fun seal(plaintext: ByteArray): SealOutcome =
-            suspendCancellableCoroutine { continuation ->
-                val vault = EnrollmentVault(applicationContext)
+        override suspend fun seal(plaintext: ByteArray): SealOutcome {
+            val vault = EnrollmentVault(applicationContext)
 
-                // The authority on "is there a secure lock screen", and the point where a key is
-                // legitimately generated. Returns false by design without one.
-                if (!vault.ensureKey()) {
-                    continuation.resume(SealOutcome.NoSecureLockScreen)
-                    return@suspendCancellableCoroutine
-                }
-                val cipher = vault.sealCipher()
-                if (cipher == null) {
-                    continuation.resume(SealOutcome.Failed("The vault cipher could not be created"))
+            // The authority on "is there a secure lock screen", and the point where a key is
+            // legitimately generated. Off the main thread: ensureKey() is a Keystore round trip
+            // that, on the generate path, attempts StrongBox key generation — hundreds of
+            // milliseconds to seconds — with a TEE fallback, plus the lazy
+            // EncryptedSharedPreferences/Tink construction behind prefs.edit().clear().commit().
+            // Nothing upstream of VaultSealer switches dispatchers, so the ceremony's coroutine
+            // runs on viewModelScope's Dispatchers.Main.immediate; without this it would block the
+            // UI thread for that entire round trip. The BiometricPrompt itself must stay on main,
+            // so this withContext ends before that begins.
+            val (ensured, cipher) = withContext(Dispatchers.IO) {
+                val ok = vault.ensureKey()
+                ok to if (ok) vault.sealCipher() else null
+            }
+            if (!ensured) {
+                // ensureKey() returns false both when there is no secure lock screen AND when both
+                // the StrongBox and TEE key-generation attempts fail for reasons that have nothing
+                // to do with the lock screen — and sealAndReport already re-checked
+                // hasSecureLockScreen() immediately before calling seal(), so by the time this
+                // branch runs a lock screen is usually present. There is no SealOutcome.NoDeviceKey,
+                // so this maps to the generic Failed rather than telling the user to fix something
+                // that is not broken.
+                return SealOutcome.Failed("The device key could not be created")
+            }
+            if (cipher == null) {
+                return SealOutcome.Failed("The vault cipher could not be created")
+            }
+
+            return suspendCancellableCoroutine { continuation ->
+                // A prompt requested after the FragmentManager has saved its state — the user hits
+                // Home the instant the envelope arrives, landing here after onSaveInstanceState —
+                // is silently dropped by BiometricPrompt.authenticateInternal: no exception, no
+                // callback, ever. Caught here rather than left to orphan the continuation; the
+                // envelope stays on the relay, so resolving as a cancel is recoverable via "Check
+                // again" exactly like an ordinary dismissal.
+                if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) ||
+                    supportFragmentManager.isStateSaved
+                ) {
+                    continuation.resume(SealOutcome.Cancelled)
                     return@suspendCancellableCoroutine
                 }
 
@@ -91,21 +165,20 @@ class DeviceEnrollmentActivity : LockedActivity() {
                         ) {
                             val authenticated = result.cryptoObject?.cipher
                             if (authenticated == null) {
-                                if (continuation.isActive) {
-                                    continuation.resume(
-                                        SealOutcome.Failed("No authenticated cipher was returned"),
-                                    )
-                                }
+                                resolveSeal(
+                                    continuation,
+                                    SealOutcome.Failed("No authenticated cipher was returned"),
+                                )
                                 return
                             }
-                            // A late result can arrive after this Activity's own onDestroy has
-                            // already shut down its sealExecutor: on rotation, BiometricPrompt's
-                            // pending operation is delivered to whichever callback was last
-                            // registered with the (config-change-surviving) BiometricViewModel,
-                            // which is this one if the new Activity never re-authenticated.
-                            // execute() on a shut-down executor throws RejectedExecutionException
-                            // synchronously on the caller's thread (the main thread, here) — that
-                            // must become a SealOutcome, not an uncaught crash.
+                            // Unreachable in practice once onDestroy has run: androidx.biometric
+                            // resets this callback to a no-op on ON_DESTROY before it could ever
+                            // fire again (see onDestroy and liveSeal's KDoc), and this dispatch and
+                            // sealExecutor.shutdown() both run on the main thread, so they cannot
+                            // interleave either. Kept as defence in depth. If it ever did fire post-
+                            // shutdown, the right outcome is a cancel — nothing was written — not a
+                            // destructive SealOutcome.Failed, which would tear down the agreement
+                            // key via failAndDestroy.
                             try {
                                 sealExecutor.execute {
                                     val outcome = runCatching {
@@ -113,25 +186,22 @@ class DeviceEnrollmentActivity : LockedActivity() {
                                         vault.store(authenticated.iv, ciphertext)
                                         SealOutcome.Sealed
                                     }.getOrElse { SealOutcome.Failed(it.message ?: "The seal failed") }
-                                    if (continuation.isActive) continuation.resume(outcome)
+                                    resolveSeal(continuation, outcome)
                                 }
                             } catch (e: RejectedExecutionException) {
-                                if (continuation.isActive) {
-                                    continuation.resume(
-                                        SealOutcome.Failed("The seal executor was no longer available"),
-                                    )
-                                }
+                                resolveSeal(continuation, SealOutcome.Cancelled)
                             }
                         }
 
-                        /** Includes the user dismissing the prompt AND this Activity being
-                         *  destroyed under it — a rotation lands here. The ceremony treats both the
-                         *  same: back to the code, nothing destroyed. */
+                        /** The user dismissing the prompt, or the library giving up on its own
+                         *  (lockout, timeout). A configuration-change destroy does **not** land
+                         *  here in androidx.biometric 1.1.0 — see [onDestroy], which resolves that
+                         *  case itself because this callback never fires for it. */
                         override fun onAuthenticationError(
                             errorCode: Int,
                             errString: CharSequence,
                         ) {
-                            if (continuation.isActive) continuation.resume(SealOutcome.Cancelled)
+                            resolveSeal(continuation, SealOutcome.Cancelled)
                         }
 
                         // onAuthenticationFailed is a non-matching finger. The prompt stays up and
@@ -152,9 +222,19 @@ class DeviceEnrollmentActivity : LockedActivity() {
                     )
                     .build()
 
+                // Set before authenticate(), not after: onDestroy must be able to see this the
+                // moment there is a live prompt to resolve, with no window where a destroy landing
+                // between authenticate() and this assignment would find nothing to cancel.
+                liveSeal = LiveSeal(prompt, continuation)
+
+                continuation.invokeOnCancellation {
+                    synchronized(sealLock) { if (liveSeal?.continuation === continuation) liveSeal = null }
+                    runCatching { prompt.cancelAuthentication() }
+                }
+
                 prompt.authenticate(info, BiometricPrompt.CryptoObject(cipher))
-                continuation.invokeOnCancellation { runCatching { prompt.cancelAuthentication() } }
             }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -182,8 +262,12 @@ class DeviceEnrollmentActivity : LockedActivity() {
 
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
+                // Captured so the countdown (started from inside render(), below) can be launched
+                // on this same STARTED-scoped CoroutineScope rather than the wider lifecycleScope —
+                // see startCountdown's KDoc.
+                val scope = this
                 combine(viewModel.state, viewModel.idle) { state, idle -> state to idle }
-                    .collect { (state, idle) -> render(state, idle) }
+                    .collect { (state, idle) -> render(scope, state, idle) }
             }
         }
     }
@@ -202,15 +286,31 @@ class DeviceEnrollmentActivity : LockedActivity() {
         // is true for exactly that case — so skipping the clear there is what stops an
         // unconditional null from uninstalling the incoming sealer and turning the next prompt
         // into a cancel. Every other path out of this screen (finish(), the app lock, the OS
-        // reclaiming the process) is not a configuration change, so the clear still runs.
+        // reclaiming the process) is not a configuration change, so the clear still runs. This
+        // guard is independent of the seal resolution below.
         if (!isChangingConfigurations()) {
             viewModel.installSealer(null)
         }
+
+        // Unconditionally — including on a configuration change — resolve any seal still waiting
+        // on a live BiometricPrompt. See liveSeal's KDoc for why androidx.biometric will not do
+        // this on its own across a rotation: without it, the continuation this Activity is holding
+        // would never be resumed, and the screen would sit on "Confirm it's you…" forever with no
+        // prompt and no way forward except Cancel (which destroys the agreement key). Resolving it
+        // here instead gives back exactly what onAuthenticationError already gives an ordinary
+        // dismissal: the code back on screen, envelope still on the relay for seven days,
+        // recoverable via "Check again".
+        val seal = synchronized(sealLock) { liveSeal.also { liveSeal = null } }
+        if (seal != null) {
+            runCatching { seal.prompt.cancelAuthentication() }
+            if (seal.continuation.isActive) seal.continuation.resume(SealOutcome.Cancelled)
+        }
+
         sealExecutor.shutdown()
         super.onDestroy()
     }
 
-    private fun render(state: EnrollmentUiState, idle: Boolean) {
+    private fun render(scope: CoroutineScope, state: EnrollmentUiState, idle: Boolean) {
         countdown?.cancel()
         countdown = null
 
@@ -227,15 +327,22 @@ class DeviceEnrollmentActivity : LockedActivity() {
         }
 
         val code = when (state) {
-            is EnrollmentUiState.ShowingCode -> state.code to state.expiresAtEpochMs
-            is EnrollmentUiState.WaitingTimedOut -> state.code to state.expiresAtEpochMs
+            is EnrollmentUiState.ShowingCode -> state.code
+            is EnrollmentUiState.WaitingTimedOut -> state.code
             else -> null
         }
         codeText.visibility = if (code == null) View.GONE else View.VISIBLE
-        expiryText.visibility = if (code == null) View.GONE else View.VISIBLE
-        if (code != null) {
-            codeText.text = formatEnrollmentCode(code.first)
-            startCountdown(code.second)
+        if (code != null) codeText.text = formatEnrollmentCode(code)
+
+        // The countdown runs only for ShowingCode. WaitingTimedOut's own detail line already says
+        // "the code above is still the right one" — a live countdown next to it claiming the code
+        // is "about to change" would contradict that about the one value the user must transcribe,
+        // and nothing is refreshing this expiry once the poll loop has stopped anyway.
+        if (state is EnrollmentUiState.ShowingCode) {
+            expiryText.visibility = View.VISIBLE
+            startCountdown(scope, state.expiresAtEpochMs)
+        } else {
+            expiryText.visibility = View.GONE
         }
 
         headline.setText(headlineFor(state))
@@ -248,16 +355,27 @@ class DeviceEnrollmentActivity : LockedActivity() {
         )
     }
 
-    /** Recomputes from the wall clock every second rather than counting down from a captured value,
-     *  so a screen that was backgrounded shows the truth when it comes back. */
-    private fun startCountdown(expiresAtEpochMs: Long) {
-        countdown = lifecycleScope.launch {
+    /**
+     * Recomputes from the wall clock every second rather than counting down from a captured value,
+     * so a screen that was backgrounded shows the truth when it comes back.
+     *
+     * Launched on [scope] — the CoroutineScope `repeatOnLifecycle(STARTED)` provides, cancelled on
+     * STOP and relaunched on the next START — rather than on `lifecycleScope`, which lives until
+     * DESTROYED. `lifecycleScope` would leave this ticking (and writing to [expiryText]) once a
+     * second while the screen is backgrounded; render()'s own `countdown?.cancel()` cannot reach it
+     * from there, because `repeatOnLifecycle`'s collector is suspended for the whole time the
+     * screen is stopped, so render() itself does not run again until it resumes.
+     */
+    private fun startCountdown(scope: CoroutineScope, expiresAtEpochMs: Long) {
+        countdown = scope.launch {
             while (true) {
-                val remaining = (expiresAtEpochMs - System.currentTimeMillis()) / 1_000L
-                expiryText.text = if (remaining > 0) {
-                    getString(R.string.enrollment_code_expiry, remaining.toInt())
-                } else {
-                    getString(R.string.enrollment_code_expiry_now)
+                expiryText.text = when (val label = expiryCountdown(expiresAtEpochMs, System.currentTimeMillis())) {
+                    is ExpiryCountdown.Counting -> resources.getQuantityString(
+                        R.plurals.enrollment_code_expiry,
+                        label.remainingSeconds,
+                        label.remainingSeconds,
+                    )
+                    ExpiryCountdown.Now -> getString(R.string.enrollment_code_expiry_now)
                 }
                 delay(1_000L)
             }
@@ -268,7 +386,7 @@ class DeviceEnrollmentActivity : LockedActivity() {
         EnrollmentUiState.CheckingIdentity -> R.string.enrollment_checking
         EnrollmentUiState.PublishingKey -> R.string.enrollment_publishing
         is EnrollmentUiState.ShowingCode -> R.string.enrollment_waiting
-        is EnrollmentUiState.WaitingTimedOut -> R.string.enrollment_waiting
+        is EnrollmentUiState.WaitingTimedOut -> R.string.enrollment_waiting_timed_out
         EnrollmentUiState.Opening -> R.string.enrollment_opening
         EnrollmentUiState.AwaitingAuth -> R.string.enrollment_awaiting_auth
         EnrollmentUiState.Enrolled -> R.string.enrollment_enrolled

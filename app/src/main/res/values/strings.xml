@@ -429,9 +429,15 @@
     <string name="enrollment_checking">Checking your account…</string>
     <string name="enrollment_publishing">Preparing this device…</string>
     <string name="enrollment_code_intro">In your browser, open KyPost and go to Settings → Encryption, choose “Set up a device”, and type this code:</string>
-    <string name="enrollment_code_expiry">This code changes in %1$d seconds. The new one works just as well.</string>
+    <plurals name="enrollment_code_expiry">
+        <item quantity="one">This code changes in %1$d second. The new one works just as well.</item>
+        <item quantity="other">This code changes in %1$d seconds. The new one works just as well.</item>
+    </plurals>
     <string name="enrollment_code_expiry_now">This code is about to change.</string>
     <string name="enrollment_waiting">Waiting for your browser…</string>
+    <!-- WaitingTimedOut's own headline: the five-minute window closed, so "Waiting for your
+         browser…" would claim something is still in flight when nothing is. -->
+    <string name="enrollment_waiting_timed_out">Nothing has arrived yet</string>
     <string name="enrollment_timed_out">Nothing has arrived in the last five minutes. The code above is still the right one — type it in your browser, then check again.</string>
     <string name="enrollment_check_again">Check again</string>
     <string name="enrollment_opening">Opening the key that was sent to this device…</string>
