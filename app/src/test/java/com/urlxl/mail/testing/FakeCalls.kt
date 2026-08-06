@@ -88,14 +88,24 @@ private class ThrowingCall(private val req: Request, private val exception: Exce
 }
 
 /** Canned JSON response. Keeps the name the per-file copies used, so adopting this file is a
- *  deletion plus an import rather than a rewrite of every call site. */
-internal fun response(request: Request, body: String, code: Int, message: String = "OK"): Response =
+ *  deletion plus an import rather than a rewrite of every call site.
+ *
+ *  [headers] exists for the responses whose meaning is carried outside the body — `Retry-After` on a
+ *  429 being the one this repo actually reads. */
+internal fun response(
+    request: Request,
+    body: String,
+    code: Int,
+    message: String = "OK",
+    headers: Map<String, String> = emptyMap(),
+): Response =
     Response.Builder()
         .request(request)
         .protocol(Protocol.HTTP_1_1)
         .code(code)
         .message(message)
         .body(body.toResponseBody("application/json".toMediaType()))
+        .apply { headers.forEach { (name, value) -> header(name, value) } }
         .build()
 
 /**

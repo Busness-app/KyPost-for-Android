@@ -261,6 +261,40 @@ class WipeResurrectionTest {
         assertFalse("a completed sweep must not leave its ledger behind", ledgerFile().exists())
     }
 
+    /**
+     * A wipe reached by ten wrong PINs must not leave behind the keys that open this device's
+     * envelope. Surviving them would outlive a wipe nobody chose, and the vault key is openable by
+     * nothing more than the device unlock.
+     *
+     * Asserted through the real `wipeAndResetApp`, not the teardown helper, because the ordering is
+     * the risk: the sharedPrefs sweep runs after this step and would recreate the vault's file if
+     * the step ran too late.
+     */
+    @Test
+    fun wipe_destroysTheDeviceEnrollment(): Unit = runBlocking {
+        val vault = com.urlxl.mail.pgp.EnrollmentVault(context)
+        com.urlxl.mail.pgp.EnrollmentKeyStore.newKeyPair()
+        vault.ensureKey()
+        vault.store(ByteArray(12), ByteArray(48))
+        assertTrue("precondition: enrollment present", vault.hasBlob())
+
+        SecurityWipe.wipeAndResetApp(context)
+
+        val ks = java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        assertFalse(
+            "agreement key survived the wipe",
+            ks.containsAlias(com.urlxl.mail.pgp.EnrollmentKeyStore.ALIAS),
+        )
+        assertFalse(
+            "vault key survived the wipe",
+            ks.containsAlias(com.urlxl.mail.pgp.EnrollmentVault.ALIAS),
+        )
+        assertFalse(
+            "sealed envelope survived the wipe",
+            com.urlxl.mail.pgp.EnrollmentVault(context).hasBlob(),
+        )
+    }
+
     /** The datastore holding the last 30 sender/subject pairs must actually be gone. */
     @Test
     fun wipe_deletesThePushHistoryDatastore(): Unit = runBlocking {

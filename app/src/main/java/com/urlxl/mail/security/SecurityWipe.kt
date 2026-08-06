@@ -282,6 +282,19 @@ object SecurityWipe {
             // in the default configuration, so these accumulate.
             DownloadedAttachmentLedger.deleteAll(appContext)
         }
+        // Before the sharedPrefs sweep below, so the vault deletes its own file rather than having
+        // it removed underneath it and then recreated — EncryptedSharedPreferences.create rebuilds
+        // both the file and a Tink keyset the moment it is touched.
+        //
+        // No state-report worker on this path: the wipe deregisters and clears the pairing, so the
+        // device row goes away server-side and there is nothing left to correct.
+        step("enrollmentTeardown") {
+            // A named step so a failure lands in the incomplete-wipe list. It has to throw to get
+            // there: `step` records a failure only when its body does, and a key surviving a wipe
+            // nobody chose is exactly what the incomplete result exists to tell the user about.
+            val leftBehind = com.urlxl.mail.pgp.EnrollmentTeardown.destroy(appContext)
+            check(leftBehind.isEmpty()) { "enrollment teardown left $leftBehind" }
+        }
         step("pullWorker") { com.urlxl.mail.push.PullScheduler.cancelPeriodic(appContext) }
         step("deviceContactWorker") { com.urlxl.mail.contacts.device.DeviceContactSyncScheduler.cancelPeriodic(appContext) }
 
