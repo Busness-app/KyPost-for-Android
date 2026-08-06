@@ -1,5 +1,8 @@
 package com.urlxl.mail.pgp
 
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+
 /** The code's validity window, and the browser's. `deviceEnrollmentCode`'s bucket is
  *  `unixSeconds / 120`; changing this alone strands every honest enrollment. */
 private const val BUCKET_SECONDS = 120L
@@ -300,7 +303,19 @@ internal class EnrollmentCeremony(
             return
         }
 
-        when (sealer.seal(plaintext)) {
+        // NonCancellable around this one call, not around sealAndReport or openAndSeal: once
+        // sealer.seal hands plaintext to a background thread (the Activity's own executor, which
+        // this file cannot see and does not control), that thread reads it until doFinal returns.
+        // Back, finish(), and the app lock all cancel viewModelScope, and — on
+        // Dispatchers.Main.immediate — a cancellation while suspended here would resume inline and
+        // unwind straight through openAndSeal's finally, running plaintext.fill(0) on the same
+        // array the background thread may still be mid-read on: a blob built from partly-zeroed
+        // plaintext would then get stored, and probeEnrollment cannot tell it apart from a real
+        // one — Cipher.init on GCM touches no ciphertext — so EnrollmentStateWorker would report
+        // encryptionEnrolled = true for a key nothing can open. See
+        // SecuritySettingsActivity.SecurityWork for the same fix applied to the same class of bug.
+        // The poll loop and report() stay outside this, and stay cancellable.
+        when (withContext(NonCancellable) { sealer.seal(plaintext) }) {
             is SealOutcome.Sealed -> {
                 // Zeroed here rather than waiting for openAndSeal's outer finally: it is durably
                 // sealed by now and has no further reader, and report() is a suspending network

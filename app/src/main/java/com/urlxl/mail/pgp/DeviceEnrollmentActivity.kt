@@ -366,12 +366,16 @@ class DeviceEnrollmentActivity : LockedActivity() {
                 }
             }
         }
-        if (seal != null) {
-            // Ask the prompt to dismiss either way — cosmetic (the OS has typically already
-            // dismissed it on a real success), and harmless to call again — but only the
-            // non-committing path also touches the continuation.
+        // cancelAuthentication() is called only on the path that also resolves the wait. On the
+        // committing path there is no live prompt left to cancel — authentication already
+        // succeeded, the fragment already delivered its result to onAuthenticationSucceeded — so
+        // the call buys nothing, and leaving it in would be a second door onto the same hazard
+        // this round closed: it exists purely to dismiss a dialog, but it reads as "this is still
+        // this Activity's prompt to manage," which is exactly the assumption committing exists to
+        // retract.
+        if (seal != null && shouldResolve) {
             runCatching { seal.prompt.cancelAuthentication() }
-            if (shouldResolve && seal.continuation.isActive) {
+            if (seal.continuation.isActive) {
                 seal.continuation.resume(SealOutcome.Cancelled)
             }
         }
