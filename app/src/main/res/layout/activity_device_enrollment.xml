@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/deviceEnrollmentRoot"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <TextView
+            android:id="@+id/enrollmentHeadline"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="12dp" />
+
+        <TextView
+            android:id="@+id/enrollmentDetail"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="14sp"
+            android:layout_marginBottom="20dp" />
+
+        <!-- Monospace and letter-spaced: this is read aloud, character by character, into a
+             different device. The font is the same one the pairing screen uses for the device id. -->
+        <TextView
+            android:id="@+id/enrollmentCode"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:textSize="28sp"
+            android:textStyle="bold"
+            android:fontFamily="@font/ibm_plex_mono"
+            android:letterSpacing="0.08"
+            android:textIsSelectable="true"
+            android:visibility="gone"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:id="@+id/enrollmentExpiry"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:textSize="13sp"
+            android:visibility="gone"
+            android:layout_marginBottom="20dp" />
+
+        <Button
+            android:id="@+id/btnEnrollmentCheckAgain"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/enrollment_check_again"
+            android:visibility="gone"
+            android:layout_marginBottom="12dp" />
+
+        <Button
+            android:id="@+id/btnEnrollmentClose"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/enrollment_cancel" />
+    </LinearLayout>
+</ScrollView>

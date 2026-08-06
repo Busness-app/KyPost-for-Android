@@ -101,6 +101,10 @@
             android:exported="false" />
 
         <activity
+            android:name=".pgp.DeviceEnrollmentActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".push.PushPairingActivity"
             android:exported="false"
             android:launchMode="singleTop" />
