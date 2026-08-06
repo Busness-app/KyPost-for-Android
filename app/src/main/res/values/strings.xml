@@ -493,4 +493,15 @@
     <string name="security_encryption_remove_confirm">Remove</string>
     <string name="security_encryption_removed">Removed from this device</string>
     <string name="security_encryption_webmail_failed">Couldn\'t open webmail on this device</string>
+
+    <!-- The pairing screen's pointer at enrollment.
+
+         Worded conditionally ("If your account uses encrypted mail") rather than as a promise,
+         because this line is NOT gated on hasPgpIdentity and never will be. Gating it would add an
+         authenticated request to the pairing flow to answer a question the browser has usually
+         already settled at first login — and hasPgpIdentity returns Boolean?, so a network failure
+         would leave the app guessing anyway. Conditional wording also means it never goes stale: a
+         user who creates their identity a week after pairing still finds the entry where this said
+         it would be. -->
+    <string name="push_pairing_encryption_hint">If your account uses encrypted mail, you can set this device up for it in Settings → Security.</string>
 </resources>

@@ -120,6 +120,13 @@
                     android:clickable="true"
                     android:text="@string/push_pairing_use_firebase" />
             </com.google.android.material.chip.ChipGroup>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/push_pairing_encryption_hint"
+                android:textSize="13sp"
+                android:layout_marginTop="16dp" />
         </LinearLayout>
     </androidx.cardview.widget.CardView>
 
