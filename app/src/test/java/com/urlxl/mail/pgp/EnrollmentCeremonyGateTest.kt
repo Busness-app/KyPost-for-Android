@@ -50,6 +50,7 @@ class EnrollmentCeremonyGateTest {
             ports.states.last(),
         )
         assertEquals(0, ports.keys.newKeyPairCalls)
+        assertTrue("no identity request may be made", ports.identity.checkCalls == 0)
     }
 
     /**
