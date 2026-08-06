@@ -120,4 +120,23 @@ class WebmailDeepLinkTest {
             )
         }
     }
+
+    /** The Security page's "open webmail" actions target the account, not one message. */
+    @Test
+    fun webmailHomeUrlIsTheServerRoot() {
+        assertEquals("https://relay.example.com/", webmailHomeUrl("https://relay.example.com"))
+        assertEquals("https://relay.example.com/", webmailHomeUrl("https://relay.example.com/"))
+    }
+
+    /** A path on the stored server URL must not survive into the handoff target. */
+    @Test
+    fun webmailHomeUrlDropsAnyPath() {
+        assertEquals("https://relay.example.com/", webmailHomeUrl("https://relay.example.com/read?message=7"))
+    }
+
+    /** Same failure mode as every other builder here: no button rather than a dead one. */
+    @Test
+    fun webmailHomeUrlRefusesAnUnusableServerUrl() {
+        assertNull(webmailHomeUrl("not a url"))
+    }
 }

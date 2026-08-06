@@ -472,4 +472,25 @@
          key rotation mid-ceremony is indistinguishable by construction from a hostile one — both
          produce exactly this — and an alarm that cries wolf is one users learn to dismiss. -->
     <string name="enrollment_failed_could_not_open">This device could not open the key that was sent to it. That happens if your account\'s encryption key changed while you were setting this up — or if the key didn\'t come from your account. Nothing was saved on this device. Start again to try once more.</string>
+
+    <!-- The Security page's encrypted-mail entry. Capability, never behaviour — see the enrollment
+         strings above. -->
+    <string name="security_encryption_section">Encrypted mail</string>
+    <string name="security_encryption_hostile_location">Not available while Hostile Location Protection is on.</string>
+    <string name="security_encryption_no_lock_screen">Set a screen lock to use encrypted mail on this device.</string>
+    <string name="security_encryption_server_held">Your account\'s encryption key is held by the server.</string>
+    <string name="security_encryption_no_identity">Your account doesn\'t use encrypted mail yet.</string>
+    <string name="security_encryption_not_enrolled">Set up encrypted mail on this device.</string>
+    <string name="security_encryption_enrolled">This device holds a key for your encrypted mail.</string>
+    <string name="security_encryption_invalidated">This device can no longer open your encrypted mail.</string>
+    <string name="security_encryption_could_not_check">Couldn\'t check whether your account uses encrypted mail. Open this screen again when you\'re back online.</string>
+    <string name="security_encryption_open_webmail">Open webmail</string>
+    <string name="security_encryption_set_up">Set up</string>
+    <string name="security_encryption_set_up_again">Set up again</string>
+    <string name="security_encryption_remove">Remove from this device</string>
+    <string name="security_encryption_remove_title">Remove encrypted mail from this device?</string>
+    <string name="security_encryption_remove_body">This device will stop holding a key for your encrypted mail. Your mail and your account\'s key are not affected, and you can set this device up again at any time.</string>
+    <string name="security_encryption_remove_confirm">Remove</string>
+    <string name="security_encryption_removed">Removed from this device</string>
+    <string name="security_encryption_webmail_failed">Couldn\'t open webmail on this device</string>
 </resources>
