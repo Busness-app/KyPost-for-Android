@@ -115,4 +115,29 @@ class EnrollmentRowTest {
             row(hasSecureLockScreen = false, identity = IdentityCheck.CouldNotCheck),
         )
     }
+
+    /**
+     * The lock screen check must outrank the local status checks too, not just the identity branch.
+     * `ENROLLED` under no secure lock screen is the same contradiction as under Hostile Location
+     * Protection: without a lock screen the vault key cannot exist, so there is nothing to remove.
+     */
+    @Test
+    fun theLockScreenCheckOutranksAnEnrolledStatus() {
+        assertEquals(
+            "without a lock screen the vault key cannot exist, so there is nothing to remove",
+            EnrollmentRow.NoSecureLockScreen,
+            row(hasSecureLockScreen = false, status = EnrollmentStatus.ENROLLED),
+        )
+    }
+
+    /** Same contradiction for an invalidated key: without a lock screen there was never a vault key
+     *  to have been invalidated, so there is nothing to report invalidated. */
+    @Test
+    fun theLockScreenCheckOutranksAnInvalidatedStatus() {
+        assertEquals(
+            "without a lock screen the vault key cannot exist, so there is nothing to report invalidated",
+            EnrollmentRow.NoSecureLockScreen,
+            row(hasSecureLockScreen = false, status = EnrollmentStatus.KEY_INVALIDATED),
+        )
+    }
 }
