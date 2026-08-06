@@ -118,6 +118,17 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           script: |
+            # THIS BLOCK RUNS UNDER /usr/bin/sh (dash), NOT bash, and the action collapses it.
+            # A multi-line `|| { ... }` brace group is a syntax error here — dash reports
+            # "line 1: Syntax error: end of file unexpected" and the job dies before a single
+            # test runs. That is exactly how this workflow failed on its first real execution.
+            # Keep every construct POSIX and on ONE line.
+
+            # The action reports the boot complete before adb is reliably answering — the first
+            # run logged "Unable to connect to adb daemon" and three adb exit-code-1s during
+            # startup. Wait explicitly rather than racing it.
+            adb wait-for-device
+
             # EnrollmentVault.ensureKey() returns false on a device with no secure lock
             # screen, BY DESIGN — the envelope's protection IS the lock screen. On a bare
             # emulator that makes EnrollmentVaultTest, EnrollmentStateTest and the enrollment
@@ -127,10 +138,7 @@ jobs:
             # Prove it took, rather than assuming. A silent failure here reads downstream as
             # a Keystore bug and costs an afternoon.
             adb shell locksettings verify --old 1234 | tee /tmp/lockcheck.txt
-            grep -qi "verified successfully" /tmp/lockcheck.txt || {
-              echo "The emulator has no secure lock screen; the vault suites cannot pass." >&2
-              exit 1
-            }
+            if ! grep -qi "verified successfully" /tmp/lockcheck.txt; then echo "The emulator has no secure lock screen; the vault suites cannot pass." >&2; exit 1; fi
 
             # Dismiss the keyguard the PIN just armed, so the test run is not typing into it.
             adb shell input keyevent 82
