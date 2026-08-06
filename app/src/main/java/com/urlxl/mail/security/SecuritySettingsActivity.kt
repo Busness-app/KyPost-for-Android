@@ -36,6 +36,32 @@ import kotlinx.coroutines.withContext
 private val SecurityWork = Dispatchers.Default + NonCancellable
 
 /**
+ * Destroys this device's enrollment and enqueues the correction, for the Hostile Location
+ * Protection toggle.
+ *
+ * Top-level rather than a private method so the instrumented test drives the same code the toggle
+ * does. A test that re-implemented the sequence would stay green after the toggle stopped calling
+ * it — which is the failure mode this whole path exists to prevent.
+ *
+ * Unlike [SecurityWipe], this leaves the pairing alone: protection keeps push and sync working, and
+ * only the ability to open the envelope goes away.
+ *
+ * A teardown that could not fully complete is logged rather than surfaced. The enqueued report is
+ * the honest half — it probes live state, so if the envelope did survive, the server is told this
+ * device is still enrolled rather than being told a comforting lie.
+ */
+internal fun tearDownEnrollmentForHostileLocation(context: android.content.Context) {
+    val leftBehind = com.urlxl.mail.pgp.EnrollmentTeardown.destroy(context)
+    if (leftBehind.isNotEmpty()) {
+        android.util.Log.e(
+            "SecuritySettings",
+            "Enrollment teardown left $leftBehind behind while enabling protection",
+        )
+    }
+    com.urlxl.mail.pgp.EnrollmentStateWorker.enqueue(context)
+}
+
+/**
  * "Security" settings: Require Unlock to Open, Hostile Location Protection, and the credential
  * PIN-gate. Toggles 2 and 3 are disabled unless toggle 1 is on; enforced here, not just documented.
  */
@@ -265,6 +291,11 @@ class SecuritySettingsActivity : LockedActivity() {
                                 it,
                             )
                         }
+                    // Before the flag flips, so every interruption point is safe: a process death
+                    // after this leaves the flag off with the envelope already gone — honestly
+                    // un-enrolled — rather than protection on with a readable envelope, which is
+                    // the state this mode exists to prevent.
+                    tearDownEnrollmentForHostileLocation(this@SecuritySettingsActivity)
                 }
                 settings.setEnabled(enable)
             }
