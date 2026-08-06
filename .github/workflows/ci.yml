@@ -99,7 +99,7 @@ jobs:
           find app/build/test-results -name '*.xml' -exec grep -l '<failure' {} + | while read -r f; do
             echo "=== $f ==="
             cat "$f"
-          done
+          done || true
 
   instrumented:
     name: ci-instrumented
@@ -196,4 +196,4 @@ jobs:
           find app/build/outputs/androidTest-results -name '*.xml' -exec grep -l '<failure' {} + | while read -r f; do
             echo "=== $f ==="
             cat "$f"
-          done
+          done || true
