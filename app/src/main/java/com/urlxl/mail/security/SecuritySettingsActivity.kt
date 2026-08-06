@@ -36,6 +36,32 @@ import kotlinx.coroutines.withContext
 private val SecurityWork = Dispatchers.Default + NonCancellable
 
 /**
+ * Destroys this device's enrollment and enqueues the correction, for the Hostile Location
+ * Protection toggle.
+ *
+ * Top-level rather than a private method so the instrumented test drives the same code the toggle
+ * does. A test that re-implemented the sequence would stay green after the toggle stopped calling
+ * it — which is the failure mode this whole path exists to prevent.
+ *
+ * Unlike [SecurityWipe], this leaves the pairing alone: protection keeps push and sync working, and
+ * only the ability to open the envelope goes away.
+ *
+ * A teardown that could not fully complete is logged rather than surfaced. The enqueued report is
+ * the honest half — it probes live state, so if the envelope did survive, the server is told this
+ * device is still enrolled rather than being told a comforting lie.
+ */
+internal fun tearDownEnrollmentForHostileLocation(context: android.content.Context) {
+    val leftBehind = com.urlxl.mail.pgp.EnrollmentTeardown.destroy(context)
+    if (leftBehind.isNotEmpty()) {
+        android.util.Log.e(
+            "SecuritySettings",
+            "Enrollment teardown left $leftBehind behind while enabling protection",
+        )
+    }
+    com.urlxl.mail.pgp.EnrollmentStateWorker.enqueue(context)
+}
+
+/**
  * "Security" settings: Require Unlock to Open, Hostile Location Protection, and the credential
  * PIN-gate. Toggles 2 and 3 are disabled unless toggle 1 is on; enforced here, not just documented.
  */
@@ -241,7 +267,18 @@ class SecuritySettingsActivity : LockedActivity() {
 
     private fun applyHostileLocationProtection(settings: HostileLocationSettings, enable: Boolean) {
         lifecycleScope.launch {
-            withContext(SecurityWork) {
+            // The relaunch is part of the non-cancellable unit, not a statement after it. It used
+            // to sit outside, which made it an ordinary cancellable continuation: a Back press or a
+            // rotation during the multi-second teardown killed lifecycleScope, the flag still
+            // committed under NonCancellable, and the process reset was silently skipped — leaving
+            // the previous session's decrypted attachments and draft resident under a switch
+            // reading ON. See [runSecurityChangeThenReset].
+            runSecurityChangeThenReset(
+                workContext = SecurityWork,
+                reset = {
+                    withContext(Dispatchers.Main) { AppRestart.relaunch(this@SecuritySettingsActivity) }
+                },
+                change = {
                 if (enable) disableAndPurgeDeviceContactSync()
                 // Both directions need a fresh on-disk kypost_mail.db afterward: enabling must
                 // not leave the pre-toggle disk cache behind, and this is a harmless no-op on
@@ -265,10 +302,15 @@ class SecuritySettingsActivity : LockedActivity() {
                                 it,
                             )
                         }
+                    // Before the flag flips, so every interruption point is safe: a process death
+                    // after this leaves the flag off with the envelope already gone — honestly
+                    // un-enrolled — rather than protection on with a readable envelope, which is
+                    // the state this mode exists to prevent.
+                    tearDownEnrollmentForHostileLocation(this@SecuritySettingsActivity)
                 }
                 settings.setEnabled(enable)
-            }
-            AppRestart.relaunch(this@SecuritySettingsActivity)
+                },
+            )
         }
     }
 
@@ -543,17 +585,30 @@ class SecuritySettingsActivity : LockedActivity() {
             ).also { settings.setEnabled(false) }
         }
 
+        // Both branches below pair a destructive step with the relaunch that completes it, and both
+        // had the same split as the hostile-location toggle: the destruction runs NonCancellable
+        // inside SecurityWipe, the relaunch after it does not. See [runSecurityChangeThenReset].
         if (prior.credentialGate) {
-            SecurityWipe.wipeAndResetApp(this)
-            AppRestart.relaunch(this)
+            runSecurityChangeThenReset(
+                workContext = SecurityWork,
+                change = { SecurityWipe.wipeAndResetApp(this@SecuritySettingsActivity) },
+                reset = {
+                    withContext(Dispatchers.Main) { AppRestart.relaunch(this@SecuritySettingsActivity) }
+                },
+            )
             return
         }
 
         withContext(SecurityWork) { appLockStore.reset() }
 
         if (prior.hostileLocation) {
-            SecurityWipe.closeAndDeleteDatabase(this)
-            AppRestart.relaunch(this)
+            runSecurityChangeThenReset(
+                workContext = SecurityWork,
+                change = { SecurityWipe.closeAndDeleteDatabase(this@SecuritySettingsActivity) },
+                reset = {
+                    withContext(Dispatchers.Main) { AppRestart.relaunch(this@SecuritySettingsActivity) }
+                },
+            )
             return
         }
 

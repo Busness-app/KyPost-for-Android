@@ -277,6 +277,22 @@ class AppLockManagerTest {
         assertTrue(gatedManager.cachedCredentialKeys() == null)
     }
 
+    /**
+     * The opened PGP private key is plaintext held for one unlock session, so the app locking is
+     * the whole of its lifetime — the same window `credentialKeys` above is bound to.
+     *
+     * Unconditional, not gated on the lock being enabled: a manager with the lock off must still
+     * drop it, or turning the lock off would keep the key alive indefinitely.
+     */
+    @Test
+    fun lockNow_clearsTheOpenedEnrollmentKey() {
+        com.urlxl.mail.pgp.EnrollmentSession.put("-----BEGIN PGP PRIVATE KEY BLOCK-----")
+
+        newManager(FakeAppLockState(lockEnabled = false)).lockNow()
+
+        assertNull(com.urlxl.mail.pgp.EnrollmentSession.peek())
+    }
+
     @Test
     fun attemptPin_withCredentialGateEnabled_andNoExistingSalt_generatesAndPersistsSalt() = runBlocking {
         val gated = FakeAppLockState().apply { setCredentialPinGateEnabled(true) }

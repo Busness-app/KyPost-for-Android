@@ -60,13 +60,19 @@ Do not read 70 bits as making the commitment unnecessary. It makes it **not urge
 
 ## Where to resume
 
-**Android — 2c plan tasks 5–9**, in `docs/superpowers/plans/2026-08-05-device-enrollment-2c-crypto-core.md`:
-the three device-authed clients, teardown, the durable WorkManager report, the HLP/wipe wiring, and
-the session-scoped plaintext holder. Tasks 1–4 are done and reviewed.
+**Android — the 2c crypto-core plan is finished.** Tasks 5–9 landed on 2026-08-05: the three
+device-authed clients, teardown, the durable WorkManager report, the HLP/wipe wiring, and the
+session-scoped plaintext holder. Every task was mutation-proven.
 
-Task 8 carries a note from Task 3's review: **re-check that `EnrollmentVault.destroy()` leaves
-pairing state untouched** once it is actually wired in. Hostile Location Protection destroys the
-envelope but deliberately keeps the device paired.
+Task 8's note from Task 3's review is **settled**: `HostileLocationEnrollmentTeardownTest` asserts
+the pairing survives alongside both keys being gone.
+
+**What is left is the ceremony itself, which is spec 2's UI work.** Nothing in the crypto core has a
+caller yet — `EnrollmentClients.publishKey`/`fetchEnvelope` and `EnrollmentSession.put` are written,
+tested, and unreferenced by design. The plan defers the orchestrator deliberately: every one of its
+failure modes is something the user must be told about. Carry over from the plan's closing note —
+tests 7 and 8 from the original handoff (re-registration sending the device secret, and
+enrollment-before-identity) belong there and must not be lost.
 
 **Server — nothing blocking.** The `enrollment-state` route is done and mutation-proven.
 
@@ -94,11 +100,23 @@ Each of these cost real time. They are not hypotheticals.
 - **Fixing one path and missing its sibling.** Most of run-5's non-crypto findings are run-4 fixes
   that closed the reported path only: downloaded attachments were wiped by `SecurityWipe` but not by
   Hostile Location Protection, whose own copy promises it erases them.
+- **An assertion on the wrong field.** The plan's own Task 7 test asserted `WorkInfo.progress` was
+  empty to prove no credential was in the worker's *input* data. `progress` is empty for every
+  worker ever enqueued, and `WorkInfo` has no `inputData` accessor in WorkManager 2.10.1 — so the
+  test would have passed against a worker shipping the device secret to WorkManager's plaintext
+  database. The request is now built through a separate `buildRequest()` the test reads directly.
+  A written plan is not a reviewed test.
 
 ## Verification state
 
-- Android: **unit 535/535, instrumented 95/95**, no workaround flags. Emulator `Pixel_10`, Android
-  17, TEE-backed.
+- Android: **unit 558/558, instrumented 103/103**, no workaround flags. Emulator `Pixel_10`, Android
+  17, TEE-backed. The ten pre-existing `PepperUnavailableException` failures the 2c plan warned
+  about are gone — `33dae86` establishes the pepper before reading it — so a failure on this
+  emulator is now genuinely yours.
+- **One dependency was added:** `androidx.work:work-testing`, `androidTest` only. Two artifacts
+  needed recording in `gradle/verification-metadata.xml`, both checked against Google Maven's
+  published SHA-1. Without it a WorkManager test enqueues against the real scheduler, which runs the
+  worker and fires a live credentialed call from a test.
 - Server: **frontend 509/509**, `tsc` clean; **backend** `go build`/`go vet`/`gofmt` clean, full
   suite green.
 - **`Cipher.init` against a per-use auth-bound key is verified on TEE only.** The emulator logs
@@ -108,6 +126,44 @@ Each of these cost real time. They are not hypotheticals.
   audit demonstrated each dynamically before the fix, so the behaviour was proven, but nothing now
   guards it. Finding 6 is the one worth covering first: it is the *default* configuration, and the
   failure mode is the wipe telling the user their data may still be present when it is gone.
+- **One known gap in the 2c work.** The HLP teardown tests drive
+  `tearDownEnrollmentForHostileLocation`, not the activity's call to it, so deleting that one line
+  in `applyHostileLocationProtection` would not turn them red. Instrumenting the toggle needs the UI
+  work in spec 2. The `SecurityWipe` side has no such gap — `WipeResurrectionTest` runs the real
+  `wipeAndResetApp`.
+
+## Security audit run-5 → run-6
+
+**Run-6** (`~/security-audit-skill/kypost-android/run-6/`) audited the tasks 5–9 delta. Five findings
+— 2 MEDIUM, 3 LOW, no HIGH — **all fixed** in `d410827`, `8bf9b44`, `0ecee8e`, `2bcf38e`. Two of the
+five were defects in the code written the session before, which is the point of running the audit
+against your own fresh work:
+
+- The state report was the **only** device-authenticated request outside the TOFU TLS pin, and it
+  fired on the Hostile Location Protection toggle. `EnrollmentClients.callFactory` lost its default
+  rather than gaining a better one: a default is what let the omission happen silently.
+- `pairingSnapshot(null)` **cannot** unwrap a gated device secret, so the worker's retry branch was
+  taken forever with the credential gate on — and the comment saying an unlock would fix it was
+  false. The report is now re-driven from the PIN unlock, the only event that makes the secret usable.
+- `AppRestart.relaunch` sat outside the `NonCancellable` block in three places, so a Back press
+  during the HLP toggle committed the flag and skipped the process reset. Pre-existing since
+  `8f37efc`, and now guarded by `runSecurityChangeThenReset` plus a test that cancels mid-change.
+- `EnrollmentSession` had not joined the `ProcessScopedState` registry, and `resetAll()` reports only
+  registered holders — so the wipe announced Complete over it.
+- Unpair and re-pair did not tear the enrollment down; only the wipe and HLP did.
+
+**Three things run-6 rejected, so nobody re-derives them:** `EnrollmentVault.destroy()`'s dead
+failure detector is real but harmless (a clean return proves the key alias is gone, so residue is
+dead ciphertext); the WorkManager database surviving the wipe discloses nothing that
+`hostile_location_settings.xml` does not state more plainly on purpose; and `deviceEnvelopeAad`
+accepting U+FB00 is not a bypass, since the AAD is built from the uppercased string.
+
+**Still owed from run-5, and confirmed still open:** run-5 finding 3's second half. `36e7e62` fixed
+the "structurally cannot fail" part of the downloaded-attachment step but not the retry part — the
+`sharedPrefs` step still deletes `com.urlxl.mail.downloaded_attachments` eleven steps later, so a
+resumed wipe finds an empty ledger, passes, and reports **Complete** after having promised a retry.
+Reproduced on the emulator. The fix run-5 asked for is still the right one: add the ledger to
+`PREFS_NAMES_RETAINED` and delete it explicitly only after the step has succeeded.
 
 ## Closed this session, for the record
 

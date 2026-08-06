@@ -86,6 +86,11 @@ class UnlockActivity : AppCompatActivity() {
                     // unwrapped because no credential key was cached yet in this process, and
                     // migrates any pre-pepper wrap — see rewrapPairingIfNeeded.
                     rewrapPairingIfNeeded(this@UnlockActivity, appLockManager)
+                    // A PIN unlock is the only event that makes a gated device secret usable, so it
+                    // is the only event that can deliver an enrollment-state report the gate made
+                    // undeliverable. The worker is unique work, so re-enqueueing is idempotent and
+                    // costs nothing when there is no report owed.
+                    com.urlxl.mail.pgp.EnrollmentStateWorker.enqueue(this@UnlockActivity)
                     proceedIntoApp()
                 }
                 is UnlockAttemptResult.Wiped -> restartToFirstRun()

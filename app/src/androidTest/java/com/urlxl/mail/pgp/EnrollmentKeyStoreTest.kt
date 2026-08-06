@@ -14,8 +14,10 @@ import java.security.KeyStore
 @RunWith(AndroidJUnit4::class)
 class EnrollmentKeyStoreTest {
 
-    @Before fun clean() = EnrollmentKeyStore.deleteKeyPair()
-    @After fun cleanup() = EnrollmentKeyStore.deleteKeyPair()
+    // Block bodies, not expression bodies: deleteKeyPair now returns whether the alias is gone, and
+    // JUnit rejects a @Before/@After whose method is not void.
+    @Before fun clean() { EnrollmentKeyStore.deleteKeyPair() }
+    @After fun cleanup() { EnrollmentKeyStore.deleteKeyPair() }
 
     @Test
     fun generatesAnUncompressedSec1Point() {

@@ -271,6 +271,15 @@ class PushRepository(
         // account; the ephemeral attachment plaintext would simply still be there. No code path
         // here restarts the process. Enumerating them individually is what let the third one be
         // written and never added — see [com.urlxl.mail.ProcessScopedState].
+        // The sealed envelope holds THIS account's PGP private key, so it is account-scoped and
+        // belongs here. The wipe and Hostile Location Protection already tore it down; the account
+        // boundary was the third destructive path and the one left out — so unpairing, or a re-pair
+        // driven by the exported kypost://native-pair link, carried one account's private key into
+        // the next account's session behind nothing but the device lock screen.
+        val enrollmentResidue = com.urlxl.mail.pgp.EnrollmentTeardown.destroy(context)
+        if (enrollmentResidue.isNotEmpty()) {
+            android.util.Log.e(TAG, "Enrollment teardown left $enrollmentResidue behind while unpairing")
+        }
         val uncleared = com.urlxl.mail.InMemoryPlaintext.clearAll()
         if (uncleared.isNotEmpty()) {
             android.util.Log.e(TAG, "Failed to clear process-scoped state: $uncleared")

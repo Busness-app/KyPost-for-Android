@@ -97,9 +97,19 @@ internal object EnrollmentKeyStore {
         }
     }.getOrNull()
 
-    fun deleteKeyPair() {
-        runCatching { keyStore().deleteEntry(ALIAS) }
-    }
+    /**
+     * Deletes the agreement keypair, reporting whether it is actually gone.
+     *
+     * The boolean is not decoration: [EnrollmentTeardown] feeds it to a `SecurityWipe.step(...)`,
+     * and `step` records a failure only when its body signals one. Swallowing the outcome here —
+     * as a bare `runCatching {}` did — would let a surviving key be reported as a completed wipe,
+     * the same defect the audit fixed in [EnrollmentVault.destroy].
+     */
+    fun deleteKeyPair(): Boolean = runCatching {
+        val ks = keyStore()
+        ks.deleteEntry(ALIAS)
+        !ks.containsAlias(ALIAS)
+    }.getOrDefault(false)
 
 
     private fun keyStore(): KeyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }

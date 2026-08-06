@@ -176,6 +176,10 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.room.runtime)
     androidTestImplementation(libs.androidx.room.testing)
+    // Test-only, and the same shape as room-testing above. Without it a WorkManager test would have
+    // to enqueue against the real scheduler, which would actually run the worker — a real network
+    // call carrying this device's credential, from a test.
+    androidTestImplementation(libs.androidx.work.testing)
 }
 
 ksp {
