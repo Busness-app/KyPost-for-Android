@@ -482,7 +482,7 @@
     <string name="security_encryption_no_identity">Your account doesn\'t use encrypted mail yet.</string>
     <string name="security_encryption_not_enrolled">Set up encrypted mail on this device.</string>
     <string name="security_encryption_enrolled">This device holds a key for your encrypted mail.</string>
-    <string name="security_encryption_invalidated">This device can no longer open your encrypted mail.</string>
+    <string name="security_encryption_invalidated">This device no longer holds a usable key for your encrypted mail.</string>
     <string name="security_encryption_could_not_check">Couldn\'t check whether your account uses encrypted mail. Open this screen again when you\'re back online.</string>
     <string name="security_encryption_open_webmail">Open webmail</string>
     <string name="security_encryption_set_up">Set up</string>

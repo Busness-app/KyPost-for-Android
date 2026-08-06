@@ -323,8 +323,13 @@ class SecuritySettingsActivity : LockedActivity() {
             val status = withContext(SecurityWork) {
                 probeEnrollment(EnrollmentVault(activity))
             }
+            // SecurityWork, like the reads above: check() calls pairingForAuthenticatedCall()
+            // before its own withContext(Dispatchers.IO), and that pairing read is several
+            // EncryptedSharedPreferences decrypts plus a CredentialCipher.unwrap AES operation —
+            // the same class of Keystore work SecurityWork's own KDoc exists to keep off the main
+            // thread, wrapping only the network fetch inside check() would have missed it.
             val identity = if (paired && !hostileLocation && lockScreen) {
-                AndroidIdentitySource(activity).check()
+                withContext(SecurityWork) { AndroidIdentitySource(activity).check() }
             } else {
                 IdentityCheck.CouldNotCheck
             }

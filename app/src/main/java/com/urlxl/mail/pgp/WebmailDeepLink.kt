@@ -62,9 +62,10 @@ fun webmailDraftsUrl(serverUrl: String): String? {
  * value carrying a path would otherwise produce `…/read/` and land nowhere. `isFirstPartyWebmailUrl`
  * still gates the launch on the origin.
  *
- * The query is cleared alongside the path: `encodedPath` alone leaves any `?...` on the input
- * untouched, so a stored URL carrying one (there is no reason one would, but nothing rules it out)
- * would otherwise survive into the handoff target the same way a path would.
+ * The query and fragment are cleared alongside the path: `encodedPath` alone leaves any `?...` or
+ * `#...` on the input untouched, so a stored URL carrying one (there is no reason one would, but
+ * nothing rules it out) would otherwise survive into the handoff target the same way a path would.
  */
 fun webmailHomeUrl(serverUrl: String): String? =
-    serverUrl.toHttpUrlOrNull()?.newBuilder()?.encodedPath("/")?.query(null)?.build()?.toString()
+    serverUrl.toHttpUrlOrNull()?.newBuilder()?.encodedPath("/")?.query(null)?.fragment(null)
+        ?.build()?.toString()
