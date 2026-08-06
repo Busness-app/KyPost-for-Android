@@ -47,7 +47,11 @@ fun ContactDto.toEntity(
     // ceremony was clearing an alarm raised about an address injection it never examined, and doing
     // it as the user's own recommended remediation. A rotated key it does answer for; a rebound
     // identity it does not.
-    val identityRebound = identityChanged && !pgpKey.isNullOrBlank()
+    // Raised by this sync, OR still outstanding from an earlier one. Carrying the previous value
+    // forward is the half that was missing: identityRebound reflected only the CURRENT call, so a QR
+    // ceremony (which passes identityChanged = false) dropped an alarm raised by an earlier sync.
+    val identityRebound = (identityChanged || previous?.identityNeedsReview == true) &&
+        !pgpKey.isNullOrBlank()
 
     return ContactEntity(
         uid = uid,
@@ -82,7 +86,14 @@ fun ContactDto.toEntity(
         pronouns = pronouns,
         isSelf = isSelf,
         pgpKeyFingerprint = newFingerprint ?: previousFingerprint,
-        pgpKeyNeedsReverification = keyRotated || stillNeedsReverification || identityRebound,
+        // The KEY alarm only. A QR fingerprint comparison answers this one, so verifiedInPerson
+        // clearing it is correct.
+        pgpKeyNeedsReverification = keyRotated || stillNeedsReverification,
+        // The IDENTITY alarm, in its own column so the ceremony cannot clear it. A fingerprint
+        // comparison attests to the key; it says nothing about which addresses that key is displayed
+        // beside, and the save path builds its DTO from the current — possibly already tampered —
+        // Room row while the confirmation screen shows the scanned card's addresses.
+        identityNeedsReview = identityRebound,
     )
 }
 

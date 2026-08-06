@@ -4,6 +4,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -14,6 +15,18 @@ import org.junit.runner.RunWith
  */
 @RunWith(AndroidJUnit4::class)
 class CredentialCipherKeystoreTest {
+
+    /**
+     * [KeystoreCredentialPepper.mix] reads the pepper and never creates it — the split that stopped
+     * a lost verifier key from reading every correct PIN as wrong and wiping the device on the tenth
+     * try. Production creates it on the establish path ([AppLockManager.deriveUsingPersistedSalt],
+     * [PinHasher.hash]); a test that only ever reads must do the same, or it passes solely on a
+     * device where some earlier test happened to establish one.
+     */
+    @Before
+    fun establishThePepper() {
+        KeystoreCredentialPepper.ensureExists()
+    }
 
     @Test
     fun keystorePepperIsStableAcrossCalls() {

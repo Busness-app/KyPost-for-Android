@@ -139,8 +139,16 @@ class PushPairingActivity : LockedActivity() {
 
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
+        // getIntent() keeps returning the Intent that created this instance unless it is replaced,
+        // so without this onCreate's unconditional consumeDeepLink re-parses the ORIGINAL deep link
+        // on every recreation -- a rotation, a dark-mode toggle, a restore after eviction. An
+        // attacker's cancelled "replace your pairing with evil.tld" prompt would resurface later
+        // with no link tap to explain it, after the user had been trained by a legitimate one.
+        setIntent(intent)
         if (redirectedToUnlock) return
         consumeDeepLink(intent)
+        // Consumed: a recreation must not replay it.
+        intent.data = null
     }
 
     private fun initViews() {

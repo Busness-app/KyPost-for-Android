@@ -56,6 +56,7 @@ class ContactAdapter(
             statusBadge.setText(
                 when {
                     hasKey && contact.pgpKeyNeedsReverification -> R.string.contact_status_key_changed
+                    hasKey && contact.identityNeedsReview -> R.string.contact_status_identity_changed
                     hasKey -> R.string.contact_status_secure_key
                     else -> R.string.contact_status_no_key
                 },

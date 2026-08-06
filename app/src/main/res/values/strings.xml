@@ -129,6 +129,10 @@
     <string name="contact_status_secure_key">Secure key</string>
     <string name="contact_status_no_key">No key</string>
     <string name="contact_status_key_changed">Key changed</string>
+    <!-- Raised when the addresses a pinned key is displayed beside changed, NOT the key. Any app
+         holding WRITE_CONTACTS can make that edit, so the wording must not send the user to a QR
+         fingerprint comparison, which attests to the key and says nothing about the addresses. -->
+    <string name="contact_status_identity_changed">Details changed \u2014 check before trusting</string>
     <string name="contact_self_label">This is you</string>
 
     <string name="push_pairing_title">Push Notifications</string>

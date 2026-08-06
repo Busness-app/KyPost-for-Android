@@ -42,3 +42,24 @@ suspend fun hasPgpIdentity(
     if (pairing == null || deviceId.isNullOrBlank() || deviceSecret.isNullOrBlank()) return null
     return pgpIdentityFromMintResult(client.mintToken(pairing.serverUrl, deviceId, deviceSecret))
 }
+
+/**
+ * The account's own PGP fingerprint, computed locally from the public key `GET /api/pgp/bootstrap`
+ * returned, or null when the account has no identity, the key doesn't parse, or the call failed.
+ *
+ * The obvious-looking local source — the self-contact's `pgpKey` column — is the wrong one and is
+ * why [PgpKeyActivity] used to tell every user their fingerprint was unavailable: that column is an
+ * ordinary contact field, written only when a key is attached to a contact by hand or by the QR
+ * scan, with no connection to the account's real PGP identity (see
+ * [com.urlxl.mail.contacts.contactHasLinkedPgpKey], which exists for the same reason). The identity
+ * itself lives server-side, and bootstrap is the only route a paired device has to it.
+ *
+ * Hashing those bytes rather than reading the response's `fingerprint` field is the same rule
+ * [PgpKeyActivity.showFetchedKey] follows for the other party's key: a fingerprint the user is
+ * about to read aloud must describe the key material actually in hand.
+ */
+internal fun ownFingerprintFromBootstrap(result: PgpBootstrapResult): String? = when (result) {
+    is PgpBootstrapResult.Success -> result.publicKey.takeIf { it.isNotBlank() }
+        ?.let { PgpFingerprint.compute(it) }
+    is PgpBootstrapResult.Failed -> null
+}

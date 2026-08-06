@@ -6,6 +6,15 @@
 > app switch and the re-login for a fraction of the cost and no new cryptography.
 > Build what follows only if measured friction survives that change.
 >
+> **Update (2026-08-04): the gating step has shipped.** Custom Tabs merged at
+> `e42ad96` and is an ancestor of the current branch, so the condition above is
+> live and **unmeasured**. The open question is no longer a design one. It is
+> whether client-custody users still report friction now that the handoff stays
+> inside the app and keeps its session. Take that measurement before building any
+> of what follows — the levers below trade real posture for convenience, and
+> there is no point paying that price for friction that Custom Tabs already
+> removed.
+>
 > Two corrections to the reasoning below, found while planning that work:
 >
 > - On-device decryption is **not** an offline win. Ciphertext is fetched per
@@ -19,8 +28,10 @@
 A client-custody account's private key is wrapped under a secret the relay does
 not hold, so the server refuses to decrypt and sends `pgpEncrypted: true` with an
 empty `pgpDecryptError` and no body. `kypost-android` renders that as a 🔒 row and,
-in the detail view, a button that hands `/read?mailbox=&message=` to the system
-browser (`EmailDetailActivity.kt:276`, `pgp/WebmailDeepLink.kt`).
+in the detail view, a button that opens `/read?mailbox=&message=` — since
+`e42ad96`, in a first-party Custom Tab rather than the system browser, falling back
+to an external browser only when no Custom Tab provider is available
+(`EmailDetailActivity.kt:425-443` via `pgp/openWebmail`, `pgp/WebmailDeepLink.kt`).
 
 The friction that motivates this work is **context switching**, and only that.
 Server-custody accounts read encrypted mail in the app already and feel nothing.
@@ -137,6 +148,36 @@ runs with JavaScript off, `blockNetworkLoads`, no file or content access. They a
 whole mode exists to prevent, and the server takes the same position for
 `mailcache.json`.
 
+### Attachments
+
+The body is not the only plaintext a decrypted message produces, and the existing
+policy sends the rest of it to the wrong place. `security/AttachmentAction.kt`
+decides between an ephemeral view and a public-Downloads save on **one** input:
+
+```kotlin
+fun attachmentActionFor(hostileLocationProtectionEnabled: Boolean): AttachmentAction =
+    if (hostileLocationProtectionEnabled) AttachmentAction.VIEW_EPHEMERAL else AttachmentAction.SAVE_TO_DOWNLOADS
+```
+
+So for any client-custody account **not** running Hostile Location Protection —
+the default — tapping an attachment on a locally-decrypted message writes E2E
+plaintext into shared MediaStore, outside the app sandbox, where no wipe short of
+`DownloadedAttachmentLedger.deleteAll` reaches it. That is a worse disclosure than
+the Room cache this design already refuses, and it happens on a single unprompted
+tap: `SecurityWipe`'s `downloadedAttachments` step notes that saving is "a single
+unprompted tap in the default configuration".
+
+`attachmentActionFor` therefore takes a second input — whether the attachment came
+from a message this device decrypted locally — and returns `VIEW_EPHEMERAL` when
+it did, regardless of the HLM flag. It stays a pure function so the rule keeps its
+JVM test, in the same style as `pgpMessageStateOf`.
+
+This is a **block, not a warning**. The plaintext of a message the server itself
+cannot read must not be one confirmation dialog away from the Downloads folder,
+and `EphemeralAttachmentProvider` already exists for exactly this path — its KDoc
+describes itself as "the one path whose entire purpose is that this is how you
+open an attachment under Hostile Location Protection".
+
 ### The unlock prompt
 
 At the first PGP operation after the vault is empty, not at launch — a user who
@@ -187,6 +228,90 @@ passphrase, a password reset stops touching the key.
 a prerequisite discussion with the server side, because shipping password entry on
 the phone without it is the part of this design that genuinely weakens something.
 
+## Accepted, gated: a device-sealed envelope
+
+Raised 2026-08-04, rejected the same day, and **accepted on 2026-08-05 as a user-visible
+choice gated behind Hostile Location Protection.** The original rejection and the reasoning
+that overturned it are both kept below, because the objection was not wrong — it was
+outweighed, and a later reader needs to see the trade rather than assume the concern was
+never raised.
+
+It is the design a hardware keystore invites, and it is more interesting than the
+naive "store the key in `EncryptedSharedPreferences`" version this spec already
+rejects.
+
+**The shape.** The phone generates an EC P-256 keypair with `PURPOSE_AGREE_KEY`,
+`setIsStrongBoxBacked(true)` where the hardware allows, private half non-extractable
+from the secure element. It publishes the public half to the server under its
+existing pairing credential. The browser — which already holds the unwrapped key —
+does ECDH against an ephemeral keypair, seals the private key into a *device
+envelope*, and uploads it. The phone re-seals that under a StrongBox AES-GCM key
+carrying `setUserAuthenticationRequired`, and the server drops its copy. No
+passphrase is ever typed on the phone, the account password never reaches the
+device, and revocation is per-device.
+
+`minSdk = 31` makes this buildable: `PURPOSE_AGREE_KEY` landed in API 31, so ECDH
+in the Keystore is available on every supported device.
+
+**The objection, which stands on its own terms.** It fails the same test as the design in
+"The constraint that shapes everything", and the argument there is worth re-reading rather
+than re-deriving: biometrics and device credentials *authorise access to a key that
+already exists*; they do not reconstitute one from a secret only the user knows.
+An envelope openable by the secure element is openable by anyone who can satisfy
+the device's own unlock — a shoulder-surfed PIN, a compelled fingerprint, a
+coerced unlock at a border. Cold start stops being a full reload.
+
+**Why it is accepted anyway (2026-08-05).** The objection describes a real downgrade, but
+it was being weighed against the wrong baseline. The alternative to a device envelope is
+not "the user has client custody and types a passphrase" — it is "the user never leaves
+server custody at all", because the friction is what keeps them there. Measured against a
+**server-held secret**, a secure-element envelope the user controls is a large improvement,
+and it is the one that makes removing server custody adoptable. Preserving cold-start
+purity for the few who would accept the friction, at the cost of leaving the many on
+server-held keys, is the worse trade.
+
+So the downgrade becomes an explicit user choice rather than a designed-in default, and
+the threat the objection describes gets its own switch.
+
+**The gate: Hostile Location Protection.** The coerced-unlock and border-stop scenarios the
+objection names *are* the hostile-location case, and this app already has a control for it.
+
+- **HLP off (the default):** the device envelope is available. The user may enroll, and may
+  un-enroll at any time.
+- **HLP on:** no device envelope. Enrollment is unavailable, and **enabling HLP must destroy
+  any envelope that already exists**, alongside the on-disk database it already deletes.
+
+That last clause is load-bearing and easy to miss. `HostileLocationSettings.setEnabled`
+is deliberately written *after* the on-disk database has been deleted, and uses `commit()`
+rather than `apply()` so a process death cannot leave the flag off while the user believes
+protection is on. The enrollment envelope and its keystore key must join that same teardown
+and obey the same ordering. An envelope surviving the switch would leave the account's
+private key openable by device unlock on a device whose owner has just declared they are
+somewhere hostile — precisely the disclosure HLP exists to prevent, and worse than the one
+this section originally objected to.
+
+**Lever C remains the better answer for users who want both.** The device envelope exists
+to avoid typing the *account password* on a phone. Rewrapping under a separate PGP
+passphrase removes that objection without giving up cold-start. It is complementary here
+rather than superseded: it is what an HLP-on user should be offered.
+
+**The handshake needs a user-verified short authentication string, and that is not
+polish.** This was a condition of revisiting; it is now a condition of shipping. The
+server-side design (kypost-server, `2026-08-04-device-enrollment-design.md`) specifies one
+— ten Crockford base32 characters, device displays, browser verifies, browser refuses to
+seal on mismatch — which satisfies the first half of what follows. The AAD binding in the
+second half is **not** yet specified anywhere and remains outstanding. In client-custody
+mode the server is the
+adversary. If the browser trusts the server's copy of "this device's public key",
+a malicious server substitutes its own, receives the sealed envelope, and opens the
+key the mode exists to withhold — silently, with every client behaving correctly.
+Both ends must display a fingerprint derived from the device public key for the
+user to compare before the browser seals anything, the same out-of-band check
+`Client_PGP_Update.md` already asks for on QR key exchange. Bind the device id and
+the PGP key fingerprint into the envelope's GCM AAD as well, so a substituted or
+replayed envelope fails authentication instead of decrypting into the wrong
+account's key.
+
 ## Non-goals
 
 - **Encrypted send from the device.** Unchanged: `POST /api/mail/draft` then hand off
@@ -211,8 +336,12 @@ Modified:
 
 - `pgp/PgpBootstrapClient.kt` — surface `wrappedPrivateKey` and `payloadEndpoint`;
   its `PgpBootstrapDto` currently parses two fields and ignores the rest
-- `EmailDetailActivity.kt:260,276,390` — the `CLIENT_PROTECTED` branches
+- `EmailDetailActivity.kt:274,290,425` — the `CLIENT_PROTECTED` branches (line
+  numbers refreshed 2026-08-04; the Custom Tabs work moved them)
 - `security/AppLockManager` — clear the vault on lock
+- `security/AttachmentAction.kt` — the second input described under "Attachments";
+  its caller in `EmailDetailActivity` has to pass whether the message was decrypted
+  locally
 - `res/values/strings.xml`
 
 ## Verification
@@ -228,10 +357,19 @@ Modified:
   `InMemoryPlaintext.clearAll()`; empty after app lock; empty after
   `SecurityWipe.wipeAndResetApp`. Follow
   `MfaChallengeTrackerPersistenceTest` / `SecurePairingStoreCredentialGateTest`.
+- **Unit (JVM).** `attachmentActionFor` returns `VIEW_EPHEMERAL` for a
+  locally-decrypted message with Hostile Location Protection **off**. That is the
+  case that is wrong today, so it is the case the test exists for; assert the other
+  three combinations too, since the function's whole job is that the two inputs do
+  not collapse into one.
 - **Instrumented.** Nothing lands on disk: after unlocking and reading an encrypted
   message, no shared-prefs file, no datastore file and no Room row contains the
   plaintext or the envelope. This is the assertion that keeps the design honest —
   the web vault has the equivalent test for `localStorage`/`sessionStorage`.
+- **Instrumented.** Extend that sweep to the attachment path: view an attachment on
+  a locally-decrypted message with HLM off, then assert public Downloads and
+  `DownloadedAttachmentLedger` are both untouched. The body and the attachment leak
+  through different code, so a body-only assertion certifies half the property.
 - **Manual, against a real client-custody account.** E2E_PGP.md records that
   *nothing* in this mode has been exercised against a real IMAP server or a real
   recipient. This branch should not be the thing that assumes it works: read an

@@ -127,14 +127,23 @@ class WipeResurrectionTest {
     }
 
     /**
-     * `MAX_WIPE_RESUMES` must be a lifetime ceiling, not a rolling window.
+     * `MAX_WIPE_RESUMES` bounds ONE wipe's resumes. It is not a rolling window, and it is not a
+     * lifetime budget either.
      *
-     * `clearWipeMarker()` used to `clear()` the whole file, dropping the attempt counter along with
-     * the in-progress flag — so reaching the ceiling reset the budget to zero and the counter cycled
-     * 1, 2, 0, 1, 2, 0, 1 forever. It now removes only the flag.
+     * Two bugs have lived here. First, `clearWipeMarker()` used to `clear()` the whole file, dropping
+     * the attempt counter with the in-progress flag, so reaching the ceiling reset the budget and the
+     * counter cycled 1, 2, 0, 1, 2, 0 forever — the ceiling bounded nothing. The fix for that kept the
+     * counter across the marker, which overshot: nothing reset it *ever*, so it became a per-install
+     * lifetime budget. Wipes are reachable by ordinary user action — turning off "Require Unlock to
+     * Open" with the credential gate on runs a full wipe — so three of those exhausted the budget,
+     * and the wipe that actually matters (a thief burning PIN attempts) then got zero retries and
+     * abandoned itself on its first failed step.
+     *
+     * The counter is now scoped to a wipe *episode*: `markWipeInProgress` starts it at 1 when the
+     * marker was clear, and increments only when resuming a marker that is already set.
      */
     @Test
-    fun wipeAttemptCeiling_accumulatesAcrossRuns(): Unit = runBlocking {
+    fun wipeAttemptCeiling_climbsWhileResuming_thenResetsForTheNextWipe(): Unit = runBlocking {
         val prefs = context.getSharedPreferences(
             "com.urlxl.mail.wipe_state", android.content.Context.MODE_PRIVATE,
         )
@@ -147,8 +156,8 @@ class WipeResurrectionTest {
                 seen += prefs.getInt("wipe_attempts", 0)
             }
             assertEquals(
-                "the attempt count must climb monotonically, not reset at the ceiling",
-                listOf(1, 2, 3, 4, 5),
+                "the count must climb while resuming ONE wipe, then start over for the next one",
+                listOf(1, 2, 3, 1, 2),
                 seen,
             )
         } finally {
@@ -165,8 +174,10 @@ class WipeResurrectionTest {
         val dir = File(context.dataDir, "shared_prefs")
         org.junit.Assume.assumeTrue(dir.exists() && dir.setReadable(false, false))
         try {
+            // Three attempts is the whole budget for one episode: 1, 2, then 3 which gives up.
+            // A fourth call would be a NEW episode and would correctly promise a retry again.
             var last: WipeResult? = null
-            repeat(4) { last = SecurityWipe.wipeAndResetApp(context) }
+            repeat(3) { last = SecurityWipe.wipeAndResetApp(context) }
             val result = last
             assertTrue("a failing wipe must report Incomplete", result is WipeResult.Incomplete)
             assertFalse(
