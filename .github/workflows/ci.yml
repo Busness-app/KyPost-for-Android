@@ -1,0 +1,145 @@
+name: ci
+
+# kypost-server/.github/workflows/ci.yml establishes every convention below; this file
+# follows it. Push is restricted to main rather than "**": with a pull_request trigger as
+# well, every push to a PR branch would otherwise run the whole suite twice for the same
+# commit.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# Supersede an in-flight run when the same ref is pushed again. main is excluded from
+# cancellation: a green tick against a specific main commit is the record of whether that
+# commit built, and cancelling it destroys that record.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+# Every action below is pinned to a commit SHA rather than a tag. A tag is a mutable
+# pointer: whoever controls it controls a job running in this repository. The sibling
+# server repo already holds this standard and states why.
+
+jobs:
+  unit:
+    name: ci-unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # gradle/wrapper/gradle-wrapper.jar is committed to this repository, so CI executes a
+      # binary out of the tree it is testing. This step is the control that stops a swapped
+      # jar running here: it checks the jar against the checksums Gradle publishes for every
+      # release. It must come before any ./gradlew invocation.
+      - uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+
+      # Temurin 25 rather than the JDK 26 this was developed on: 25 is what Gradle 9.6
+      # officially supports, and "works on my machine's 26" is not the same claim. If AGP
+      # 9.3.1 ever refuses this JDK, raise the number here — do not lower the Gradle version.
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+
+      - uses: ./.github/actions/placeholder-google-services
+
+      # NEVER add --write-verification-metadata to any Gradle invocation in this file.
+      # gradle/verification-metadata.xml has verify-metadata=true and 600+ pinned
+      # components, and the entire point is that CI FAILS on an unrecorded artifact. A job
+      # that regenerates it silently defeats the supply-chain control this repo already paid
+      # for: an injected dependency would be recorded as legitimate by the very run that
+      # should have caught it.
+      - name: unit tests and lint
+        run: ./gradlew testDebugUnitTest lint
+
+      # The other half of the rule above, expressed as a check rather than a comment: if
+      # anything in this job regenerated the metadata, the file is dirty and the job fails.
+      - name: dependency verification metadata is unchanged
+        run: git diff --exit-code -- gradle/verification-metadata.xml
+
+      - name: unit test report
+        if: failure()
+        run: |
+          find app/build/reports/tests -name '*.html' -print || true
+          find app/build/test-results -name '*.xml' -exec grep -l '<failure' {} + | while read -r f; do
+            echo "=== $f ==="
+            cat "$f"
+          done || true
+
+  instrumented:
+    name: ci-instrumented
+    runs-on: ubuntu-latest
+    # Slower and flakier than unit-only, and still worth it: the wipe, teardown, Keystore
+    # and enrollment-state guarantees are asserted ONLY here. A CI that ran unit tests alone
+    # would give this repository false confidence about precisely its most security-relevant
+    # behaviour.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+
+      - uses: ./.github/actions/placeholder-google-services
+
+      # Hardware acceleration for the emulator. Without it the AVD falls back to software
+      # and a 45-minute timeout is not enough.
+      - name: enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # target: google_apis, NOT google_apis_playstore. Play Store images are user builds,
+      # where `adb shell locksettings` is not permitted — and without it the lock-screen step
+      # below cannot run at all.
+      - uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: |
+            # EnrollmentVault.ensureKey() returns false on a device with no secure lock
+            # screen, BY DESIGN — the envelope's protection IS the lock screen. On a bare
+            # emulator that makes EnrollmentVaultTest, EnrollmentStateTest and the enrollment
+            # round-trip test fail as though the code were broken. Set one first.
+            adb shell locksettings set-pin 1234
+
+            # Prove it took, rather than assuming. A silent failure here reads downstream as
+            # a Keystore bug and costs an afternoon.
+            adb shell locksettings verify --old 1234 | tee /tmp/lockcheck.txt
+            grep -qi "verified successfully" /tmp/lockcheck.txt || {
+              echo "The emulator has no secure lock screen; the vault suites cannot pass." >&2
+              exit 1
+            }
+
+            # Dismiss the keyguard the PIN just armed, so the test run is not typing into it.
+            adb shell input keyevent 82
+            adb shell input text 1234
+            adb shell input keyevent 66
+
+            ./gradlew connectedDebugAndroidTest
+
+      - name: dependency verification metadata is unchanged
+        run: git diff --exit-code -- gradle/verification-metadata.xml
+
+      - name: instrumented test report
+        if: failure()
+        run: |
+          find app/build/reports/androidTests -name '*.html' -print || true
+          find app/build/outputs/androidTest-results -name '*.xml' -exec grep -l '<failure' {} + | while read -r f; do
+            echo "=== $f ==="
+            cat "$f"
+          done || true
