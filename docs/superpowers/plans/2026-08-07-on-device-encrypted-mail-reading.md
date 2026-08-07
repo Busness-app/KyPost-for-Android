@@ -3068,6 +3068,15 @@ Send an encrypted message from webmail and file it into a folder the poller neve
 | Reply / Reply-All / Forward | Greyed; tapping shows the webmail notice |
 | Enable Hostile Location Protection, reopen | Padlock, no Decrypt button |
 
+- [ ] **Step 3b: StrictMode check, scoped**
+
+Enable `StrictMode.detectDiskReads().detectCustomSlowCalls().penaltyLog()` and open a
+client-protected message on the **automatic path — key already held**. That path must be clean.
+
+**The Decrypt-tap path is a known exclusion until Task 16 lands**, because the vault's own prefs and
+Keystore reads still run on Main there. Do not treat a hit on that path as a failure of the
+automatic-path criterion; record it and check Task 16 shipped.
+
 - [ ] **Step 4: Confirm the decrypted body did not land on disk**
 
 ```bash
@@ -3448,6 +3457,95 @@ strings, so the next round would have been the same shape.
 
 The server now ships keys already narrowed to the sender, so the second
 parser is deleted rather than patched.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 16: move the vault's disk work off the main thread
+
+Added 2026-08-07, from Task 10's re-review. Small, and it deletes a wrapper rather than adding one.
+
+**Files:**
+- Modify: `app/src/main/java/com/urlxl/mail/pgp/VaultOpenerAndroid.kt`
+- Modify: `app/src/main/java/com/urlxl/mail/EmailDetailActivity.kt` (delete the anonymous `VaultOpener`)
+
+**Interfaces:** unchanged. `VaultOpener.open()` keeps its signature; only where its body runs changes.
+
+**The defect.** Task 10 wrapped the whole of `AndroidVaultOpener.open()` in `Dispatchers.Main`, because
+`BiometricPrompt.authenticate` performs a FragmentManager transaction. That is true of the prompt, and
+false of everything before it. Currently on the main thread:
+
+- `vault.stored()` forces `EnrollmentVault.buildPrefs()` — a `MasterKey` Keystore round trip, an
+  `EncryptedSharedPreferences.create` (Tink keyset disk read plus Keystore unwrap) and two AES
+  decrypts. This is the **`device_envelope_secure` file, not the pairing store**, so Task 10's
+  `Dispatchers.IO` pairing read does not warm it: the first call per process pays the cold path on
+  Main. Its failure branch does a `deleteSharedPreferences` — a file delete on the UI thread.
+- `vault.openCipher(iv)` — `KeyStore.load(null)`, `getKey`, and `Cipher.init` on a
+  user-auth-required, **StrongBox-preferred** key. StrongBox `Cipher.init` is tens to hundreds of
+  milliseconds on real hardware.
+
+`AndroidEnrollmentTransport.pairing()`'s KDoc already says of this same workload: *"Blocking, and
+never to be called from the main thread."*
+
+It only runs after a deliberate Decrypt or Retry tap, never on the automatic path, which is why
+Task 10 shipped without it. It is still the wrong thread.
+
+**The fix.** Let the port own its dispatching, which is the pattern `AndroidIdentitySource` and
+`AndroidEnrollmentTransport` already use — the port is the Android edge, and that is where this
+belongs.
+
+- [ ] **Step 1: Move the vault reads to IO inside the port**
+
+In `AndroidVaultOpener.open()`, wrap everything from `EnrollmentVault(activity)` through
+`openCipher(iv)` in `withContext(Dispatchers.IO)`, and keep **only** the
+`suspendCancellableCoroutine { … }` block in `withContext(Dispatchers.Main)`.
+
+The lifecycle/`isStateSaved` guard stays **inside** the `suspendCancellableCoroutine` block, on Main.
+That is the whole argument for the hop living in the port rather than around it: the guard has to be
+evaluated on the thread that will call `authenticate()`, as late as possible.
+
+Add a comment recording why the split is where it is, and cross-referencing
+`AndroidEnrollmentTransport.pairing()`'s "never from the main thread" note.
+
+- [ ] **Step 2: Delete the caller's wrapper**
+
+In `EmailDetailActivity.encryptedReader()`, replace the anonymous `object : VaultOpener` that hops to
+Main with `AndroidVaultOpener(this)`. The hop now lives in the port.
+
+- [ ] **Step 3: Verify the prompt is still on Main**
+
+The `Cipher` is now built off-Main and consumed by a `CryptoObject` on Main. That is safe in
+principle — a Keystore `Cipher` is not thread-affine — but it is exactly the kind of thing that is
+fine until it isn't, so **record it in the report as device-verify**, and confirm by reading that
+`prompt.authenticate(...)` is inside the Main block.
+
+- [ ] **Step 4: Build and test**
+
+```bash
+./gradlew :app:assembleDebug :app:testDebugUnitTest
+```
+
+Expected: BUILD SUCCESSFUL. No new unit test — this is a dispatcher change with no JVM seam, and a
+test that appeared to cover it would resolve against a stub.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add app/src/main/java/com/urlxl/mail/pgp/VaultOpenerAndroid.kt \
+        app/src/main/java/com/urlxl/mail/EmailDetailActivity.kt
+git commit -m "fix(pgp): keep the vault's disk work off the main thread
+
+Opening the envelope ran EncryptedSharedPreferences construction, a Tink
+keyset read, a Keystore unwrap and a StrongBox Cipher.init on the UI
+thread, because the whole of open() was wrapped in Dispatchers.Main to
+satisfy BiometricPrompt's FragmentManager transaction. Only the prompt
+needs Main.
+
+The port now owns its own dispatching, like AndroidIdentitySource and
+AndroidEnrollmentTransport, and the caller's wrapper is deleted. The
+lifecycle guard stays on Main, as late as possible before authenticate().
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
