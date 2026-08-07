@@ -487,6 +487,12 @@
 
     <!-- The Security page's encrypted-mail entry. Capability, never behaviour — see the enrollment
          strings above. -->
+    <!-- Section eyebrows. Rendered uppercase by applySectionEyebrowLabel, so written in sentence
+         case here — the style guide's eyebrow is a display treatment, not a spelling.
+         Named for what the user controls, not for the subsystem behind it. -->
+    <string name="security_section_app_lock">App lock</string>
+    <string name="security_section_location">This location</string>
+    <string name="security_section_notifications">Notifications</string>
     <string name="security_encryption_section">Encrypted mail</string>
     <string name="security_encryption_hostile_location">Not available while Hostile Location Protection is on.</string>
     <string name="security_encryption_no_lock_screen">Set a screen lock before this device can hold a key for your encrypted mail.</string>
