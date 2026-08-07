@@ -9,6 +9,54 @@ package com.urlxl.mail.pgp
  * name, so a second file in this package declaring the same name fails to compile as a duplicate
  * class. That already cost this package four near-identical copies of one fake.
  */
+/** The fingerprint the fake identity reports, and so the one a valid envelope's AAD must bind. */
+internal const val FAKE_FINGERPRINT = "164D5B834E7FE927"
+
+internal const val FAKE_PLAINTEXT =
+    "-----BEGIN PGP PRIVATE KEY BLOCK-----\nnot a real key\n-----END-----"
+
+/**
+ * Seals a real envelope the fake ports can open, using the same primitives the browser does.
+ *
+ * Lives here rather than in one test class because the seam it exercises — the state machine against
+ * the pure crypto in `DeviceEnvelope.kt` — is reached from more than one suite, and a second private
+ * copy is how this package previously ended up with four near-identical versions of one fake.
+ *
+ * The shared secret is whatever [FakeEnrollmentKeys.sharedSecretResult] returns: the ECDH is the one
+ * step a JVM test cannot perform, and it is covered on hardware by `EnrollmentKeyStoreTest`.
+ */
+internal fun sealEnvelope(
+    keys: FakeEnrollmentKeys,
+    deviceId: String = "dev-1",
+    aadFingerprint: String = FAKE_FINGERPRINT,
+): String {
+    val sharedSecret = requireNotNull(keys.sharedSecretResult)
+    val ephemeral = ByteArray(65).also { it[0] = 0x04; for (i in 1..64) it[i] = 0x44 }
+    val key = hkdfSha256(
+        ikm = sharedSecret,
+        salt = keys.keystorePoint,
+        info = "kypost-device-envelope/v2".toByteArray(Charsets.UTF_8),
+        length = 32,
+    )
+    val iv = ByteArray(12) { 0x55 }
+    val cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding").apply {
+        init(
+            javax.crypto.Cipher.ENCRYPT_MODE,
+            javax.crypto.spec.SecretKeySpec(key, "AES"),
+            javax.crypto.spec.GCMParameterSpec(128, iv),
+        )
+        updateAAD(deviceEnvelopeAad(deviceId, aadFingerprint))
+    }
+    val ct = cipher.doFinal(FAKE_PLAINTEXT.toByteArray(Charsets.UTF_8))
+    val b64 = java.util.Base64.getEncoder()
+    return """
+        {"v":"2","alg":"ECDH-P256+HKDF-SHA256+A256GCM",
+         "epk":"${b64.encodeToString(ephemeral)}",
+         "iv":"${b64.encodeToString(iv)}",
+         "ct":"${b64.encodeToString(ct)}"}
+    """.trimIndent().replace("\n", "")
+}
+
 internal class FakeIdentitySource(private val result: IdentityCheck) : IdentitySource {
     var checkCalls = 0
         private set
@@ -40,6 +88,18 @@ internal class FakeEnrollmentKeys(
     var sharedSecretResult: ByteArray? = ByteArray(32) { 0x33 }
     private var exists = false
 
+    /**
+     * Destroys the key from under a running ceremony, as `SecurityWipe` and Hostile Location
+     * Protection both genuinely can: both tear the enrollment down on a live screen. Set from a test's
+     * `onState` to reach the mid-window branch, which no list of canned results can produce.
+     */
+    var vanished = false
+
+    /** A key that mints but whose public half cannot be read back — the Keystore entry exists while
+     *  `getCertificate` returns nothing. Separate from [vanished] because it is reachable
+     *  synchronously, immediately after a *successful* mint. */
+    var encodingFails = false
+
     /** The point the code must be derived from. */
     val keystorePoint: ByteArray = ByteArray(65).also { it[0] = 0x04; for (i in 1..64) it[i] = keyByte }
 
@@ -54,10 +114,11 @@ internal class FakeEnrollmentKeys(
         return minting
     }
 
-    override fun rawPublicKey(): ByteArray? = keystorePoint.takeIf { exists }
+    override fun rawPublicKey(): ByteArray? = keystorePoint.takeIf { exists && !vanished }
 
     override fun encodedPublicKey(): String? =
-        publishedPoint.takeIf { exists }?.let { java.util.Base64.getEncoder().encodeToString(it) }
+        publishedPoint.takeIf { exists && !vanished && !encodingFails }
+            ?.let { java.util.Base64.getEncoder().encodeToString(it) }
 
     override fun sharedSecret(epk: ByteArray): ByteArray? = sharedSecretResult
 
@@ -76,7 +137,9 @@ internal class FakeEnrollmentTransport(
     private val deviceId: String? = "dev-1",
     var publishResult: EnrollmentCallResult = EnrollmentCallResult.Ok,
     private val fetchResults: MutableList<EnrollmentCallResult> = mutableListOf(),
-    private val fetchWhenExhausted: EnrollmentCallResult = EnrollmentCallResult.NotFound,
+    /** `var` so a test can change what a *later* window sees. A five-minute window is ~100 fetches,
+     *  so "404 for the whole first window, then the envelope" is not expressible as a list. */
+    var fetchWhenExhausted: EnrollmentCallResult = EnrollmentCallResult.NotFound,
     var reportResult: EnrollmentCallResult = EnrollmentCallResult.Ok,
 ) : EnrollmentTransport {
     val publishedKeys = mutableListOf<String>()
@@ -166,9 +229,13 @@ internal class FakePorts(
     fetchResults: MutableList<EnrollmentCallResult> = mutableListOf(),
     fetchWhenExhausted: EnrollmentCallResult = EnrollmentCallResult.NotFound,
     reportResult: EnrollmentCallResult = EnrollmentCallResult.Ok,
+    /** A keystore that refuses to mint — StrongBox and the TEE fallback both failing. Exposed here
+     *  because [FailureReason.NO_DEVICE_KEY] was otherwise unreachable from any test: this bundle
+     *  hardcoded a minting keystore, so the branch had production call sites and no coverage. */
+    minting: Boolean = true,
 ) {
     val identity = FakeIdentitySource(identityResult)
-    val keys = FakeEnrollmentKeys()
+    val keys = FakeEnrollmentKeys(minting = minting)
     val transport = FakeEnrollmentTransport(
         deviceId = deviceIdValue,
         publishResult = publishResult,

@@ -17,46 +17,7 @@ import java.util.Base64
  */
 class EnrollmentCeremonyExitTest {
 
-    private val fingerprint = "164D5B834E7FE927"
-
-    /**
-     * Seals a real envelope the fake ports can open, using the same primitives the browser does.
-     *
-     * The shared secret is whatever [FakeEnrollmentKeys.sharedSecretResult] returns — the ECDH is
-     * the one step a JVM test cannot perform, and it is already covered on hardware by
-     * `EnrollmentKeyStoreTest`.
-     */
-    private fun sealEnvelope(
-        keys: FakeEnrollmentKeys,
-        deviceId: String = "dev-1",
-        aadFingerprint: String = fingerprint,
-    ): String {
-        val sharedSecret = requireNotNull(keys.sharedSecretResult)
-        val ephemeral = ByteArray(65).also { it[0] = 0x04; for (i in 1..64) it[i] = 0x44 }
-        val key = hkdfSha256(
-            ikm = sharedSecret,
-            salt = keys.keystorePoint,
-            info = "kypost-device-envelope/v2".toByteArray(Charsets.UTF_8),
-            length = 32,
-        )
-        val iv = ByteArray(12) { 0x55 }
-        val cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding").apply {
-            init(
-                javax.crypto.Cipher.ENCRYPT_MODE,
-                javax.crypto.spec.SecretKeySpec(key, "AES"),
-                javax.crypto.spec.GCMParameterSpec(128, iv),
-            )
-            updateAAD(deviceEnvelopeAad(deviceId, aadFingerprint))
-        }
-        val ct = cipher.doFinal(PLAINTEXT.toByteArray(Charsets.UTF_8))
-        val b64 = Base64.getEncoder()
-        return """
-            {"v":"2","alg":"ECDH-P256+HKDF-SHA256+A256GCM",
-             "epk":"${b64.encodeToString(ephemeral)}",
-             "iv":"${b64.encodeToString(iv)}",
-             "ct":"${b64.encodeToString(ct)}"}
-        """.trimIndent().replace("\n", "")
-    }
+    private val fingerprint = FAKE_FINGERPRINT
 
     private fun portsWithEnvelope(
         sealFor: String = "dev-1",
@@ -387,7 +348,104 @@ class EnrollmentCeremonyExitTest {
         }
     }
 
+    /**
+     * [FailureReason.NO_DEVICE_KEY] has four production call sites and, until these, no test at any
+     * of them — it was unreachable because [FakePorts] hardcoded a minting keystore with no way to
+     * make an accessor fail. An untested failure branch on the path that mints and publishes a key is
+     * the branch most likely to be silently rewired, so each site gets its own case.
+     *
+     * Every one of them must also destroy the keypair. `keyPairLive` is set *before* the mint is
+     * checked precisely because a failed `newKeyPair()` can still leave a half-generated key behind,
+     * and a key that outlives a ceremony is a standing unauthenticated path to every envelope the
+     * relay retains.
+     */
+    @Test
+    fun aKeystoreThatCannotMintFailsWithNoDeviceKey() = runBlocking {
+        val ports = FakePorts(minting = false)
+
+        ports.ceremony().run()
+
+        assertEquals(EnrollmentUiState.Failed(FailureReason.NO_DEVICE_KEY), ports.states.last())
+        assertEquals("a failed mint can still leave a key behind", 1, ports.keys.deleteCalls)
+        assertEquals("nothing may be published", 0, ports.transport.publishedKeys.size)
+    }
+
+    /** The key minted, but its public half cannot be read back — so there is nothing to publish. */
+    @Test
+    fun aKeyWhosePublicHalfCannotBeReadFailsWithNoDeviceKey() = runBlocking {
+        val ports = FakePorts()
+        ports.keys.encodingFails = true
+
+        ports.ceremony().run()
+
+        assertEquals(EnrollmentUiState.Failed(FailureReason.NO_DEVICE_KEY), ports.states.last())
+        assertEquals(1, ports.keys.deleteCalls)
+        assertEquals("nothing may be published", 0, ports.transport.publishedKeys.size)
+    }
+
+    /**
+     * The key is destroyed under a running window — `SecurityWipe` and Hostile Location Protection
+     * both do exactly this to a live screen. The next bucket boundary must fail the ceremony rather
+     * than derive a code from a key that no longer exists.
+     */
+    @Test
+    fun aKeyDestroyedMidWindowFailsWithNoDeviceKey() = runBlocking {
+        val ports = FakePorts()
+        lateinit var ceremony: EnrollmentCeremony
+        ceremony = EnrollmentCeremony(
+            identity = ports.identity,
+            transport = ports.transport,
+            keys = ports.keys,
+            sealer = ports.sealer,
+            clock = ports.clock,
+            hostileLocationEnabled = { false },
+            hasSecureLockScreen = { true },
+            onState = { state ->
+                ports.states += state
+                // Destroy it once the first code is up, so the failure lands on the NEXT boundary —
+                // inside the loop, which no canned list of fetch results can reach.
+                if (state is EnrollmentUiState.ShowingCode) ports.keys.vanished = true
+            },
+        )
+
+        ceremony.run()
+
+        assertEquals(EnrollmentUiState.Failed(FailureReason.NO_DEVICE_KEY), ports.states.last())
+        assertTrue(
+            "the window must stop, not run to its deadline",
+            ports.transport.fetchCalls < 100,
+        )
+    }
+
+    /**
+     * The key survives long enough to receive an envelope and then goes. The open needs the keystore
+     * point as the HKDF salt, so this must fail rather than derive a key from a substitute.
+     */
+    @Test
+    fun aKeyDestroyedBeforeTheOpenFailsWithNoDeviceKey() = runBlocking {
+        val ports = portsWithEnvelope()
+        lateinit var ceremony: EnrollmentCeremony
+        ceremony = EnrollmentCeremony(
+            identity = ports.identity,
+            transport = ports.transport,
+            keys = ports.keys,
+            sealer = ports.sealer,
+            clock = ports.clock,
+            hostileLocationEnabled = { false },
+            hasSecureLockScreen = { true },
+            onState = { state ->
+                ports.states += state
+                if (state is EnrollmentUiState.Opening) ports.keys.vanished = true
+            },
+        )
+
+        ceremony.run()
+
+        assertEquals(EnrollmentUiState.Failed(FailureReason.NO_DEVICE_KEY), ports.states.last())
+        assertTrue("nothing may be sealed", ports.sealer.received.isEmpty())
+    }
+
     private companion object {
-        const val PLAINTEXT = "-----BEGIN PGP PRIVATE KEY BLOCK-----\nnot a real key\n-----END-----"
+        const val PLAINTEXT = FAKE_PLAINTEXT
     }
 }
