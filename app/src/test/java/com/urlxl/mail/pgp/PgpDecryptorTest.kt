@@ -13,11 +13,11 @@ import org.junit.Test
  */
 class PgpDecryptorTest {
 
-    /** The signer keys the reader will pass in production. A secret key ring also exposes its
-     *  public keys, so the fixture can verify its own signature — acceptable HERE because
-     *  [SignerBinding] is what forbids self-verification in production: it only ever supplies keys
-     *  the address book bound to the displayed sender. */
-    private val signerKeys = listOf(TestPgpPrivateKey.ARMORED_PRIVATE)
+    /** The signer keys the reader will pass in production: [TestPgpPrivateKey.ARMORED_PUBLIC] is
+     *  the same key pair's public half, exported separately by `gpg`, exactly the shape a real
+     *  caller holds — [SignerBinding] only ever supplies keys the address book bound to the
+     *  displayed sender, never the sender's own message. */
+    private val signerKeys = listOf(TestPgpPrivateKey.ARMORED_PUBLIC)
 
     @Test
     fun decryptsAMessageEncryptedByGpg() {
@@ -72,6 +72,20 @@ class PgpDecryptorTest {
         // TestPgpKey is a different, unrelated pair — and a public key at that.
         val result = PgpDecryptor.decrypt(
             TestPgpKey.ARMORED, TestPgpPrivateKey.ARMORED_MESSAGE, signerKeys,
+        )
+
+        assertTrue("expected Failed, got $result", result is DecryptResult.Failed)
+    }
+
+    @Test
+    fun failsClosedOnAnUnprotectedMessage() {
+        // ARMORED_UNPROTECTED_MESSAGE is a legacy Symmetrically Encrypted Data (tag 9) packet, made
+        // with `gpg --rfc2440 --disable-mdc` — not the Sym. Encrypted Integrity Protected Data
+        // (tag 18) packet every other fixture here uses. Accepting it would mean a tampered
+        // ciphertext could render as an ordinary message: this is the one case the reader can never
+        // trust the server not to have produced.
+        val result = PgpDecryptor.decrypt(
+            TestPgpPrivateKey.ARMORED_PRIVATE, TestPgpPrivateKey.ARMORED_UNPROTECTED_MESSAGE, signerKeys,
         )
 
         assertTrue("expected Failed, got $result", result is DecryptResult.Failed)

@@ -95,8 +95,13 @@ internal object PgpDecryptor {
         val (plaintext, signature) = readLiteral(clear, signerPublicKeys)
 
         // Integrity protection is not optional. An unprotected message is malleable, and
-        // accepting one would let a tampered ciphertext render as an ordinary message.
-        if (encrypted.isIntegrityProtected && !encrypted.verify()) {
+        // accepting one would let a tampered ciphertext render as an ordinary message. The `||`
+        // short-circuits before `verify()`, which throws outright on a packet that was never
+        // integrity protected in the first place — a legacy Symmetrically Encrypted Data (tag 9)
+        // packet rather than the Sym. Encrypted Integrity Protected Data (tag 18) one. Covered by
+        // failsClosedOnAnUnprotectedMessage; ARMORED_UNPROTECTED_MESSAGE is the reachable fixture
+        // for that branch, made with `gpg --rfc2440 --disable-mdc`.
+        if (!encrypted.isIntegrityProtected || !encrypted.verify()) {
             return DecryptResult.Failed("this message failed its integrity check")
         }
 
@@ -128,7 +133,11 @@ internal object PgpDecryptor {
         signature.init(BcPGPContentVerifierBuilderProvider(), key)
         signature.update(body)
         RawSignature(present = true, valid = signature.verify(), signerKeyId = signature.keyID)
-    }.getOrElse { RawSignature(present = true, valid = false, signerKeyId = 0L) }
+        // Anything that throws here — including armoredSignature failing to parse as OpenPGP data
+        // at all — never got as far as confirming a PGPSignatureList exists. That is "no signature
+        // was readable", the same present = false decrypt() reports for a message that never
+        // parsed as OpenPGP in the first place, not a signature this code declined to trust.
+    }.getOrElse { RawSignature(present = false, valid = false, signerKeyId = 0L) }
 
     /**
      * Walks the decrypted stream to its literal data, checking any one-pass signature on the way.
@@ -190,7 +199,14 @@ internal object PgpDecryptor {
             ?: return RawSignature(present = true, valid = false, signerKeyId = onePass.keyID)
 
         val key = signerPublicKeys.asSequence()
-            .mapNotNull { findPublicKey(it, onePass.keyID) }
+            .mapNotNull { armored ->
+                runCatching {
+                    PGPPublicKeyRingCollection(
+                        PGPUtil.getDecoderStream(armored.byteInputStream(Charsets.UTF_8)),
+                        BcKeyFingerprintCalculator(),
+                    ).getPublicKey(onePass.keyID)
+                }.getOrNull()
+            }
             .firstOrNull()
             ?: return RawSignature(present = true, valid = false, signerKeyId = onePass.keyID)
 
@@ -201,32 +217,5 @@ internal object PgpDecryptor {
         }.getOrDefault(false)
 
         return RawSignature(present = true, valid = valid, signerKeyId = onePass.keyID)
-    }
-
-    /**
-     * Resolves [keyId] to a public key from an armored blob that may be an ordinary public key
-     * ring, or — as in [PgpDecryptorTest], and in principle any caller that already holds the full
-     * key pair — a secret key ring. Bouncy Castle's [PGPPublicKeyRingCollection] throws
-     * `PGPSecretKeyRing found where PGPPublicKeyRing expected` rather than reading a secret ring's
-     * embedded public-key material, so both forms are tried explicitly instead of assuming one
-     * parses as the other.
-     */
-    private fun findPublicKey(
-        armored: String,
-        keyId: Long,
-    ): org.bouncycastle.openpgp.PGPPublicKey? {
-        runCatching {
-            PGPPublicKeyRingCollection(
-                PGPUtil.getDecoderStream(armored.byteInputStream(Charsets.UTF_8)),
-                BcKeyFingerprintCalculator(),
-            ).getPublicKey(keyId)
-        }.getOrNull()?.let { return it }
-
-        return runCatching {
-            PGPSecretKeyRingCollection(
-                PGPUtil.getDecoderStream(armored.byteInputStream(Charsets.UTF_8)),
-                BcKeyFingerprintCalculator(),
-            ).getSecretKey(keyId)?.publicKey
-        }.getOrNull()
     }
 }

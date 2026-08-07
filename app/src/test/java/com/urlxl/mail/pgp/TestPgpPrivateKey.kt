@@ -45,4 +45,40 @@ internal object TestPgpPrivateKey {
         =/cZ5
         -----END PGP MESSAGE-----
     """.trimIndent()
+
+    /** This same key pair's public half only, exported separately with `gpg --export` (not derived
+     *  from [ARMORED_PRIVATE]) — the signer key a production caller actually holds, since the
+     *  address book only ever binds public keys. See [PgpDecryptorTest]. */
+    val ARMORED_PUBLIC = """
+        -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+        mDMEanXKfhYJKwYBBAHaRw8BAQdA2rBAx6x5YF+ObBFQBXF+/2csH6f0qPdhr1ag
+        i2N5i460KlBncERlY3J5cHRvclRlc3QgPGRlY3J5cHRAZXhhbXBsZS5pbnZhbGlk
+        PoiQBBMWCgA4FiEEswrNZOBLjhsDeaMgHWvfCT+tHREFAmp1yn4CGwMFCwkIBwIG
+        FQoJCAsCBBYCAwECHgECF4AACgkQHWvfCT+tHREbAgD/cO+OJwixkCNUliNN08Kx
+        ithvJxDolSa0oQXMeMiYFbgBAOKd9ZSXOWZ76efP4Fr/8DGF3WYbmNsLO9u4Gp1o
+        U7QPuDgEanXKgxIKKwYBBAGXVQEFAQEHQHUeP6JlYcQsIPjpVbnfOxa+3+BqPnOY
+        /DxDfNMlE3J0AwEIB4h4BBgWCgAgFiEEswrNZOBLjhsDeaMgHWvfCT+tHREFAmp1
+        yoMCGwwACgkQHWvfCT+tHRGEVAD/b9wy54PFxEYUk7Y9cZJb1i5pvjzY/bCH03r0
+        8BZUdRMBAKhU67DG8/En1w+cdE7xyyqwnq+0ZGQHC1WPK3KK7vQK
+        =Cbik
+        -----END PGP PUBLIC KEY BLOCK-----
+    """.trimIndent()
+
+    /** Same key, same plaintext, but a legacy Symmetrically Encrypted Data packet (tag 9) instead
+     *  of the Sym. Encrypted Integrity Protected Data packet (tag 18) `ARMORED_MESSAGE` uses —
+     *  produced with `gpg --rfc2440 --disable-mdc`. A decryptor that accepts this is accepting
+     *  ciphertext an attacker could tamper with undetected. */
+    const val UNPROTECTED_PLAINTEXT = "Unprotected legacy message.\n"
+
+    val ARMORED_UNPROTECTED_MESSAGE = """
+        -----BEGIN PGP MESSAGE-----
+
+        hF4DIE6jVovIid0SAQdAWHqPbgM+XRAGZC+xKnEonHOJT093AlXrz6OuuPetnR4w
+        nUccPxkOY2eWnMNe3r2wXcnqDpoum903e10u/uGyepidKhjAE+igYxAAvbshmjoL
+        yUDXCoX+hCK3Ph7RbvZAGV5LW5c0wivJeaKewBT1ZhPoE6YXzJfsLt2YkXUTsYai
+        zg6eRYlo3dLJ0eIyMpN2WPQG
+        =3Eds
+        -----END PGP MESSAGE-----
+    """.trimIndent()
 }
