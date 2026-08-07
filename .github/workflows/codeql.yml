@@ -1,0 +1,79 @@
+name: CodeQL
+
+# Runs on upload to GitHub (push), on pull requests, weekly, and on manual dispatch.
+# Push is restricted to main to mirror ci.yml: with a pull_request trigger as
+# well, every push to a PR branch would otherwise run the same commit twice.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    # Weekly on Monday at 06:00 UTC — keeps the CodeQL database fresh even
+    # when no code was pushed (covers stale-result expiry and new queries).
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+# Supersede an in-flight CodeQL run when the same ref is pushed again.
+# main is excluded from cancellation so the security scan for that commit
+# is not lost — same policy as ci.yml.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+# Every action below is pinned to a commit SHA rather than a tag. A tag is a
+# mutable pointer: whoever controls it controls a job running in this
+# repository. The sibling server repo and ci.yml already hold this standard.
+
+jobs:
+  analyze:
+    name: codeql-analyze
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [java-kotlin]
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # gradle/wrapper/gradle-wrapper.jar is committed to this repository, so
+      # CI executes a binary out of the tree it is testing. This check stops a
+      # swapped jar from running: it verifies the jar against the checksums
+      # Gradle publishes for every release. Must come before any ./gradlew
+      # invocation (including the autobuild step below).
+      - uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+
+      # Temurin 25: same JDK as ci.yml. Gradle 9.6 officially supports 25;
+      # CodeQL's autobuild invokes Gradle, so the toolchain must match.
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: gradle
+
+      - uses: ./.github/actions/placeholder-google-services
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@2d92b76c45b91eb80fc44c74ce3fce0ee94e8f9d # v3.30.0
+        with:
+          languages: ${{ matrix.language }}
+          # Default suite is security-and-quality. Uncomment to widen:
+          # queries: security-extended
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@2d92b76c45b91eb80fc44c74ce3fce0ee94e8f9d # v3.30.0
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@2d92b76c45b91eb80fc44c74ce3fce0ee94e8f9d # v3.30.0
+        with:
+          category: "/language:${{ matrix.language }}"
