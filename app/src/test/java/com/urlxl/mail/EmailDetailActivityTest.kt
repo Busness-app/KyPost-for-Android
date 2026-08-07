@@ -294,4 +294,46 @@ class EmailDetailActivityTest {
     fun showsRetryButton_isFalseForNoEncryptedContent() {
         assertFalse(showsRetryButton(ReadOutcome.NoEncryptedContent))
     }
+
+    // ---- displaySignatureVerdict: the verdict actually safe to display ----
+
+    private val decryptedBody = DecryptedBody(html = "<p>hi</p>", plain = null, protectedSubject = null)
+
+    @Test
+    fun displaySignatureVerdict_passesThroughASignatureWithAResolvedSender() {
+        val outcome = ReadOutcome.Decrypted(
+            body = decryptedBody,
+            signature = PgpSignatureState.VERIFIED_CONFIRMED,
+            resolvedSender = "bob@example.com",
+        )
+        assertEquals(PgpSignatureState.VERIFIED_CONFIRMED, displaySignatureVerdict(outcome))
+    }
+
+    /**
+     * The security case this function exists for: PgpPayloadResult.resolvedSender's own KDoc says
+     * it is empty "e.g. [for] a multi-mailbox From" — exactly the attacker-separable shape ("Bob
+     * Smith (Eve <eve@evil.example>) <bob@example.com>" and its relatives) the resolved-vs-raw
+     * sender display rule exists for. A non-NONE signature with no resolved mailbox to pin it to
+     * must not reach the screen, where it would read as being about whatever raw sender text is
+     * still displayed.
+     */
+    @Test
+    fun displaySignatureVerdict_suppressesASignatureWithNoResolvedSender() {
+        val outcome = ReadOutcome.Decrypted(
+            body = decryptedBody,
+            signature = PgpSignatureState.SIGNER_UNKNOWN,
+            resolvedSender = "",
+        )
+        assertEquals(PgpSignatureState.NONE, displaySignatureVerdict(outcome))
+    }
+
+    @Test
+    fun displaySignatureVerdict_isNoneWhenTheReadOutcomeItselfIsNone() {
+        val outcome = ReadOutcome.Decrypted(
+            body = decryptedBody,
+            signature = PgpSignatureState.NONE,
+            resolvedSender = "bob@example.com",
+        )
+        assertEquals(PgpSignatureState.NONE, displaySignatureVerdict(outcome))
+    }
 }
