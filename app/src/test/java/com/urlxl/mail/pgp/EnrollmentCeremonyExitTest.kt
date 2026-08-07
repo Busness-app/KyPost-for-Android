@@ -204,6 +204,7 @@ class EnrollmentCeremonyExitTest {
             transport = ports.transport,
             keys = ports.keys,
             sealer = ports.sealer,
+            mailCache = ports.mailCache,
             clock = ports.clock,
             hostileLocationEnabled = { false },
             hasSecureLockScreen = { true },
@@ -349,6 +350,55 @@ class EnrollmentCeremonyExitTest {
     }
 
     /**
+     * Enrolling is the moment this device stops depending on the server being able to read the
+     * account's mail. Anything cached before it that the server decrypted is plaintext the new threat
+     * model does not account for: the server can no longer produce it, and nothing else on the device
+     * removes it until the next full snapshot up to 24 hours later — the delta path deliberately
+     * preserves bodies, so deltas never clear it.
+     */
+    @Test
+    fun successDropsThePlaintextTheServerHadDecrypted() = runBlocking {
+        val ports = portsWithEnvelope()
+
+        ports.ceremony().run()
+
+        assertEquals(EnrollmentUiState.Enrolled, ports.states.last())
+        assertEquals("the old server-decrypted plaintext must not outlive enrollment", 1, ports.mailCache.clearCalls)
+    }
+
+    /**
+     * Cleared before [EnrollmentTransport.reportEnrolled], which is a network round trip that can run
+     * to a full timeout or fail outright. A local privacy action must not be queued behind it.
+     */
+    @Test
+    fun thePlaintextIsDroppedEvenWhenTheServerCannotBeTold() = runBlocking {
+        val probe = FakeEnrollmentKeys()
+        val ports = FakePorts(
+            fetchResults = mutableListOf(EnrollmentCallResult.Envelope(sealEnvelope(probe))),
+            reportResult = EnrollmentCallResult.Failed("offline"),
+        )
+
+        ports.ceremony().run()
+
+        assertEquals(1, ports.mailCache.clearCalls)
+    }
+
+    /** A ceremony that never sealed has not changed where the account's key lives, so there is no
+     *  reason to drop mail the user can still read. */
+    @Test
+    fun aFailedCeremonyLeavesTheCacheAlone() = runBlocking {
+        val ports = portsWithEnvelope(sealFor = "some-other-device")
+
+        ports.ceremony().run()
+
+        assertEquals(
+            EnrollmentUiState.Failed(FailureReason.COULD_NOT_OPEN),
+            ports.states.last(),
+        )
+        assertEquals(0, ports.mailCache.clearCalls)
+    }
+
+    /**
      * [FailureReason.NO_DEVICE_KEY] has four production call sites and, until these, no test at any
      * of them — it was unreachable because [FakePorts] hardcoded a minting keystore with no way to
      * make an accessor fail. An untested failure branch on the path that mints and publishes a key is
@@ -397,6 +447,7 @@ class EnrollmentCeremonyExitTest {
             transport = ports.transport,
             keys = ports.keys,
             sealer = ports.sealer,
+            mailCache = ports.mailCache,
             clock = ports.clock,
             hostileLocationEnabled = { false },
             hasSecureLockScreen = { true },
@@ -430,6 +481,7 @@ class EnrollmentCeremonyExitTest {
             transport = ports.transport,
             keys = ports.keys,
             sealer = ports.sealer,
+            mailCache = ports.mailCache,
             clock = ports.clock,
             hostileLocationEnabled = { false },
             hasSecureLockScreen = { true },

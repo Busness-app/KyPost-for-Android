@@ -2,6 +2,7 @@ package com.urlxl.mail.pgp
 
 import android.content.Context
 import android.os.SystemClock
+import com.urlxl.mail.data.DataRuntime
 import com.urlxl.mail.push.PushRuntime
 import com.urlxl.mail.push.pinnedPairingCallFactory
 import kotlinx.coroutines.Dispatchers
@@ -156,4 +157,20 @@ internal object SystemEnrollmentClock : EnrollmentClock {
     override fun epochSeconds(): Long = System.currentTimeMillis() / 1_000
     override fun elapsedRealtimeMs(): Long = SystemClock.elapsedRealtime()
     override suspend fun sleep(millis: Long) = delay(millis)
+}
+
+/**
+ * [DecryptedMailCache] over Room.
+ *
+ * `withContext(Dispatchers.IO)` for the same reason every method in [AndroidEnrollmentTransport]
+ * opens with it: the ceremony runs on `viewModelScope`'s `Dispatchers.Main.immediate`, so an
+ * unwrapped DAO write would land a disk write on the main thread. `DataRuntime.graph` is resolved
+ * inside the same block rather than in the constructor — building the graph opens the database, and
+ * during a wipe that would rebuild the very database being destroyed. See `PushRepository`, which
+ * documents the same hazard.
+ */
+internal class RoomDecryptedMailCache(private val appContext: Context) : DecryptedMailCache {
+    override suspend fun clearServerDecryptedBodies(): Int = withContext(Dispatchers.IO) {
+        DataRuntime.graph(appContext).database.emailDao().clearServerDecryptedBodies()
+    }
 }
