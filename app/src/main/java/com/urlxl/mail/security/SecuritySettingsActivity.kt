@@ -161,7 +161,7 @@ class SecuritySettingsActivity : LockedActivity() {
             orientation = LinearLayout.VERTICAL
             // 16, not the previous 20: the cards carry their own 16dp inset now, and 20 + 16 put
             // content 36dp off the screen edge on a page that is mostly text.
-            setPadding(dpToPx(16), dpToPx(16), dpToPx(16), dpToPx(24))
+            setPadding(dpToPx(16), dpToPx(12), dpToPx(16), dpToPx(20))
         }
         applyTopInsetWithHeader(this, scrollView)
 
@@ -172,21 +172,19 @@ class SecuritySettingsActivity : LockedActivity() {
             isChecked = snapshot.lockEnabled
         }
         lockCard.addViewSpaced(lockSwitch, bottomDp = 4)
-        lockCard.addViewSpaced(caption(getString(R.string.security_require_unlock_intro)), bottomDp = 14)
+        lockCard.addViewSpaced(caption(getString(R.string.security_require_unlock_intro)), bottomDp = 10)
 
         changePinButton = Button(this).apply {
             text = getString(R.string.security_change_pin_button)
             visibility = if (snapshot.lockEnabled) View.VISIBLE else View.GONE
             setOnClickListener { promptChangePin() }
         }
-        lockCard.addViewSpaced(changePinButton, bottomDp = 14)
-
         biometricSwitch = SwitchCompat(this).apply {
             text = getString(R.string.security_use_biometric_title)
             isChecked = snapshot.biometricEnabled
             isEnabled = snapshot.lockEnabled
         }
-        lockCard.addViewSpaced(biometricSwitch, bottomDp = 14)
+        lockCard.addViewSpaced(biometricSwitch, bottomDp = 10)
 
         // How long backgrounding is tolerated before the lock re-engages. This existed only as a
         // hardcoded "immediately", which meant the attachment picker, the QR scanner and the
@@ -197,7 +195,21 @@ class SecuritySettingsActivity : LockedActivity() {
             isEnabled = snapshot.lockEnabled
             setOnClickListener { promptLockGrace(lockGraceSettings) }
         }
-        lockCard.addViewSpaced(lockGraceButton, bottomDp = 4)
+        // The two secondary actions share a row. They are peers — both open a picker, neither is the
+        // thing you came here to do — and stacking them cost a full button height on a page that does
+        // not fit a screen. 0dp width plus weight means "Lock after" simply takes the whole row when
+        // "Change PIN" is GONE, which is its state whenever the lock is off.
+        val secondaryActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        secondaryActions.addView(
+            changePinButton,
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                .apply { marginEnd = dpToPx(8) },
+        )
+        secondaryActions.addView(
+            lockGraceButton,
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+        )
+        lockCard.addViewSpaced(secondaryActions, bottomDp = 4)
         lockCard.addViewSpaced(caption(getString(R.string.security_lock_grace_intro)), bottomDp = 0)
 
         val locationCard = container.addSection(R.string.security_section_location)
@@ -294,13 +306,13 @@ class SecuritySettingsActivity : LockedActivity() {
         container.addViewSpaced(encryptionSectionLabel, bottomDp = 6)
         encryptionCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dpToPx(16), dpToPx(14), dpToPx(16), dpToPx(14))
+            setPadding(dpToPx(14), dpToPx(12), dpToPx(14), dpToPx(12))
             visibility = View.GONE
         }
         panelCards += encryptionCard
-        container.addViewSpaced(encryptionCard, bottomDp = 12)
+        container.addViewSpaced(encryptionCard, bottomDp = 10)
         encryptionRowText = caption("")
-        encryptionCard.addViewSpaced(encryptionRowText, bottomDp = 12)
+        encryptionCard.addViewSpaced(encryptionRowText, bottomDp = 10)
         encryptionActionButton = Button(this).apply { visibility = View.GONE }
         encryptionCard.addViewSpaced(encryptionActionButton, bottomDp = 0)
 
@@ -339,7 +351,7 @@ class SecuritySettingsActivity : LockedActivity() {
      *
      * The eyebrow sits OUTSIDE the card, matching web's `.sidebar-section-label` placement.
      */
-    private fun LinearLayout.addSection(titleRes: Int, bottomDp: Int = 12): LinearLayout {
+    private fun LinearLayout.addSection(titleRes: Int, bottomDp: Int = 10): LinearLayout {
         addViewSpaced(
             TextView(this@SecuritySettingsActivity).apply {
                 setText(titleRes)
@@ -349,7 +361,7 @@ class SecuritySettingsActivity : LockedActivity() {
         )
         val card = LinearLayout(this@SecuritySettingsActivity).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dpToPx(16), dpToPx(14), dpToPx(16), dpToPx(14))
+            setPadding(dpToPx(14), dpToPx(12), dpToPx(14), dpToPx(12))
         }
         // Painted later, not here: applyThemeToViewTree repaints every ViewGroup flat `panel` and
         // would flatten the rounding. See the paint pass after applyThemeToActivity.
