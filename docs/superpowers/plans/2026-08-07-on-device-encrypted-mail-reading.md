@@ -2442,25 +2442,17 @@ internal class EncryptedMessageReader(
             is PgpPayloadResult.Failed -> return ReadOutcome.FetchFailed(result.message)
         }
 
-        // Only keys bound to THIS sender, and never a conflicted one. Computed before either
-        // signature path below, because both need it.
+        // `payload.signerKeys` arrives ALREADY narrowed to the displayed sender by
+        // `boundSignerKeysForSender` (Task 14). Do not re-narrow here, and do not parse `sender`
+        // to do it: a second parser deciding the same binding is exactly the defect Task 15
+        // removed — the client's own From parser diverged from the server's on 27 of 111
+        // adversarial headers, including RFC 5322 comments, which let any contact forge a verified
+        // badge for anyone.
         //
-        // Narrowing the candidate set — rather than verifying against the whole address book and
-        // post-checking — is what stops a forgery being reported as verified. Offering every key
-        // makes `valid` mean "some contact of yours signed this": BouncyCastle resolves the
-        // signature against whichever offered key carries the matching key id and has no address
-        // to compare it against. So an ordinary contact could sign a message, forge
-        // `From: someone-else`, and have it render as verified from that someone else.
-        //
-        // The server learned this over three attempts; see `signerKeysForSender`'s comment in
-        // `pgp_receive.go`: "Narrowing the candidate set rather than post-checking the fingerprint
-        // means there is no window where a wrong-key signature is ever considered valid."
-        // `signatureStateFor` independently re-checks the signing key id, so this is the outer of
-        // two layers, not the only one.
-        val senderAddress = senderAddrSpec(sender)
-        val offeredKeys = payload.signerKeys
-            .filter { !it.conflict && it.addresses.any { a -> a.trim().lowercase() == senderAddress } }
-            .map { it.publicKey }
+        // Conflicted keys are still dropped here: they carry no key material and must never be
+        // offered to a signature check. They stay in `payload.signerKeys` so `signatureStateFor`
+        // can report KEY_CHANGED.
+        val offeredKeys = payload.signerKeys.filter { !it.conflict }.map { it.publicKey }
 
         // A signed-but-not-encrypted message arrives with a readable body and a detached
         // signature; there is nothing to decrypt.
@@ -2485,7 +2477,7 @@ internal class EncryptedMessageReader(
             )
             val parsed = PgpMimeReader.read(payload.body.toByteArray(Charsets.UTF_8))
                 ?: DecryptedBody(html = null, plain = payload.body, protectedSubject = null)
-            return ReadOutcome.Decrypted(parsed, signatureStateFor(raw, sender, payload.signerKeys))
+            return ReadOutcome.Decrypted(parsed, signatureStateFor(raw, payload.signerKeys))
         }
 
         val decrypted = when (
@@ -2502,7 +2494,7 @@ internal class EncryptedMessageReader(
 
         return ReadOutcome.Decrypted(
             body,
-            signatureStateFor(decrypted.signature, sender, payload.signerKeys),
+            signatureStateFor(decrypted.signature, payload.signerKeys),
         )
     }
 }
@@ -3070,3 +3062,346 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 **Type consistency.** `RawSignature` (3) → consumed by `signatureStateFor` (5) and `EncryptedMessageReader` (8). `SignerKey` (5) → produced by `PgpPayloadClient` (6), consumed by 5 and 8. `DecryptedBody` (4) → `ReadOutcome.Decrypted` (8) → `renderReadOutcome` (10). `OpenOutcome` (7) → 8. `PgpPayloadResult` (6) → 8. `PayloadSource` declared in 8, implemented anonymously in 10. Wire names `verified`/`source`/`conflict` are identical in Task 2's Go struct tags and Task 6's `SignerKeyDto`.
 
 **Known rough edge, flagged rather than hidden.** Task 3 Step 4 ships `verifyOnePass` returning `valid = false` with an implementer note to complete it against a caller-supplied public key. That is the one place in this plan where a step hands over an incomplete function rather than a finished one — it is unavoidable, because one-pass verification needs the signer key that Task 5 defines the binding for, and inverting the task order would make `SignerBinding` untestable. The note states exactly what to change and the two `PgpDecryptorTest` signature assertions fail until it is done.
+
+---
+
+# Part 0b — the server resolves the sender
+
+Added 2026-08-07, after a differential harness (111 adversarial headers against Go's
+`net/mail.ParseAddressList`) found 27 divergences in the client's hand-rolled `senderAddrSpec`,
+including a Critical: RFC 5322 **comments** are invisible to it.
+
+`From: Bob Smith (Eve <eve@evil.com>) <bob@x.com>` is valid RFC 5322. Go and the server bind
+`bob@x.com`; the client bound `eve@evil.com`. Eve — any ordinary contact — signs with her own key
+and the badge reads verified. The key-id binding added earlier does not help: the key that signed
+genuinely *is* bound to the address the client resolved. The comment is arbitrary-length, so the
+decoy hides inside a plausible gateway banner.
+
+Three fix rounds addressed three constructs (last-vs-first mailbox, quoted display name, comments),
+each defect introduced by the previous fix. Comments nest, quoted strings and comments have
+different escape rules, and `\` means different things inside and outside a quoted string. **The
+client stops parsing `From` altogether.** The server already owns a parser that has survived three
+attempts; it becomes the single binding authority.
+
+These two tasks run **before** Tasks 6-13.
+
+### Task 14: `handlePGPPayload` returns keys already narrowed to the sender
+
+**Files:**
+- Modify: `backend/internal/adapters/imap/client.go` — add `Sender` to `MessageContent`, populate in `GetMessageBodies`
+- Modify: `backend/internal/api/pgp_receive.go` — add `boundSignerKeysForSender`
+- Modify: `backend/internal/api/pgp_client_read.go` — narrow `signerKeys`, return the resolved sender
+- Test: `backend/internal/api/pgp_receive_test.go`
+
+**Interfaces:**
+- Consumes: `senderAddrSpec`, `contactBindsAddress`, `keyMatchesPin` (all existing in `pgp_receive.go`).
+- Produces: `GET /api/mail/pgp-payload` gains `"sender"` (raw `From`) and `"resolvedSender"` (the parsed addr-spec), and its `signerKeys` array now contains **only** keys bound to that sender. Task 15 consumes both.
+
+**Why no extra IMAP round trip.** `GetMessageBodies` already holds `*goimap.Email`, and `client.go:594`
+shows `e.From.String()` is available on that type. Adding one field costs nothing on the wire to IMAP.
+
+- [ ] **Step 1: Write the failing test**
+
+Add to `backend/internal/api/pgp_receive_test.go`. Reuse the fixture idiom already in that file
+(`pgpVictimWithIdentity` + `pgpmail.GenerateIdentity` + `store.Upsert`) — read it first, do not
+invent a second style.
+
+```go
+// The client no longer parses From at all, so this narrowing IS the binding.
+// A key bound to some OTHER contact must never reach a client that is
+// displaying this sender.
+func TestBoundSignerKeysForSenderExcludesOtherContacts(t *testing.T) {
+	store := newContactsStoreForTest(t)
+	upsertContactWithKey(t, store, "bob@example.com", /*verified=*/ true, "qr")
+	upsertContactWithKey(t, store, "eve@evil.example", /*verified=*/ false, "autocrypt")
+
+	got := boundSignerKeysForSender(store, "bob@example.com")
+
+	if len(got) != 1 {
+		t.Fatalf("want only the sender's key, got %d: %+v", len(got), got)
+	}
+	if got[0].Addresses[0] != "bob@example.com" || !got[0].Verified {
+		t.Fatalf("wrong key or lost provenance: %+v", got[0])
+	}
+}
+
+// The RFC 5322 comment attack, at the layer that now owns the decision.
+// Go's mail.ParseAddressList binds the real mailbox; the decoy inside the
+// comment must not select Eve's key.
+func TestBoundSignerKeysForSenderIgnoresAnAddressHiddenInAComment(t *testing.T) {
+	store := newContactsStoreForTest(t)
+	upsertContactWithKey(t, store, "bob@example.com", true, "qr")
+	upsertContactWithKey(t, store, "eve@evil.example", false, "autocrypt")
+
+	resolved := senderAddrSpec("Bob Smith (Eve <eve@evil.example>) <bob@example.com>")
+	got := boundSignerKeysForSender(store, resolved)
+
+	if resolved != "bob@example.com" {
+		t.Fatalf("senderAddrSpec bound the decoy: %q", resolved)
+	}
+	if len(got) != 1 || got[0].Addresses[0] != "bob@example.com" {
+		t.Fatalf("comment decoy selected the wrong key: %+v", got)
+	}
+}
+
+// A conflicted key for THIS sender must still be reported, with no key
+// material — it is the only way the client can say the key changed.
+func TestBoundSignerKeysForSenderStillReportsAConflict(t *testing.T) {
+	store := newContactsStoreForTest(t)
+	upsertContactWithConflictingPin(t, store, "bob@example.com")
+
+	got := boundSignerKeysForSender(store, "bob@example.com")
+
+	if len(got) != 1 || !got[0].Conflict {
+		t.Fatalf("want a conflict marker, got %+v", got)
+	}
+	if got[0].PublicKey != "" {
+		t.Fatal("a conflicted key must ship no key material")
+	}
+}
+```
+
+> Name the helpers to match whatever the file already uses; the three used above are placeholders for
+> that file's real idiom. Do **not** add a second fixture style.
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+```bash
+cd /home/yoshi/git/kypost-server/backend
+go test ./internal/api/ -run 'TestBoundSignerKeysForSender' -v
+```
+
+Expected: FAIL to compile — `boundSignerKeysForSender` undefined.
+
+- [ ] **Step 3: Add `Sender` to `MessageContent`**
+
+In `backend/internal/adapters/imap/client.go`, add to `type MessageContent struct`:
+
+```go
+	// Sender is the raw From header, exactly as ListOverviews reports it
+	// (`Name <addr>` when a display name is present).
+	//
+	// Carried here so handlePGPPayload can resolve the signature binding with
+	// the SAME parser the rest of the server uses. The Android client used to
+	// parse this header itself, and a differential harness found 27 divergences
+	// from net/mail.ParseAddressList — including RFC 5322 comments, where
+	// `Bob (Eve <eve@evil>) <bob@x>` is valid and the client bound Eve. One
+	// parser, server-side, removes that entire class.
+	//
+	// Free: GetMessageBodies already holds the *goimap.Email this comes from.
+	Sender string
+```
+
+and in `GetMessageBodies`'s per-UID loop, where `content` is built:
+
+```go
+		content := MessageContent{
+			Body:           body,
+			BodyMode:       bodyMode,
+			HasAttachments: len(e.Attachments) > 0,
+			Sender:         strings.TrimSpace(e.From.String()),
+		}
+```
+
+- [ ] **Step 4: Add `boundSignerKeysForSender`**
+
+In `backend/internal/api/pgp_receive.go`, beside `boundSignerKeys`:
+
+```go
+// boundSignerKeysForSender is boundSignerKeys narrowed to one sender.
+//
+// This is now THE signature binding for the Android client, which no longer
+// parses the From header at all. Its hand-rolled parser diverged from
+// net/mail.ParseAddressList on 27 of 111 adversarial headers — most seriously
+// on RFC 5322 comments, where `Bob (Eve <eve@evil>) <bob@x>` is a valid header
+// that Go binds to bob@x and the client bound to eve@evil, letting any contact
+// forge a verified badge for anyone. Three client-side fix rounds each closed
+// one construct and opened another. Shipping the decision instead of the inputs
+// removes the second parser, exactly as boundSignerKeys' own comment says of
+// the browser.
+//
+// address must already be a bare addr-spec from senderAddrSpec. An empty
+// address matches nothing, which is the safe direction: no keys, so no verdict
+// beyond "signed, but not by a key you hold for this sender".
+func boundSignerKeysForSender(store *contacts.Store, address string) []boundSignerKey {
+	out := []boundSignerKey{}
+	if address == "" {
+		return out
+	}
+	for _, k := range boundSignerKeys(store) {
+		for _, a := range k.Addresses {
+			if a == address {
+				out = append(out, k)
+				break
+			}
+		}
+	}
+	return out
+}
+```
+
+- [ ] **Step 5: Use it in the handler**
+
+In `backend/internal/api/pgp_client_read.go`, replace the `signerKeys` block:
+
+```go
+	// The sender the client will display, and the addr-spec the binding uses.
+	// Both are shipped: the client renders one and binds on the other, and it
+	// must never re-derive the second from the first. See boundSignerKeysForSender.
+	sender := strings.TrimSpace(content.Sender)
+	resolvedSender := senderAddrSpec(sender)
+
+	signerKeys := []boundSignerKey{}
+	if contactsStore, cerr := s.userContactsStore(ac.UserID); cerr == nil {
+		signerKeys = boundSignerKeysForSender(contactsStore, resolvedSender)
+	}
+```
+
+and add both fields to the response map:
+
+```go
+		"sender":         sender,
+		"resolvedSender": resolvedSender,
+```
+
+- [ ] **Step 6: Run the tests to verify they pass**
+
+```bash
+cd /home/yoshi/git/kypost-server/backend
+go test ./internal/api/ -run 'TestBoundSignerKeysForSender' -v && go test ./internal/...
+```
+
+Expected: PASS.
+
+- [ ] **Step 7: Prove by deliberate break**
+
+Change `boundSignerKeysForSender` to `return boundSignerKeys(store)` (un-narrowed). Confirm
+`TestBoundSignerKeysForSenderExcludesOtherContacts` FAILS. Restore.
+
+- [ ] **Step 8: Commit**
+
+```bash
+cd /home/yoshi/git/kypost-server
+git add backend/internal/adapters/imap/client.go backend/internal/api/pgp_receive.go \
+        backend/internal/api/pgp_client_read.go backend/internal/api/pgp_receive_test.go
+git commit -m "feat(pgp): bind signer keys to the sender server-side
+
+The Android client parsed the From header itself to decide which key a
+signature binds to. A differential harness over 111 adversarial headers
+found 27 divergences from net/mail.ParseAddressList, the worst being RFC
+5322 comments: 'Bob (Eve <eve@evil>) <bob@x>' is valid, Go binds bob@x,
+the client bound eve@evil — so any contact could forge a verified badge
+for anyone. Three client fix rounds each closed one construct and opened
+another.
+
+The payload endpoint now ships keys already narrowed to the sender, plus
+the raw and resolved sender, so the client stops parsing headers. Same
+argument boundSignerKeys already makes for the browser: ship the binding,
+not the inputs.
+
+MessageContent gains Sender at no IMAP cost — GetMessageBodies already
+holds the goimap.Email it comes from.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 15: delete the client's `From` parser
+
+**Files:**
+- Modify: `app/src/main/java/com/urlxl/mail/pgp/SignerBinding.kt`
+- Modify: `app/src/test/java/com/urlxl/mail/pgp/SignerBindingTest.kt`
+
+**Interfaces:**
+- Consumes: `signerKeys` from Task 14, already narrowed to the sender.
+- Produces: `signatureStateFor(signature: RawSignature, signerKeys: List<SignerKey>): PgpSignatureState` — **the `senderAddress` parameter is gone.** Task 8 consumes this shape.
+
+- [ ] **Step 1: Delete the parser and its tests**
+
+Remove from `SignerBinding.kt`: `senderAddrSpec`, `firstMailboxText`, `addrSpecFromMailbox`,
+`looksLikeAddrSpec`, `firstUnquotedAngleOpen`, and every helper that exists only to serve them.
+Remove the corresponding tests from `SignerBindingTest.kt` (the mailbox-parsing cases). Keep every
+test about verdicts.
+
+- [ ] **Step 2: Narrow `signatureStateFor`'s signature**
+
+```kotlin
+/**
+ * The signature verdict for a message being displayed as being from a sender the **server** has
+ * already resolved.
+ *
+ * [signerKeys] arrives narrowed to that sender by `boundSignerKeysForSender`. This function does
+ * not know the sender's address and must not learn it: the client used to parse the raw `From`
+ * header itself, and a differential harness over 111 adversarial headers found 27 divergences from
+ * the server's parser — most seriously RFC 5322 comments, where `Bob (Eve <eve@evil>) <bob@x>` is
+ * valid, the server binds `bob@x`, and the client bound `eve@evil`, letting any contact forge a
+ * verified badge for anyone. Three fix rounds each closed one construct and opened another.
+ *
+ * A second parser deciding the same binding is the defect. Do not reintroduce one.
+ */
+internal fun signatureStateFor(
+    signature: RawSignature,
+    signerKeys: List<SignerKey>,
+): PgpSignatureState {
+    if (!signature.present) return PgpSignatureState.NONE
+    if (signerKeys.isEmpty()) return PgpSignatureState.SIGNER_UNKNOWN
+    if (signerKeys.any { it.conflict }) return PgpSignatureState.KEY_CHANGED
+
+    val signedBy = signerKeys.filter { signature.signerKeyId in signerKeyIdsOf(it.publicKey) }
+    if (signedBy.isEmpty()) return PgpSignatureState.SIGNER_UNKNOWN
+    if (!signature.valid) return PgpSignatureState.INVALID
+
+    return if (signedBy.any { it.verified }) {
+        PgpSignatureState.VERIFIED_CONFIRMED
+    } else {
+        PgpSignatureState.VERIFIED_SEEN_BEFORE
+    }
+}
+```
+
+- [ ] **Step 3: Add the regression test that pins the deletion**
+
+```kotlin
+    @Test
+    fun theClientHoldsNoSenderParserOfItsOwn() {
+        // The binding is the server's, shipped already narrowed. If someone reintroduces a
+        // From-header parser here, this fails to compile — which is the point. See the KDoc on
+        // signatureStateFor for the 27-divergence harness that made this a rule.
+        val state = signatureStateFor(
+            RawSignature(present = true, valid = true, signerKeyId = 0L),
+            emptyList(),
+        )
+        assertEquals(PgpSignatureState.SIGNER_UNKNOWN, state)
+    }
+```
+
+- [ ] **Step 4: Run the tests**
+
+```bash
+./gradlew :app:testDebugUnitTest
+```
+
+Expected: BUILD SUCCESSFUL.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add app/src/main/java/com/urlxl/mail/pgp/SignerBinding.kt \
+        app/src/test/java/com/urlxl/mail/pgp/SignerBindingTest.kt
+git commit -m "fix(pgp): stop parsing the From header on the client
+
+A differential harness over 111 adversarial headers found 27 divergences
+from the server's parser. The worst: RFC 5322 comments were invisible, so
+'Bob (Eve <eve@evil>) <bob@x>' — a valid header — bound to Eve while the
+server bound Bob, letting any contact in the address book forge a
+verified badge for anyone. Three fix rounds each closed one construct
+(last-vs-first mailbox, quoted display name, comments) and opened
+another; comments nest and escape differently inside and outside quoted
+strings, so the next round would have been the same shape.
+
+The server now ships keys already narrowed to the sender, so the second
+parser is deleted rather than patched.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
