@@ -75,7 +75,7 @@ internal class EncryptedMessageReader(
          *  This is what keeps the biometric sheet tied to a deliberate action. */
         unlockIfNeeded: Boolean,
     ): ReadOutcome {
-        if (EnrollmentSession.peek() == null) {
+        if (!EnrollmentSession.isHeld()) {
             if (!unlockIfNeeded) return ReadOutcome.NeedsUnlock
             when (val outcome = opener.open()) {
                 is OpenOutcome.Opened -> Unit
@@ -87,6 +87,12 @@ internal class EncryptedMessageReader(
         }
         // Re-read rather than trusting the branch above: the app can lock between the unseal and
         // here, and lockNow() clears this holder.
+        //
+        // This does mint an unwipeable String copy of the private key (peek(), not isHeld()) — the
+        // key material itself is what BouncyCastle needs next, not just its presence, so there is no
+        // presence-only check to substitute here. That copy is real residue: it is not zeroed and
+        // will sit in the heap until GC reclaims it, same as any other Kotlin String. Accepted
+        // because the alternative is decrypting nothing.
         val key = EnrollmentSession.peek() ?: return ReadOutcome.NeedsUnlock
 
         val payload = when (val result = payloads.fetch(mailbox, messageId)) {
@@ -124,6 +130,27 @@ internal class EncryptedMessageReader(
         // A signed-but-not-encrypted message arrives with a readable body and a detached
         // signature; there is nothing to decrypt.
         //
+        // UNREACHABLE IN PRODUCTION TODAY. This function, attemptDecrypt(), is only invoked from
+        // EmailDetailActivity's PgpMessageState.CLIENT_PROTECTED branch, and pgpMessageStateOf()
+        // only reaches CLIENT_PROTECTED when the server's own pgpEncrypted flag is true — a
+        // signed-only message never sets it, and the server keeps the two payloads mutually
+        // exclusive (see signedOnlyBody in pgp_client_read.go, which zeroes the body whenever
+        // encryptedPayload is non-empty and vice versa). So payload.encryptedPayload.isBlank() has
+        // no live caller that can make it true.
+        //
+        // Do not delete it and do not try to make it work — reviving it is a design decision for
+        // the owner, not a cleanup. If it IS revived: payload.body here is signedOnlyBody's
+        // enmime-extracted DISPLAY body, not the canonical octets that were actually signed —
+        // pgp_client_read.go's own comment on verifySignedOnlyMessageContent documents that a
+        // canonicalization mismatch there is routine and just leaves PGPVerified false rather than
+        // erroring. verifyDetached below has no such tolerance: a body that reads identically to a
+        // human but differs byte-for-byte from what was signed fails verification outright, and
+        // signatureStateFor maps a bound sender plus an unverifiable signature to INVALID — the
+        // strongest accusation this app renders. Reviving this path with payload.body as-is would
+        // therefore falsely accuse real correspondents of a bad signature on a routine, expected
+        // mismatch. It would need the canonical signed octets, not the display body, before it can
+        // safely run.
+        //
         // The offered key is narrowed to the displayed sender here too. Taking "whichever
         // non-conflicted contact sorts first" would fail verification for a genuine
         // detached-signed message from anyone else — and signatureStateFor maps a bound sender
@@ -138,6 +165,14 @@ internal class EncryptedMessageReader(
                     armoredSignature = payload.signaturePayload,
                 ).takeIf { it.valid }
             } ?: PgpDecryptor.verifyDetached(
+                // This IS "whichever non-conflicted contact sorts first" — it looks like the exact
+                // thing the comment above forbids, but it is not the binding decision: nothing
+                // that key id verified against feeds the verdict below. This fallback only exists
+                // to produce a non-null RawSignature (present = true, valid = false, some
+                // signerKeyId) when every real candidate above failed, so signatureStateFor can
+                // still run its own key-id re-match against payload.signerKeys and land on
+                // SIGNER_UNKNOWN or INVALID rather than crash on a null. The sender binding is
+                // enforced there, not by which key was armored here.
                 armoredPublicKey = offeredKeys.firstOrNull().orEmpty(),
                 body = payload.body.toByteArray(Charsets.UTF_8),
                 armoredSignature = payload.signaturePayload,

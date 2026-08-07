@@ -36,6 +36,11 @@ internal object EnrollmentSession : ProcessScopedState {
         held = armoredKey.toCharArray()
     }
 
+    /** True while a key is held, with no copy minted to answer it. Use this instead of
+     *  `peek() != null` for a plain presence check — that would allocate an unwipeable `String`
+     *  copy of the private key purely to throw it away. */
+    fun isHeld(): Boolean = held != null
+
     fun peek(): String? = held?.let { String(it) }
 
     fun clear() {

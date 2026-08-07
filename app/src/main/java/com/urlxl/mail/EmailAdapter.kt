@@ -44,6 +44,9 @@ class EmailAdapter(
             subjectTextView.contentDescription = when {
                 signatureState == PgpSignatureState.INVALID ->
                     itemView.context.getString(R.string.email_row_pgp_bad_signature_description, email.subject)
+                // Unreachable today: signatureState comes from pgpSignatureStateOf, which cannot
+                // produce KEY_CHANGED (that state comes only from a local decrypt). Kept so a
+                // future row-level local verdict does not silently regress this branch.
                 signatureState == PgpSignatureState.KEY_CHANGED ->
                     itemView.context.getString(R.string.email_row_pgp_key_changed_description, email.subject)
                 pgpState == PgpMessageState.CLIENT_PROTECTED ->

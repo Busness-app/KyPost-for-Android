@@ -139,9 +139,14 @@ internal class AndroidVaultOpener(private val activity: FragmentActivity) : Vaul
                                 // to this key — that is a real Failed, not a crash, and not something
                                 // a retry fixes: the caller is told to re-enrol.
                                 val plaintext = authenticated.doFinal(ciphertext)
+                                // String(plaintext, ...) on the line below is itself a permanent,
+                                // unwipeable copy of the private key — Kotlin/JVM Strings cannot be
+                                // zeroed. EnrollmentSession.put() only wipes the CharArray it copies
+                                // that String into; the String created here is not cleaned up by
+                                // anything. Zeroing plaintext below only removes the ByteArray that
+                                // is ours to clean up, not that String — this reduces the residue by
+                                // one copy, it does not remove it.
                                 EnrollmentSession.put(String(plaintext, Charsets.UTF_8))
-                                // Zero the intermediate copy. EnrollmentSession holds a CharArray it
-                                // can wipe; this ByteArray is ours to clean up.
                                 plaintext.fill(0)
                                 OpenOutcome.Opened
                             }.getOrElse {

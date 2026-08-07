@@ -29,6 +29,7 @@ import com.urlxl.mail.getStoredThemePalette
 import com.urlxl.mail.pgp.AndroidIdentitySource
 import com.urlxl.mail.pgp.DeviceEnrollmentActivity
 import com.urlxl.mail.pgp.EnrollmentRow
+import com.urlxl.mail.pgp.EnrollmentSession
 import com.urlxl.mail.pgp.EnrollmentStatus
 import com.urlxl.mail.pgp.EnrollmentTeardown
 import com.urlxl.mail.pgp.EnrollmentVault
@@ -541,6 +542,15 @@ class SecuritySettingsActivity : LockedActivity() {
                             "Enrollment removal left $leftBehind behind",
                         )
                     }
+                    // The vault and the server-side record are gone, but this process may still be
+                    // holding the account's plaintext private key from an earlier read
+                    // (EnrollmentSession has exactly one production writer, VaultOpenerAndroid, and
+                    // nothing before this cleared it on the unenroll path). Cleared directly rather
+                    // than via ProcessState.resetAll(): unenroll is not an account or session
+                    // boundary — the same account stays paired — so it must not also discard an
+                    // in-progress compose draft or ephemeral attachment plaintext the way a wipe,
+                    // relaunch or unpair legitimately does.
+                    EnrollmentSession.clear()
                     if (isFinishing || isDestroyed) return@launch
                     // The enqueued report probes live state, so a half-failed teardown is reported
                     // honestly rather than as a removal that did not happen.

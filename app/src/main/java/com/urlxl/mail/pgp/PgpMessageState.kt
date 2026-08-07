@@ -12,8 +12,11 @@ enum class PgpMessageState {
 
     /**
      * Encrypted, and the server deliberately did not decrypt it because the account's key is
-     * end-to-end protected. There is no body and this app holds no private key, so the only
-     * route to the content is webmail.
+     * end-to-end protected. The inbox row and detail Intent still carry no body — that much is
+     * still true — but this app can hold the private key now: [EnrollmentSession] caches it for
+     * one unlock session once the user enrols this device, and [EncryptedMessageReader] decrypts
+     * locally from it. Webmail is a fallback for a device that has not enrolled, not the only
+     * route.
      */
     CLIENT_PROTECTED,
 
@@ -86,12 +89,21 @@ fun rendersNothing(state: PgpMessageState, body: String?, preview: String): Bool
  * can be perfectly readable and still be signed by someone other than who it claims to be from, and
  * that is precisely the case worth surfacing.
  *
- * The relay computes this and returns `pgpSigned`/`pgpVerified`/`pgpSignerFingerprint` per message.
- * All three were parsed off the wire, mapped into [com.urlxl.mail.Email], and persisted to Room
- * behind their own schema migration — and then never rendered anywhere on Android. An attacker who
- * fetched the victim's published key, encrypted to it, signed with their own key and forged the
- * `From` header got a message that displayed as ordinary encrypted mail, while the same message in
- * webmail read "signature does not match sender".
+ * The relay computes three of these states — [PgpSignatureState.VERIFIED_SEEN_BEFORE],
+ * [PgpSignatureState.NONE] and [PgpSignatureState.INVALID] — and returns them as
+ * `pgpSigned`/`pgpVerified`/`pgpSignerFingerprint` per message; see [pgpSignatureStateOf]. The
+ * other three ([PgpSignatureState.VERIFIED_CONFIRMED], [PgpSignatureState.SIGNER_UNKNOWN],
+ * [PgpSignatureState.KEY_CHANGED]) come only from a local decrypt against a locally-held key, via
+ * [signatureStateFor] — see that KDoc below.
+ *
+ * This used to be the whole story: `pgpSigned`/`pgpVerified`/`pgpSignerFingerprint` were parsed off
+ * the wire, mapped into [com.urlxl.mail.Email], and persisted to Room behind their own schema
+ * migration — and then never rendered anywhere on Android. An attacker who fetched the victim's
+ * published key, encrypted to it, signed with their own key and forged the `From` header got a
+ * message that displayed as ordinary encrypted mail, while the same message in webmail read
+ * "signature does not match sender". That gap is closed: [com.urlxl.mail.EmailAdapter] renders the
+ * inbox-row marker via [pgpRowMarker] and [com.urlxl.mail.EmailDetailActivity] renders the detail
+ * notice via `signatureNoticeFor`, both keyed off this enum.
  */
 enum class PgpSignatureState {
     /** Not signed, or no opinion was expressed. Nothing to say. */
@@ -151,10 +163,14 @@ fun pgpSignatureStateOf(pgpSigned: Boolean, pgpVerified: Boolean): PgpSignatureS
 /**
  * Marker for an inbox row, or null for no marker.
  *
- * Only the two states that yield no readable content are marked. DECRYPTED_BY_SERVER is
- * deliberately unmarked: the row opens and reads normally, so a marker there would be a symbol on
- * most rows in a server-mode mailbox carrying no information the user can act on — and the detail
- * view already discloses that the server decrypted it.
+ * Four states are marked, not two: [PgpMessageState.CLIENT_PROTECTED] and
+ * [PgpMessageState.DECRYPT_FAILED] for readability, via [pgpReadabilityMarker] — plus, regardless of
+ * readability, [PgpSignatureState.INVALID] and [PgpSignatureState.KEY_CHANGED], which mark even a
+ * row that opens and reads normally (see the `signature` parameter below).
+ * [PgpMessageState.DECRYPTED_BY_SERVER] is the one deliberately unmarked readability state: the row
+ * opens and reads normally, so a marker there would be a symbol on most rows in a server-mode
+ * mailbox carrying no information the user can act on — and the detail view already discloses that
+ * the server decrypted it.
  */
 fun pgpRowMarker(
     state: PgpMessageState,
@@ -163,6 +179,10 @@ fun pgpRowMarker(
      *  SIGNER_UNKNOWN deliberately does not mark — see [PgpSignatureState.SIGNER_UNKNOWN]. */
     signature: PgpSignatureState = PgpSignatureState.NONE,
 ): String? = when (signature) {
+    // KEY_CHANGED is unreachable here today: EmailAdapter, this function's only caller, derives
+    // `signature` from pgpSignatureStateOf, which cannot produce KEY_CHANGED (see its own KDoc —
+    // that state comes only from a local decrypt via signatureStateFor). Kept so that if a future
+    // row-level local verdict starts producing it, this marker does not silently regress.
     PgpSignatureState.INVALID, PgpSignatureState.KEY_CHANGED -> "⚠"
     else -> pgpReadabilityMarker(state)
 }

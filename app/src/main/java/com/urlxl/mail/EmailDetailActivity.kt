@@ -107,8 +107,12 @@ class EmailDetailActivity : LockedActivity() {
      *  see [quoteForReply] for why the 140-character preview was never an acceptable substitute. */
     private var fetchedBodyHtml: String? = null
 
-    /** The relay's verdict on this message's OpenPGP signature, from the detail Intent. Rendered by
-     *  [renderPgpBar] — see [PgpSignatureState] for why it is separate from [PgpMessageState]. */
+    /** The relay's verdict on this message's OpenPGP signature, from the detail Intent —
+     *  initially. For a [PgpMessageState.CLIENT_PROTECTED] message this app can decrypt locally,
+     *  it is overwritten with the local verdict from [displaySignatureVerdict] once that decrypt
+     *  finishes, so it does not stay the relay's verdict for the message's whole lifetime on
+     *  screen. Rendered by both [renderPgpBar] and [showLocked] — see [PgpSignatureState] for why
+     *  it is separate from [PgpMessageState]. */
     private var pgpSignatureState: PgpSignatureState = PgpSignatureState.NONE
 
     /** Attachments downloaded on this screen, keyed by their listing index, so Forward can carry
@@ -381,8 +385,11 @@ class EmailDetailActivity : LockedActivity() {
         runOnUiThread {
             if (isFinishing || isDestroyed) return@runOnUiThread
             lastRenderedHtml = htmlContent
-            // Not `bodyToRender`: that is blanked for the PGP states with nothing to show.
-            fetchedBodyHtml = content?.html
+            // Not `bodyToRender`: that is blanked for the PGP states with nothing to show. Enforced
+            // here too, not just emergent from the server's empty CLIENT_PROTECTED body: the spec's
+            // non-negotiable rule is that a local decrypt must never reach this property, and this
+            // makes that explicit rather than relying on the server having nothing to assign.
+            fetchedBodyHtml = content?.html?.takeIf { pgpState != PgpMessageState.CLIENT_PROTECTED }
             webView.loadDataWithBaseURL(null, htmlContent, "text/html", "utf-8", null)
             loading.visibility = android.view.View.GONE
             imagesBlockedBar.visibility = if (hasRemoteImages) View.VISIBLE else View.GONE
