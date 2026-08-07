@@ -1,5 +1,9 @@
 package com.urlxl.mail.pgp
 
+import org.bouncycastle.openpgp.PGPPublicKeyRingCollection
+import org.bouncycastle.openpgp.PGPUtil
+import org.bouncycastle.openpgp.operator.bc.BcKeyFingerprintCalculator
+
 /**
  * One address-bound contact key as the server ships it.
  *
@@ -41,10 +45,38 @@ internal fun senderAddrSpec(sender: String): String {
 }
 
 /**
+ * The key ids [armoredPublicKey] can sign with: its primary key plus every subkey it contains.
+ *
+ * A one-pass signature is ordinarily made with a dedicated signing subkey, whose id differs from
+ * the primary key's, so matching only the primary key's id would silently reject every normally
+ * signed message. Returns an empty set — never throws — on a key that fails to parse: an
+ * unparseable bound key must never grant a pass, only ever shrink the candidate set.
+ */
+internal fun signerKeyIdsOf(armoredPublicKey: String): Set<Long> = runCatching {
+    val rings = PGPPublicKeyRingCollection(
+        PGPUtil.getDecoderStream(armoredPublicKey.byteInputStream(Charsets.UTF_8)),
+        BcKeyFingerprintCalculator(),
+    )
+    rings.keyRings.asSequence()
+        .flatMap { it.publicKeys.asSequence() }
+        .map { it.keyID }
+        .toSet()
+}.getOrDefault(emptySet())
+
+/**
  * The signature verdict for a message being displayed as being from [senderAddress].
  *
- * A signature is accepted only from a key the address book binds to that sender. The signing key's
- * own claim about who it belongs to is never consulted.
+ * A signature is accepted only from a key the address book binds to that sender, AND only when the
+ * key that actually produced the signature ([RawSignature.signerKeyId]) is one of that bound key's
+ * own key ids. The second check is not redundant with the first: [PgpDecryptor] resolves the
+ * signature against every non-conflicted key offered to it, so a signature made by some other
+ * contact's key still comes back `valid = true` — it verifies, just not against this sender's key.
+ * Without this check, any contact in the address book could forge this sender's `From` header, sign
+ * with their own harvested key, and have the message attributed to whoever they named. A mismatch
+ * reads as [PgpSignatureState.SIGNER_UNKNOWN], not [PgpSignatureState.INVALID]: it means "signed by
+ * somebody, but not this sender," and no key for whoever it actually was is held here.
+ *
+ * The signing key's own claim about who it belongs to is never consulted.
  */
 internal fun signatureStateFor(
     signature: RawSignature,
@@ -63,6 +95,9 @@ internal fun signatureStateFor(
     // them is a key that changed, and reporting the survivor as verified would hide precisely the
     // event worth reporting.
     if (bound.any { it.conflict }) return PgpSignatureState.KEY_CHANGED
+
+    val signedByABoundKey = bound.any { signature.signerKeyId in signerKeyIdsOf(it.publicKey) }
+    if (!signedByABoundKey) return PgpSignatureState.SIGNER_UNKNOWN
 
     if (!signature.valid) return PgpSignatureState.INVALID
 
