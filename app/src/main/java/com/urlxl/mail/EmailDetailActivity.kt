@@ -32,7 +32,6 @@ import com.urlxl.mail.pgp.PgpMessageState
 import com.urlxl.mail.pgp.PgpPayloadClient
 import com.urlxl.mail.pgp.PgpSignatureState
 import com.urlxl.mail.pgp.ReadOutcome
-import com.urlxl.mail.pgp.VaultOpener
 import com.urlxl.mail.pgp.openWebmail
 import com.urlxl.mail.pgp.pgpMessageStateOf
 import com.urlxl.mail.pgp.rendersNothing
@@ -547,15 +546,10 @@ class EmailDetailActivity : LockedActivity() {
         val deviceSecret = pairing.deviceSecret ?: return null
         val client = PgpPayloadClient(callFactory = pinnedPairingCallFactory(this))
         return EncryptedMessageReader(
-            // Wrapped back onto Main: BiometricPrompt.authenticate() performs a FragmentManager
-            // transaction, which requires Main, even though this whole reader is otherwise run off
-            // it (see attemptDecrypt). The hop is scoped to just the prompt, not the surrounding
-            // Default-dispatched decrypt.
-            opener = object : VaultOpener {
-                override suspend fun open() = withContext(Dispatchers.Main) {
-                    AndroidVaultOpener(this@EmailDetailActivity).open()
-                }
-            },
+            // No wrapper here: AndroidVaultOpener.open() owns its own dispatching now — IO for the
+            // Keystore/prefs read, Main only for the BiometricPrompt itself — so nothing in this
+            // caller needs to hop for it. See VaultOpenerAndroid.kt.
+            opener = AndroidVaultOpener(this@EmailDetailActivity),
             payloads = object : PayloadSource {
                 override suspend fun fetch(mailbox: String, messageId: String) =
                     client.fetch(pairing.serverUrl, deviceId, deviceSecret, mailbox, messageId)
@@ -577,7 +571,8 @@ class EmailDetailActivity : LockedActivity() {
      * MIME parse all on the UI thread — ANR-class on a large message. Only [encryptedReader]'s own
      * pairing lookup goes on `Dispatchers.IO` (it is disk I/O, not CPU work); the reader's `read`
      * itself goes on `Dispatchers.Default`, matching the CPU-bound work inside it. The one exception
-     * is the biometric prompt, hopped back to Main inside [encryptedReader]'s `opener`.
+     * is the biometric prompt: `AndroidVaultOpener.open()` owns that hop back to Main itself, so
+     * nothing here has to arrange it.
      *
      * [decryptJob] guards against a second attempt landing mid-flight — see its KDoc.
      */
