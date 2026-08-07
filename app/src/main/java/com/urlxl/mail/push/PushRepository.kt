@@ -275,7 +275,15 @@ class PushRepository(
         // belongs here. The wipe and Hostile Location Protection already tore it down; the account
         // boundary was the third destructive path and the one left out — so unpairing, or a re-pair
         // driven by the exported kypost://native-pair link, carried one account's private key into
-        // the next account's session behind nothing but the device lock screen.
+        // the next account's session behind nothing but the device lock screen. The fourth path,
+        // "Remove from this device" in SecuritySettingsActivity.confirmRemoveEnrollment, tears down
+        // the same vault and server record but is deliberately NOT routed through here or through
+        // ProcessState.resetAll(): unenroll keeps the account paired, so it must not also discard an
+        // in-progress draft or ephemeral attachment the way this account-boundary purge legitimately
+        // does. It clears com.urlxl.mail.pgp.EnrollmentSession directly instead. Naming it here so
+        // the next destructive path that touches account-scoped in-memory state checks this list
+        // instead of repeating the omission that made EnrollmentSession the third one in the first
+        // place.
         val enrollmentResidue = com.urlxl.mail.pgp.EnrollmentTeardown.destroy(context)
         if (enrollmentResidue.isNotEmpty()) {
             android.util.Log.e(TAG, "Enrollment teardown left $enrollmentResidue behind while unpairing")

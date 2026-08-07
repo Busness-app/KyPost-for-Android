@@ -35,18 +35,46 @@ Owns production Android app code and resources.
   `pgpDecryptError`. All are `omitempty` server-side, so the Kotlin defaults (false/"") are the
   contract for a message with no OpenPGP content, not an unknown state. `pgp.PgpMessageState` is the
   single place the rule lives: `pgpEncrypted` with an EMPTY `pgpDecryptError` means the account's key
-  is end-to-end protected — the server holds no key, there is no body, and **this app cannot decrypt
-  it**; a NON-empty `pgpDecryptError` means the server tried and failed, which is a different state
-  with a real error to show; `pgpEncrypted` with a body means the server decrypted it, which
-  `EmailDetailActivity` surfaces rather than rendering silently, because the user should be able to
-  tell the server read their mail. Deliberately no on-device private key: the phone pairs by QR and
-  never learns the account password that the wrapped key envelope is sealed under (see the server
-  repo's `docs/E2E_PGP.md` "Mobile plan"). Do not add one without revisiting that decision.
+  is end-to-end protected — the server holds no key, there is no body, and whether this device can
+  read it depends on its enrollment state, below; a NON-empty `pgpDecryptError` means the server
+  tried and failed, which is a different state with a real error to show; `pgpEncrypted` with a body
+  means the server decrypted it, which `EmailDetailActivity` surfaces rather than rendering silently,
+  because the user should be able to tell the server read their mail.
+  **There IS an on-device private key, and this replaced the earlier "deliberately none" contract.**
+  The device enrollment ceremony seals the account's PGP private key into a StrongBox/TEE AES-GCM
+  envelope with `setUserAuthenticationRequired(true)` (`pgp/EnrollmentVault`), and no passphrase is
+  ever typed on the phone — which is what made the old objection ("the phone never learns the
+  account password") stop applying. `pgp/EncryptedMessageReader` unseals it through
+  `pgp/VaultOpener`, holds it in `pgp/EnrollmentSession` for the configured lock window, and
+  decrypts client-protected messages locally. So `CLIENT_PROTECTED` no longer means "cannot be read
+  here": it means "not readable here **unless** this device is enrolled and unlocked". Webmail
+  remains the fallback for every device that is not.
+  Hostile Location Protection destroys the envelope and is the mode in which none of this exists.
   `pgpRowMarker` marks inbox rows for the two states that yield nothing readable (🔒 client-protected,
   ⚠ decrypt failed) and deliberately leaves server-decrypted rows unmarked — those open normally, so
   a marker would sit on most rows of a server-mode mailbox carrying nothing actionable. `EmailAdapter`
   also sets a spelled-out `contentDescription` for those two, because screen readers announce emoji
   inconsistently.
+  A failed signature or a CHANGED signer key (`PgpSignatureState.KEY_CHANGED`) outranks both with
+  ⚠. `SIGNER_UNKNOWN` deliberately does not mark: it is the ordinary state for a correspondent not
+  yet in the address book, and a glyph on most rows carries nothing actionable.
+- `PgpSignatureState` has six values, not a verified/unverified pair: `NONE` (unsigned, or no opinion
+  expressed), `VERIFIED_CONFIRMED` (a key bound to the sender that the user confirmed out of band —
+  the only state that claims identity), `VERIFIED_SEEN_BEFORE` (a bound key still matching its TOFU
+  pin, but never confirmed — most keys arrive by Autocrypt harvest, so this claims only continuity,
+  "same key as last time", not who they say they are), `SIGNER_UNKNOWN` (no key bound to this sender
+  at all — an ordinary correspondent not yet in the address book, a key that rotated before harvest,
+  and a forged `From` are locally indistinguishable, so this is not an accusation), `KEY_CHANGED` (a
+  key IS bound to this sender and no longer matches its TOFU pin — the one alarm worth raising), and
+  `INVALID` (signed, but it does not verify against the bound key). **The client parses no address out
+  of the `From` header at all.** `senderAddrSpec` and its helpers were deleted after a differential
+  harness found 27 divergences from the server's parser across 111 adversarial headers — worst, an
+  RFC 5322 comment like `Bob (Eve <eve@evil>) <bob@x>`, where the client bound `eve@evil` and the
+  server binds `bob@x`, letting any contact forge a verified badge for anyone. The server now ships
+  `signerKeys` already narrowed to the sender it resolved (`pgp/SignerBinding.signatureStateFor`,
+  consumed by `pgp/EncryptedMessageReader`). Do not reintroduce a client-side `From` parser to "wire
+  up" that narrowing yourself — a second parser deciding the same binding is exactly the defect that
+  was removed.
 - **The account's own PGP identity is never in the contacts database.** `ContactEntity.pgpKey` — even
   on the self-contact (`isSelf = 1`) — is an ordinary contact field, written only when a key is
   attached to a contact by hand or by the QR scan; the account's real identity lives server-side.

@@ -157,6 +157,20 @@
                 android:visibility="gone"
                 android:text="@string/email_pgp_open_webmail_button" />
 
+            <Button
+                android:id="@+id/btnDecryptHere"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/email_pgp_decrypt_button"
+                android:visibility="gone" />
+
+            <Button
+                android:id="@+id/btnRetryPayload"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/email_pgp_retry_button"
+                android:visibility="gone" />
+
         </LinearLayout>
 
         <LinearLayout
@@ -184,6 +198,17 @@
                 android:text="@string/email_show_images_button" />
 
         </LinearLayout>
+
+        <ImageView
+            android:id="@+id/emailLockedPlaceholder"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:contentDescription="@string/email_pgp_locked_placeholder_description"
+            android:scaleType="fitCenter"
+            android:padding="48dp"
+            android:src="@drawable/ic_lock_large"
+            android:visibility="gone" />
 
         <WebView
             android:id="@+id/emailWebView"

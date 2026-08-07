@@ -25,38 +25,94 @@ import com.urlxl.mail.mail.MailRuntime
 import com.urlxl.mail.mail.QuotedHtmlSanitizer
 import com.urlxl.mail.mail.addressFromHeader
 import com.urlxl.mail.mail.userFacingMessage
+import com.urlxl.mail.pgp.AndroidVaultOpener
+import com.urlxl.mail.pgp.EncryptedMessageReader
+import com.urlxl.mail.pgp.PayloadSource
 import com.urlxl.mail.pgp.PgpMessageState
+import com.urlxl.mail.pgp.PgpPayloadClient
 import com.urlxl.mail.pgp.PgpSignatureState
+import com.urlxl.mail.pgp.ReadOutcome
 import com.urlxl.mail.pgp.openWebmail
 import com.urlxl.mail.pgp.pgpMessageStateOf
 import com.urlxl.mail.pgp.rendersNothing
 import com.urlxl.mail.pgp.webmailMessageUrl
 import com.urlxl.mail.push.PushRuntime
+import com.urlxl.mail.push.pinnedPairingCallFactory
 import java.util.concurrent.Executors
 import com.urlxl.mail.security.LockedActivity
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class EmailDetailActivity : LockedActivity() {
 
     private val ioExecutor = Executors.newSingleThreadExecutor()
     private lateinit var mailRepository: MailRepository
     private lateinit var actionButtons: List<ImageButton>
+
+    /** [actionReply], [actionReplyAll] and [actionForward] — the subset of [actionButtons] that
+     *  [applyReplyForwardAvailability] visually marks as unavailable for a
+     *  [PgpMessageState.CLIENT_PROTECTED] message. Kept as its own field, rather than re-derived
+     *  from [actionButtons] by position, so which three buttons this reaches cannot silently drift
+     *  if [actionButtons]'s order ever changes. */
+    private lateinit var replyForwardButtons: List<ImageButton>
+
+    /**
+     * The state Reply/Reply-All/Forward's click listeners check via [mayReplyOrForward] before
+     * doing anything.
+     *
+     * Fail closed. [renderBody] runs on a background thread and, for an uncached message, makes a
+     * network round trip before it can report a real [PgpMessageState] — see its own KDoc on
+     * `bodyUnavailable` — and may never report one at all if it throws (caught by the `runCatching`
+     * around its call site, which only toasts). Defaulting to [PgpMessageState.NONE] here would
+     * leave Reply live for that entire window on exactly the messages this task exists to protect.
+     * Set to the real, encrypted-or-not verdict as soon as the Intent extra is read in `onCreate`
+     * (synchronous, no fetch involved), then overwritten with the definitive value once
+     * [renderBody] resolves it.
+     */
+    private var replyForwardState: PgpMessageState = PgpMessageState.CLIENT_PROTECTED
     private lateinit var divider: View
     private lateinit var webView: WebView
+    private lateinit var lockedPlaceholder: android.widget.ImageView
     private lateinit var imagesBlockedBar: View
     private lateinit var btnShowImages: Button
     private lateinit var phishingBar: TextView
     private lateinit var pgpBar: View
     private lateinit var pgpText: TextView
+    private lateinit var subjectView: TextView
+    private lateinit var fromView: TextView
     private lateinit var btnOpenInWebmail: Button
+    private lateinit var btnDecryptHere: Button
+    private lateinit var btnRetryPayload: Button
     private var lastAppliedThemeName: String = ""
     private var lastRenderedHtml: String? = null
+
+    /** Set in the [PgpMessageState.CLIENT_PROTECTED] branch of [renderPgpBar] when no webmail URL
+     *  could be resolved for this message. [showLocked] appends [R.string.email_pgp_no_webmail] in
+     *  that case, since every [ReadOutcome] notice below was written assuming a webmail fallback
+     *  exists — several end "...or open it in webmail" with no button and no address on screen when
+     *  it does not. */
+    private var webmailUnavailable: Boolean = false
+
+    /** Guards [attemptDecrypt] against a second attempt landing while the first is still in flight
+     *  — e.g. a tap on Decrypt while the automatic (unlockIfNeeded = false) attempt is still
+     *  running. Without this, an outcome that resolves out of order (a stale [ReadOutcome.Cancelled]
+     *  arriving after a real [ReadOutcome.Decrypted]) could regress a message already on screen back
+     *  to the padlock. */
+    private var decryptJob: Job? = null
 
     /** The message's real body, once the background fetch has answered. Reply/Forward quote this;
      *  see [quoteForReply] for why the 140-character preview was never an acceptable substitute. */
     private var fetchedBodyHtml: String? = null
 
-    /** The relay's verdict on this message's OpenPGP signature, from the detail Intent. Rendered by
-     *  [renderPgpBar] — see [PgpSignatureState] for why it is separate from [PgpMessageState]. */
+    /** The relay's verdict on this message's OpenPGP signature, from the detail Intent —
+     *  initially. For a [PgpMessageState.CLIENT_PROTECTED] message this app can decrypt locally,
+     *  it is overwritten with the local verdict from [displaySignatureVerdict] once that decrypt
+     *  finishes, so it does not stay the relay's verdict for the message's whole lifetime on
+     *  screen. Rendered by both [renderPgpBar] and [showLocked] — see [PgpSignatureState] for why
+     *  it is separate from [PgpMessageState]. */
     private var pgpSignatureState: PgpSignatureState = PgpSignatureState.NONE
 
     /** Attachments downloaded on this screen, keyed by their listing index, so Forward can carry
@@ -89,6 +145,13 @@ class EmailDetailActivity : LockedActivity() {
         val emailPreview = intent.getStringExtra("email_preview") ?: "No content"
         val hasAttachments = intent.getBooleanExtra("email_has_attachments", false)
         val pgpEncrypted = intent.getBooleanExtra("email_pgp_encrypted", false)
+        // Refines the fail-closed CLIENT_PROTECTED default above as soon as we synchronously know
+        // better: an unencrypted message was never going to become CLIENT_PROTECTED, so there is no
+        // reason to hold its Reply button hostage to the body fetch below. An encrypted one keeps
+        // the fail-closed default until renderBody reports the real state. See
+        // initialReplyForwardState's own KDoc for why this is a pure function rather than the
+        // ternary it replaced.
+        replyForwardState = initialReplyForwardState(pgpEncrypted)
         val pgpDecryptError = intent.getStringExtra("email_pgp_decrypt_error").orEmpty()
         pgpSignatureState = com.urlxl.mail.pgp.pgpSignatureStateOf(
             pgpSigned = intent.getBooleanExtra("email_pgp_signed", false),
@@ -98,9 +161,10 @@ class EmailDetailActivity : LockedActivity() {
 
         setTitle(R.string.email_title)
 
-        val subjectView = findViewById<TextView>(R.id.emailSubject)
-        val fromView = findViewById<TextView>(R.id.emailFrom)
+        subjectView = findViewById(R.id.emailSubject)
+        fromView = findViewById(R.id.emailFrom)
         webView = findViewById(R.id.emailWebView)
+        lockedPlaceholder = findViewById(R.id.emailLockedPlaceholder)
         divider = findViewById(R.id.emailDivider)
         imagesBlockedBar = findViewById(R.id.emailImagesBlockedBar)
         btnShowImages = findViewById(R.id.btnShowImages)
@@ -112,6 +176,8 @@ class EmailDetailActivity : LockedActivity() {
         pgpBar = findViewById(R.id.emailPgpBar)
         pgpText = findViewById(R.id.emailPgpText)
         btnOpenInWebmail = findViewById(R.id.btnOpenInWebmail)
+        btnDecryptHere = findViewById(R.id.btnDecryptHere)
+        btnRetryPayload = findViewById(R.id.btnRetryPayload)
         val loading = findViewById<ProgressBar>(R.id.emailBodyLoading)
 
         subjectView.text = emailSubject
@@ -129,6 +195,7 @@ class EmailDetailActivity : LockedActivity() {
             actionReply, actionReplyAll, actionForward,
             actionArchive, actionJunk, actionDelete,
         )
+        replyForwardButtons = listOf(actionReply, actionReplyAll, actionForward)
         applyDetailChrome()
 
         // markRead stays non-reporting on purpose: it is incidental to opening the message, and a
@@ -145,6 +212,14 @@ class EmailDetailActivity : LockedActivity() {
             runMailActionAndFinish(getString(R.string.action_junk), emailId) { it.spam(emailId, emailFolder) }
         }
         actionReply.setOnClickListener {
+            // Checked here, not via isEnabled = false: a disabled ImageButton's onTouchEvent
+            // returns before performClick ever runs, which would make this very explanation
+            // unreachable. See applyReplyForwardAvailability's KDoc for the rest of the reasoning
+            // (fail-closed default, alpha-only visual signal, contentDescription for TalkBack).
+            if (!mayReplyOrForward(replyForwardState)) {
+                Toast.makeText(this, R.string.email_pgp_reply_disabled, Toast.LENGTH_LONG).show()
+                return@setOnClickListener
+            }
             quotedBodyHtmlAsync(emailPreview) { quoted ->
                 openCompose(
                     to = extractAddress(emailSender),
@@ -154,6 +229,10 @@ class EmailDetailActivity : LockedActivity() {
             }
         }
         actionReplyAll.setOnClickListener {
+            if (!mayReplyOrForward(replyForwardState)) {
+                Toast.makeText(this, R.string.email_pgp_reply_disabled, Toast.LENGTH_LONG).show()
+                return@setOnClickListener
+            }
             val recipients = (listOf(extractAddress(emailSender)) + toRecipients.map(::extractAddress) + ccRecipients.map(::extractAddress))
                 .distinct()
                 .filter { it.isNotBlank() }
@@ -166,6 +245,10 @@ class EmailDetailActivity : LockedActivity() {
             }
         }
         actionForward.setOnClickListener {
+            if (!mayReplyOrForward(replyForwardState)) {
+                Toast.makeText(this, R.string.email_pgp_reply_disabled, Toast.LENGTH_LONG).show()
+                return@setOnClickListener
+            }
             forwardMessage(emailId, emailFolder, emailSender, emailSubject, emailPreview)
         }
 
@@ -240,7 +323,7 @@ class EmailDetailActivity : LockedActivity() {
         // since the message stays in the mailbox. The decode bug is fixed; this makes the next one
         // an unreadable message rather than an unusable app.
         ioExecutor.execute {
-            runCatching { renderBody(emailId, emailFolder, emailPreview, pgpEncrypted, pgpDecryptError, loading) }
+            runCatching { renderBody(emailId, emailFolder, emailSender, emailPreview, pgpEncrypted, pgpDecryptError, loading) }
                 .onFailure { error ->
                     android.util.Log.e(TAG, "Failed to render message body", error)
                     runOnUiThread {
@@ -258,6 +341,7 @@ class EmailDetailActivity : LockedActivity() {
     private fun renderBody(
         emailId: String,
         emailFolder: String,
+        emailSender: String,
         emailPreview: String,
         pgpEncrypted: Boolean,
         pgpDecryptError: String,
@@ -301,12 +385,16 @@ class EmailDetailActivity : LockedActivity() {
         runOnUiThread {
             if (isFinishing || isDestroyed) return@runOnUiThread
             lastRenderedHtml = htmlContent
-            // Not `bodyToRender`: that is blanked for the PGP states with nothing to show.
-            fetchedBodyHtml = content?.html
+            // Not `bodyToRender`: that is blanked for the PGP states with nothing to show. Enforced
+            // here too, not just emergent from the server's empty CLIENT_PROTECTED body: the spec's
+            // non-negotiable rule is that a local decrypt must never reach this property, and this
+            // makes that explicit rather than relying on the server having nothing to assign.
+            fetchedBodyHtml = content?.html?.takeIf { pgpState != PgpMessageState.CLIENT_PROTECTED }
             webView.loadDataWithBaseURL(null, htmlContent, "text/html", "utf-8", null)
             loading.visibility = android.view.View.GONE
             imagesBlockedBar.visibility = if (hasRemoteImages) View.VISIBLE else View.GONE
-            renderPgpBar(pgpState, pgpDecryptError, serverUrl, webmailUrl, nothingToRender)
+            renderPgpBar(pgpState, pgpDecryptError, serverUrl, webmailUrl, nothingToRender, emailFolder, emailId, emailSender)
+            applyReplyForwardAvailability(pgpState)
             if (content != null) {
                 toRecipients = content.toAddresses
                 ccRecipients = content.ccAddresses
@@ -403,17 +491,19 @@ class EmailDetailActivity : LockedActivity() {
         /** Decided by [rendersNothing] in the same render pass that chose the body, so this cannot
          *  disagree with what was actually put on screen. */
         nothingToRender: Boolean,
+        /** The account mailbox (IMAP folder) and message id this render is for, plus the sender
+         *  exactly as displayed — needed only to kick off [attemptDecrypt] from the
+         *  [PgpMessageState.CLIENT_PROTECTED] branch below. */
+        mailbox: String,
+        messageId: String,
+        sender: String,
     ) {
         // A message can be perfectly readable and still be signed by someone other than who it
         // claims to be from, so the signature verdict is rendered even when there is no encryption
         // state to report. This was computed by the relay, carried through every layer and written
         // to Room behind its own migration — and then never shown, so a forged-signature message
         // displayed as ordinary mail while webmail flagged it.
-        val signatureNotice = when (pgpSignatureState) {
-            PgpSignatureState.INVALID -> getString(R.string.email_pgp_signature_invalid)
-            PgpSignatureState.VERIFIED -> getString(R.string.email_pgp_signature_verified)
-            PgpSignatureState.NONE -> null
-        }
+        val signatureNotice = signatureNoticeFor(pgpSignatureState)
 
         if (state == PgpMessageState.NONE) {
             // The blank-screen case this function's KDoc warns about, still open for NONE after it
@@ -440,6 +530,13 @@ class EmailDetailActivity : LockedActivity() {
                 // No pairing, or a serverUrl no URL could be built from: we genuinely do not know
                 // this server's web address, which is what email_pgp_no_webmail says. A launch
                 // that fails later is a different problem and gets a different string.
+                //
+                // Recorded in webmailUnavailable, not just written into pgpText here: the automatic
+                // attemptDecrypt below overwrites pgpText with a ReadOutcome notice almost
+                // immediately, and several of those notices ("...or open it in webmail") are
+                // misleading with no button and no address on screen unless showLocked appends this
+                // explanation too.
+                webmailUnavailable = serverUrl == null || webmailUrl == null
                 if (serverUrl == null || webmailUrl == null) {
                     pgpText.text = getString(R.string.email_pgp_client_protected) +
                         "\n" + getString(R.string.email_pgp_no_webmail)
@@ -459,6 +556,17 @@ class EmailDetailActivity : LockedActivity() {
                         }
                     }
                 }
+                // Explicit taps always may prompt; only the automatic attempt below is silent when
+                // the key is not held.
+                btnDecryptHere.setOnClickListener {
+                    attemptDecrypt(mailbox, messageId, sender, unlockIfNeeded = true)
+                }
+                btnRetryPayload.setOnClickListener {
+                    attemptDecrypt(mailbox, messageId, sender, unlockIfNeeded = true)
+                }
+                // Automatic only when the key is already held: unlockIfNeeded = false means this
+                // never raises a biometric sheet on a message the user simply opened.
+                attemptDecrypt(mailbox, messageId, sender, unlockIfNeeded = false)
             }
             PgpMessageState.BODY_UNAVAILABLE ->
                 pgpText.text = getString(R.string.email_pgp_body_unavailable)
@@ -470,6 +578,219 @@ class EmailDetailActivity : LockedActivity() {
         if (signatureNotice != null) {
             pgpText.text = signatureNotice + "\n\n" + pgpText.text
         }
+    }
+
+    /**
+     * Records the definitive [PgpMessageState] for Reply/Reply-All/Forward's own click-time check
+     * ([replyForwardState]) and updates the three buttons' visual state to match.
+     *
+     * `POST /api/mail/draft` uploads the draft to the server. Quoting a decrypted body into a
+     * reply would hand the server the plaintext of a message this whole mode exists to keep from
+     * it — at one tap, with no warning. There is no encrypted send path in the app yet, so there
+     * is no safe destination for any of these three actions.
+     *
+     * Unconditional rather than gated on decrypt success — see [mayReplyOrForward] — so a button
+     * never starts working once a message opens; that would teach the user a rule that is not
+     * true.
+     *
+     * Deliberately does NOT set `isEnabled = false`. `View.onTouchEvent` returns before
+     * `performClick()` ever runs on a disabled view, which would make the explanatory Toast in
+     * each click listener unreachable dead code — a grey button the user taps for nothing. `alpha`
+     * carries the visual signal instead, and [contentDescription][View.setContentDescription]
+     * carries the same "why" to TalkBack that `isEnabled = false` would otherwise have announced
+     * for free (as "disabled", with no reason) — the same substitution [EmailAdapter] already makes
+     * for the inbox row's own PGP markers, and for the same reason: an emoji or a plain disabled
+     * state tells a screen-reader user nothing a sighted user wouldn't also be missing.
+     *
+     * Only touches the buttons when [pgpState] blocks them. `renderBody` calls this exactly once
+     * per Activity instance, and every one of these `ImageButton`s already carries its own
+     * `android:contentDescription` ("Reply", "Reply all", "Forward") from the layout — clearing
+     * that unconditionally on the allowed path would silently strip those labels from every
+     * ordinary message, not just this one's.
+     */
+    private fun applyReplyForwardAvailability(pgpState: PgpMessageState) {
+        replyForwardState = pgpState
+        if (mayReplyOrForward(pgpState)) return
+        val notice = getString(R.string.email_pgp_reply_disabled)
+        replyForwardButtons.forEach { button ->
+            button.alpha = 0.4f
+            button.contentDescription = notice
+        }
+    }
+
+    /** The sentence for one [PgpSignatureState], or null when there is nothing to say. Shared by
+     *  [renderPgpBar] (server-side verdicts) and [renderReadOutcome] (on-device verdicts) so the
+     *  wording cannot drift between the two paths that can produce the same six states. */
+    private fun signatureNoticeFor(state: PgpSignatureState): String? = when (state) {
+        PgpSignatureState.INVALID -> getString(R.string.email_pgp_signature_invalid)
+        PgpSignatureState.KEY_CHANGED -> getString(R.string.email_pgp_signature_key_changed)
+        PgpSignatureState.VERIFIED_CONFIRMED -> getString(R.string.email_pgp_signature_confirmed)
+        PgpSignatureState.VERIFIED_SEEN_BEFORE -> getString(R.string.email_pgp_signature_seen_before)
+        PgpSignatureState.SIGNER_UNKNOWN -> getString(R.string.email_pgp_signature_signer_unknown)
+        PgpSignatureState.NONE -> null
+    }
+
+    /** Built lazily: constructing it needs the pairing credential, which is a disk read — so this
+     *  itself must only ever run off Main; see [attemptDecrypt]'s `Dispatchers.IO` hop. */
+    private suspend fun encryptedReader(): EncryptedMessageReader? {
+        val pairing = PushRuntime.graph(this).repository.pairingForAuthenticatedCall() ?: return null
+        val deviceId = pairing.deviceId ?: return null
+        val deviceSecret = pairing.deviceSecret ?: return null
+        val client = PgpPayloadClient(callFactory = pinnedPairingCallFactory(this))
+        return EncryptedMessageReader(
+            // No wrapper here: AndroidVaultOpener.open() owns its own dispatching now — IO for the
+            // Keystore/prefs read, Main only for the BiometricPrompt itself — so nothing in this
+            // caller needs to hop for it. See VaultOpenerAndroid.kt.
+            opener = AndroidVaultOpener(this@EmailDetailActivity),
+            payloads = object : PayloadSource {
+                override suspend fun fetch(mailbox: String, messageId: String) =
+                    client.fetch(pairing.serverUrl, deviceId, deviceSecret, mailbox, messageId)
+            },
+        )
+    }
+
+    /**
+     * Automatic when the key is already held, explicit when it is not.
+     *
+     * The prompt stays tied to a deliberate tap so that a dismissal is always a response to
+     * something the user just did, rather than a sheet that ambushed a message they opened by
+     * accident.
+     *
+     * [EncryptedMessageReader.read] is deliberately Android-free — no `withContext` anywhere inside
+     * it — which makes dispatching it off Main this caller's job. Left on the default
+     * `Dispatchers.Main.immediate` of [lifecycleScope], the happy path (key already held, automatic
+     * decrypt) would run a Keystore-backed disk read, the full BouncyCastle decrypt/verify and the
+     * MIME parse all on the UI thread — ANR-class on a large message. Only [encryptedReader]'s own
+     * pairing lookup goes on `Dispatchers.IO` (it is disk I/O, not CPU work); the reader's `read`
+     * itself goes on `Dispatchers.Default`, matching the CPU-bound work inside it. The one exception
+     * is the biometric prompt: `AndroidVaultOpener.open()` owns that hop back to Main itself, so
+     * nothing here has to arrange it.
+     *
+     * [decryptJob] guards against a second attempt landing mid-flight — see its KDoc.
+     */
+    private fun attemptDecrypt(mailbox: String, messageId: String, sender: String, unlockIfNeeded: Boolean) {
+        if (decryptJob?.isActive == true) return
+        btnDecryptHere.isEnabled = false
+        btnRetryPayload.isEnabled = false
+        decryptJob = lifecycleScope.launch {
+            val reader = withContext(Dispatchers.IO) { encryptedReader() }
+            if (reader == null) {
+                renderReadOutcome(ReadOutcome.NotEnrolled)
+                return@launch
+            }
+            val outcome = withContext(Dispatchers.Default) {
+                reader.read(mailbox, messageId, sender, unlockIfNeeded)
+            }
+            renderReadOutcome(outcome)
+        }
+    }
+
+    private fun renderReadOutcome(outcome: ReadOutcome) {
+        if (isFinishing || isDestroyed) return
+        btnDecryptHere.visibility = View.GONE
+        btnDecryptHere.isEnabled = true
+        btnRetryPayload.visibility = View.GONE
+        btnRetryPayload.isEnabled = true
+
+        when (outcome) {
+            is ReadOutcome.Decrypted -> {
+                // The one path that shows content. The body goes to the WebView and NOWHERE else:
+                // not Room, and not fetchedBodyHtml, which feeds reply quoting into
+                // ComposeDraftCache and on to POST /api/mail/draft — the server this message was
+                // deliberately never readable by.
+                lockedPlaceholder.visibility = View.GONE
+                webView.visibility = View.VISIBLE
+                val rawHtml = outcome.body.html
+                    ?: "<pre>" + android.text.Html.escapeHtml(outcome.body.plain.orEmpty()) + "</pre>"
+                // Routed through the same dark-theme override every other body gets — without it, a
+                // sender who hardcodes their own colors (buildEmailBodyHtml's own KDoc: "virtually
+                // all of them") renders black-on-black under a dark palette.
+                val palette = getStoredThemePalette(this)
+                val html = buildEmailBodyHtml(
+                    rawHtml,
+                    palette,
+                    ibmPlexMonoFontFaceCss(this),
+                    isDark = isDarkPalette(palette),
+                )
+                webView.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
+                // The real subject from the encrypted part's protected headers, when the sender used
+                // them — the outer envelope subject is only ever a placeholder for this path. This is
+                // the entire point of protected headers; leaving it unrendered defeats them.
+                outcome.body.protectedSubject?.takeIf { it.isNotBlank() }?.let { subjectView.text = it }
+                // The verdict actually safe to display — see displaySignatureVerdict's KDoc for why
+                // this can differ from outcome.signature itself.
+                val verdict = displaySignatureVerdict(outcome)
+                pgpSignatureState = verdict
+                // Show the mailbox the verdict is ABOUT, not the header the sender wrote.
+                //
+                // `sender` and `resolvedSender` are separable by an attacker: a From whose display
+                // name is `bob@example.com` and whose mailbox is `eve@evil.example` renders as
+                // "bob@example.com <eve@evil.example>". The badge is computed against the resolved
+                // mailbox, so putting the raw header beside it would let a badge earned by Eve's
+                // key sit next to Bob's name. Wherever a verification verdict appears, the
+                // resolved mailbox appears with it — and displaySignatureVerdict already guarantees
+                // resolvedSender is non-blank whenever verdict is not NONE.
+                if (verdict != PgpSignatureState.NONE) {
+                    fromView.text = getString(R.string.email_from) + " " + outcome.resolvedSender
+                }
+                // Prepended, not appended — matching renderPgpBar just above: a signature that does
+                // not match the sender is the more urgent of the two facts.
+                pgpText.text = listOfNotNull(
+                    signatureNoticeFor(verdict),
+                    getString(R.string.email_pgp_decrypted_here),
+                ).joinToString("\n\n")
+                btnOpenInWebmail.visibility = View.GONE
+            }
+            ReadOutcome.NeedsUnlock -> {
+                showLocked(getString(R.string.email_pgp_can_decrypt_here))
+                btnDecryptHere.visibility = View.VISIBLE
+            }
+            // Silent on purpose: the user dismissed a sheet they raised. A toast here would be
+            // noise about their own action.
+            ReadOutcome.Cancelled -> {
+                showLocked(getString(R.string.email_pgp_can_decrypt_here))
+                btnDecryptHere.visibility = View.VISIBLE
+            }
+            ReadOutcome.NotEnrolled -> showLocked(getString(R.string.email_pgp_not_enrolled))
+            ReadOutcome.NoSecureLockScreen -> showLocked(getString(R.string.email_pgp_no_lock_screen))
+            ReadOutcome.TooLarge -> showLocked(getString(R.string.email_pgp_too_large))
+            ReadOutcome.NotClientProtected -> showLocked(getString(R.string.email_pgp_client_protected))
+            is ReadOutcome.UnsealFailed -> showLocked(getString(R.string.email_pgp_unseal_failed))
+            is ReadOutcome.FetchFailed -> showLocked(getString(R.string.email_pgp_fetch_failed))
+            // Terminal, unlike FetchFailed: the server answered, and its answer was that this
+            // message carries no OpenPGP payload. Retrying cannot change that, so no Retry button —
+            // offering one would invite the user to tap it forever.
+            ReadOutcome.NoEncryptedContent ->
+                showLocked(getString(R.string.email_pgp_no_encrypted_content))
+            is ReadOutcome.DecryptFailed -> showLocked(getString(R.string.email_pgp_decrypt_here_failed))
+        }
+        // Routed through the pure decision below rather than set inline per-branch, so the one
+        // outcome that must never offer Retry (NoEncryptedContent — see showsRetryButton's KDoc)
+        // cannot drift out of sync with a JVM test that has no Android framework to exercise the
+        // branches above directly.
+        btnRetryPayload.visibility = if (showsRetryButton(outcome)) View.VISIBLE else View.GONE
+    }
+
+    /** The padlock and the webmail button always appear together: one says "not readable here",
+     *  the other says "readable there" — except when [webmailUnavailable], where there is genuinely
+     *  nowhere to send the user, and [R.string.email_pgp_no_webmail] is appended so the padlock does
+     *  not sit next to a notice that dangles a webmail fallback with no button and no address on
+     *  screen. */
+    private fun showLocked(notice: String) {
+        webView.visibility = View.GONE
+        // Otherwise the decrypted plaintext DOM from an earlier Decrypted render lives on behind
+        // the padlock, unloaded but still present.
+        webView.loadUrl("about:blank")
+        lockedPlaceholder.visibility = View.VISIBLE
+        pgpBar.visibility = View.VISIBLE
+        val body = if (webmailUnavailable) {
+            notice + "\n" + getString(R.string.email_pgp_no_webmail)
+        } else {
+            notice
+        }
+        // Prepended, not appended — same reasoning as renderPgpBar and the Decrypted branch above: a
+        // signature that does not match the sender outranks a readability notice.
+        pgpText.text = listOfNotNull(signatureNoticeFor(pgpSignatureState), body).joinToString("\n\n")
     }
 
     private fun loadAttachments(emailId: String, emailFolder: String) {
@@ -871,6 +1192,74 @@ internal fun buildEmailBodyHtml(bodyToRender: String, palette: ThemePalette, mon
         </html>
     """.trimIndent()
 }
+
+/**
+ * Whether [outcome] should offer a Retry button.
+ *
+ * True only for [ReadOutcome.FetchFailed] — a transport failure a second attempt might not repeat.
+ * [ReadOutcome.NoEncryptedContent] looks similar at a glance (both leave the message unread) but is
+ * terminal: the server answered, and its answer was that this message carries no OpenPGP payload,
+ * so retrying cannot change it. Offering Retry there would invite the user to tap it forever.
+ *
+ * Pulled out as its own pure function — rather than left inline in [EmailDetailActivity]'s
+ * `renderReadOutcome` `when` — so this one decision has a JVM test with no Android framework
+ * involved, on a file where `isReturnDefaultValues = true` makes most other UI logic untestable.
+ */
+internal fun showsRetryButton(outcome: ReadOutcome): Boolean = outcome is ReadOutcome.FetchFailed
+
+/**
+ * The signature verdict actually safe to display for [outcome].
+ *
+ * [ReadOutcome.Decrypted.signature] can be non-[PgpSignatureState.NONE] — e.g.
+ * [PgpSignatureState.SIGNER_UNKNOWN] — even when [ReadOutcome.Decrypted.resolvedSender] is blank:
+ * [com.urlxl.mail.pgp.PgpPayloadResult.resolvedSender]'s own KDoc documents this ("empty when the
+ * server could not resolve one, e.g. a multi-mailbox From"), and a multi-mailbox `From` is exactly
+ * the attacker-separable shape the resolved-vs-raw-sender display rule exists for in the first
+ * place. Showing a verdict with no resolved mailbox to pin it to lets that verdict read as being
+ * about whatever raw sender text the screen still has on it — so with no resolved mailbox to
+ * display, this returns [PgpSignatureState.NONE]: there is nothing safe to say.
+ *
+ * A security rule, not a cosmetic one, which is why it is pulled out as its own pure, tested
+ * function rather than left as the compound boolean it replaced.
+ */
+internal fun displaySignatureVerdict(outcome: ReadOutcome.Decrypted): PgpSignatureState =
+    outcome.signature.takeIf { outcome.resolvedSender.isNotBlank() } ?: PgpSignatureState.NONE
+
+/**
+ * Whether Reply, Reply-All or Forward may be offered for a message in [state].
+ *
+ * False only for [PgpMessageState.CLIENT_PROTECTED] — see [EmailDetailActivity.applyReplyForwardAvailability]
+ * for why that has to hold even once the message is decrypted on screen: `POST /api/mail/draft`
+ * uploads to the server, so quoting a decrypted body into a reply would hand the server plaintext
+ * this mode exists to keep from it, and there is no encrypted send path in the app to make that
+ * safe.
+ *
+ * Pulled out as its own pure function for the same reason as [showsRetryButton] above: a JVM test
+ * with no Android framework, on a file where `isReturnDefaultValues = true` makes the Activity's
+ * own view-toggling logic untestable.
+ */
+internal fun mayReplyOrForward(state: PgpMessageState): Boolean = state != PgpMessageState.CLIENT_PROTECTED
+
+/**
+ * The [PgpMessageState] Reply/Reply-All/Forward should assume for [pgpEncrypted] before
+ * `renderBody`'s background fetch — which may make a network round trip for an uncached message,
+ * and may never complete at all if it throws — can report the real state.
+ *
+ * Fails closed: an encrypted message defaults to [PgpMessageState.CLIENT_PROTECTED], the one state
+ * [mayReplyOrForward] refuses, rather than [PgpMessageState.NONE]. The alternative — assume
+ * replyable until told otherwise — leaves the buttons live for the entire fetch on exactly the
+ * messages this task exists to protect, and forever if the fetch throws. An unencrypted message
+ * defaults to [PgpMessageState.NONE] since it was never going to become [PgpMessageState.CLIENT_PROTECTED]
+ * regardless of how the fetch turns out, so there's no reason to hold it hostage to the same wait.
+ *
+ * Pulled out as its own pure function, rather than left as the ternary it replaced inline in
+ * `onCreate`, so this specific fail-closed default has a JVM test independent of the Activity that
+ * reads it — `EmailDetailActivity` itself can't be instantiated in this module's plain JUnit
+ * tests (no Robolectric; see the other Android-framework-free notes throughout this file's test
+ * class).
+ */
+internal fun initialReplyForwardState(pgpEncrypted: Boolean): PgpMessageState =
+    if (pgpEncrypted) PgpMessageState.CLIENT_PROTECTED else PgpMessageState.NONE
 
 /**
  * The sender's filename, reduced to something safe to hand MediaStore.

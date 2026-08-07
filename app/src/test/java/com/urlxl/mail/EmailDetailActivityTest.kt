@@ -1,5 +1,9 @@
 package com.urlxl.mail
 
+import com.urlxl.mail.pgp.DecryptedBody
+import com.urlxl.mail.pgp.PgpMessageState
+import com.urlxl.mail.pgp.PgpSignatureState
+import com.urlxl.mail.pgp.ReadOutcome
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -248,4 +252,132 @@ class EmailDetailActivityTest {
     // Robolectric in this module — see every other test file's Android-framework-free style) —
     // covered instead by buildEmailBodyHtml's own isDark parameter above, and by manual/instrumented
     // verification that a dark theme's palette.bg does trigger the override branch in the real app.
+
+    // ---- showsRetryButton: which ReadOutcome offers a Retry tap ----
+
+    /** Every non-FetchFailed row of the exit table, once each. The two easiest to confuse with a
+     *  transport failure are the actual target: [ReadOutcome.NoEncryptedContent] is terminal (the
+     *  server answered "no payload"; retrying cannot change that) and [ReadOutcome.DecryptFailed]
+     *  is a local decrypt failure, not a fetch failure — neither should offer Retry. */
+    private val nonRetryableOutcomes = listOf(
+        ReadOutcome.Decrypted(
+            body = DecryptedBody(html = "<p>hi</p>", plain = null, protectedSubject = null),
+            signature = PgpSignatureState.NONE,
+            resolvedSender = "bob@example.com",
+        ),
+        ReadOutcome.NeedsUnlock,
+        ReadOutcome.Cancelled,
+        ReadOutcome.NotEnrolled,
+        ReadOutcome.NoSecureLockScreen,
+        ReadOutcome.TooLarge,
+        ReadOutcome.NotClientProtected,
+        ReadOutcome.UnsealFailed("could not open"),
+        ReadOutcome.NoEncryptedContent,
+        ReadOutcome.DecryptFailed("bad padding"),
+    )
+
+    @Test
+    fun showsRetryButton_isTrueOnlyForFetchFailed() {
+        assertTrue(showsRetryButton(ReadOutcome.FetchFailed("network error")))
+    }
+
+    @Test
+    fun showsRetryButton_isFalseForEveryOtherExitTableRow() {
+        nonRetryableOutcomes.forEach { outcome ->
+            assertFalse("expected no Retry for $outcome", showsRetryButton(outcome))
+        }
+    }
+
+    /** [ReadOutcome.NoEncryptedContent] specifically: the server answered, so a Retry button here
+     *  would invite the user to tap it forever. Deliberate-break check inline, not just a shared
+     *  loop assertion, since this is the one row the brief calls out by name as never-Retry. */
+    @Test
+    fun showsRetryButton_isFalseForNoEncryptedContent() {
+        assertFalse(showsRetryButton(ReadOutcome.NoEncryptedContent))
+    }
+
+    // ---- displaySignatureVerdict: the verdict actually safe to display ----
+
+    private val decryptedBody = DecryptedBody(html = "<p>hi</p>", plain = null, protectedSubject = null)
+
+    @Test
+    fun displaySignatureVerdict_passesThroughASignatureWithAResolvedSender() {
+        val outcome = ReadOutcome.Decrypted(
+            body = decryptedBody,
+            signature = PgpSignatureState.VERIFIED_CONFIRMED,
+            resolvedSender = "bob@example.com",
+        )
+        assertEquals(PgpSignatureState.VERIFIED_CONFIRMED, displaySignatureVerdict(outcome))
+    }
+
+    /**
+     * The security case this function exists for: PgpPayloadResult.resolvedSender's own KDoc says
+     * it is empty "e.g. [for] a multi-mailbox From" — exactly the attacker-separable shape ("Bob
+     * Smith (Eve <eve@evil.example>) <bob@example.com>" and its relatives) the resolved-vs-raw
+     * sender display rule exists for. A non-NONE signature with no resolved mailbox to pin it to
+     * must not reach the screen, where it would read as being about whatever raw sender text is
+     * still displayed.
+     */
+    @Test
+    fun displaySignatureVerdict_suppressesASignatureWithNoResolvedSender() {
+        val outcome = ReadOutcome.Decrypted(
+            body = decryptedBody,
+            signature = PgpSignatureState.SIGNER_UNKNOWN,
+            resolvedSender = "",
+        )
+        assertEquals(PgpSignatureState.NONE, displaySignatureVerdict(outcome))
+    }
+
+    @Test
+    fun displaySignatureVerdict_isNoneWhenTheReadOutcomeItselfIsNone() {
+        val outcome = ReadOutcome.Decrypted(
+            body = decryptedBody,
+            signature = PgpSignatureState.NONE,
+            resolvedSender = "bob@example.com",
+        )
+        assertEquals(PgpSignatureState.NONE, displaySignatureVerdict(outcome))
+    }
+
+    // ---- mayReplyOrForward: which PgpMessageState blocks Reply/Reply-All/Forward ----
+
+    /** The one state Task 11 exists for: no safe destination for a quoted decrypted body, so this
+     *  must be false even once the message has been decrypted on screen — see
+     *  EmailDetailActivity.applyReplyForwardAvailability's KDoc for why that has to hold
+     *  unconditionally rather than just before decrypt succeeds. */
+    @Test
+    fun mayReplyOrForward_isFalseForClientProtected() {
+        assertFalse(mayReplyOrForward(PgpMessageState.CLIENT_PROTECTED))
+    }
+
+    /** Every other state must stay true, so a change that widens the block (e.g. mistakenly
+     *  gating on DECRYPT_FAILED too) fails a test rather than shipping silently disabled buttons
+     *  on messages with a perfectly good server-side body. Enumerated via [PgpMessageState.entries]
+     *  rather than hand-listed, so a future state added to the enum is covered automatically
+     *  instead of silently passing unchecked. */
+    @Test
+    fun mayReplyOrForward_isTrueForEveryOtherState() {
+        PgpMessageState.entries.filter { it != PgpMessageState.CLIENT_PROTECTED }.forEach { state ->
+            assertTrue("expected $state to allow reply/forward", mayReplyOrForward(state))
+        }
+    }
+
+    // ---- initialReplyForwardState: the fail-closed default before renderBody's fetch answers ----
+
+    /** The case this function exists for: `renderBody`'s background fetch may take a network
+     *  round trip, or never complete at all if it throws, so an encrypted message must default to
+     *  blocked — not to allowed-until-proven-otherwise — or Reply is live for that whole window on
+     *  exactly the messages this task exists to protect. */
+    @Test
+    fun initialReplyForwardState_failsClosedWhenEncrypted() {
+        val state = initialReplyForwardState(pgpEncrypted = true)
+        assertEquals(PgpMessageState.CLIENT_PROTECTED, state)
+        assertFalse(mayReplyOrForward(state))
+    }
+
+    /** An unencrypted message was never going to become CLIENT_PROTECTED, so it isn't held
+     *  hostage to the same wait. */
+    @Test
+    fun initialReplyForwardState_isNoneWhenNotEncrypted() {
+        assertEquals(PgpMessageState.NONE, initialReplyForwardState(pgpEncrypted = false))
+    }
 }
