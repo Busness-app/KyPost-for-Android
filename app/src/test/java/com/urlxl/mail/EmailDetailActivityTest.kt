@@ -349,18 +349,35 @@ class EmailDetailActivityTest {
         assertFalse(mayReplyOrForward(PgpMessageState.CLIENT_PROTECTED))
     }
 
-    /** Deliberate-break check: every other state must stay true, so a change that widens the
-     *  block (e.g. mistakenly gating on DECRYPT_FAILED too) fails a test rather than shipping
-     *  silently disabled buttons on messages with a perfectly good server-side body. */
+    /** Every other state must stay true, so a change that widens the block (e.g. mistakenly
+     *  gating on DECRYPT_FAILED too) fails a test rather than shipping silently disabled buttons
+     *  on messages with a perfectly good server-side body. Enumerated via [PgpMessageState.entries]
+     *  rather than hand-listed, so a future state added to the enum is covered automatically
+     *  instead of silently passing unchecked. */
     @Test
     fun mayReplyOrForward_isTrueForEveryOtherState() {
-        listOf(
-            PgpMessageState.NONE,
-            PgpMessageState.DECRYPT_FAILED,
-            PgpMessageState.DECRYPTED_BY_SERVER,
-            PgpMessageState.BODY_UNAVAILABLE,
-        ).forEach { state ->
+        PgpMessageState.entries.filter { it != PgpMessageState.CLIENT_PROTECTED }.forEach { state ->
             assertTrue("expected $state to allow reply/forward", mayReplyOrForward(state))
         }
+    }
+
+    // ---- initialReplyForwardState: the fail-closed default before renderBody's fetch answers ----
+
+    /** The case this function exists for: `renderBody`'s background fetch may take a network
+     *  round trip, or never complete at all if it throws, so an encrypted message must default to
+     *  blocked — not to allowed-until-proven-otherwise — or Reply is live for that whole window on
+     *  exactly the messages this task exists to protect. */
+    @Test
+    fun initialReplyForwardState_failsClosedWhenEncrypted() {
+        val state = initialReplyForwardState(pgpEncrypted = true)
+        assertEquals(PgpMessageState.CLIENT_PROTECTED, state)
+        assertFalse(mayReplyOrForward(state))
+    }
+
+    /** An unencrypted message was never going to become CLIENT_PROTECTED, so it isn't held
+     *  hostage to the same wait. */
+    @Test
+    fun initialReplyForwardState_isNoneWhenNotEncrypted() {
+        assertEquals(PgpMessageState.NONE, initialReplyForwardState(pgpEncrypted = false))
     }
 }

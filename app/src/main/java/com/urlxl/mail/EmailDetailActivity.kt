@@ -53,10 +53,26 @@ class EmailDetailActivity : LockedActivity() {
     private lateinit var actionButtons: List<ImageButton>
 
     /** [actionReply], [actionReplyAll] and [actionForward] — the subset of [actionButtons] that
-     *  [applyReplyForwardAvailability] disables for a [PgpMessageState.CLIENT_PROTECTED] message.
-     *  Kept as its own field, rather than re-derived from [actionButtons] by position, so which
-     *  three buttons this reaches cannot silently drift if [actionButtons]'s order ever changes. */
+     *  [applyReplyForwardAvailability] visually marks as unavailable for a
+     *  [PgpMessageState.CLIENT_PROTECTED] message. Kept as its own field, rather than re-derived
+     *  from [actionButtons] by position, so which three buttons this reaches cannot silently drift
+     *  if [actionButtons]'s order ever changes. */
     private lateinit var replyForwardButtons: List<ImageButton>
+
+    /**
+     * The state Reply/Reply-All/Forward's click listeners check via [mayReplyOrForward] before
+     * doing anything.
+     *
+     * Fail closed. [renderBody] runs on a background thread and, for an uncached message, makes a
+     * network round trip before it can report a real [PgpMessageState] — see its own KDoc on
+     * `bodyUnavailable` — and may never report one at all if it throws (caught by the `runCatching`
+     * around its call site, which only toasts). Defaulting to [PgpMessageState.NONE] here would
+     * leave Reply live for that entire window on exactly the messages this task exists to protect.
+     * Set to the real, encrypted-or-not verdict as soon as the Intent extra is read in `onCreate`
+     * (synchronous, no fetch involved), then overwritten with the definitive value once
+     * [renderBody] resolves it.
+     */
+    private var replyForwardState: PgpMessageState = PgpMessageState.CLIENT_PROTECTED
     private lateinit var divider: View
     private lateinit var webView: WebView
     private lateinit var lockedPlaceholder: android.widget.ImageView
@@ -125,6 +141,13 @@ class EmailDetailActivity : LockedActivity() {
         val emailPreview = intent.getStringExtra("email_preview") ?: "No content"
         val hasAttachments = intent.getBooleanExtra("email_has_attachments", false)
         val pgpEncrypted = intent.getBooleanExtra("email_pgp_encrypted", false)
+        // Refines the fail-closed CLIENT_PROTECTED default above as soon as we synchronously know
+        // better: an unencrypted message was never going to become CLIENT_PROTECTED, so there is no
+        // reason to hold its Reply button hostage to the body fetch below. An encrypted one keeps
+        // the fail-closed default until renderBody reports the real state. See
+        // initialReplyForwardState's own KDoc for why this is a pure function rather than the
+        // ternary it replaced.
+        replyForwardState = initialReplyForwardState(pgpEncrypted)
         val pgpDecryptError = intent.getStringExtra("email_pgp_decrypt_error").orEmpty()
         pgpSignatureState = com.urlxl.mail.pgp.pgpSignatureStateOf(
             pgpSigned = intent.getBooleanExtra("email_pgp_signed", false),
@@ -185,6 +208,14 @@ class EmailDetailActivity : LockedActivity() {
             runMailActionAndFinish(getString(R.string.action_junk), emailId) { it.spam(emailId, emailFolder) }
         }
         actionReply.setOnClickListener {
+            // Checked here, not via isEnabled = false: a disabled ImageButton's onTouchEvent
+            // returns before performClick ever runs, which would make this very explanation
+            // unreachable. See applyReplyForwardAvailability's KDoc for the rest of the reasoning
+            // (fail-closed default, alpha-only visual signal, contentDescription for TalkBack).
+            if (!mayReplyOrForward(replyForwardState)) {
+                Toast.makeText(this, R.string.email_pgp_reply_disabled, Toast.LENGTH_LONG).show()
+                return@setOnClickListener
+            }
             quotedBodyHtmlAsync(emailPreview) { quoted ->
                 openCompose(
                     to = extractAddress(emailSender),
@@ -194,6 +225,10 @@ class EmailDetailActivity : LockedActivity() {
             }
         }
         actionReplyAll.setOnClickListener {
+            if (!mayReplyOrForward(replyForwardState)) {
+                Toast.makeText(this, R.string.email_pgp_reply_disabled, Toast.LENGTH_LONG).show()
+                return@setOnClickListener
+            }
             val recipients = (listOf(extractAddress(emailSender)) + toRecipients.map(::extractAddress) + ccRecipients.map(::extractAddress))
                 .distinct()
                 .filter { it.isNotBlank() }
@@ -206,6 +241,10 @@ class EmailDetailActivity : LockedActivity() {
             }
         }
         actionForward.setOnClickListener {
+            if (!mayReplyOrForward(replyForwardState)) {
+                Toast.makeText(this, R.string.email_pgp_reply_disabled, Toast.LENGTH_LONG).show()
+                return@setOnClickListener
+            }
             forwardMessage(emailId, emailFolder, emailSender, emailSubject, emailPreview)
         }
 
@@ -535,8 +574,8 @@ class EmailDetailActivity : LockedActivity() {
     }
 
     /**
-     * Disables Reply, Reply-All and Forward for every [PgpMessageState.CLIENT_PROTECTED] message,
-     * decrypted or not.
+     * Records the definitive [PgpMessageState] for Reply/Reply-All/Forward's own click-time check
+     * ([replyForwardState]) and updates the three buttons' visual state to match.
      *
      * `POST /api/mail/draft` uploads the draft to the server. Quoting a decrypted body into a
      * reply would hand the server the plaintext of a message this whole mode exists to keep from
@@ -545,17 +584,30 @@ class EmailDetailActivity : LockedActivity() {
      *
      * Unconditional rather than gated on decrypt success — see [mayReplyOrForward] — so a button
      * never starts working once a message opens; that would teach the user a rule that is not
-     * true. The disabled button still explains itself when tapped, rather than sitting there
-     * silently dead.
+     * true.
+     *
+     * Deliberately does NOT set `isEnabled = false`. `View.onTouchEvent` returns before
+     * `performClick()` ever runs on a disabled view, which would make the explanatory Toast in
+     * each click listener unreachable dead code — a grey button the user taps for nothing. `alpha`
+     * carries the visual signal instead, and [contentDescription][View.setContentDescription]
+     * carries the same "why" to TalkBack that `isEnabled = false` would otherwise have announced
+     * for free (as "disabled", with no reason) — the same substitution [EmailAdapter] already makes
+     * for the inbox row's own PGP markers, and for the same reason: an emoji or a plain disabled
+     * state tells a screen-reader user nothing a sighted user wouldn't also be missing.
+     *
+     * Only touches the buttons when [pgpState] blocks them. `renderBody` calls this exactly once
+     * per Activity instance, and every one of these `ImageButton`s already carries its own
+     * `android:contentDescription` ("Reply", "Reply all", "Forward") from the layout — clearing
+     * that unconditionally on the allowed path would silently strip those labels from every
+     * ordinary message, not just this one's.
      */
     private fun applyReplyForwardAvailability(pgpState: PgpMessageState) {
+        replyForwardState = pgpState
         if (mayReplyOrForward(pgpState)) return
+        val notice = getString(R.string.email_pgp_reply_disabled)
         replyForwardButtons.forEach { button ->
-            button.isEnabled = false
             button.alpha = 0.4f
-            button.setOnClickListener {
-                Toast.makeText(this, R.string.email_pgp_reply_disabled, Toast.LENGTH_LONG).show()
-            }
+            button.contentDescription = notice
         }
     }
 
@@ -1180,6 +1232,27 @@ internal fun displaySignatureVerdict(outcome: ReadOutcome.Decrypted): PgpSignatu
  * own view-toggling logic untestable.
  */
 internal fun mayReplyOrForward(state: PgpMessageState): Boolean = state != PgpMessageState.CLIENT_PROTECTED
+
+/**
+ * The [PgpMessageState] Reply/Reply-All/Forward should assume for [pgpEncrypted] before
+ * `renderBody`'s background fetch — which may make a network round trip for an uncached message,
+ * and may never complete at all if it throws — can report the real state.
+ *
+ * Fails closed: an encrypted message defaults to [PgpMessageState.CLIENT_PROTECTED], the one state
+ * [mayReplyOrForward] refuses, rather than [PgpMessageState.NONE]. The alternative — assume
+ * replyable until told otherwise — leaves the buttons live for the entire fetch on exactly the
+ * messages this task exists to protect, and forever if the fetch throws. An unencrypted message
+ * defaults to [PgpMessageState.NONE] since it was never going to become [PgpMessageState.CLIENT_PROTECTED]
+ * regardless of how the fetch turns out, so there's no reason to hold it hostage to the same wait.
+ *
+ * Pulled out as its own pure function, rather than left as the ternary it replaced inline in
+ * `onCreate`, so this specific fail-closed default has a JVM test independent of the Activity that
+ * reads it — `EmailDetailActivity` itself can't be instantiated in this module's plain JUnit
+ * tests (no Robolectric; see the other Android-framework-free notes throughout this file's test
+ * class).
+ */
+internal fun initialReplyForwardState(pgpEncrypted: Boolean): PgpMessageState =
+    if (pgpEncrypted) PgpMessageState.CLIENT_PROTECTED else PgpMessageState.NONE
 
 /**
  * The sender's filename, reduced to something safe to hand MediaStore.
