@@ -25,6 +25,17 @@
       <trusted-artifacts>
          <trust file=".*-sources[.]jar" regex="true"/>
          <trust file=".*-javadoc[.]jar" regex="true"/>
+         <!--
+            The same sync also fetches gradle-9.6.0-src.zip from Gradle's distribution repository, so
+            build scripts can navigate into Gradle's own API. It is a src.zip rather than a
+            sources.jar, so the rule above does not cover it, and it was the single remaining failure
+            after that rule landed.
+
+            Scoped to the gradle:gradle component instead of a bare ".*-src[.]zip", which would extend
+            trust to any third party publishing that suffix. Left version-free so a Gradle upgrade
+            does not reintroduce the same broken sync.
+         -->
+         <trust group="gradle" name="gradle" file=".*-src[.]zip" regex="true"/>
       </trusted-artifacts>
    </configuration>
    <components>
