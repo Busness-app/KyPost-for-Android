@@ -2442,20 +2442,8 @@ internal class EncryptedMessageReader(
             is PgpPayloadResult.Failed -> return ReadOutcome.FetchFailed(result.message)
         }
 
-        // A signed-but-not-encrypted message arrives with a readable body and a detached
-        // signature; there is nothing to decrypt.
-        if (payload.encryptedPayload.isBlank()) {
-            val raw = PgpDecryptor.verifyDetached(
-                armoredPublicKey = payload.signerKeys.firstOrNull { !it.conflict }?.publicKey.orEmpty(),
-                body = payload.body.toByteArray(Charsets.UTF_8),
-                armoredSignature = payload.signaturePayload,
-            )
-            val parsed = PgpMimeReader.read(payload.body.toByteArray(Charsets.UTF_8))
-                ?: DecryptedBody(html = null, plain = payload.body, protectedSubject = null)
-            return ReadOutcome.Decrypted(parsed, signatureStateFor(raw, sender, payload.signerKeys))
-        }
-
-        // Only keys bound to THIS sender, and never a conflicted one.
+        // Only keys bound to THIS sender, and never a conflicted one. Computed before either
+        // signature path below, because both need it.
         //
         // Narrowing the candidate set — rather than verifying against the whole address book and
         // post-checking — is what stops a forgery being reported as verified. Offering every key
@@ -2473,6 +2461,32 @@ internal class EncryptedMessageReader(
         val offeredKeys = payload.signerKeys
             .filter { !it.conflict && it.addresses.any { a -> a.trim().lowercase() == senderAddress } }
             .map { it.publicKey }
+
+        // A signed-but-not-encrypted message arrives with a readable body and a detached
+        // signature; there is nothing to decrypt.
+        //
+        // The offered key is narrowed to the displayed sender here too. Taking "whichever
+        // non-conflicted contact sorts first" would fail verification for a genuine
+        // detached-signed message from anyone else — and signatureStateFor maps a bound sender
+        // plus an unverifiable signature to INVALID, which tells the user to treat a legitimate
+        // correspondent's message as untrusted. Same narrowing rule as the encrypted path above,
+        // for the same reason.
+        if (payload.encryptedPayload.isBlank()) {
+            val raw = offeredKeys.firstNotNullOfOrNull { armored ->
+                PgpDecryptor.verifyDetached(
+                    armoredPublicKey = armored,
+                    body = payload.body.toByteArray(Charsets.UTF_8),
+                    armoredSignature = payload.signaturePayload,
+                ).takeIf { it.valid }
+            } ?: PgpDecryptor.verifyDetached(
+                armoredPublicKey = offeredKeys.firstOrNull().orEmpty(),
+                body = payload.body.toByteArray(Charsets.UTF_8),
+                armoredSignature = payload.signaturePayload,
+            )
+            val parsed = PgpMimeReader.read(payload.body.toByteArray(Charsets.UTF_8))
+                ?: DecryptedBody(html = null, plain = payload.body, protectedSubject = null)
+            return ReadOutcome.Decrypted(parsed, signatureStateFor(raw, sender, payload.signerKeys))
+        }
 
         val decrypted = when (
             val result = PgpDecryptor.decrypt(key, payload.encryptedPayload, offeredKeys)
