@@ -240,7 +240,9 @@ Expected: PASS.
 
 ```bash
 cd /home/yoshi/git/kypost-server
-git checkout -b fix/client-protected-pgp-flags
+# Branch off main, which is synced with upstream. Do NOT stack this on whatever
+# branch happens to be checked out.
+git checkout main && git checkout -b fix/client-protected-pgp-flags
 git add backend/internal/mailcache/store.go backend/internal/mailcache/store_test.go backend/internal/api/server_inbox.go
 git commit -m "fix(mail): keep the PGP flags for bodyless client-protected messages
 
@@ -492,11 +494,24 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
       data class Failed(val message: String) : DecryptResult()
   }
   internal object PgpDecryptor {
-      fun decrypt(armoredPrivateKey: String, armoredMessage: String): DecryptResult
+      fun decrypt(
+          armoredPrivateKey: String,
+          armoredMessage: String,
+          signerPublicKeys: List<String>,
+      ): DecryptResult
       fun verifyDetached(armoredPublicKey: String, body: ByteArray, armoredSignature: String): RawSignature
   }
   ```
   Task 5 (`SignerBinding`) consumes `RawSignature`. Task 8 consumes `DecryptResult`.
+
+  **`signerPublicKeys` has no default, deliberately.** A one-pass signature can only be completed
+  against the signer's public key, and this object never takes one from the message itself — a
+  message that vouches for itself proves only that whoever wrote it owned a key. Task 8 passes the
+  address-bound keys. If this parameter could be omitted, `valid` would silently stay false, and
+  `signatureStateFor` maps *signed + bound key + not valid* to `INVALID` — rendering "this message's
+  signature does not match the sender it claims to be from" for **every** legitimately signed
+  message from a contact whose key the user actually holds. Requiring the argument makes that
+  mistake a compile error rather than a false accusation.
 
 - [ ] **Step 1: Generate the test fixture**
 
@@ -564,11 +579,18 @@ import org.junit.Test
  */
 class PgpDecryptorTest {
 
+    /** The signer keys the reader will pass in production. A secret key ring also exposes its
+     *  public keys, so the fixture can verify its own signature — acceptable HERE because
+     *  [SignerBinding] is what forbids self-verification in production: it only ever supplies keys
+     *  the address book bound to the displayed sender. */
+    private val signerKeys = listOf(TestPgpPrivateKey.ARMORED_PRIVATE)
+
     @Test
     fun decryptsAMessageEncryptedByGpg() {
         val result = PgpDecryptor.decrypt(
             TestPgpPrivateKey.ARMORED_PRIVATE,
             TestPgpPrivateKey.ARMORED_MESSAGE,
+            signerKeys,
         )
 
         val ok = result as? DecryptResult.Ok
@@ -581,6 +603,7 @@ class PgpDecryptorTest {
         val ok = PgpDecryptor.decrypt(
             TestPgpPrivateKey.ARMORED_PRIVATE,
             TestPgpPrivateKey.ARMORED_MESSAGE,
+            signerKeys,
         ) as DecryptResult.Ok
 
         assertTrue("signature should be present", ok.signature.present)
@@ -588,8 +611,24 @@ class PgpDecryptorTest {
     }
 
     @Test
+    fun reportsAPresentSignatureAsUnverifiedWhenNoSignerKeyIsOffered() {
+        // Not "no signature": the message IS signed, and we simply cannot check it. The caller
+        // maps this through SignerBinding, which turns an unbound signer into SIGNER_UNKNOWN.
+        val ok = PgpDecryptor.decrypt(
+            TestPgpPrivateKey.ARMORED_PRIVATE,
+            TestPgpPrivateKey.ARMORED_MESSAGE,
+            emptyList(),
+        ) as DecryptResult.Ok
+
+        assertTrue("signature should still be reported as present", ok.signature.present)
+        assertEquals(false, ok.signature.valid)
+    }
+
+    @Test
     fun failsClosedOnAMessageThatIsNotOpenPGP() {
-        val result = PgpDecryptor.decrypt(TestPgpPrivateKey.ARMORED_PRIVATE, "not a pgp message")
+        val result = PgpDecryptor.decrypt(
+            TestPgpPrivateKey.ARMORED_PRIVATE, "not a pgp message", signerKeys,
+        )
 
         assertTrue("expected Failed, got $result", result is DecryptResult.Failed)
     }
@@ -597,7 +636,9 @@ class PgpDecryptorTest {
     @Test
     fun failsClosedWhenTheKeyCannotDecryptTheMessage() {
         // TestPgpKey is a different, unrelated pair — and a public key at that.
-        val result = PgpDecryptor.decrypt(TestPgpKey.ARMORED, TestPgpPrivateKey.ARMORED_MESSAGE)
+        val result = PgpDecryptor.decrypt(
+            TestPgpKey.ARMORED, TestPgpPrivateKey.ARMORED_MESSAGE, signerKeys,
+        )
 
         assertTrue("expected Failed, got $result", result is DecryptResult.Failed)
     }
@@ -670,7 +711,15 @@ internal sealed class DecryptResult {
  */
 internal object PgpDecryptor {
 
-    fun decrypt(armoredPrivateKey: String, armoredMessage: String): DecryptResult = runCatching {
+    fun decrypt(
+        armoredPrivateKey: String,
+        armoredMessage: String,
+        /** The public keys the address book binds to the displayed sender, from [SignerKey]. A
+         *  one-pass signature cannot be completed without one, and the key travelling inside the
+         *  signed message is deliberately never used: a message that vouches for itself proves
+         *  only that whoever wrote it owned a key. Empty means "present but unverifiable". */
+        signerPublicKeys: List<String>,
+    ): DecryptResult = runCatching {
         val secretKeys = PGPSecretKeyRingCollection(
             PGPUtil.getDecoderStream(armoredPrivateKey.byteInputStream(Charsets.UTF_8)),
             BcKeyFingerprintCalculator(),
@@ -704,7 +753,7 @@ internal object PgpDecryptor {
             return DecryptResult.Failed("this message is not encrypted to a key on this device")
         }
 
-        val (plaintext, signature) = readLiteral(clear)
+        val (plaintext, signature) = readLiteral(clear, signerPublicKeys)
 
         // Integrity protection is not optional. An unprotected message is malleable, and
         // accepting one would let a tampered ciphertext render as an ordinary message.
@@ -749,7 +798,10 @@ internal object PgpDecryptor {
      * split into "get the bytes" and "check the signature" — the one-pass form requires both in a
      * single traversal.
      */
-    private fun readLiteral(clear: InputStream): Pair<ByteArray, RawSignature> {
+    private fun readLiteral(
+        clear: InputStream,
+        signerPublicKeys: List<String>,
+    ): Pair<ByteArray, RawSignature> {
         var factory = org.bouncycastle.openpgp.jcajce.JcaPGPObjectFactory(clear)
         var onePass: org.bouncycastle.openpgp.PGPOnePassSignature? = null
         var obj = factory.nextObject()
@@ -766,8 +818,7 @@ internal object PgpDecryptor {
                     val out = ByteArrayOutputStream()
                     obj.inputStream.copyTo(out)
                     val bytes = out.toByteArray()
-                    val verdict = verifyOnePass(onePass, bytes, factory)
-                    return bytes to verdict
+                    return bytes to verifyOnePass(onePass, bytes, factory, signerPublicKeys)
                 }
             }
             obj = factory.nextObject()
@@ -779,27 +830,50 @@ internal object PgpDecryptor {
      * Completes a one-pass signature against the literal bytes just read.
      *
      * The signer's public key travels inside the signed message often enough to be tempting, and it
-     * is deliberately NOT used to self-verify here: a message that vouches for itself proves only
-     * that whoever wrote it owned a key. [SignerBinding] supplies the key, bound to the sender by
-     * the address book, and this reports only what the bytes support.
+     * is deliberately NOT used to self-verify: a message that vouches for itself proves only that
+     * whoever wrote it owned a key. Only [signerPublicKeys] — which the address book bound to the
+     * displayed sender — can produce `valid = true`.
+     *
+     * `present = true, valid = false` with no offered key is **not** an accusation. It means "signed,
+     * unverifiable here", and [signatureStateFor] is what decides whether that reads as
+     * SIGNER_UNKNOWN (no key bound) or INVALID (a key is bound and it did not match).
      */
     private fun verifyOnePass(
         onePass: org.bouncycastle.openpgp.PGPOnePassSignature?,
         body: ByteArray,
         factory: org.bouncycastle.openpgp.jcajce.JcaPGPObjectFactory,
+        signerPublicKeys: List<String>,
     ): RawSignature {
         if (onePass == null) return RawSignature(present = false, valid = false, signerKeyId = 0L)
         val tail = generateSequence { factory.nextObject() }
             .filterIsInstance<PGPSignatureList>()
             .firstOrNull()
             ?: return RawSignature(present = true, valid = false, signerKeyId = onePass.keyID)
-        return RawSignature(present = true, valid = false, signerKeyId = tail[0].keyID)
-            .copy(valid = false)
+
+        val key = signerPublicKeys.asSequence()
+            .mapNotNull { armored ->
+                runCatching {
+                    PGPPublicKeyRingCollection(
+                        PGPUtil.getDecoderStream(armored.byteInputStream(Charsets.UTF_8)),
+                        BcKeyFingerprintCalculator(),
+                    ).getPublicKey(onePass.keyID)
+                }.getOrNull()
+            }
+            .firstOrNull()
+            ?: return RawSignature(present = true, valid = false, signerKeyId = onePass.keyID)
+
+        val valid = runCatching {
+            onePass.init(BcPGPContentVerifierBuilderProvider(), key)
+            onePass.update(body)
+            onePass.verify(tail[0])
+        }.getOrDefault(false)
+
+        return RawSignature(present = true, valid = valid, signerKeyId = onePass.keyID)
     }
 }
 ```
 
-> **Implementer note for `verifyOnePass`:** the stub above deliberately reports `valid = false`, because a one-pass signature can only be completed against the signer's public key, which this object does not hold. Task 5 supplies it. Wire it as follows and delete this note: change `PgpDecryptor.decrypt` to accept an optional `signerPublicKeys: List<String> = emptyList()`, resolve `onePass.keyID` against them with `BcPGPContentVerifierBuilderProvider`, call `onePass.init(provider, key)`, `onePass.update(body)`, and return `onePass.verify(tail[0])` as `valid`. The two `PgpDecryptorTest` signature assertions pass `listOf(TestPgpPrivateKey.ARMORED_PRIVATE)` — a secret key ring also exposes its public keys — so the test vector self-verifies, which is acceptable *in the test* because Task 5 is what forbids self-verification in production.
+> A `PGPSecretKeyRingCollection`'s armored form also parses as a `PGPPublicKeyRingCollection`, which is why the test can pass `TestPgpPrivateKey.ARMORED_PRIVATE` as a signer key. In production Task 8 passes only `SignerKey.publicKey` values.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
@@ -807,7 +881,7 @@ internal object PgpDecryptor {
 ./gradlew :app:testDebugUnitTest --tests "com.urlxl.mail.pgp.PgpDecryptorTest"
 ```
 
-Expected: PASS, 4 tests.
+Expected: PASS, 5 tests.
 
 - [ ] **Step 6: Prove by deliberate break**
 
@@ -2151,6 +2225,48 @@ class EncryptedMessageReaderTest {
         // it owned a key.
         assertEquals(PgpSignatureState.SIGNER_UNKNOWN, outcome.signature)
     }
+
+    @Test
+    fun aBoundKeyMakesAGenuineSignatureVerifyRatherThanAccusingTheSender() {
+        // The regression this exists for: if the reader does not hand the bound keys to
+        // PgpDecryptor, `valid` stays false, and signatureStateFor maps signed + bound + invalid
+        // to INVALID — telling the user that every legitimately signed message from a
+        // correspondent they DO hold a key for is an impersonation.
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE)
+        val bound = SignerKey(
+            addresses = listOf("bob@example.com"),
+            // A secret key ring's armored form also parses as a public key ring, so the fixture
+            // can stand in for the sender's published key.
+            publicKey = TestPgpPrivateKey.ARMORED_PRIVATE,
+            verified = false,
+            source = "autocrypt",
+            conflict = false,
+        )
+        val (r, _) = reader(payloads = FakePayloadSource(successPayload(signerKeys = listOf(bound))))
+
+        val outcome = read(r, unlockIfNeeded = false) as ReadOutcome.Decrypted
+
+        assertEquals(PgpSignatureState.VERIFIED_SEEN_BEFORE, outcome.signature)
+    }
+
+    @Test
+    fun aConflictedKeyIsNeverOfferedToTheSignatureCheck() {
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE)
+        val conflicted = SignerKey(
+            addresses = listOf("bob@example.com"),
+            publicKey = TestPgpPrivateKey.ARMORED_PRIVATE,
+            verified = false,
+            source = "autocrypt",
+            conflict = true,
+        )
+        val (r, _) = reader(
+            payloads = FakePayloadSource(successPayload(signerKeys = listOf(conflicted))),
+        )
+
+        val outcome = read(r, unlockIfNeeded = false) as ReadOutcome.Decrypted
+
+        assertEquals(PgpSignatureState.KEY_CHANGED, outcome.signature)
+    }
 }
 ```
 
@@ -2258,7 +2374,15 @@ internal class EncryptedMessageReader(
             return ReadOutcome.Decrypted(parsed, signatureStateFor(raw, sender, payload.signerKeys))
         }
 
-        val decrypted = when (val result = PgpDecryptor.decrypt(key, payload.encryptedPayload)) {
+        // Only keys the address book bound to a sender, and never a conflicted one. Passing these
+        // is what lets a one-pass signature verify at all; omitting them would report every signed
+        // message as unverified, which signatureStateFor turns into INVALID whenever a key IS
+        // bound — a false accusation against exactly the correspondents the user knows best.
+        val offeredKeys = payload.signerKeys.filter { !it.conflict }.map { it.publicKey }
+
+        val decrypted = when (
+            val result = PgpDecryptor.decrypt(key, payload.encryptedPayload, offeredKeys)
+        ) {
             is DecryptResult.Ok -> result
             // Deliberately does NOT clear EnrollmentSession: one message failing says nothing
             // about the held key, and clearing would re-prompt for every later message.
@@ -2282,7 +2406,7 @@ internal class EncryptedMessageReader(
 ./gradlew :app:testDebugUnitTest --tests "com.urlxl.mail.pgp.EncryptedMessageReaderTest"
 ```
 
-Expected: PASS, 11 tests.
+Expected: PASS, 13 tests.
 
 - [ ] **Step 6: Prove by deliberate break**
 
@@ -2316,7 +2440,6 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `app/src/main/java/com/urlxl/mail/KyPostApp.kt`
-- Test: `app/src/test/java/com/urlxl/mail/pgp/EnrollmentSessionTest.kt` (extend)
 
 **Interfaces:**
 - Consumes: `EnrollmentSession.clear()`.
@@ -2324,33 +2447,9 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 **Background.** `AppLockManager.lockNow()` **already** clears `EnrollmentSession` (line 98), tested at `AppLockManagerTest.kt:289`. `onTrimMemory` exists nowhere in the app — that half is genuinely unbuilt. Do **not** route this through `InMemoryPlaintext`: its KDoc records that it is deliberately not called from `lockNow()` because the draft cache must survive an ordinary lock. The key holder has the opposite requirement.
 
-- [ ] **Step 1: Write the failing test**
+**No new unit test, deliberately.** The deliverable is an `Application` lifecycle callback with no JVM seam, and `EnrollmentSession.clear()` is already pinned by `EnrollmentSessionTest`. A test added here would pass before the change as well as after, gating nothing — which the review rubric treats as a defect in its own right. The verification is Step 3's grep and the manual pass in Task 13.
 
-Add to `app/src/test/java/com/urlxl/mail/pgp/EnrollmentSessionTest.kt`:
-
-```kotlin
-    @Test
-    fun clearZeroesTheBackingArraySoAHeapDumpFindsNothing() {
-        // Already covered, but restated next to the trim-memory rule it justifies: a String's
-        // backing array cannot be wiped, which is why this holder is a CharArray.
-        EnrollmentSession.put("-----BEGIN PGP PRIVATE KEY BLOCK-----")
-        val backing = EnrollmentSession.backingArrayForTest()
-
-        EnrollmentSession.clear()
-
-        assertTrue("backing array still holds key material", backing.all { it == ' ' })
-    }
-```
-
-- [ ] **Step 2: Run it to verify it passes already**
-
-```bash
-./gradlew :app:testDebugUnitTest --tests "com.urlxl.mail.pgp.EnrollmentSessionTest"
-```
-
-Expected: PASS. This one documents rather than drives; the behaviour under test in this task is an `Application` callback, which has no JVM test seam and is verified in Step 5 by inspection plus the manual pass.
-
-- [ ] **Step 3: Add the callback**
+- [ ] **Step 1: Add the callback**
 
 In `app/src/main/java/com/urlxl/mail/KyPostApp.kt`, add to the `Application` subclass:
 
@@ -2373,7 +2472,7 @@ In `app/src/main/java/com/urlxl/mail/KyPostApp.kt`, add to the `Application` sub
     }
 ```
 
-- [ ] **Step 4: Verify it compiles and the suite is green**
+- [ ] **Step 2: Verify it compiles and the suite is green**
 
 ```bash
 ./gradlew :app:assembleDebug :app:testDebugUnitTest
@@ -2381,7 +2480,7 @@ In `app/src/main/java/com/urlxl/mail/KyPostApp.kt`, add to the `Application` sub
 
 Expected: BUILD SUCCESSFUL.
 
-- [ ] **Step 5: Confirm the two policies did not get swapped**
+- [ ] **Step 3: Confirm the two policies did not get swapped**
 
 ```bash
 grep -n "EnrollmentSession\|InMemoryPlaintext" app/src/main/java/com/urlxl/mail/KyPostApp.kt \
@@ -2390,11 +2489,10 @@ grep -n "EnrollmentSession\|InMemoryPlaintext" app/src/main/java/com/urlxl/mail/
 
 Expected: `KyPostApp.onTrimMemory` and `AppLockManager.lockNow` both name `EnrollmentSession`; **neither** names `InMemoryPlaintext`.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add app/src/main/java/com/urlxl/mail/KyPostApp.kt \
-        app/src/test/java/com/urlxl/mail/pgp/EnrollmentSessionTest.kt
+git add app/src/main/java/com/urlxl/mail/KyPostApp.kt
 git commit -m "feat(security): drop the opened PGP key on onTrimMemory
 
 lockNow already cleared it; onTrimMemory existed nowhere in the app. A
