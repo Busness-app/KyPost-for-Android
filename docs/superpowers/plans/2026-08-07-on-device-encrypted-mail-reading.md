@@ -1700,6 +1700,11 @@ internal sealed class PgpPayloadResult {
          *  alongside a detached signature in order to verify it. Empty when encrypted. */
         val body: String,
         val signerKeys: List<SignerKey>,
+        /** The raw From header as the server re-rendered it. Display only — never bind on it. */
+        val sender: String,
+        /** The addr-spec the server resolved and narrowed [signerKeys] to. The verdict is about
+         *  THIS. Empty when the server could not resolve one, e.g. a multi-mailbox From. */
+        val resolvedSender: String,
     ) : PgpPayloadResult()
 
     /** 409 — this account's key is not client-protected. A bug if it is ever seen here. */
@@ -1731,6 +1736,8 @@ private data class PgpPayloadDto(
     val signaturePayload: String = "",
     val body: String = "",
     val signerKeys: List<SignerKeyDto> = emptyList(),
+    val sender: String = "",
+    val resolvedSender: String = "",
 )
 
 private val JSON = Json { ignoreUnknownKeys = true }
@@ -1779,6 +1786,8 @@ internal class PgpPayloadClient(private val callFactory: Call.Factory = pairingH
                     signerKeys = dto.signerKeys.map {
                         SignerKey(it.addresses, it.publicKey, it.verified, it.source, it.conflict)
                     },
+                    sender = dto.sender,
+                    resolvedSender = dto.resolvedSender,
                 )
             }
         }.getOrElse { PgpPayloadResult.Failed(it.message ?: "could not reach the server") }
@@ -2382,7 +2391,14 @@ internal interface PayloadSource {
  * dismissed a sheet they raised, and the screen simply goes back to offering the Decrypt button.
  */
 internal sealed class ReadOutcome {
-    data class Decrypted(val body: DecryptedBody, val signature: PgpSignatureState) : ReadOutcome()
+    data class Decrypted(
+        val body: DecryptedBody,
+        val signature: PgpSignatureState,
+        /** The mailbox the SERVER resolved from the From header, and the one the verdict is about.
+         *  Rendered in place of the raw sender wherever a verdict is shown — the two are separable
+         *  by an attacker. Empty when the server could not resolve one. */
+        val resolvedSender: String,
+    ) : ReadOutcome()
 
     /** The key is not held and this call was not allowed to prompt. The screen offers Decrypt. */
     object NeedsUnlock : ReadOutcome()
@@ -2477,7 +2493,11 @@ internal class EncryptedMessageReader(
             )
             val parsed = PgpMimeReader.read(payload.body.toByteArray(Charsets.UTF_8))
                 ?: DecryptedBody(html = null, plain = payload.body, protectedSubject = null)
-            return ReadOutcome.Decrypted(parsed, signatureStateFor(raw, payload.signerKeys))
+            return ReadOutcome.Decrypted(
+                parsed,
+                signatureStateFor(raw, payload.signerKeys),
+                payload.resolvedSender,
+            )
         }
 
         val decrypted = when (
@@ -2495,6 +2515,7 @@ internal class EncryptedMessageReader(
         return ReadOutcome.Decrypted(
             body,
             signatureStateFor(decrypted.signature, payload.signerKeys),
+            payload.resolvedSender,
         )
     }
 }
@@ -2756,6 +2777,19 @@ In `EmailDetailActivity`, add fields and a render function. Wire the `CLIENT_PRO
                     ?: "<pre>" + android.text.Html.escapeHtml(outcome.body.plain.orEmpty()) + "</pre>"
                 webView.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
                 pgpSignatureState = outcome.signature
+                // Show the mailbox the verdict is ABOUT, not the header the sender wrote.
+                //
+                // `sender` and `resolvedSender` are separable by an attacker: a From whose display
+                // name is `bob@example.com` and whose mailbox is `eve@evil.example` renders as
+                // "bob@example.com <eve@evil.example>". The badge is computed against the resolved
+                // mailbox, so putting the raw header beside it would let a badge earned by Eve's
+                // key sit next to Bob's name. Wherever a verification verdict appears, the
+                // resolved mailbox appears with it.
+                if (outcome.signature != PgpSignatureState.NONE &&
+                    outcome.resolvedSender.isNotBlank()
+                ) {
+                    fromView.text = getString(R.string.email_from) + " " + outcome.resolvedSender
+                }
                 pgpText.text = listOfNotNull(
                     getString(R.string.email_pgp_decrypted_here),
                     signatureNoticeFor(outcome.signature),
