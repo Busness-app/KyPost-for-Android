@@ -90,6 +90,24 @@ internal interface VaultSealer {
 }
 
 /**
+ * The locally cached plaintext of mail the server decrypted.
+ *
+ * A port rather than a direct DAO call because [EnrollmentCeremony] has no Android imports and must
+ * keep none — see its KDoc. This is the seam that makes "enrolling clears the old plaintext" a JVM
+ * test instead of an instrumented one.
+ *
+ * **Why the ceremony owns this.** Enrolling is the moment this device stops depending on the server
+ * being able to read the account's mail. Everything cached before it that the server decrypted is
+ * plaintext the new threat model does not account for, and nothing else would remove it until the
+ * next full snapshot — up to 24 hours later, because the delta path deliberately preserves bodies
+ * (`reconcileFetchResult` merges "updated" entries over the existing body).
+ */
+internal interface DecryptedMailCache {
+    /** @return the number of cached messages whose plaintext was dropped. */
+    suspend fun clearServerDecryptedBodies(): Int
+}
+
+/**
  * Time, and waiting.
  *
  * Two clocks because the two uses need different guarantees. [epochSeconds] is wall clock: the

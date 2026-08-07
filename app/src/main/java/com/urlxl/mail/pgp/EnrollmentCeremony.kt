@@ -45,6 +45,7 @@ internal class EnrollmentCeremony(
     private val transport: EnrollmentTransport,
     private val keys: EnrollmentKeys,
     private val sealer: VaultSealer,
+    private val mailCache: DecryptedMailCache,
     private val clock: EnrollmentClock,
     private val hostileLocationEnabled: () -> Boolean,
     private val hasSecureLockScreen: () -> Boolean,
@@ -333,6 +334,13 @@ internal class EnrollmentCeremony(
                 // harmless — it just covers the failure, cancel and throw paths this branch doesn't
                 // take.
                 plaintext.fill(0)
+                // Before report(), which is a network round trip that can run to a full timeout or
+                // fail outright. This device has just stopped depending on the server being able to
+                // read this account's mail; anything cached that the server decrypted is plaintext
+                // the new threat model does not account for, and queueing its removal behind a call
+                // that may never succeed would leave it there for the 24 hours until the next full
+                // snapshot — the delta path preserves bodies, so deltas never clear it.
+                mailCache.clearServerDecryptedBodies()
                 report()
             }
             is SealOutcome.NoSecureLockScreen -> failAndDestroy(FailureReason.NO_SECURE_LOCK_SCREEN)

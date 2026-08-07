@@ -42,6 +42,7 @@ class InboxActivity : LockedActivity() {
     private lateinit var keywordChips: ChipGroup
     private lateinit var bottomNav: BottomNavigationView
     private lateinit var loadingOverlay: View
+    private lateinit var swipeRefresh: androidx.swiperefreshlayout.widget.SwipeRefreshLayout
     private lateinit var loadingStatus: TextView
     private lateinit var cancelLoading: View
     private lateinit var inboxRoot: View
@@ -194,6 +195,11 @@ class InboxActivity : LockedActivity() {
         keywordChips = findViewById(R.id.keywordChipGroup)
         bottomNav = findViewById(R.id.bottomNavigation)
         loadingOverlay = findViewById(R.id.loadingOverlay)
+        swipeRefresh = findViewById(R.id.inboxSwipeRefresh)
+        // forceFullResync = true: the 90-second cadence sends the cursor and gets a delta, which
+        // cannot repair a drifted cache. Someone pulling down is saying they think the list is
+        // wrong, so this re-reads the folder rather than asking what changed.
+        swipeRefresh.setOnRefreshListener { refreshInbox(forceFullResync = true) }
         loadingStatus = findViewById<TextView>(R.id.loadingStatus)
         cancelLoading = findViewById(R.id.cancelLoading)
 
@@ -355,11 +361,26 @@ class InboxActivity : LockedActivity() {
         mainHandler.postDelayed(refreshRunnable, REFRESH_INTERVAL_MS)
     }
 
-    private fun refreshInbox() {
+    /**
+     * [forceFullResync] is the difference between the 90-second cadence and a user pulling down.
+     *
+     * The automatic path sends the persisted cursor, so the relay answers with a delta — which is
+     * right for a background poll and wrong for someone who just told the app they think it is out of
+     * date. A delta cannot repair a cache that has drifted: `reconcileFetchResult` merges "updated"
+     * entries over the existing row and skips entries it has never seen, so the states a user
+     * actually pulls down about survive it. `since=0` re-reads the folder and prunes what is gone.
+     *
+     * There is already a daily forced resync for the same reason (`MailCursorStore`). This just lets
+     * the user ask for one instead of waiting up to 24 hours for it.
+     */
+    private fun refreshInbox(forceFullResync: Boolean = false) {
         // No emails held in memory yet (cold open, or a just-switched-to folder) — render the
         // Room cache immediately so the list isn't empty while the network round trip is in
         // flight, then let the fetch below overwrite it with fresh data.
-        val showCacheFirst = allEmails.isEmpty() || pendingMessageId != null
+        //
+        // Never on a pull: the gesture has its own spinner, and raising the full-screen overlay over
+        // it would replace the list the user is looking at.
+        val showCacheFirst = (allEmails.isEmpty() || pendingMessageId != null) && !forceFullResync
         if (showCacheFirst) {
             loadingOverlay.visibility = android.view.View.VISIBLE
             val status = if (pendingMessageId != null) {
@@ -372,35 +393,47 @@ class InboxActivity : LockedActivity() {
             cancelLoading.visibility = if (pendingMessageId != null) View.VISIBLE else View.GONE
         }
         ioExecutor.execute {
-            if (showCacheFirst) {
-                val cached = mailRepository.cachedEmails(currentFolder)
-                if (cached.isNotEmpty()) {
-                    runOnUiThread {
-                        allEmails = cached
-                        rebuildTabs(cached)
-                        renderFilteredEmails()
-                        checkPendingMessage(cached, isFinal = false)
-                        // If we aren't waiting for a specific message (it was found in cache or 
-                        // this isn't a deep link), we can hide the overlay now.
-                        if (pendingMessageId == null) {
-                            loadingOverlay.visibility = android.view.View.GONE
-                        }
+            // try/finally, not a call at the end of the happy path. cachedEmails and
+            // rememberKeywords both touch Room and can throw, and a spinner that never stops is a
+            // screen the user has to back out of to escape.
+            try {
+                refreshInboxOnIo(showCacheFirst, forceFullResync)
+            } finally {
+                runOnUiThread { swipeRefresh.isRefreshing = false }
+            }
+        }
+    }
+
+    private fun refreshInboxOnIo(showCacheFirst: Boolean, forceFullResync: Boolean) {
+        if (showCacheFirst) {
+            val cached = mailRepository.cachedEmails(currentFolder)
+            if (cached.isNotEmpty()) {
+                runOnUiThread {
+                    allEmails = cached
+                    rebuildTabs(cached)
+                    renderFilteredEmails()
+                    checkPendingMessage(cached, isFinal = false)
+                    // If we aren't waiting for a specific message (it was found in cache or 
+                    // this isn't a deep link), we can hide the overlay now.
+                    if (pendingMessageId == null) {
+                        loadingOverlay.visibility = android.view.View.GONE
                     }
                 }
             }
-            val outcome: MailOutcome<MailFetchResult> = mailRepository.refreshFolder(currentFolder)
-            val emails = mailRepository.cachedEmails(currentFolder)
-            val errorMessage = outcome.userFacingMessage()
-            keywordSettings.rememberKeywords(emails.flatMap { it.keywords }.toSet())
-            runOnUiThread {
-                loadingOverlay.visibility = android.view.View.GONE
-                allEmails = emails
-                rebuildTabs(emails)
-                renderFilteredEmails()
-                checkPendingMessage(emails, isFinal = true)
-                if (errorMessage != null) {
-                    Toast.makeText(this, errorMessage, Toast.LENGTH_LONG).show()
-                }
+        }
+        val outcome: MailOutcome<MailFetchResult> =
+            mailRepository.refreshFolder(currentFolder, forceFullResync = forceFullResync)
+        val emails = mailRepository.cachedEmails(currentFolder)
+        val errorMessage = outcome.userFacingMessage()
+        keywordSettings.rememberKeywords(emails.flatMap { it.keywords }.toSet())
+        runOnUiThread {
+            loadingOverlay.visibility = android.view.View.GONE
+            allEmails = emails
+            rebuildTabs(emails)
+            renderFilteredEmails()
+            checkPendingMessage(emails, isFinal = true)
+            if (errorMessage != null) {
+                Toast.makeText(this, errorMessage, Toast.LENGTH_LONG).show()
             }
         }
     }
