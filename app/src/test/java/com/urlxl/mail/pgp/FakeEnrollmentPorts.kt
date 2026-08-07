@@ -171,6 +171,16 @@ internal class FakeEnrollmentTransport(
     }
 }
 
+internal class FakeDecryptedMailCache(private val cachedRows: Int = 3) : DecryptedMailCache {
+    var clearCalls = 0
+        private set
+
+    override suspend fun clearServerDecryptedBodies(): Int {
+        clearCalls++
+        return cachedRows
+    }
+}
+
 internal class FakeVaultSealer(
     var outcome: SealOutcome = SealOutcome.Sealed,
 ) : VaultSealer {
@@ -244,6 +254,7 @@ internal class FakePorts(
         reportResult = reportResult,
     )
     val sealer = FakeVaultSealer()
+    val mailCache = FakeDecryptedMailCache()
     val clock = FakeEnrollmentClock()
 
     /** Every state the ceremony emitted, in order. */
@@ -254,6 +265,7 @@ internal class FakePorts(
         transport = transport,
         keys = keys,
         sealer = sealer,
+        mailCache = mailCache,
         clock = clock,
         hostileLocationEnabled = { hostileLocation },
         hasSecureLockScreen = { secureLockScreen },
