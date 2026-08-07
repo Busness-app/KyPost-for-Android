@@ -65,6 +65,28 @@ internal object TestPgpPrivateKey {
         -----END PGP PUBLIC KEY BLOCK-----
     """.trimIndent()
 
+    /** Decrypts to a real PGP/MIME payload — `Content-Type: text/plain` followed by
+     *  [EXPECTED_PLAINTEXT] — unlike [ARMORED_MESSAGE], whose plaintext is bare text with no MIME
+     *  headers and so is unparseable by [PgpMimeReader]. Same key pair, same one-pass self-signature
+     *  shape, produced the same way: `gpg --sign --encrypt`, this time over a MIME-wrapped plaintext.
+     *  Needed because [EncryptedMessageReaderTest] exercises the full decrypt-then-parse path, which
+     *  [ARMORED_MESSAGE] cannot reach past PgpMimeReader without regenerating that shared fixture and
+     *  risking every other test built on it. */
+    val ARMORED_MIME_MESSAGE = """
+        -----BEGIN PGP MESSAGE-----
+
+        hF4DIE6jVovIid0SAQdA5ua6l9wfANzlnQecHQ0D9rUipmHc8/vNT8fm3h/wu38w
+        t3e5oQ02X6P7SpU6Ei+7T2Yta6eoaTNmtgTXox+fWktVOlg7U/t9+pRzrKMADfp/
+        0sBOAbtAD6y7d+lepNAuDdaYgzEghz7s/y9ydJwpZm1tyxFpCkWt1aCZnIhGFuHT
+        8jTC0vmnXylqaJMRO+mf0rqsJ7BY+llCKSQrMaonZhoBdKWvBM3Gnr3KOmhAEy8/
+        e5vuXYxkTztLhs2J51D6uRyu60HxbQmKsz2J7UdqhLdaEdxupY94zH8sFZf5fEkg
+        xLKizkrlGkrpCu55/O1alebV2VV8EaM7qLh8J9bkdNcgADO7y9UAU2P8VJfBKg8o
+        e+4BbrTWLuH03boQtlUkuuvUvPVTBxt9lMtN8oDnsKMp87N6JCYCW82yqkwHxizO
+        0ziPcaakdFDBOWrlUS5BjUwTvagnbIoT1izHOmDQVmop
+        =kdmH
+        -----END PGP MESSAGE-----
+    """.trimIndent()
+
     /** Same key, same plaintext, but a legacy Symmetrically Encrypted Data packet (tag 9) instead
      *  of the Sym. Encrypted Integrity Protected Data packet (tag 18) `ARMORED_MESSAGE` uses —
      *  produced with `gpg --rfc2440 --disable-mdc`. A decryptor that accepts this is accepting
