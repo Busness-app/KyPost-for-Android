@@ -533,30 +533,38 @@ class SecuritySettingsActivity : LockedActivity() {
                     // Keystore deletion plus a commit()-backed prefs clear.
                     //
                     // EnrollmentSession.clear() lives INSIDE this block rather than as a statement
-                    // after it, for the exact reason [SecurityWork]'s KDoc calls out: NonCancellable
-                    // protects the block's body, but a statement placed after `withContext` returns
-                    // resumes through an ordinary cancellable continuation. If the Activity is
-                    // destroyed while destroyAndReport is in flight, that resume throws
-                    // CancellationException before ever reaching a clear() sitting out here — the
-                    // teardown completes, the clear never runs, and the account's plaintext PGP
-                    // private key survives on the heap in a process that finishing the Activity does
-                    // not kill. Folding it in, unconditionally, also means it runs whether or not
-                    // destroyAndReport left anything behind: a half-failed teardown is exactly the
-                    // case where the in-memory key most needs to go.
+                    // after it, for the exact reason [runSecurityChangeThenReset]'s KDoc calls out
+                    // (SecuritySessionReset.kt): NonCancellable protects the block's body, but a
+                    // statement placed after `withContext` returns resumes through an ordinary
+                    // cancellable continuation. If the Activity is destroyed while destroyAndReport
+                    // is in flight, that resume throws CancellationException before ever reaching a
+                    // clear() sitting out here — the teardown completes, the clear never runs, and
+                    // the account's plaintext PGP private key survives on the heap in a process that
+                    // finishing the Activity does not kill.
+                    //
+                    // try/finally, not a trailing statement, because destroyAndReport itself can
+                    // throw: EnrollmentStateWorker.enqueue (reached via destroyAndReport) calls
+                    // WorkManager.enqueueUniqueWork with no runCatching, unlike the two steps ahead
+                    // of it in the chain. A throw there would otherwise skip the clear the same way
+                    // a cancellation would — finally runs it (and lets leftBehind's exception
+                    // propagate) unconditionally.
                     val leftBehind = withContext(SecurityWork) {
-                        val failed = EnrollmentTeardown.destroyAndReport(
-                            this@SecuritySettingsActivity,
-                        )
-                        // The vault and the server-side record are gone, but this process may still
-                        // be holding the account's plaintext private key from an earlier read
-                        // (EnrollmentSession has exactly one production writer, VaultOpenerAndroid,
-                        // and nothing before this cleared it on the unenroll path). Cleared directly
-                        // rather than via ProcessState.resetAll(): unenroll is not an account or
-                        // session boundary — the same account stays paired — so it must not also
-                        // discard an in-progress compose draft or ephemeral attachment plaintext the
-                        // way a wipe, relaunch or unpair legitimately does.
-                        EnrollmentSession.clear()
-                        failed
+                        try {
+                            EnrollmentTeardown.destroyAndReport(
+                                this@SecuritySettingsActivity,
+                            )
+                        } finally {
+                            // The vault and the server-side record are gone, but this process may
+                            // still be holding the account's plaintext private key from an earlier
+                            // read (EnrollmentSession has exactly one production writer,
+                            // VaultOpenerAndroid, and nothing before this cleared it on the unenroll
+                            // path). Cleared directly rather than via ProcessState.resetAll():
+                            // unenroll is not an account or session boundary — the same account
+                            // stays paired — so it must not also discard an in-progress compose
+                            // draft or ephemeral attachment plaintext the way a wipe, relaunch or
+                            // unpair legitimately does.
+                            EnrollmentSession.clear()
+                        }
                     }
                     if (leftBehind.isNotEmpty()) {
                         android.util.Log.e(
