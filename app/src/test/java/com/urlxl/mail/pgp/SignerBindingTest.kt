@@ -182,6 +182,19 @@ class SignerBindingTest {
         assertEquals(PgpSignatureState.SIGNER_UNKNOWN, state)
     }
 
+    @Test
+    fun anAngleAddrInsideAQuotedDisplayNameNeverBeatsTheRealMailbox() {
+        // Regression: a bare `indexOf('<')` in addrSpecFromMailbox found the `<bob@x.com>` sitting
+        // INSIDE the quoted, entirely attacker-controlled display name, and returned that instead
+        // of the real mailbox `<eve@evil.com>`. Go's mail.ParseAddressList — what the server
+        // actually runs — treats a quoted string as opaque and returns eve@evil.com, so this must
+        // too: the '<' that starts the real angle-addr is the first one OUTSIDE quotes.
+        assertEquals(
+            "eve@evil.com",
+            senderAddrSpec("\"Bob <bob@x.com>\" <eve@evil.com>"),
+        )
+    }
+
     // --- Finding 2: `verified` must come from the key that signed, not any key bound to the address. ---
 
     @Test
@@ -203,14 +216,20 @@ class SignerBindingTest {
         assertEquals(PgpSignatureState.VERIFIED_SEEN_BEFORE, state)
     }
 
-    // --- Finding 3: the signing-subkey path, uncovered before this test. ---
+    // --- Finding 3: the subkey path, uncovered before this test. ---
 
     @Test
-    fun aSignatureFromTheSigningSubkeyIsAccepted() {
-        // Real one-pass signatures are ordinarily made by a dedicated signing SUBKEY, never the
-        // primary key. TestPgpKey.ARMORED (used everywhere else in this suite) has no subkey, so
-        // every other test here is accidentally blind to this path. TestPgpPrivateKey.ARMORED_PUBLIC
-        // has a primary key plus one signing subkey; this signs with the SUBKEY's id specifically.
+    fun aSignatureFromASubkeyIdIsAccepted() {
+        // Real one-pass signatures are ordinarily made by a dedicated SUBKEY, never the primary
+        // key. TestPgpKey.ARMORED (used everywhere else in this suite) has no subkey, so every
+        // other test here is accidentally blind to this path. TestPgpPrivateKey.ARMORED_PUBLIC has
+        // a primary key plus one subkey; this signs with the SUBKEY's id specifically.
+        //
+        // That subkey (204EA3568BC889DD, algo 18/ECDH) is ENCRYPTION-only per `gpg --list-packets`
+        // (key flags 0C) — not a signing key. Naming this test "the signing subkey" would be false:
+        // it actually pins that signerKeyIdsOf accepts a subkey's id regardless of usage flags,
+        // exactly the looseness recorded in that function's KDoc. A signature could not really be
+        // produced with this specific key in practice; the id match is what's under test.
         val subkeyId = subkeyIdOf(TestPgpPrivateKey.ARMORED_PUBLIC)
         assertNotEquals(primaryKeyIdOf(TestPgpPrivateKey.ARMORED_PUBLIC), subkeyId)
         val boundKey = key(verified = true, source = "manual", publicKey = TestPgpPrivateKey.ARMORED_PUBLIC)

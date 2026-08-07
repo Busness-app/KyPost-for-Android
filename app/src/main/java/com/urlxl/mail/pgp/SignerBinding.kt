@@ -67,7 +67,7 @@ private fun firstMailboxText(raw: String): String {
 private fun addrSpecFromMailbox(mailbox: String): String {
     val trimmed = mailbox.trim()
     if (trimmed.isEmpty()) return ""
-    val open = trimmed.indexOf('<')
+    val open = firstUnquotedAngleOpen(trimmed)
     val candidate = if (open >= 0) {
         val close = trimmed.indexOf('>', open + 1)
         if (close < 0) return "" // unterminated angle-addr: fail closed
@@ -76,6 +76,26 @@ private fun addrSpecFromMailbox(mailbox: String): String {
         trimmed
     }
     return if (looksLikeAddrSpec(candidate)) candidate.lowercase() else ""
+}
+
+/**
+ * The index of the first `<` that lies OUTSIDE a quoted display-name string, or -1 if there is
+ * none. A bare `indexOf('<')` here would let a quoted display name that itself contains an
+ * angle-addr — `"Bob <bob@x.com>" <eve@evil.com>`, entirely attacker-controlled — beat the real
+ * mailbox `<eve@evil.com>`. Mirrors the same quote-tracking [firstMailboxText] already does, so
+ * a quoted `<` never gets mistaken for the start of the actual angle-addr.
+ */
+private fun firstUnquotedAngleOpen(mailbox: String): Int {
+    var inQuotes = false
+    for (i in mailbox.indices) {
+        val c = mailbox[i]
+        when {
+            c == '"' && (i == 0 || mailbox[i - 1] != '\\') -> inQuotes = !inQuotes
+            inQuotes -> Unit
+            c == '<' -> return i
+        }
+    }
+    return -1
 }
 
 /** A conservative addr-spec check: no whitespace/quote/bracket/comma leftovers (which would mean
