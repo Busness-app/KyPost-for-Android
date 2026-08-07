@@ -4,6 +4,7 @@ import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.Lifecycle
 import com.urlxl.mail.R
 import kotlin.coroutines.resume
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -51,6 +52,22 @@ internal class AndroidVaultOpener(private val activity: FragmentActivity) : Vaul
             ?: return OpenOutcome.Failed(activity.getString(R.string.email_pgp_unseal_failed))
 
         return suspendCancellableCoroutine { cont ->
+            // A prompt requested after the FragmentManager has saved its state — the user
+            // backgrounds the app the instant the reader starts unsealing, landing here after
+            // onSaveInstanceState — is silently dropped by BiometricPrompt.authenticateInternal:
+            // no exception, no callback, ever. Without this guard the continuation above would
+            // never resume and open() would hang forever behind a spinner with no prompt and no
+            // error. Mirrors DeviceEnrollmentActivity.vaultSealer.seal()'s identical guard, in the
+            // same place — first thing inside the coroutine, before the prompt is built — and
+            // Cancelled for the same reason every other BiometricPrompt outcome that isn't a real
+            // unseal failure resolves to Cancelled: nothing is broken, the user can try again.
+            if (!activity.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) ||
+                activity.supportFragmentManager.isStateSaved
+            ) {
+                cont.resume(OpenOutcome.Cancelled)
+                return@suspendCancellableCoroutine
+            }
+
             val prompt = BiometricPrompt(
                 activity,
                 ContextCompat.getMainExecutor(activity),
