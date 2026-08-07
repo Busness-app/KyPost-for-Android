@@ -51,6 +51,12 @@ class EmailDetailActivity : LockedActivity() {
     private val ioExecutor = Executors.newSingleThreadExecutor()
     private lateinit var mailRepository: MailRepository
     private lateinit var actionButtons: List<ImageButton>
+
+    /** [actionReply], [actionReplyAll] and [actionForward] — the subset of [actionButtons] that
+     *  [applyReplyForwardAvailability] disables for a [PgpMessageState.CLIENT_PROTECTED] message.
+     *  Kept as its own field, rather than re-derived from [actionButtons] by position, so which
+     *  three buttons this reaches cannot silently drift if [actionButtons]'s order ever changes. */
+    private lateinit var replyForwardButtons: List<ImageButton>
     private lateinit var divider: View
     private lateinit var webView: WebView
     private lateinit var lockedPlaceholder: android.widget.ImageView
@@ -162,6 +168,7 @@ class EmailDetailActivity : LockedActivity() {
             actionReply, actionReplyAll, actionForward,
             actionArchive, actionJunk, actionDelete,
         )
+        replyForwardButtons = listOf(actionReply, actionReplyAll, actionForward)
         applyDetailChrome()
 
         // markRead stays non-reporting on purpose: it is incidental to opening the message, and a
@@ -341,6 +348,7 @@ class EmailDetailActivity : LockedActivity() {
             loading.visibility = android.view.View.GONE
             imagesBlockedBar.visibility = if (hasRemoteImages) View.VISIBLE else View.GONE
             renderPgpBar(pgpState, pgpDecryptError, serverUrl, webmailUrl, nothingToRender, emailFolder, emailId, emailSender)
+            applyReplyForwardAvailability(pgpState)
             if (content != null) {
                 toRecipients = content.toAddresses
                 ccRecipients = content.ccAddresses
@@ -523,6 +531,31 @@ class EmailDetailActivity : LockedActivity() {
         // the two facts, and it should not sit below a paragraph about decryption.
         if (signatureNotice != null) {
             pgpText.text = signatureNotice + "\n\n" + pgpText.text
+        }
+    }
+
+    /**
+     * Disables Reply, Reply-All and Forward for every [PgpMessageState.CLIENT_PROTECTED] message,
+     * decrypted or not.
+     *
+     * `POST /api/mail/draft` uploads the draft to the server. Quoting a decrypted body into a
+     * reply would hand the server the plaintext of a message this whole mode exists to keep from
+     * it — at one tap, with no warning. There is no encrypted send path in the app yet, so there
+     * is no safe destination for any of these three actions.
+     *
+     * Unconditional rather than gated on decrypt success — see [mayReplyOrForward] — so a button
+     * never starts working once a message opens; that would teach the user a rule that is not
+     * true. The disabled button still explains itself when tapped, rather than sitting there
+     * silently dead.
+     */
+    private fun applyReplyForwardAvailability(pgpState: PgpMessageState) {
+        if (mayReplyOrForward(pgpState)) return
+        replyForwardButtons.forEach { button ->
+            button.isEnabled = false
+            button.alpha = 0.4f
+            button.setOnClickListener {
+                Toast.makeText(this, R.string.email_pgp_reply_disabled, Toast.LENGTH_LONG).show()
+            }
         }
     }
 
@@ -1132,6 +1165,21 @@ internal fun showsRetryButton(outcome: ReadOutcome): Boolean = outcome is ReadOu
  */
 internal fun displaySignatureVerdict(outcome: ReadOutcome.Decrypted): PgpSignatureState =
     outcome.signature.takeIf { outcome.resolvedSender.isNotBlank() } ?: PgpSignatureState.NONE
+
+/**
+ * Whether Reply, Reply-All or Forward may be offered for a message in [state].
+ *
+ * False only for [PgpMessageState.CLIENT_PROTECTED] — see [EmailDetailActivity.applyReplyForwardAvailability]
+ * for why that has to hold even once the message is decrypted on screen: `POST /api/mail/draft`
+ * uploads to the server, so quoting a decrypted body into a reply would hand the server plaintext
+ * this mode exists to keep from it, and there is no encrypted send path in the app to make that
+ * safe.
+ *
+ * Pulled out as its own pure function for the same reason as [showsRetryButton] above: a JVM test
+ * with no Android framework, on a file where `isReturnDefaultValues = true` makes the Activity's
+ * own view-toggling logic untestable.
+ */
+internal fun mayReplyOrForward(state: PgpMessageState): Boolean = state != PgpMessageState.CLIENT_PROTECTED
 
 /**
  * The sender's filename, reduced to something safe to hand MediaStore.

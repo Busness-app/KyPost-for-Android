@@ -1,6 +1,7 @@
 package com.urlxl.mail
 
 import com.urlxl.mail.pgp.DecryptedBody
+import com.urlxl.mail.pgp.PgpMessageState
 import com.urlxl.mail.pgp.PgpSignatureState
 import com.urlxl.mail.pgp.ReadOutcome
 import org.junit.Assert.assertEquals
@@ -335,5 +336,31 @@ class EmailDetailActivityTest {
             resolvedSender = "bob@example.com",
         )
         assertEquals(PgpSignatureState.NONE, displaySignatureVerdict(outcome))
+    }
+
+    // ---- mayReplyOrForward: which PgpMessageState blocks Reply/Reply-All/Forward ----
+
+    /** The one state Task 11 exists for: no safe destination for a quoted decrypted body, so this
+     *  must be false even once the message has been decrypted on screen — see
+     *  EmailDetailActivity.applyReplyForwardAvailability's KDoc for why that has to hold
+     *  unconditionally rather than just before decrypt succeeds. */
+    @Test
+    fun mayReplyOrForward_isFalseForClientProtected() {
+        assertFalse(mayReplyOrForward(PgpMessageState.CLIENT_PROTECTED))
+    }
+
+    /** Deliberate-break check: every other state must stay true, so a change that widens the
+     *  block (e.g. mistakenly gating on DECRYPT_FAILED too) fails a test rather than shipping
+     *  silently disabled buttons on messages with a perfectly good server-side body. */
+    @Test
+    fun mayReplyOrForward_isTrueForEveryOtherState() {
+        listOf(
+            PgpMessageState.NONE,
+            PgpMessageState.DECRYPT_FAILED,
+            PgpMessageState.DECRYPTED_BY_SERVER,
+            PgpMessageState.BODY_UNAVAILABLE,
+        ).forEach { state ->
+            assertTrue("expected $state to allow reply/forward", mayReplyOrForward(state))
+        }
     }
 }
