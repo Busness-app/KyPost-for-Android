@@ -2715,6 +2715,7 @@ And immediately before the `WebView` (~line 188), add the placeholder:
     <string name="email_pgp_no_lock_screen">This device needs a screen lock before it can hold your mail key.</string>
     <string name="email_pgp_too_large">This message is too large to open on this device.</string>
     <string name="email_pgp_fetch_failed">Couldn\'t reach the server to fetch this message.</string>
+    <string name="email_pgp_no_encrypted_content">This message doesn\'t carry any encrypted content. Open it in webmail if you expected something here.</string>
     <string name="email_pgp_decrypt_here_failed">This message couldn\'t be decrypted on this device.</string>
     <string name="email_pgp_reply_disabled">Replying to encrypted mail isn\'t available in the app yet — use webmail.</string>
 ```
@@ -2821,6 +2822,11 @@ In `EmailDetailActivity`, add fields and a render function. Wire the `CLIENT_PRO
                 showLocked(getString(R.string.email_pgp_fetch_failed))
                 btnRetryPayload.visibility = View.VISIBLE
             }
+            // Terminal, unlike FetchFailed: the server answered, and its answer was that this
+            // message carries no OpenPGP payload. Retrying cannot change that, so no Retry button —
+            // offering one would invite the user to tap it forever.
+            ReadOutcome.NoEncryptedContent ->
+                showLocked(getString(R.string.email_pgp_no_encrypted_content))
             is ReadOutcome.DecryptFailed -> showLocked(getString(R.string.email_pgp_decrypt_here_failed))
         }
     }

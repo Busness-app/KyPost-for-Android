@@ -281,6 +281,7 @@ decrypt teaches the wrong model.
 | 8 | Payload fetch failed | padlock | Retry + webmail | Could not reach the server |
 | 9 | 413 too large | padlock | webmail | Too large to open on this device |
 | 10 | 409 not client-protected | padlock | webmail | Generic; this is a bug if seen |
+| 10b | 404 no encrypted content | padlock | webmail (**no Retry**) | This message carries no encrypted content |
 | 11 | Decrypt failed | padlock | webmail | Could not decrypt this message |
 | 12 | Decrypted | body | — | Decrypted here + signature verdict |
 
