@@ -2307,6 +2307,30 @@ class EncryptedMessageReaderTest {
     }
 
     @Test
+    fun aKeyBoundToADifferentSenderIsNeverOfferedToTheSignatureCheck() {
+        // The forgery case, at the reader level. An ordinary contact signs a message and forges
+        // the From header to name someone else. If the reader offered the whole address book, the
+        // signature would verify against the forger's own key and be attributed to the person
+        // named in From. Only keys bound to the DISPLAYED sender may be offered.
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE)
+        val otherContact = SignerKey(
+            addresses = listOf("eve@evil.example"),
+            publicKey = TestPgpPrivateKey.ARMORED_PUBLIC,
+            verified = false,
+            source = "autocrypt",
+            conflict = false,
+        )
+        val (r, _) = reader(
+            payloads = FakePayloadSource(successPayload(signerKeys = listOf(otherContact))),
+        )
+
+        val outcome = read(r, unlockIfNeeded = false, sender = "bob@example.com")
+            as ReadOutcome.Decrypted
+
+        assertEquals(PgpSignatureState.SIGNER_UNKNOWN, outcome.signature)
+    }
+
+    @Test
     fun aConflictedKeyIsNeverOfferedToTheSignatureCheck() {
         EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE)
         val conflicted = SignerKey(
@@ -2431,11 +2455,24 @@ internal class EncryptedMessageReader(
             return ReadOutcome.Decrypted(parsed, signatureStateFor(raw, sender, payload.signerKeys))
         }
 
-        // Only keys the address book bound to a sender, and never a conflicted one. Passing these
-        // is what lets a one-pass signature verify at all; omitting them would report every signed
-        // message as unverified, which signatureStateFor turns into INVALID whenever a key IS
-        // bound — a false accusation against exactly the correspondents the user knows best.
-        val offeredKeys = payload.signerKeys.filter { !it.conflict }.map { it.publicKey }
+        // Only keys bound to THIS sender, and never a conflicted one.
+        //
+        // Narrowing the candidate set — rather than verifying against the whole address book and
+        // post-checking — is what stops a forgery being reported as verified. Offering every key
+        // makes `valid` mean "some contact of yours signed this": BouncyCastle resolves the
+        // signature against whichever offered key carries the matching key id and has no address
+        // to compare it against. So an ordinary contact could sign a message, forge
+        // `From: someone-else`, and have it render as verified from that someone else.
+        //
+        // The server learned this over three attempts; see `signerKeysForSender`'s comment in
+        // `pgp_receive.go`: "Narrowing the candidate set rather than post-checking the fingerprint
+        // means there is no window where a wrong-key signature is ever considered valid."
+        // `signatureStateFor` independently re-checks the signing key id, so this is the outer of
+        // two layers, not the only one.
+        val senderAddress = senderAddrSpec(sender)
+        val offeredKeys = payload.signerKeys
+            .filter { !it.conflict && it.addresses.any { a -> a.trim().lowercase() == senderAddress } }
+            .map { it.publicKey }
 
         val decrypted = when (
             val result = PgpDecryptor.decrypt(key, payload.encryptedPayload, offeredKeys)
