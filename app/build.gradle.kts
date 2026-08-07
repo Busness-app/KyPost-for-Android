@@ -164,6 +164,7 @@ dependencies {
     implementation(libs.material)
     implementation(libs.androidx.recyclerview)
     implementation(libs.androidx.cardview)
+    implementation(libs.androidx.swiperefreshlayout)
     implementation(libs.angus.mail)
     implementation(libs.bouncycastle.bcpg)
     implementation(libs.androidx.room.runtime)
