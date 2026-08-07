@@ -65,6 +65,10 @@ internal fun signatureStateFor(
 ): PgpSignatureState {
     if (!signature.present) return PgpSignatureState.NONE
     if (signerKeys.isEmpty()) return PgpSignatureState.SIGNER_UNKNOWN
+
+    // A conflict outranks a good key for the same sender. Two entries for one address means one of
+    // them is a key that changed, and reporting the survivor as verified would hide precisely the
+    // event worth reporting.
     if (signerKeys.any { it.conflict }) return PgpSignatureState.KEY_CHANGED
 
     val signedBy = signerKeys.filter { signature.signerKeyId in signerKeyIdsOf(it.publicKey) }

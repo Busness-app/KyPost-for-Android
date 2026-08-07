@@ -74,6 +74,9 @@ class SignerBindingTest {
 
     @Test
     fun aConflictOutranksAnOtherwiseGoodKeyForTheSameSender() {
+        // A conflict outranks a good key for the same sender. Two entries for one address means
+        // one of them is a key that changed, and reporting the survivor as verified would hide
+        // precisely the event worth reporting.
         val state = signatureStateFor(
             sig(),
             listOf(key(verified = true, source = "manual"), key(conflict = true, publicKey = "")),
@@ -167,14 +170,24 @@ class SignerBindingTest {
 
     @Test
     fun theClientHoldsNoSenderParserOfItsOwn() {
-        // The binding is the server's, shipped already narrowed. If someone reintroduces a
-        // From-header parser here, this fails to compile — which is the point. See the KDoc on
-        // signatureStateFor for the 27-divergence harness that made this a rule.
-        val state = signatureStateFor(
-            RawSignature(present = true, valid = true, signerKeyId = 0L),
-            emptyList(),
+        // signatureStateFor takes no sender argument at all — the property the deletion actually
+        // established, and one noKeysIsUnknown cannot show (an empty signerKeys list can't prove
+        // anything about a field that IS present). This pins the other half: SignerKey.addresses
+        // is carried straight through from the server's binding and is never read here, even
+        // though the field still exists on the data class and still holds attacker-influenceable
+        // content. A key bound to a nonsense, unparseable "address" must verify exactly as if its
+        // address were sane, because nothing in this function ever looks at it. If someone
+        // reintroduces a From-header parser or an address comparison, either this fails to
+        // compile (no sender to compare against) or this assertion starts failing (addresses
+        // suddenly matter). See the KDoc on signatureStateFor for the 27-divergence harness that
+        // made this a rule.
+        val keyWithUselessAddress = key(
+            address = "this is not even a valid address, and it must not matter",
+            verified = true,
+            source = "manual",
         )
-        assertEquals(PgpSignatureState.SIGNER_UNKNOWN, state)
+        val state = signatureStateFor(sig(), listOf(keyWithUselessAddress))
+        assertEquals(PgpSignatureState.VERIFIED_CONFIRMED, state)
     }
 
     private fun subkeyIdOf(armoredPublicKey: String): Long =
