@@ -37,7 +37,6 @@ class SignerBindingTest {
     fun unsignedIsNone() {
         val state = signatureStateFor(
             RawSignature(present = false, valid = false, signerKeyId = 0L),
-            "bob@example.com",
             listOf(key()),
         )
         assertEquals(PgpSignatureState.NONE, state)
@@ -45,51 +44,38 @@ class SignerBindingTest {
 
     @Test
     fun confirmedKeyBoundToTheSenderIsConfirmed() {
-        val state = signatureStateFor(sig(), "bob@example.com", listOf(key(verified = true, source = "qr")))
+        val state = signatureStateFor(sig(), listOf(key(verified = true, source = "qr")))
         assertEquals(PgpSignatureState.VERIFIED_CONFIRMED, state)
     }
 
     @Test
     fun autocryptKeyIsNeverConfirmed() {
-        val state = signatureStateFor(sig(), "bob@example.com", listOf(key(source = "autocrypt")))
+        val state = signatureStateFor(sig(), listOf(key(source = "autocrypt")))
         assertEquals(PgpSignatureState.VERIFIED_SEEN_BEFORE, state)
     }
 
     @Test
-    fun noKeyBoundToTheSenderIsUnknown() {
-        val state = signatureStateFor(sig(), "carol@example.com", listOf(key(address = "bob@example.com")))
+    fun noKeysIsUnknown() {
+        val state = signatureStateFor(sig(), emptyList())
         assertEquals(PgpSignatureState.SIGNER_UNKNOWN, state)
     }
 
     @Test
     fun changedKeyIsNeverJustUnknown() {
-        val state = signatureStateFor(sig(), "bob@example.com", listOf(key(conflict = true, publicKey = "")))
+        val state = signatureStateFor(sig(), listOf(key(conflict = true, publicKey = "")))
         assertEquals(PgpSignatureState.KEY_CHANGED, state)
     }
 
     @Test
     fun aBadSignatureAgainstABoundKeyIsInvalid() {
-        val state = signatureStateFor(sig(valid = false), "bob@example.com", listOf(key()))
+        val state = signatureStateFor(sig(valid = false), listOf(key()))
         assertEquals(PgpSignatureState.INVALID, state)
-    }
-
-    @Test
-    fun senderMatchingIgnoresDisplayNameAndCase() {
-        // The relay sends the RAW From header. Comparing that against a bare address matched
-        // nothing for any correspondent with a display name, while a bare `From: bob@…` — the
-        // form an attacker always chooses — went on matching. A binding that only fires for the
-        // attacker is worse than no binding.
-        val state = signatureStateFor(
-            sig(), "Bob Example <BOB@Example.com>", listOf(key(verified = true, source = "manual")),
-        )
-        assertEquals(PgpSignatureState.VERIFIED_CONFIRMED, state)
     }
 
     @Test
     fun aConflictOutranksAnOtherwiseGoodKeyForTheSameSender() {
         val state = signatureStateFor(
             sig(),
-            "bob@example.com",
             listOf(key(verified = true, source = "manual"), key(conflict = true, publicKey = "")),
         )
         assertEquals(PgpSignatureState.KEY_CHANGED, state)
@@ -105,7 +91,6 @@ class SignerBindingTest {
         val notBobsKeyId = testKeyId + 1 // any id that is not TestPgpKey.ARMORED's own
         val state = signatureStateFor(
             sig(signerKeyId = notBobsKeyId),
-            "bob@example.com",
             listOf(key(verified = true, source = "manual")),
         )
         assertEquals(PgpSignatureState.SIGNER_UNKNOWN, state)
@@ -117,12 +102,12 @@ class SignerBindingTest {
         // key still verifies, both unconfirmed (VERIFIED_SEEN_BEFORE) and confirmed
         // (VERIFIED_CONFIRMED).
         val seenBefore = signatureStateFor(
-            sig(signerKeyId = testKeyId), "bob@example.com", listOf(key(verified = false, source = "autocrypt")),
+            sig(signerKeyId = testKeyId), listOf(key(verified = false, source = "autocrypt")),
         )
         assertEquals(PgpSignatureState.VERIFIED_SEEN_BEFORE, seenBefore)
 
         val confirmed = signatureStateFor(
-            sig(signerKeyId = testKeyId), "bob@example.com", listOf(key(verified = true, source = "manual")),
+            sig(signerKeyId = testKeyId), listOf(key(verified = true, source = "manual")),
         )
         assertEquals(PgpSignatureState.VERIFIED_CONFIRMED, confirmed)
     }
@@ -134,65 +119,9 @@ class SignerBindingTest {
         // empty set can never contain signature.signerKeyId.
         val state = signatureStateFor(
             sig(signerKeyId = testKeyId),
-            "bob@example.com",
             listOf(key(verified = true, source = "manual", publicKey = "this is not an OpenPGP key")),
         )
         assertEquals(PgpSignatureState.SIGNER_UNKNOWN, state)
-    }
-
-    // --- Finding 1: senderAddrSpec must bind the FIRST mailbox, matching the server, not the last. ---
-
-    @Test
-    fun senderAddrSpecBindsTheFirstNamedMailboxNotTheLast() {
-        // The server's senderAddrSpec binds bob@example.com here. An earlier version of this
-        // function took the LAST `<...>` in the header, which would bind eve@evil.com instead —
-        // an ordinary contact (Eve) could then forge `From: Bob <bob@…>, Eve <eve@evil.com>`, sign
-        // with her own harvested key, and have the badge read as bob@example.com's signer, while
-        // the single-line inbox row (which ellipsizes the tail) shows the user "Bob".
-        assertEquals(
-            "bob@example.com",
-            senderAddrSpec("Bob <bob@example.com>, Eve <eve@evil.com>"),
-        )
-    }
-
-    @Test
-    fun senderAddrSpecBindsTheFirstBareMailboxNotTheWholeString() {
-        // Without angle brackets the old fallback returned the whole raw string (never matching
-        // any stored address, silently going to SIGNER_UNKNOWN for a signature Bob actually made).
-        // The server takes just the first bare address; this must too.
-        assertEquals(
-            "bob@example.com",
-            senderAddrSpec("bob@example.com, eve@evil.com"),
-        )
-    }
-
-    @Test
-    fun eveCannotBorrowBobsIdentityByLeadingTheFromHeaderWithHisAddress() {
-        // End-to-end version of the attack: Eve is a real contact with her OWN bound key at
-        // eve@evil.com. She forges `From: Bob <bob@example.com>, Eve <eve@evil.com>` and signs
-        // with her own key. senderAddrSpec must resolve the displayed sender to bob@example.com,
-        // under which Eve's key is not bound at all, so the verdict is SIGNER_UNKNOWN — never a
-        // verified badge borrowed from Bob's name.
-        val eveKeyId = signerKeyIdsOf(TestPgpKey.ARMORED).single()
-        val state = signatureStateFor(
-            RawSignature(present = true, valid = true, signerKeyId = eveKeyId),
-            "Bob <bob@example.com>, Eve <eve@evil.com>",
-            listOf(key(address = "eve@evil.com", verified = true, source = "manual")),
-        )
-        assertEquals(PgpSignatureState.SIGNER_UNKNOWN, state)
-    }
-
-    @Test
-    fun anAngleAddrInsideAQuotedDisplayNameNeverBeatsTheRealMailbox() {
-        // Regression: a bare `indexOf('<')` in addrSpecFromMailbox found the `<bob@x.com>` sitting
-        // INSIDE the quoted, entirely attacker-controlled display name, and returned that instead
-        // of the real mailbox `<eve@evil.com>`. Go's mail.ParseAddressList — what the server
-        // actually runs — treats a quoted string as opaque and returns eve@evil.com, so this must
-        // too: the '<' that starts the real angle-addr is the first one OUTSIDE quotes.
-        assertEquals(
-            "eve@evil.com",
-            senderAddrSpec("\"Bob <bob@x.com>\" <eve@evil.com>"),
-        )
     }
 
     // --- Finding 2: `verified` must come from the key that signed, not any key bound to the address. ---
@@ -210,7 +139,6 @@ class SignerBindingTest {
             key(verified = false, source = "autocrypt", publicKey = TestPgpKey.ARMORED)
         val state = signatureStateFor(
             sig(signerKeyId = testKeyId), // testKeyId belongs to TestPgpKey.ARMORED, not ARMORED_PUBLIC
-            "bob@example.com",
             listOf(confirmedButDidNotSign, autocryptAndDidSign),
         )
         assertEquals(PgpSignatureState.VERIFIED_SEEN_BEFORE, state)
@@ -233,24 +161,20 @@ class SignerBindingTest {
         val subkeyId = subkeyIdOf(TestPgpPrivateKey.ARMORED_PUBLIC)
         assertNotEquals(primaryKeyIdOf(TestPgpPrivateKey.ARMORED_PUBLIC), subkeyId)
         val boundKey = key(verified = true, source = "manual", publicKey = TestPgpPrivateKey.ARMORED_PUBLIC)
-        val state = signatureStateFor(sig(signerKeyId = subkeyId), "bob@example.com", listOf(boundKey))
+        val state = signatureStateFor(sig(signerKeyId = subkeyId), listOf(boundKey))
         assertEquals(PgpSignatureState.VERIFIED_CONFIRMED, state)
     }
 
-    // --- Finding 5: stored SignerKey.addresses entries are not guaranteed pre-normalized. ---
-
     @Test
-    fun storedAddressIsNormalizedBeforeComparison() {
-        // senderAddrSpec's output is always lowercase and trimmed, but every OTHER fixture in this
-        // file cheats by supplying an already-normalized SignerKey.addresses entry too. This one
-        // does not, so it actually exercises `it.trim().lowercase()` on the stored side of the
-        // comparison rather than merely on the incoming header.
+    fun theClientHoldsNoSenderParserOfItsOwn() {
+        // The binding is the server's, shipped already narrowed. If someone reintroduces a
+        // From-header parser here, this fails to compile — which is the point. See the KDoc on
+        // signatureStateFor for the 27-divergence harness that made this a rule.
         val state = signatureStateFor(
-            sig(),
-            "bob@example.com",
-            listOf(key(address = " Bob@Example.COM ", verified = true, source = "manual")),
+            RawSignature(present = true, valid = true, signerKeyId = 0L),
+            emptyList(),
         )
-        assertEquals(PgpSignatureState.VERIFIED_CONFIRMED, state)
+        assertEquals(PgpSignatureState.SIGNER_UNKNOWN, state)
     }
 
     private fun subkeyIdOf(armoredPublicKey: String): Long =
