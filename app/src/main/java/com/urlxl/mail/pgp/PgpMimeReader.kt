@@ -30,9 +30,15 @@ internal data class DecryptedBody(
  * putting unparsed bytes into a WebView is not a degradation this accepts.
  *
  * `angus.mail`'s parser is lenient: bytes with no recognizable MIME headers (e.g. random binary) are
- * not rejected, they're accepted as a default `text/plain` message with an empty-string body. So a
- * blank/empty part is treated the same as "no part found" below, rather than as real content — that's
- * what lets [read] fail closed on genuinely non-MIME input instead of returning an empty [DecryptedBody].
+ * not rejected, they're accepted as a default `text/plain` message with an empty-string body — RFC
+ * 2045's default content type, not something parsed from the input. That default is indistinguishable
+ * from a real, empty `text/plain` body by content alone, so the blank check at the top level only fires
+ * when [MimeMessage.getHeader] shows no `Content-Type` header was actually present: `hadContentTypeHeader
+ * == false` means the empty string came from the RFC default, not from a parsed header, and only then is
+ * blank treated as absent. When a `Content-Type` header *was* parsed, an empty body is real — a
+ * "no body, attachment only" message is a legitimate compose pattern — so it is kept as `""`, not
+ * collapsed to `null`. Inside [walk], every part reached was found via genuine multipart boundary
+ * parsing, so a blank part there is always real content and is never discarded.
  */
 internal object PgpMimeReader {
 
@@ -49,17 +55,20 @@ internal object PgpMimeReader {
                 val part = content.getBodyPart(i)
                 val body = runCatching { part.content }.getOrNull()
                 when {
-                    part.isMimeType("text/html") -> if (html == null) html = (body as? String)?.takeIf { it.isNotBlank() }
-                    part.isMimeType("text/plain") -> if (plain == null) plain = (body as? String)?.takeIf { it.isNotBlank() }
+                    part.isMimeType("text/html") -> if (html == null) html = body as? String
+                    part.isMimeType("text/plain") -> if (plain == null) plain = body as? String
                     body is MimeMultipart -> walk(body)
                 }
             }
         }
 
+        val hadContentTypeHeader = message.getHeader("Content-Type", null) != null
         val content = message.content
         when {
-            message.isMimeType("text/html") -> html = (content as? String)?.takeIf { it.isNotBlank() }
-            message.isMimeType("text/plain") -> plain = (content as? String)?.takeIf { it.isNotBlank() }
+            message.isMimeType("text/html") -> html = (content as? String)
+                ?.let { if (hadContentTypeHeader) it else it.takeIf(String::isNotBlank) }
+            message.isMimeType("text/plain") -> plain = (content as? String)
+                ?.let { if (hadContentTypeHeader) it else it.takeIf(String::isNotBlank) }
             else -> walk(content)
         }
 

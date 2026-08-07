@@ -65,4 +65,44 @@ class PgpMimeReaderTest {
         // into a WebView.
         assertNull(PgpMimeReader.read(byteArrayOf(0x00, 0x01, 0x02)))
     }
+
+    @Test
+    fun distinguishesAGenuinelyEmptyBodyFromGarbage() {
+        // An explicit Content-Type header was parsed here, so the empty body is real content (e.g. an
+        // "attachment only, no body" compose) — not the RFC 2045 default angus.mail falls back to for
+        // non-MIME input. It must not be collapsed to null like the garbage-bytes case below.
+        val mime = "Content-Type: text/plain; charset=utf-8\n\n"
+
+        val body = PgpMimeReader.read(mime.toByteArray(Charsets.UTF_8))
+
+        assertEquals("", body?.plain)
+        assertNull(body?.html)
+        assertNull(PgpMimeReader.read(byteArrayOf(0x00, 0x01, 0x02)))
+    }
+
+    @Test
+    fun recursesIntoNestedMultiparts() {
+        val body = read(
+            """
+            Content-Type: multipart/mixed; boundary="outer"
+
+            --outer
+            Content-Type: multipart/alternative; boundary="inner"
+
+            --inner
+            Content-Type: text/plain; charset=utf-8
+
+            nested fallback text
+            --inner
+            Content-Type: text/html; charset=utf-8
+
+            <p>nested rich text</p>
+            --inner--
+            --outer--
+            """.trimIndent(),
+        )
+
+        assertTrue("expected the nested html part", body?.html?.contains("nested rich text") == true)
+        assertTrue("expected the nested plain part", body?.plain?.contains("nested fallback text") == true)
+    }
 }
