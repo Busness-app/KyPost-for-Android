@@ -50,6 +50,7 @@ internal class DeviceEnrollmentViewModel(application: Application) : AndroidView
             override suspend fun seal(plaintext: ByteArray): SealOutcome =
                 activitySealer?.seal(plaintext) ?: SealOutcome.Cancelled
         },
+        mailCache = RoomDecryptedMailCache(application),
         clock = SystemEnrollmentClock,
         hostileLocationEnabled = {
             SecurityRuntime.graph(application).hostileLocationSettings.isEnabled()

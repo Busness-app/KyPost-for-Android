@@ -3,6 +3,40 @@
    <configuration>
       <verify-metadata>true</verify-metadata>
       <verify-signatures>false</verify-signatures>
+      <!--
+         Android Studio resolves a -sources.jar for every dependency on sync, through a detached
+         configuration, so it can show dependency source. None of them are recorded below, so sync
+         died with "110 artifacts failed verification" and every single entry was a -sources.jar.
+         The CLI never requests sources, which is why CI and ./gradlew stayed green throughout.
+
+         Trusting them is not a hole in the control that matters. A sources jar is never on a
+         compile or runtime classpath: it is not executed by the build, is not packaged into the
+         APK, and is only read by the IDE for navigation. Every artifact that actually runs is still
+         pinned by sha256 below, and verify-metadata stays true.
+
+         What it does cost: a tampered sources jar could show a developer misleading source next to
+         a binary whose hash is nonetheless correct. That is a deceive-the-reader risk, not a code
+         execution one. Recording all ~110 hashes instead would mean regenerating them on every
+         dependency bump via the write-verification-metadata flag, which ci.yml forbids for good
+         reason, and a control that has to be regenerated constantly is one that gets rubber
+         stamped. The stricter alternative is to leave this out and turn off "Download sources" in
+         Studio's Gradle settings, which keeps verification absolute at the cost of IDE navigation.
+      -->
+      <trusted-artifacts>
+         <trust file=".*-sources[.]jar" regex="true"/>
+         <trust file=".*-javadoc[.]jar" regex="true"/>
+         <!--
+            The same sync also fetches gradle-9.6.0-src.zip from Gradle's distribution repository, so
+            build scripts can navigate into Gradle's own API. It is a src.zip rather than a
+            sources.jar, so the rule above does not cover it, and it was the single remaining failure
+            after that rule landed.
+
+            Scoped to the gradle:gradle component instead of a bare ".*-src[.]zip", which would extend
+            trust to any third party publishing that suffix. Left version-free so a Gradle upgrade
+            does not reintroduce the same broken sync.
+         -->
+         <trust group="gradle" name="gradle" file=".*-src[.]zip" regex="true"/>
+      </trusted-artifacts>
    </configuration>
    <components>
       <component group="androidx.activity" name="activity" version="1.10.1">

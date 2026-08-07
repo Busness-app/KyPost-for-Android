@@ -25,6 +25,14 @@ private class FakeEmailDao : EmailDao {
         val keep = keepIds.toSet()
         rows.values.filter { it.folder == folder && it.messageId !in keep }.forEach { rows.remove(it.messageId) }
     }
+
+    /** Mirrors the real query's predicate. The authority on the SQL itself is
+     *  `EmailDaoClearDecryptedTest`, which runs it against a real Room database. */
+    override fun clearServerDecryptedBodies(): Int {
+        val hits = rows.values.filter { it.pgpEncrypted && !it.body.isNullOrEmpty() }
+        hits.forEach { rows[it.messageId] = it.copy(body = "", preview = "") }
+        return hits.size
+    }
 }
 
 private fun email(id: String, body: String? = "body-$id", status: String = "unread") = Email(
