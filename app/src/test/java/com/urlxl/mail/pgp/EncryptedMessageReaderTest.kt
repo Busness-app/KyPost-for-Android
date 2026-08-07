@@ -186,7 +186,14 @@ class EncryptedMessageReaderTest {
     }
 
     @Test
-    fun aConflictedKeyIsNeverOfferedToTheSignatureCheck() {
+    fun aConflictedKeyYieldsKeyChanged() {
+        // Named for what this actually proves, not for the offeredKeys filter in
+        // EncryptedMessageReader: signatureStateFor returns KEY_CHANGED the moment ANY entry in
+        // signerKeys has conflict = true, before it ever looks at which key was offered to
+        // PgpDecryptor or whether the signature matched. That precedence means this test cannot
+        // observe — and must not claim to prove — that the conflicted key's material was kept out
+        // of the crypto layer. See the KDoc on the `offeredKeys` filter in
+        // EncryptedMessageReader.kt for why the filter still stays despite being unobservable here.
         EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE)
         val conflicted = SignerKey(
             addresses = listOf("bob@example.com"),

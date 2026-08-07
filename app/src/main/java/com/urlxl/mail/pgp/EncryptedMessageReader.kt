@@ -93,6 +93,17 @@ internal class EncryptedMessageReader(
         // Conflicted keys are still dropped here: they carry no key material and must never be
         // offered to a signature check. They stay in `payload.signerKeys` so `signatureStateFor`
         // can report KEY_CHANGED.
+        //
+        // This filter cannot change today's ReadOutcome: signatureStateFor returns KEY_CHANGED the
+        // moment ANY entry in `payload.signerKeys` has `conflict = true`, before it ever looks at
+        // what got offered here or whether the signature matched — so no test can observe this line
+        // doing anything (confirmed: EncryptedMessageReaderTest.aConflictedKeyYieldsKeyChanged
+        // still passes with this filter deliberately removed). It stays anyway, as defence-in-depth
+        // against exactly one plausible future edit: someone reordering signatureStateFor so
+        // conflict no longer short-circuits first. If that ever happens, offering a key that failed
+        // its TOFU pin would start to matter, and deleting this filter now would make that future
+        // edit silently unsafe. Do not delete this as "dead code" without re-checking
+        // signatureStateFor's precedence first.
         val offeredKeys = payload.signerKeys.filter { !it.conflict }.map { it.publicKey }
 
         // A signed-but-not-encrypted message arrives with a readable body and a detached
