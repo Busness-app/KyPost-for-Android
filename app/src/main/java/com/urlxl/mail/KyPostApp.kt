@@ -183,4 +183,21 @@ class KyPostApp : Application(), DefaultLifecycleObserver {
             appLockManager.cancelScheduledLock()
         }
     }
+
+    /**
+     * Drops the opened PGP private key when the system asks for memory back.
+     *
+     * The plaintext key's lifetime is the exposure, and a trim signal means this process is a
+     * candidate for a background kill — after which the heap can outlive any of our teardown. The
+     * cost of being wrong is one extra BiometricPrompt.
+     *
+     * Deliberately NOT routed through `InMemoryPlaintext`. Its KDoc records that it is not called
+     * from `AppLockManager.lockNow()` because the compose draft cache must survive an ordinary
+     * lock; the key holder has the opposite requirement, so it gets its own call rather than a
+     * change to that policy.
+     */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        com.urlxl.mail.pgp.EnrollmentSession.clear()
+    }
 }
