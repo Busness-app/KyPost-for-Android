@@ -111,8 +111,13 @@ enum class PgpSignatureState {
      */
     VERIFIED_SEEN_BEFORE,
 
-    /** Signed, but no key we hold is bound to this sender. Not an accusation: the ordinary state
-     *  for a correspondent who is not in the address book yet. */
+    /**
+     * Signed, but not by any key we hold for this sender. This is not an accusation: the same
+     * verdict results from an ordinary correspondent who is not in the address book yet, from a
+     * sender whose key rotated before we harvested the new one, and from someone else signing with
+     * their own key under a forged `From` header naming this sender. Those three are locally
+     * indistinguishable, so this state deliberately claims no more than what is actually known.
+     */
     SIGNER_UNKNOWN,
 
     /**

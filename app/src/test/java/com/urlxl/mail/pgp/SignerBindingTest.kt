@@ -1,6 +1,10 @@
 package com.urlxl.mail.pgp
 
+import org.bouncycastle.openpgp.PGPPublicKeyRingCollection
+import org.bouncycastle.openpgp.PGPUtil
+import org.bouncycastle.openpgp.operator.bc.BcKeyFingerprintCalculator
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Test
 
 /**
@@ -135,4 +139,110 @@ class SignerBindingTest {
         )
         assertEquals(PgpSignatureState.SIGNER_UNKNOWN, state)
     }
+
+    // --- Finding 1: senderAddrSpec must bind the FIRST mailbox, matching the server, not the last. ---
+
+    @Test
+    fun senderAddrSpecBindsTheFirstNamedMailboxNotTheLast() {
+        // The server's senderAddrSpec binds bob@example.com here. An earlier version of this
+        // function took the LAST `<...>` in the header, which would bind eve@evil.com instead —
+        // an ordinary contact (Eve) could then forge `From: Bob <bob@…>, Eve <eve@evil.com>`, sign
+        // with her own harvested key, and have the badge read as bob@example.com's signer, while
+        // the single-line inbox row (which ellipsizes the tail) shows the user "Bob".
+        assertEquals(
+            "bob@example.com",
+            senderAddrSpec("Bob <bob@example.com>, Eve <eve@evil.com>"),
+        )
+    }
+
+    @Test
+    fun senderAddrSpecBindsTheFirstBareMailboxNotTheWholeString() {
+        // Without angle brackets the old fallback returned the whole raw string (never matching
+        // any stored address, silently going to SIGNER_UNKNOWN for a signature Bob actually made).
+        // The server takes just the first bare address; this must too.
+        assertEquals(
+            "bob@example.com",
+            senderAddrSpec("bob@example.com, eve@evil.com"),
+        )
+    }
+
+    @Test
+    fun eveCannotBorrowBobsIdentityByLeadingTheFromHeaderWithHisAddress() {
+        // End-to-end version of the attack: Eve is a real contact with her OWN bound key at
+        // eve@evil.com. She forges `From: Bob <bob@example.com>, Eve <eve@evil.com>` and signs
+        // with her own key. senderAddrSpec must resolve the displayed sender to bob@example.com,
+        // under which Eve's key is not bound at all, so the verdict is SIGNER_UNKNOWN — never a
+        // verified badge borrowed from Bob's name.
+        val eveKeyId = signerKeyIdsOf(TestPgpKey.ARMORED).single()
+        val state = signatureStateFor(
+            RawSignature(present = true, valid = true, signerKeyId = eveKeyId),
+            "Bob <bob@example.com>, Eve <eve@evil.com>",
+            listOf(key(address = "eve@evil.com", verified = true, source = "manual")),
+        )
+        assertEquals(PgpSignatureState.SIGNER_UNKNOWN, state)
+    }
+
+    // --- Finding 2: `verified` must come from the key that signed, not any key bound to the address. ---
+
+    @Test
+    fun verifiedIsReadFromTheKeyThatActuallySignedNotAnyBoundKey() {
+        // Two keys can share an address whenever two contacts list it — contact address lists are
+        // attacker-influenceable (pgp_qr_bind_confirm_body warns exactly this). Here bob@example.com
+        // has TWO non-conflicted bound keys: one confirmed (manual) that did NOT sign this message,
+        // and one Autocrypt-harvested key that DID. The verdict must reflect the key that actually
+        // produced the signature, not "some bound key for this address is confirmed."
+        val confirmedButDidNotSign =
+            key(verified = true, source = "manual", publicKey = TestPgpPrivateKey.ARMORED_PUBLIC)
+        val autocryptAndDidSign =
+            key(verified = false, source = "autocrypt", publicKey = TestPgpKey.ARMORED)
+        val state = signatureStateFor(
+            sig(signerKeyId = testKeyId), // testKeyId belongs to TestPgpKey.ARMORED, not ARMORED_PUBLIC
+            "bob@example.com",
+            listOf(confirmedButDidNotSign, autocryptAndDidSign),
+        )
+        assertEquals(PgpSignatureState.VERIFIED_SEEN_BEFORE, state)
+    }
+
+    // --- Finding 3: the signing-subkey path, uncovered before this test. ---
+
+    @Test
+    fun aSignatureFromTheSigningSubkeyIsAccepted() {
+        // Real one-pass signatures are ordinarily made by a dedicated signing SUBKEY, never the
+        // primary key. TestPgpKey.ARMORED (used everywhere else in this suite) has no subkey, so
+        // every other test here is accidentally blind to this path. TestPgpPrivateKey.ARMORED_PUBLIC
+        // has a primary key plus one signing subkey; this signs with the SUBKEY's id specifically.
+        val subkeyId = subkeyIdOf(TestPgpPrivateKey.ARMORED_PUBLIC)
+        assertNotEquals(primaryKeyIdOf(TestPgpPrivateKey.ARMORED_PUBLIC), subkeyId)
+        val boundKey = key(verified = true, source = "manual", publicKey = TestPgpPrivateKey.ARMORED_PUBLIC)
+        val state = signatureStateFor(sig(signerKeyId = subkeyId), "bob@example.com", listOf(boundKey))
+        assertEquals(PgpSignatureState.VERIFIED_CONFIRMED, state)
+    }
+
+    // --- Finding 5: stored SignerKey.addresses entries are not guaranteed pre-normalized. ---
+
+    @Test
+    fun storedAddressIsNormalizedBeforeComparison() {
+        // senderAddrSpec's output is always lowercase and trimmed, but every OTHER fixture in this
+        // file cheats by supplying an already-normalized SignerKey.addresses entry too. This one
+        // does not, so it actually exercises `it.trim().lowercase()` on the stored side of the
+        // comparison rather than merely on the incoming header.
+        val state = signatureStateFor(
+            sig(),
+            "bob@example.com",
+            listOf(key(address = " Bob@Example.COM ", verified = true, source = "manual")),
+        )
+        assertEquals(PgpSignatureState.VERIFIED_CONFIRMED, state)
+    }
+
+    private fun subkeyIdOf(armoredPublicKey: String): Long =
+        publicKeysOf(armoredPublicKey).first { !it.isMasterKey }.keyID
+
+    private fun primaryKeyIdOf(armoredPublicKey: String): Long =
+        publicKeysOf(armoredPublicKey).first { it.isMasterKey }.keyID
+
+    private fun publicKeysOf(armoredPublicKey: String) =
+        PGPPublicKeyRingCollection(
+            PGPUtil.getDecoderStream(armoredPublicKey.byteInputStream(Charsets.UTF_8)),
+            BcKeyFingerprintCalculator(),
+        ).keyRings.asSequence().flatMap { it.publicKeys.asSequence() }.toList()
 }
