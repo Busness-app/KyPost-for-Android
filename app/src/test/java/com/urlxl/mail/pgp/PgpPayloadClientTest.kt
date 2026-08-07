@@ -1,11 +1,15 @@
 package com.urlxl.mail.pgp
 
+import com.urlxl.mail.HEADER_DEVICE_ID
+import com.urlxl.mail.HEADER_DEVICE_SECRET
 import com.urlxl.mail.testing.FakeCallFactory
+import com.urlxl.mail.testing.ThrowingCallFactory
 import com.urlxl.mail.testing.response
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.IOException
 
 class PgpPayloadClientTest {
 
@@ -71,5 +75,52 @@ class PgpPayloadClientTest {
     @Test
     fun anyOtherErrorIsAPlainFailure() {
         assertTrue(fetchWith(500, "{}") is PgpPayloadResult.Failed)
+    }
+
+    /** A dropped or mistyped query parameter here would silently fetch the wrong message's
+     *  ciphertext, and nothing else in this test class would notice. */
+    @Test
+    fun getsWithMailboxAndMessageIdQueryParamsAndAuthHeaders() = runBlocking {
+        val callFactory = FakeCallFactory { request ->
+            response(request, """{"encryptedPayload":"X","signaturePayload":"","body":"","signerKeys":[]}""", 200)
+        }
+        val client = PgpPayloadClient(callFactory = callFactory)
+
+        client.fetch("https://relay.example.com/", "dev-1", "secret-1", "INBOX", "42")
+
+        val sent = callFactory.requests.single()
+        assertEquals("/api/mail/pgp-payload", sent.url.encodedPath)
+        assertEquals("GET", sent.method)
+        assertEquals("INBOX", sent.url.queryParameter("mailbox"))
+        assertEquals("42", sent.url.queryParameter("messageId"))
+        assertEquals("dev-1", sent.header(HEADER_DEVICE_ID))
+        assertEquals("secret-1", sent.header(HEADER_DEVICE_SECRET))
+    }
+
+    @Test
+    fun unusableServerUrlIsFailed() = runBlocking {
+        val client = PgpPayloadClient(callFactory = FakeCallFactory { request -> response(request, "{}", 200) })
+
+        val result = client.fetch("not a url", "d", "s", "INBOX", "42")
+
+        assertTrue("expected Failed, got $result", result is PgpPayloadResult.Failed)
+    }
+
+    @Test
+    fun networkThrowIsFailed() = runBlocking {
+        val client = PgpPayloadClient(callFactory = ThrowingCallFactory(IOException("offline")))
+
+        val result = client.fetch("https://relay.example.com", "d", "s", "INBOX", "42")
+
+        assertTrue("expected Failed, got $result", result is PgpPayloadResult.Failed)
+    }
+
+    @Test
+    fun malformedBodyIsFailed() = runBlocking {
+        val client = PgpPayloadClient(callFactory = FakeCallFactory { request -> response(request, "not json", 200) })
+
+        val result = client.fetch("https://relay.example.com", "d", "s", "INBOX", "42")
+
+        assertTrue("expected Failed, got $result", result is PgpPayloadResult.Failed)
     }
 }
