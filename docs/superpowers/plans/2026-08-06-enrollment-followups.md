@@ -4,8 +4,8 @@ Findings from the final whole-branch review of `feat/device-enrollment-ceremony`
 that arrived **after** the session handoff was written, so nothing else in git records them. None
 blocks the merged work; all three are small.
 
-The larger owed items — the unrun end-to-end ceremony, the six unperformed manual checks, the
-browser-side code grouping, the latent `EnrollmentVault` staleness — are in
+The larger owed items — the end-to-end ceremony (**run and passed 2026-08-06**), the six
+unperformed manual checks, the browser-side code grouping, the latent `EnrollmentVault` staleness — are in
 `2026-08-06-session-handoff-ceremony-spec-and-audit-run-6.md` and
 `2026-08-06-handoff-server-code-grouping.md`. This file is only the remainder.
 
