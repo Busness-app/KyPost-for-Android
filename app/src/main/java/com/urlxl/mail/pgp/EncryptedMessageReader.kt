@@ -33,6 +33,12 @@ internal sealed class ReadOutcome {
     object NoSecureLockScreen : ReadOutcome()
     object TooLarge : ReadOutcome()
     object NotClientProtected : ReadOutcome()
+
+    /** The server has the message but it carries no OpenPGP payload (404). Terminal — unlike a
+     *  transport failure, retrying cannot change it, so the UI must not offer Retry. Reachable when
+     *  the inbox flag said encrypted and the fetched message disagrees. */
+    object NoEncryptedContent : ReadOutcome()
+
     data class UnsealFailed(val message: String) : ReadOutcome()
     data class FetchFailed(val message: String) : ReadOutcome()
     data class DecryptFailed(val message: String) : ReadOutcome()
@@ -55,7 +61,15 @@ internal class EncryptedMessageReader(
     suspend fun read(
         mailbox: String,
         messageId: String,
-        /** The sender exactly as displayed, so the binding is checked against what the user sees. */
+        /** The sender exactly as displayed. Display context only — deliberately unread by this
+         *  function. The signature binding is the SERVER's job: it narrows `payload.signerKeys` to
+         *  the resolved sender before this ever runs (see the `offeredKeys` comment below), so this
+         *  reader has no binding decision left to make with it. Do not "wire this up" to filter
+         *  `signerKeys` — that reintroduces the client-side From parser an earlier task deleted
+         *  after it diverged from the server's on 27 of 111 adversarial headers. Kept as a parameter
+         *  because callers already have it and a future caller may want it for a purpose that is
+         *  NOT the signature verdict (e.g. logging, or comparing against `resolvedSender` for
+         *  display). */
         sender: String,
         /** False on an automatic attempt when the screen opens; true when the user tapped Decrypt.
          *  This is what keeps the biometric sheet tied to a deliberate action. */
@@ -79,7 +93,7 @@ internal class EncryptedMessageReader(
             is PgpPayloadResult.Success -> result
             is PgpPayloadResult.TooLarge -> return ReadOutcome.TooLarge
             is PgpPayloadResult.NotClientProtected -> return ReadOutcome.NotClientProtected
-            is PgpPayloadResult.NoPayload -> return ReadOutcome.FetchFailed("this message carries no encrypted content")
+            is PgpPayloadResult.NoPayload -> return ReadOutcome.NoEncryptedContent
             is PgpPayloadResult.Failed -> return ReadOutcome.FetchFailed(result.message)
         }
 
@@ -94,16 +108,17 @@ internal class EncryptedMessageReader(
         // offered to a signature check. They stay in `payload.signerKeys` so `signatureStateFor`
         // can report KEY_CHANGED.
         //
-        // This filter cannot change today's ReadOutcome: signatureStateFor returns KEY_CHANGED the
-        // moment ANY entry in `payload.signerKeys` has `conflict = true`, before it ever looks at
-        // what got offered here or whether the signature matched — so no test can observe this line
-        // doing anything (confirmed: EncryptedMessageReaderTest.aConflictedKeyYieldsKeyChanged
-        // still passes with this filter deliberately removed). It stays anyway, as defence-in-depth
-        // against exactly one plausible future edit: someone reordering signatureStateFor so
-        // conflict no longer short-circuits first. If that ever happens, offering a key that failed
-        // its TOFU pin would start to matter, and deleting this filter now would make that future
-        // edit silently unsafe. Do not delete this as "dead code" without re-checking
-        // signatureStateFor's precedence first.
+        // This filter cannot change today's ReadOutcome: signatureStateFor returns KEY_CHANGED for
+        // any SIGNED message the moment ANY entry in `payload.signerKeys` has `conflict = true` —
+        // checked after `!present -> NONE` and `signerKeys.isEmpty() -> SIGNER_UNKNOWN`, but still
+        // before it ever looks at what got offered here or whether the signature matched — so no
+        // test can observe this line doing anything (confirmed:
+        // EncryptedMessageReaderTest.aConflictedKeyYieldsKeyChanged still passes with this filter
+        // deliberately removed). It stays anyway, as defence-in-depth against exactly one plausible
+        // future edit: someone reordering signatureStateFor so conflict no longer short-circuits
+        // first. If that ever happens, offering a key that failed its TOFU pin would start to
+        // matter, and deleting this filter now would make that future edit silently unsafe. Do not
+        // delete this as "dead code" without re-checking signatureStateFor's precedence first.
         val offeredKeys = payload.signerKeys.filter { !it.conflict }.map { it.publicKey }
 
         // A signed-but-not-encrypted message arrives with a readable body and a detached

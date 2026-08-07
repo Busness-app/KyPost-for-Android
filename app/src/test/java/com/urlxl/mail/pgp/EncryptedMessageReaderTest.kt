@@ -197,7 +197,8 @@ class EncryptedMessageReaderTest {
         EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE)
         val conflicted = SignerKey(
             addresses = listOf("bob@example.com"),
-            publicKey = TestPgpPrivateKey.ARMORED_PRIVATE,
+            // "" per SignerKey's own KDoc: a conflicted entry carries no key material.
+            publicKey = "",
             verified = false,
             source = "autocrypt",
             conflict = true,
@@ -209,5 +210,101 @@ class EncryptedMessageReaderTest {
         val outcome = read(r, unlockIfNeeded = false) as ReadOutcome.Decrypted
 
         assertEquals(PgpSignatureState.KEY_CHANGED, outcome.signature)
+    }
+
+    // --- The detached-signature branch (payload.encryptedPayload.isBlank()): a signed-but-not-
+    // encrypted message. successPayload() always sets a non-blank encryptedPayload, so without
+    // these this whole branch — and PgpDecryptor.verifyDetached — never runs in CI. ---
+
+    @Test
+    fun aDetachedSignatureFromAnUnboundKeyIsUnknownNotUnsigned() {
+        // Pins `present = true`. With no bound keys, offeredKeys is empty, so the code falls back
+        // to `verifyDetached(armoredPublicKey = "", ...)`. That relies on
+        // PGPPublicKeyRingCollection returning an EMPTY collection for an empty input rather than
+        // throwing — if it threw instead, verifyDetached's catch-all would report `present = false`
+        // and this would come back NONE ("not signed") for a message that plainly is signed, and a
+        // conflicted-key case (below) would silently lose its KEY_CHANGED warning behind the same
+        // NONE. Nothing else in this suite reaches this fallback.
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE)
+        val (r, _) = reader(payloads = FakePayloadSource(detachedSignedPayload(signerKeys = emptyList())))
+
+        val outcome = read(r, unlockIfNeeded = false) as ReadOutcome.Decrypted
+
+        assertEquals(PgpSignatureState.SIGNER_UNKNOWN, outcome.signature)
+    }
+
+    @Test
+    fun aDetachedSignatureFromABoundKeyVerifies() {
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE)
+        val bound = SignerKey(
+            addresses = listOf("bob@example.com"),
+            publicKey = TestPgpPrivateKey.ARMORED_PUBLIC,
+            verified = false,
+            source = "autocrypt",
+            conflict = false,
+        )
+        val (r, _) = reader(
+            payloads = FakePayloadSource(detachedSignedPayload(signerKeys = listOf(bound))),
+        )
+
+        val outcome = read(r, unlockIfNeeded = false) as ReadOutcome.Decrypted
+
+        assertEquals(PgpSignatureState.VERIFIED_SEEN_BEFORE, outcome.signature)
+    }
+
+    @Test
+    fun aDetachedSignatureWithOnlyAConflictedKeyIsKeyChanged() {
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE)
+        val conflicted = SignerKey(
+            addresses = listOf("bob@example.com"),
+            publicKey = "",
+            verified = false,
+            source = "autocrypt",
+            conflict = true,
+        )
+        val (r, _) = reader(
+            payloads = FakePayloadSource(detachedSignedPayload(signerKeys = listOf(conflicted))),
+        )
+
+        val outcome = read(r, unlockIfNeeded = false) as ReadOutcome.Decrypted
+
+        assertEquals(PgpSignatureState.KEY_CHANGED, outcome.signature)
+    }
+
+    // --- Exit-table rows the brief's fixtures never reached. ---
+
+    @Test
+    fun aClientUnprotectedAccountSaysSo() {
+        val (r, _) = reader(payloads = FakePayloadSource(PgpPayloadResult.NotClientProtected))
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE)
+
+        assertEquals(ReadOutcome.NotClientProtected, read(r, unlockIfNeeded = false))
+    }
+
+    @Test
+    fun aMessageWithNoOpenPgpPayloadIsTerminalNotRetryable() {
+        // Spec defect fix: NoPayload (404) used to collapse into FetchFailed, which the UI renders
+        // with a Retry button. Retry cannot help a terminal 404 — the message simply carries no
+        // OpenPGP payload — so it gets its own outcome instead.
+        val (r, _) = reader(payloads = FakePayloadSource(PgpPayloadResult.NoPayload))
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE)
+
+        assertEquals(ReadOutcome.NoEncryptedContent, read(r, unlockIfNeeded = false))
+    }
+
+    @Test
+    fun aKeyThatVanishesBetweenUnsealAndFetchAsksForAnUnlockAgain() {
+        // FakeVaultOpener.keyToHold exists as exactly this seam: open() reports Opened without
+        // actually leaving a key in EnrollmentSession, simulating the app locking (lockNow() clears
+        // the session) in the gap between the unseal returning and the post-unseal re-read a few
+        // lines later in EncryptedMessageReader.read.
+        val opener = FakeVaultOpener(keyToHold = null)
+        val (r, payloads) = reader(opener)
+
+        val outcome = read(r, unlockIfNeeded = true)
+
+        assertEquals(ReadOutcome.NeedsUnlock, outcome)
+        assertEquals("the unseal itself must still have run exactly once", 1, opener.opened)
+        assertEquals("must not spend a fetch when there is no key to decrypt with", 0, payloads.fetched)
     }
 }

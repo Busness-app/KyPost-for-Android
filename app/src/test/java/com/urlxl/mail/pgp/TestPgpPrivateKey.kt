@@ -71,7 +71,14 @@ internal object TestPgpPrivateKey {
      *  shape, produced the same way: `gpg --sign --encrypt`, this time over a MIME-wrapped plaintext.
      *  Needed because [EncryptedMessageReaderTest] exercises the full decrypt-then-parse path, which
      *  [ARMORED_MESSAGE] cannot reach past PgpMimeReader without regenerating that shared fixture and
-     *  risking every other test built on it. */
+     *  risking every other test built on it.
+     *
+     *  Regenerate by importing [ARMORED_PRIVATE] into a throwaway `GNUPGHOME` and running, over a
+     *  file containing `Content-Type: text/plain; charset=utf-8\r\n\r\nHello from a real OpenPGP
+     *  message.\r\n`:
+     *  `gpg --batch --yes --pinentry-mode loopback --passphrase '' --local-user 1D6BDF093FAD1D11
+     *  --trust-model always --sign --encrypt --armor --recipient 1D6BDF093FAD1D11 -o out.asc
+     *  plain.mime` */
     val ARMORED_MIME_MESSAGE = """
         -----BEGIN PGP MESSAGE-----
 
@@ -102,5 +109,26 @@ internal object TestPgpPrivateKey {
         zg6eRYlo3dLJ0eIyMpN2WPQG
         =3Eds
         -----END PGP MESSAGE-----
+    """.trimIndent()
+
+    /** The exact bytes [ARMORED_DETACHED_SIGNATURE] signs — a signed-but-not-encrypted message's
+     *  readable body, RFC 3156 style. Verified against [ARMORED_PUBLIC] with `gpg --verify` before
+     *  being wired into any test, independently of the Bouncy Castle code under test. */
+    const val DETACHED_SIGNATURE_BODY = "Hello from a detached signature.\n"
+
+    /** A detached signature over [DETACHED_SIGNATURE_BODY], made with this same key pair.
+     *
+     *  Regenerate by importing [ARMORED_PRIVATE] into a throwaway `GNUPGHOME` and running, over a
+     *  file containing exactly [DETACHED_SIGNATURE_BODY]:
+     *  `gpg --batch --yes --pinentry-mode loopback --passphrase '' --local-user 1D6BDF093FAD1D11
+     *  --detach-sign --armor -o out.asc body.txt` */
+    val ARMORED_DETACHED_SIGNATURE = """
+        -----BEGIN PGP SIGNATURE-----
+
+        iHUEABYKAB0WIQSzCs1k4EuOGwN5oyAda98JP60dEQUCanYIIgAKCRAda98JP60d
+        EbWNAP9fwxWqBGi3C7s/omp5dfSZas7SdeapITPDfYGbIpYbgwEAsgZeCY4pI2zs
+        vtCCtajHfEiFMQp00CyzHSuLbWNaBAg=
+        =KR0w
+        -----END PGP SIGNATURE-----
     """.trimIndent()
 }

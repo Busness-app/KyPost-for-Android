@@ -41,3 +41,25 @@ internal fun successPayload(
     sender = sender,
     resolvedSender = resolvedSender,
 )
+
+/** A signed-but-not-encrypted payload: `encryptedPayload` blank, `body` readable,
+ *  `signaturePayload` a detached signature over it — the shape `PgpPayloadClient` returns for
+ *  RFC 3156 clear-signed mail. Defaults to [TestPgpPrivateKey.DETACHED_SIGNATURE_BODY] signed by
+ *  [TestPgpPrivateKey.ARMORED_DETACHED_SIGNATURE], both verified independently with `gpg --verify`
+ *  before being wired in here, so `EncryptedMessageReader`'s `payload.encryptedPayload.isBlank()`
+ *  branch has a real fixture to run against instead of never executing at all (it previously had
+ *  none — `successPayload` always sets a non-blank `encryptedPayload`). */
+internal fun detachedSignedPayload(
+    body: String = TestPgpPrivateKey.DETACHED_SIGNATURE_BODY,
+    signaturePayload: String = TestPgpPrivateKey.ARMORED_DETACHED_SIGNATURE,
+    signerKeys: List<SignerKey> = emptyList(),
+    sender: String = "bob@example.com",
+    resolvedSender: String = "bob@example.com",
+) = PgpPayloadResult.Success(
+    encryptedPayload = "",
+    signaturePayload = signaturePayload,
+    body = body,
+    signerKeys = signerKeys,
+    sender = sender,
+    resolvedSender = resolvedSender,
+)
