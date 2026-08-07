@@ -29,6 +29,7 @@ import com.urlxl.mail.pgp.PgpMessageState
 import com.urlxl.mail.pgp.PgpSignatureState
 import com.urlxl.mail.pgp.openWebmail
 import com.urlxl.mail.pgp.pgpMessageStateOf
+import com.urlxl.mail.pgp.rendersNothing
 import com.urlxl.mail.pgp.webmailMessageUrl
 import com.urlxl.mail.push.PushRuntime
 import java.util.concurrent.Executors
@@ -276,6 +277,9 @@ class EmailDetailActivity : LockedActivity() {
             PgpMessageState.BODY_UNAVAILABLE -> ""
             else -> content?.html?.takeIf { it.isNotBlank() } ?: TextUtils.htmlEncode(emailPreview)
         }
+        // Computed from the same inputs the line above used, so the notice cannot claim the screen is
+        // empty while something is on it, or stay silent while it is not.
+        val nothingToRender = rendersNothing(pgpState, content?.html, emailPreview)
         // Cosmetic heuristic, so on a multi-megabyte sender-chosen body a bounded "assume none"
         // beats an unbounded scan. Belt-and-braces with the bounded tag interior in the pattern.
         val hasRemoteImages = bodyToRender.length <= REMOTE_IMAGE_SCAN_MAX_LENGTH &&
@@ -302,7 +306,7 @@ class EmailDetailActivity : LockedActivity() {
             webView.loadDataWithBaseURL(null, htmlContent, "text/html", "utf-8", null)
             loading.visibility = android.view.View.GONE
             imagesBlockedBar.visibility = if (hasRemoteImages) View.VISIBLE else View.GONE
-            renderPgpBar(pgpState, pgpDecryptError, serverUrl, webmailUrl)
+            renderPgpBar(pgpState, pgpDecryptError, serverUrl, webmailUrl, nothingToRender)
             if (content != null) {
                 toRecipients = content.toAddresses
                 ccRecipients = content.ccAddresses
@@ -396,6 +400,9 @@ class EmailDetailActivity : LockedActivity() {
         pgpDecryptError: String,
         serverUrl: String?,
         webmailUrl: String?,
+        /** Decided by [rendersNothing] in the same render pass that chose the body, so this cannot
+         *  disagree with what was actually put on screen. */
+        nothingToRender: Boolean,
     ) {
         // A message can be perfectly readable and still be signed by someone other than who it
         // claims to be from, so the signature verdict is rendered even when there is no encryption
@@ -409,9 +416,16 @@ class EmailDetailActivity : LockedActivity() {
         }
 
         if (state == PgpMessageState.NONE) {
-            pgpBar.visibility = if (signatureNotice == null) View.GONE else View.VISIBLE
+            // The blank-screen case this function's KDoc warns about, still open for NONE after it
+            // was closed for every encrypted state. An encrypted message the server has not warmed
+            // arrives with pgpEncrypted false and no body, lands here, and rendered as silence.
+            // A signature notice, where there is one, wins: it is a stronger statement than "nothing
+            // to show" and the two would otherwise be concatenated into a contradiction.
+            val notice = signatureNotice
+                ?: getString(R.string.email_no_content).takeIf { nothingToRender }
+            pgpBar.visibility = if (notice == null) View.GONE else View.VISIBLE
             btnOpenInWebmail.visibility = View.GONE
-            pgpText.text = signatureNotice.orEmpty()
+            pgpText.text = notice.orEmpty()
             return
         }
         pgpBar.visibility = View.VISIBLE
