@@ -1,6 +1,7 @@
 package com.urlxl.mail.security
 
 import android.content.Intent
+import android.graphics.Color
 import android.os.Bundle
 import android.view.View
 import android.widget.Button
@@ -14,6 +15,8 @@ import androidx.lifecycle.lifecycleScope
 import com.urlxl.mail.R
 import com.urlxl.mail.addViewSpaced
 import com.urlxl.mail.applyDangerButtonTheme
+import com.urlxl.mail.applyGhostButtonTheme
+import com.urlxl.mail.applyPanelBackground
 import com.urlxl.mail.applyPrimaryButtonTheme
 import com.urlxl.mail.applySectionEyebrowLabel
 import com.urlxl.mail.applyThemeToActivity
@@ -22,6 +25,7 @@ import com.urlxl.mail.applyWarningCalloutTheme
 import com.urlxl.mail.contacts.device.DeviceContactSyncScheduler
 import com.urlxl.mail.contacts.device.DeviceContactsRuntime
 import com.urlxl.mail.dpToPx
+import com.urlxl.mail.getStoredThemePalette
 import com.urlxl.mail.pgp.AndroidIdentitySource
 import com.urlxl.mail.pgp.DeviceEnrollmentActivity
 import com.urlxl.mail.pgp.EnrollmentRow
@@ -92,6 +96,11 @@ class SecuritySettingsActivity : LockedActivity() {
     private lateinit var hostileLocationIntro: TextView
     private lateinit var credentialGateSwitch: SwitchCompat
     private lateinit var encryptionSectionLabel: TextView
+    private lateinit var encryptionCard: LinearLayout
+
+    /** Cards awaiting their rounded panel fill, which can only be applied after
+     *  `applyThemeToActivity` has finished flattening every ViewGroup. */
+    private val panelCards = mutableListOf<LinearLayout>()
     private lateinit var encryptionRowText: TextView
     private lateinit var encryptionActionButton: Button
     private var suppressLockToggleListener = false
@@ -150,36 +159,32 @@ class SecuritySettingsActivity : LockedActivity() {
         val scrollView = ScrollView(this)
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dpToPx(20), dpToPx(20), dpToPx(20), dpToPx(20))
+            // 16, not the previous 20: the cards carry their own 16dp inset now, and 20 + 16 put
+            // content 36dp off the screen edge on a page that is mostly text.
+            setPadding(dpToPx(16), dpToPx(12), dpToPx(16), dpToPx(20))
         }
         applyTopInsetWithHeader(this, scrollView)
+
+        val lockCard = container.addSection(R.string.security_section_app_lock)
 
         lockSwitch = SwitchCompat(this).apply {
             text = getString(R.string.security_require_unlock_title)
             isChecked = snapshot.lockEnabled
         }
-        container.addViewSpaced(lockSwitch, bottomDp = 4)
-        container.addViewSpaced(
-            TextView(this).apply {
-                text = getString(R.string.security_require_unlock_intro)
-                textSize = 13f
-            },
-            bottomDp = 20,
-        )
+        lockCard.addViewSpaced(lockSwitch, bottomDp = 4)
+        lockCard.addViewSpaced(caption(getString(R.string.security_require_unlock_intro)), bottomDp = 10)
 
         changePinButton = Button(this).apply {
             text = getString(R.string.security_change_pin_button)
             visibility = if (snapshot.lockEnabled) View.VISIBLE else View.GONE
             setOnClickListener { promptChangePin() }
         }
-        container.addViewSpaced(changePinButton, bottomDp = 16)
-
         biometricSwitch = SwitchCompat(this).apply {
             text = getString(R.string.security_use_biometric_title)
             isChecked = snapshot.biometricEnabled
             isEnabled = snapshot.lockEnabled
         }
-        container.addViewSpaced(biometricSwitch, bottomDp = 20)
+        lockCard.addViewSpaced(biometricSwitch, bottomDp = 10)
 
         // How long backgrounding is tolerated before the lock re-engages. This existed only as a
         // hardcoded "immediately", which meant the attachment picker, the QR scanner and the
@@ -190,31 +195,39 @@ class SecuritySettingsActivity : LockedActivity() {
             isEnabled = snapshot.lockEnabled
             setOnClickListener { promptLockGrace(lockGraceSettings) }
         }
-        container.addViewSpaced(lockGraceButton, bottomDp = 4)
-        container.addViewSpaced(
-            TextView(this).apply {
-                text = getString(R.string.security_lock_grace_intro)
-                textSize = 13f
-            },
-            bottomDp = 20,
+        // The two secondary actions share a row. They are peers — both open a picker, neither is the
+        // thing you came here to do — and stacking them cost a full button height on a page that does
+        // not fit a screen. 0dp width plus weight means "Lock after" simply takes the whole row when
+        // "Change PIN" is GONE, which is its state whenever the lock is off.
+        val secondaryActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        secondaryActions.addView(
+            changePinButton,
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                .apply { marginEnd = dpToPx(8) },
         )
+        secondaryActions.addView(
+            lockGraceButton,
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+        )
+        lockCard.addViewSpaced(secondaryActions, bottomDp = 4)
+        lockCard.addViewSpaced(caption(getString(R.string.security_lock_grace_intro)), bottomDp = 0)
 
+        val locationCard = container.addSection(R.string.security_section_location)
         val hostileLocationSettings = SecurityRuntime.graph(this).hostileLocationSettings
         hostileLocationSwitch = SwitchCompat(this).apply {
             text = getString(R.string.security_hostile_location_title)
             isChecked = snapshot.hostileLocationEnabled
             isEnabled = snapshot.lockEnabled
         }
-        container.addViewSpaced(hostileLocationSwitch, bottomDp = 4)
-        hostileLocationIntro = TextView(this).apply {
-            text = if (snapshot.lockEnabled) {
+        locationCard.addViewSpaced(hostileLocationSwitch, bottomDp = 4)
+        hostileLocationIntro = caption(
+            if (snapshot.lockEnabled) {
                 getString(R.string.security_hostile_location_intro)
             } else {
                 getString(R.string.security_hostile_location_requires_lock)
-            }
-            textSize = 13f
-        }
-        container.addViewSpaced(hostileLocationIntro, bottomDp = 20)
+            },
+        )
+        locationCard.addViewSpaced(hostileLocationIntro, bottomDp = 0)
         hostileLocationSwitch.setOnCheckedChangeListener { _, checked ->
             if (suppressHostileLocationListener) return@setOnCheckedChangeListener
             // Confirmed, because this is the most destructive control on the screen and was the
@@ -239,30 +252,28 @@ class SecuritySettingsActivity : LockedActivity() {
                 .show()
         }
 
+        val notificationsCard = container.addSection(R.string.security_section_notifications)
         credentialGateSwitch = SwitchCompat(this).apply {
             text = getString(R.string.security_credential_gate_title)
             isChecked = snapshot.credentialGateEnabled
             isEnabled = snapshot.lockEnabled
         }
-        container.addViewSpaced(credentialGateSwitch, bottomDp = 4)
-        container.addViewSpaced(
-            TextView(this).apply {
-                text = getString(R.string.security_credential_gate_intro)
-                textSize = 13f
-            },
-            bottomDp = 8,
+        notificationsCard.addViewSpaced(credentialGateSwitch, bottomDp = 4)
+        notificationsCard.addViewSpaced(
+            caption(getString(R.string.security_credential_gate_intro)),
+            bottomDp = 10,
         )
         // Always visible regardless of credentialGateSwitch's state: the push-relay exposure this
         // describes exists on every push delivery, on or off — this toggle only ever controlled
         // whether content is withheld while locked, not whether the relay sees it.
-        container.addViewSpaced(
+        notificationsCard.addViewSpaced(
             TextView(this).apply {
                 text = getString(R.string.security_credential_gate_leak_warning)
                 textSize = 13f
                 setPadding(dpToPx(12), dpToPx(10), dpToPx(12), dpToPx(10))
                 applyWarningCalloutTheme(this@SecuritySettingsActivity, this)
             },
-            bottomDp = 16,
+            bottomDp = 0,
         )
         credentialGateSwitch.setOnCheckedChangeListener { _, checked ->
             if (suppressCredentialGateListener) return@setOnCheckedChangeListener
@@ -283,23 +294,87 @@ class SecuritySettingsActivity : LockedActivity() {
         // Encrypted mail. Built hidden and filled in asynchronously: deciding the row needs a
         // Keystore probe and (usually) one authenticated request, neither of which may run on the
         // main thread or block the rest of this screen from appearing.
+        //
+        // The eyebrow and the card are hidden together. A titled empty card on a screen that is
+        // otherwise fully populated reads as something failing to load, which is exactly the wrong
+        // impression for the one section whose absence is normal (unpaired devices never get it).
         encryptionSectionLabel = TextView(this).apply {
             text = getString(R.string.security_encryption_section)
+            applySectionEyebrowLabel(this@SecuritySettingsActivity, this)
             visibility = View.GONE
         }
-        container.addViewSpaced(encryptionSectionLabel, topDp = 8, bottomDp = 8)
-        encryptionRowText = TextView(this).apply {
-            textSize = 13f
+        container.addViewSpaced(encryptionSectionLabel, bottomDp = 6)
+        encryptionCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpToPx(14), dpToPx(12), dpToPx(14), dpToPx(12))
             visibility = View.GONE
         }
-        container.addViewSpaced(encryptionRowText, bottomDp = 8)
+        panelCards += encryptionCard
+        container.addViewSpaced(encryptionCard, bottomDp = 10)
+        encryptionRowText = caption("")
+        encryptionCard.addViewSpaced(encryptionRowText, bottomDp = 10)
         encryptionActionButton = Button(this).apply { visibility = View.GONE }
-        container.addViewSpaced(encryptionActionButton, bottomDp = 16)
+        encryptionCard.addViewSpaced(encryptionActionButton, bottomDp = 0)
 
         scrollView.addView(container)
         setContentView(scrollView)
         applyThemeToActivity(this)
+
+        // Everything below runs AFTER applyThemeToActivity, which walks the tree and overwrites
+        // both of the things this screen's layout depends on. ComposeActivity solved the same
+        // problem the same way; this is that precedent, not a new trick.
+        //
+        // 1. Every ViewGroup, root included, is repainted flat `panel`. Cards left at `panel` on a
+        //    `panel` background are invisible, so the scroll surface is repainted `bg` and the cards
+        //    keep the rounded `panel` fill — the contrast IS the card.
+        val bg = Color.parseColor(getStoredThemePalette(this).bg)
+        scrollView.setBackgroundColor(bg)
+        container.setBackgroundColor(bg)
+        panelCards.forEach { applyPanelBackground(this, it) }
+
+        // 2. Every Button is repainted with the accent-filled primary background. These two are
+        //    secondary actions, and three solid accent buttons stacked down a settings page say
+        //    everything is equally the thing to do next. Ghost is the style guide's answer.
+        applyGhostButtonTheme(this, changePinButton)
+        applyGhostButtonTheme(this, lockGraceButton)
         refreshEncryptionRow()
+    }
+
+    /**
+     * A section: an eyebrow label, then a panel card holding the controls.
+     *
+     * The page was a single flat column of switches, captions and accent buttons — every element at
+     * the same visual weight, so nothing said which controls belong together or which one the others
+     * depend on. Cards are what the rest of this app already uses for exactly that (Compose's
+     * details/message cards, the inbox's keyword bar), and STYLE_GUIDE.md §3 fixes the radius at
+     * 14dp across all four KyPost clients.
+     *
+     * The eyebrow sits OUTSIDE the card, matching web's `.sidebar-section-label` placement.
+     */
+    private fun LinearLayout.addSection(titleRes: Int, bottomDp: Int = 10): LinearLayout {
+        addViewSpaced(
+            TextView(this@SecuritySettingsActivity).apply {
+                setText(titleRes)
+                applySectionEyebrowLabel(this@SecuritySettingsActivity, this)
+            },
+            bottomDp = 6,
+        )
+        val card = LinearLayout(this@SecuritySettingsActivity).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpToPx(14), dpToPx(12), dpToPx(14), dpToPx(12))
+        }
+        // Painted later, not here: applyThemeToViewTree repaints every ViewGroup flat `panel` and
+        // would flatten the rounding. See the paint pass after applyThemeToActivity.
+        panelCards += card
+        addViewSpaced(card, bottomDp = bottomDp)
+        return card
+    }
+
+    /** A control's explanatory line: one step down from the switch it belongs to, never the same
+     *  weight. 13sp matches the caption size the rest of this screen already used. */
+    private fun caption(text: CharSequence): TextView = TextView(this).apply {
+        this.text = text
+        textSize = 13f
     }
 
     /**
@@ -357,11 +432,15 @@ class SecuritySettingsActivity : LockedActivity() {
     private fun renderEncryptionRow(row: EnrollmentRow) {
         if (row is EnrollmentRow.Hidden) {
             encryptionSectionLabel.visibility = View.GONE
+            // The card too, not just its contents: an empty bordered panel is a section that looks
+            // broken rather than absent.
+            encryptionCard.visibility = View.GONE
             encryptionRowText.visibility = View.GONE
             encryptionActionButton.visibility = View.GONE
             return
         }
         encryptionSectionLabel.visibility = View.VISIBLE
+        encryptionCard.visibility = View.VISIBLE
         applySectionEyebrowLabel(this, encryptionSectionLabel)
         encryptionRowText.visibility = View.VISIBLE
         encryptionRowText.setText(encryptionRowCopy(row))

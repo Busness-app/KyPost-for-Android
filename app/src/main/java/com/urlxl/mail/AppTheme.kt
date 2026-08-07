@@ -191,6 +191,7 @@ fun applyPrimaryButtonTheme(context: Context, button: Button) {
     button.backgroundTintList = null
     button.background = buttonBackground(palette)
     button.setTextColor(readableOn(Color.parseColor(palette.accent)))
+    applyButtonPadding(button)
 }
 
 fun applyIconButtonTheme(context: Context, button: android.widget.ImageButton) {
@@ -205,6 +206,7 @@ fun applyGhostButtonTheme(context: Context, button: Button) {
     button.backgroundTintList = null
     button.background = ghostButtonBackground(palette)
     button.setTextColor(Color.parseColor(palette.inkStrong))
+    applyButtonPadding(button)
 }
 
 /** 1dp stroke + 12% fill of the fixed danger red, mirrors web's `.users-action-danger` /
@@ -213,6 +215,7 @@ fun applyDangerButtonTheme(context: Context, button: Button) {
     button.backgroundTintList = null
     button.background = dangerButtonBackground()
     button.setTextColor(Color.parseColor(COLOR_DANGER_ACTION_TEXT))
+    applyButtonPadding(button)
 }
 
 /** Stroke + 12%-fill warning panel for non-interactive informational callouts — same stroke+fill
@@ -514,6 +517,7 @@ private fun applyThemeToViewTree(view: View, palette: ThemePalette) {
         is Button -> {
             view.setTextColor(readableOn(accent))
             view.background = buttonBackground(palette)
+            applyButtonPadding(view)
         }
         is CheckBox -> {
             view.setTextColor(inkStrong)
@@ -605,6 +609,28 @@ private fun buttonBackground(palette: ThemePalette): GradientDrawable {
         cornerRadius = 10f * density
         setColor(Color.parseColor(palette.accent))
     }
+}
+
+/**
+ * Restores the inset a themed button loses.
+ *
+ * A `Button`'s default background is a nine-patch carrying its own padding, and that padding is where
+ * the label's breathing room comes from. Replacing it with a [GradientDrawable] — which has none —
+ * leaves the label flush against the rounded edge, and on a wide button with a long label it reads as
+ * text running off the left side. Exactly the problem the [EditText] branch of [applyThemeToViewTree]
+ * already documents and guards against; buttons had the same bug and no guard.
+ *
+ * `maxOf` so a view that declares larger padding in XML keeps it.
+ */
+private fun applyButtonPadding(button: Button) {
+    val padH = (16 * density).toInt()
+    val padV = (10 * density).toInt()
+    button.setPadding(
+        maxOf(padH, button.paddingLeft),
+        maxOf(padV, button.paddingTop),
+        maxOf(padH, button.paddingRight),
+        maxOf(padV, button.paddingBottom),
+    )
 }
 
 private fun ghostButtonBackground(palette: ThemePalette): GradientDrawable {
