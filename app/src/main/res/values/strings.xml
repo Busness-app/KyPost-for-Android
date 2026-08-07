@@ -72,6 +72,9 @@
     <string name="email_pgp_body_unavailable">This message is encrypted and isn\'t cached on this device, so its protection can\'t be confirmed here. Refresh the inbox, or open it in webmail.</string>
     <string name="email_pgp_no_webmail">Couldn\'t work out this server\'s web address — open this message in your browser.</string>
     <string name="email_pgp_no_handler">No app on this device can open that link — open this message in your browser.</string>
+    <string name="email_pgp_unlock_title">Unlock your mail key</string>
+    <string name="email_pgp_unlock_subtitle">Confirm it\'s you to read this encrypted message.</string>
+    <string name="email_pgp_unseal_failed">This device\'s key could not be opened. Enrol this device again from Security settings.</string>
     <string name="email_row_pgp_locked_description">Encrypted, can\'t be read in this app: %1$s</string>
     <string name="email_row_pgp_bad_signature_description">Signature does not match the sender: %1$s</string>
     <string name="pgp_qr_bind_confirm_title">Bind this key to these addresses?</string>
