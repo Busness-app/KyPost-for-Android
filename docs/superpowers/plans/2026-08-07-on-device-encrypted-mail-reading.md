@@ -61,9 +61,44 @@
 ### Task 1: The PGP flags survive an empty body for client-protected messages
 
 **Files:**
+- Modify: `backend/internal/mailcache/mailcache.go` — add `PGPDecryptError string \`json:"-"\`` to `Entry`
 - Modify: `backend/internal/mailcache/store.go:458`
-- Modify: `backend/internal/api/server_inbox.go:504`
+- Modify: `backend/internal/api/server_inbox.go:504` and `mailCacheEntryFromUnreadMessage` (~:196)
 - Test: `backend/internal/mailcache/store_test.go`
+
+**Prerequisite the first draft of this plan missed.** `mailcache.Entry` has `PGPEncrypted`,
+`PGPSigned`, `PGPVerified`, `PGPSignerFingerprint`, `PGPVerdictSchemaVersion` and `ContactKeyGen`
+— but **no `PGPDecryptError`**. Without it the guard below cannot compile, and more importantly it
+could not do its job: at the `Upsert` boundary a client-protected message and a failed decrypt are
+both "encrypted, no body", and nothing distinguishes them.
+
+Add the field as a **transient signal that is never persisted**:
+
+```go
+	// PGPDecryptError is the transient outcome of the caller's decrypt
+	// ATTEMPT, not durable state — hence `json:"-"`, unlike every other
+	// field here.
+	//
+	// It exists so Upsert can tell two bodyless cases apart. A
+	// client-protected message is encrypted and bodyless because the server
+	// deliberately does not decrypt it, and that classification is a stable
+	// fact worth caching. A FAILED decrypt is also encrypted and bodyless,
+	// and may be transient, so caching it would make one bad moment stick
+	// until the entry rolls out of the window.
+	//
+	// Never written into a stored entry: read by the guard, then discarded.
+	// Persisting it would be the stale-error bug in a different place.
+	PGPDecryptError string `json:"-"`
+```
+
+Three consequences, all in scope:
+
+1. The existing-UID branch reads `in.PGPDecryptError` for the guard and never copies it to `updated`.
+2. The new-UID branch does `e := in`, which copies it — set `e.PGPDecryptError = ""` there, so it
+   stays out of the in-memory window as well as off disk.
+3. `mailCacheEntryFromUnreadMessage` must copy `msg.PGPDecryptError`, or the classic (non-delta)
+   path hands `Upsert` an entry that always looks like a clean classification and the guard caches
+   failed decrypts there.
 
 **Interfaces:**
 - Consumes: nothing.
@@ -131,6 +166,28 @@ func TestUpsertStillDropsFlagsWhenDecryptFailed(t *testing.T) {
 	}
 	if entries[0].PGPEncrypted {
 		t.Fatal("a failed decrypt was cached; it must stay uncached and retryable")
+	}
+}
+
+// The error is a signal for the guard, not durable state. If it survived
+// into the window, a transient failure would keep suppressing the flags
+// long after the decrypt would have succeeded.
+func TestUpsertNeverStoresADecryptError(t *testing.T) {
+	dir := t.TempDir()
+	s := New(dir)
+
+	if err := s.Upsert("INBOX", []Entry{{
+		UID: 9, MessageID: "9", PGPEncrypted: true, PGPDecryptError: "no secret key",
+	}}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	entries, _ := s.Snapshot("INBOX", 1)
+	if len(entries) != 1 {
+		t.Fatalf("want 1 entry, got %d", len(entries))
+	}
+	if entries[0].PGPDecryptError != "" {
+		t.Fatalf("a decrypt error was stored: %q", entries[0].PGPDecryptError)
 	}
 }
 ```
