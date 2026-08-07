@@ -444,6 +444,13 @@
          feature's one alarm — from an entirely honest enrollment. "Check again" reopens a window,
          which re-derives the code, so that is what the copy points at. -->
     <string name="enrollment_timed_out">Nothing has arrived in the last five minutes. Codes change every couple of minutes, so choose “Check again” for a current one, then type that in your browser.</string>
+    <!-- Shown when a message would otherwise render as a completely blank screen. Deliberately does
+         NOT claim the message is encrypted: pgpEncrypted is omitempty server-side and defaults to
+         false, so an encrypted message the server has not warmed yet is indistinguishable from an
+         ordinary one, and asserting the stronger property on that evidence is the mistake
+         BODY_UNAVAILABLE exists to prevent. It says what is true — there is nothing to show — and
+         names the most likely reason without claiming it. -->
+    <string name="email_no_content">There\'s nothing to show for this message. If your account uses encrypted mail, the server may not have finished preparing it — refresh your inbox and open it again.</string>
     <string name="enrollment_check_again">Check again</string>
     <!-- Shown after the user dismisses the confirmation prompt. Must NOT show the code or ask for it
          to be typed again: this state is only reachable because the browser already read the code and
