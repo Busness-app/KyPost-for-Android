@@ -1991,7 +1991,13 @@ internal class AndroidVaultOpener(private val activity: FragmentActivity) : Vaul
 
     override suspend fun open(): OpenOutcome {
         val vault = EnrollmentVault(activity)
-        if (!vault.ensureKey()) return OpenOutcome.NoSecureLockScreen
+        // hasSecureLockScreen, NOT vault.ensureKey(). `ensureKey` MUTATES: on a key that fails its
+        // spec check — including one that is merely unreadable — it regenerates, and `generate`
+        // clears the stored blob in the same breath. Calling it here would mean opening an
+        // encrypted message could destroy the user's enrollment and send them back through the
+        // whole ceremony. `EnrollmentPortsAndroid.hasSecureLockScreen`'s KDoc already records this
+        // hazard, and `probeEnrollment` established the non-mutating read pattern used here.
+        if (!hasSecureLockScreen(activity)) return OpenOutcome.NoSecureLockScreen
         val (iv, ciphertext) = vault.stored() ?: return OpenOutcome.NotEnrolled
         val cipher = vault.openCipher(iv) ?: return OpenOutcome.Failed(
             activity.getString(R.string.email_pgp_unseal_failed),
