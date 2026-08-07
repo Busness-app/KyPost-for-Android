@@ -51,14 +51,24 @@
 
             </HorizontalScrollView>
 
-            <androidx.recyclerview.widget.RecyclerView
-                android:id="@+id/recyclerViewInbox"
+            <!-- The weight moves to the refresh layout: it is now the child filling the column, and
+                 the RecyclerView fills it. Leaving layout_weight on the RecyclerView would give it a
+                 zero-height parent and an empty inbox. -->
+            <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+                android:id="@+id/inboxSwipeRefresh"
                 android:layout_width="match_parent"
                 android:layout_height="0dp"
                 android:layout_weight="1"
-                android:clipToPadding="false"
-                android:layout_marginTop="8dp"
-                android:paddingBottom="8dp" />
+                android:layout_marginTop="8dp">
+
+                <androidx.recyclerview.widget.RecyclerView
+                    android:id="@+id/recyclerViewInbox"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:clipToPadding="false"
+                    android:paddingBottom="8dp" />
+
+            </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
 
         </LinearLayout>
 
