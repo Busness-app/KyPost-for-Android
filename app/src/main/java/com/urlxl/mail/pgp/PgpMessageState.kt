@@ -94,19 +94,52 @@ fun rendersNothing(state: PgpMessageState, body: String?, preview: String): Bool
  * webmail read "signature does not match sender".
  */
 enum class PgpSignatureState {
-    /** Not signed, or the relay expressed no opinion. Nothing to say. */
+    /** Not signed, or no opinion was expressed. Nothing to say. */
     NONE,
 
-    /** Signed, and the signature matches a key this account associates with the sender. */
-    VERIFIED,
+    /** Signed by a key bound to the sender, and the user confirmed that key out of band — by
+     *  eyeballing the fingerprint or scanning a QR code. The only state that claims identity. */
+    VERIFIED_CONFIRMED,
 
-    /** Signed, and it does **not** match. The sender is not who the message claims. */
+    /**
+     * Signed by a key bound to the sender that still matches its TOFU pin, but which nobody ever
+     * confirmed. This claims **continuity**, not identity: the same key as last time.
+     *
+     * Distinct from [VERIFIED_CONFIRMED] because most keys arrive by Autocrypt harvest, so one flat
+     * "verified" badge would assert the stronger property on the weaker evidence for nearly every
+     * message — and a badge that over-claims on the common case is one users learn to ignore.
+     */
+    VERIFIED_SEEN_BEFORE,
+
+    /** Signed, but no key we hold is bound to this sender. Not an accusation: the ordinary state
+     *  for a correspondent who is not in the address book yet. */
+    SIGNER_UNKNOWN,
+
+    /**
+     * A key IS bound to this sender and it no longer matches its TOFU pin.
+     *
+     * Under trust-on-first-use this is the one alarm worth raising. It used to be indistinguishable
+     * from [SIGNER_UNKNOWN], because the server dropped a pin-mismatched contact entirely — so an
+     * active key substitution displayed as the most routine message in the app.
+     */
+    KEY_CHANGED,
+
+    /** Signed, and it does **not** verify against the key bound to the sender. */
     INVALID,
 }
 
+/**
+ * The relay's verdict, for accounts whose key the **server** holds.
+ *
+ * Two booleans cannot express six states, and they cannot distinguish a fingerprint-confirmed key
+ * from an Autocrypt-harvested one, so `pgpVerified` maps to the weaker of the two positive claims.
+ * [PgpSignatureState.VERIFIED_CONFIRMED], [PgpSignatureState.SIGNER_UNKNOWN] and
+ * [PgpSignatureState.KEY_CHANGED] are reachable only through [signatureStateFor], from a local
+ * decrypt against a locally-held key.
+ */
 fun pgpSignatureStateOf(pgpSigned: Boolean, pgpVerified: Boolean): PgpSignatureState = when {
     !pgpSigned -> PgpSignatureState.NONE
-    pgpVerified -> PgpSignatureState.VERIFIED
+    pgpVerified -> PgpSignatureState.VERIFIED_SEEN_BEFORE
     else -> PgpSignatureState.INVALID
 }
 
@@ -120,11 +153,12 @@ fun pgpSignatureStateOf(pgpSigned: Boolean, pgpVerified: Boolean): PgpSignatureS
  */
 fun pgpRowMarker(
     state: PgpMessageState,
-    /** A failed signature outranks every readability marker: the row is readable, and that is
-     *  exactly what makes an unflagged impersonation dangerous. */
+    /** A failed signature or a changed key outranks every readability marker: the row is
+     *  readable, and that is exactly what makes an unflagged impersonation dangerous.
+     *  SIGNER_UNKNOWN deliberately does not mark — see [PgpSignatureState.SIGNER_UNKNOWN]. */
     signature: PgpSignatureState = PgpSignatureState.NONE,
-): String? = when {
-    signature == PgpSignatureState.INVALID -> "⚠"
+): String? = when (signature) {
+    PgpSignatureState.INVALID, PgpSignatureState.KEY_CHANGED -> "⚠"
     else -> pgpReadabilityMarker(state)
 }
 

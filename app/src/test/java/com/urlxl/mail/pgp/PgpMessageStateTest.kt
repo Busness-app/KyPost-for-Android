@@ -50,4 +50,27 @@ class PgpMessageStateTest {
         assertNull(pgpRowMarker(PgpMessageState.DECRYPTED_BY_SERVER))
         assertNull(pgpRowMarker(PgpMessageState.NONE))
     }
+
+    @Test
+    fun serverVerifiedNeverClaimsTheUserConfirmedTheKey() {
+        // The relay's two booleans cannot tell a fingerprint-confirmed key from an
+        // Autocrypt-harvested one, so the mapping takes the weaker claim. Promoting this to
+        // VERIFIED_CONFIRMED would reintroduce the exact over-claim Part 0.2 removed.
+        assertEquals(
+            PgpSignatureState.VERIFIED_SEEN_BEFORE,
+            pgpSignatureStateOf(pgpSigned = true, pgpVerified = true),
+        )
+    }
+
+    @Test
+    fun aChangedKeyMarksTheRow() {
+        assertEquals("⚠", pgpRowMarker(PgpMessageState.NONE, PgpSignatureState.KEY_CHANGED))
+    }
+
+    @Test
+    fun anUnknownSignerDoesNotMarkTheRow() {
+        // It is the ordinary state for anyone not yet in the address book. A glyph on most rows
+        // carries nothing the user can act on — the same reason DECRYPTED_BY_SERVER is unmarked.
+        assertNull(pgpRowMarker(PgpMessageState.NONE, PgpSignatureState.SIGNER_UNKNOWN))
+    }
 }

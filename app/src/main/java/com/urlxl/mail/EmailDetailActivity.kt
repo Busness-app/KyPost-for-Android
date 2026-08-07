@@ -411,7 +411,10 @@ class EmailDetailActivity : LockedActivity() {
         // displayed as ordinary mail while webmail flagged it.
         val signatureNotice = when (pgpSignatureState) {
             PgpSignatureState.INVALID -> getString(R.string.email_pgp_signature_invalid)
-            PgpSignatureState.VERIFIED -> getString(R.string.email_pgp_signature_verified)
+            PgpSignatureState.KEY_CHANGED -> getString(R.string.email_pgp_signature_key_changed)
+            PgpSignatureState.VERIFIED_CONFIRMED -> getString(R.string.email_pgp_signature_confirmed)
+            PgpSignatureState.VERIFIED_SEEN_BEFORE -> getString(R.string.email_pgp_signature_seen_before)
+            PgpSignatureState.SIGNER_UNKNOWN -> getString(R.string.email_pgp_signature_signer_unknown)
             PgpSignatureState.NONE -> null
         }
 
