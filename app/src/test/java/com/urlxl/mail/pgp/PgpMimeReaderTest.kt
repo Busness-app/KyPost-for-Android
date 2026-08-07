@@ -105,4 +105,47 @@ class PgpMimeReaderTest {
         assertTrue("expected the nested html part", body?.html?.contains("nested rich text") == true)
         assertTrue("expected the nested plain part", body?.plain?.contains("nested fallback text") == true)
     }
+
+    @Test
+    fun walkPrefersFirstNonBlankPartOverAnEarlierBlankSibling() {
+        // A blank part must not lock the slot: if a later sibling of the same subtype carries real
+        // content, that content has to win. Otherwise it is silently dropped and the message renders
+        // blank with no error shown to the user.
+        val body = read(
+            """
+            Content-Type: multipart/mixed; boundary="b1"
+
+            --b1
+            Content-Type: text/html; charset=utf-8
+
+            --b1
+            Content-Type: text/html; charset=utf-8
+
+            <p>real content</p>
+            --b1--
+            """.trimIndent(),
+        )
+
+        assertEquals("<p>real content</p>", body?.html?.trim())
+    }
+
+    @Test
+    fun walkKeepsAnAllBlankMultipartAsEmptyStringNotNull() {
+        // The other half of the same fix: a blank part is still real content when nothing better ever
+        // turns up. A multipart whose only text/html part is empty must yield "" and a non-null
+        // DecryptedBody, not null.
+        val body = read(
+            """
+            Content-Type: multipart/mixed; boundary="b1"
+
+            --b1
+            Content-Type: text/html; charset=utf-8
+
+            --b1--
+            """.trimIndent(),
+        )
+
+        assertEquals("", body?.html)
+        assertNull(body?.plain)
+    }
 }

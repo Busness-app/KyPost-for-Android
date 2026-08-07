@@ -38,7 +38,11 @@ internal data class DecryptedBody(
  * blank treated as absent. When a `Content-Type` header *was* parsed, an empty body is real — a
  * "no body, attachment only" message is a legitimate compose pattern — so it is kept as `""`, not
  * collapsed to `null`. Inside [walk], every part reached was found via genuine multipart boundary
- * parsing, so a blank part there is always real content and is never discarded.
+ * parsing, so a blank part there is always real content and is never discarded outright — but it does
+ * not get to keep a slot a later sibling could fill with something non-blank. The first non-blank
+ * `text/html` (or `text/plain`) part wins; a blank part is only kept if nothing better ever turns up,
+ * so an all-blank multipart still ends as `""` rather than `null`, and a blank-then-real pair never
+ * silently drops the real content behind an already-filled slot.
  */
 internal object PgpMimeReader {
 
@@ -55,8 +59,18 @@ internal object PgpMimeReader {
                 val part = content.getBodyPart(i)
                 val body = runCatching { part.content }.getOrNull()
                 when {
-                    part.isMimeType("text/html") -> if (html == null) html = body as? String
-                    part.isMimeType("text/plain") -> if (plain == null) plain = body as? String
+                    part.isMimeType("text/html") -> {
+                        val s = body as? String
+                        // A blank part is real content — a multipart whose only text part is empty
+                        // must yield "" and not null. But it must not lock the slot: a later
+                        // sibling with actual content has to win, or it is silently dropped and
+                        // the message renders blank with no error.
+                        if (s != null && (html == null || html!!.isBlank())) html = s
+                    }
+                    part.isMimeType("text/plain") -> {
+                        val s = body as? String
+                        if (s != null && (plain == null || plain!!.isBlank())) plain = s
+                    }
                     body is MimeMultipart -> walk(body)
                 }
             }
