@@ -114,6 +114,50 @@ class EnrollmentCeremonyCodeTest {
     }
 
     /**
+     * A resumed window must put a code back on screen **before it does anything else.**
+     *
+     * `shownBucket` is instance state that survives the loop, so a window reopened in the same bucket
+     * it closed in finds it unchanged and emits nothing. The screen then stays on `WaitingTimedOut` —
+     * "Nothing has arrived in the last five minutes" — while a window runs silently behind it, and
+     * the state that says the ceremony is *waiting on the browser* never appears. `poll()` resets
+     * `shownBucket` on entry to prevent it.
+     *
+     * The two existing tests cannot catch a missing reset and both pass without it:
+     * `theCodeRecomputesOnTheBucketBoundaryAndNotBefore` sees the same emissions either way because
+     * the first window already starts at `Long.MIN_VALUE`, and
+     * `checkAgainOpensAFreshWindowAgainstTheSameKeypair` derives its expected bucket *from the
+     * emission it receives*, so it cannot notice one that never arrived.
+     *
+     * The envelope is made to arrive on the resumed window's FIRST fetch. That is what makes this
+     * decisive rather than merely slow: with the reset the next state is `ShowingCode`, without it
+     * the ceremony goes straight to `Opening` and no code is ever re-shown.
+     */
+    @Test
+    fun aResumedWindowShowsACodeBeforeItPolls() = runBlocking {
+        val ports = FakePorts()
+        val ceremony = ports.ceremony()
+
+        ceremony.run()
+        assertTrue(ports.states.last() is EnrollmentUiState.WaitingTimedOut)
+
+        // Same bucket the window closed in: the clock is not advanced here on purpose. A test that
+        // advanced it would cross a boundary, the bucket would differ, and the emission would happen
+        // with or without the reset — which is exactly how this fix came to have no test.
+        val probe = FakeEnrollmentKeys()
+        ports.transport.fetchWhenExhausted =
+            EnrollmentCallResult.Envelope(sealEnvelope(probe))
+        val afterTimeout = ports.states.size
+
+        ceremony.checkAgain()
+
+        assertTrue(
+            "the resumed window must re-show the code before polling; without poll()'s shownBucket " +
+                "reset the screen is left on WaitingTimedOut and jumps straight to ${ports.states[afterTimeout]}",
+            ports.states[afterTimeout] is EnrollmentUiState.ShowingCode,
+        )
+    }
+
+    /**
      * **"Check again" resumes; it does not restart.**
      *
      * A restart would rotate the key, which would invalidate the code the user may have already

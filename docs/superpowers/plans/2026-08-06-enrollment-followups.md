@@ -26,7 +26,7 @@ pairing read *before* its own `withContext(Dispatchers.IO)`, so wrapping only th
 miss it. The same commit made `check()` wrap its whole body, so that comment now describes code that
 no longer exists. The outer wrap is still correct — just no longer for the stated reason.
 
-## 2. The stale-code fix has no regression test
+## 2. ~~The stale-code fix has no regression test~~ DONE
 
 `EnrollmentCeremony.poll()` now resets `shownBucket` on entry so every polling window opens on a
 freshly derived code. That closed three reachable states which displayed a dead code under copy
@@ -40,15 +40,32 @@ bucket from the emission it receives, so it cannot notice a missing one.
 
 So the fix is the change on this branch most likely to be silently reverted by someone tidying up.
 
-A test would drive a ceremony to `WaitingTimedOut`, advance the fake clock past a bucket boundary,
-call `checkAgain()`, and assert the first `ShowingCode` of the resumed window carries a code derived
-from the *new* bucket rather than the old one. `FakeEnrollmentClock` already advances both its
-timebases on `sleep`, so no new fake is needed.
+Closed by `aResumedWindowShowsACodeBeforeItPolls`.
 
-Related and equally cheap, from an earlier review: `FailureReason.NO_DEVICE_KEY` has two production
-call sites and zero tests, and is currently unreachable from tests because `FakePorts` hardcodes
-`FakeEnrollmentKeys()` with no `minting` override. One defaulted constructor parameter plus one test
-closes it, and the cost only grows as call sites accumulate.
+**The sketch recorded here was wrong, and worth keeping as a warning.** It proposed advancing the
+fake clock past a bucket boundary before `checkAgain()`. That defeats the test: once the boundary is
+crossed the bucket genuinely differs from `shownBucket`, so the emission happens *with or without*
+the reset. The test has to resume in the **same bucket the window closed in** — which is the case
+the reset exists for — and make the envelope arrive on the resumed window's first fetch, so the next
+state is `ShowingCode` with the reset and `Opening` without it.
+
+The visible symptom is also not quite what was written above: the screen is left on
+`WaitingTimedOut` ("Nothing has arrived in the last five minutes") while a window runs silently
+behind it, rather than showing a stale code.
+
+Proven by deliberate break: with `shownBucket = Long.MIN_VALUE` removed, 35 ceremony tests ran and
+**only** the new one failed — confirming this file's claim that the two existing tests cannot catch it.
+
+Related, from an earlier review and also done: `FailureReason.NO_DEVICE_KEY` had **four** production
+call sites (this file previously said two) and zero tests, unreachable because `FakePorts` hardcoded
+`FakeEnrollmentKeys()` with no `minting` override. `FakePorts` now takes `minting`, and
+`FakeEnrollmentKeys` takes `vanished` and `encodingFails` — the last two reach the mid-ceremony sites,
+where the key is destroyed under a running window exactly as `SecurityWipe` and Hostile Location
+Protection can do to a live screen.
+
+Each site has its own test, and each was mutated individually to `SEAL_FAILED` to prove the mapping is
+one-to-one. That check is not ceremony: this repo has already shipped a mutation that edited the wrong
+one of three identical blocks and left the target test green.
 
 ## 3. ~~Awaiting a decision~~ DECIDED: `SealOutcome.Cancelled` no longer shows a code at all
 
