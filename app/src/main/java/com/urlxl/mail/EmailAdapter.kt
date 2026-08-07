@@ -44,6 +44,8 @@ class EmailAdapter(
             subjectTextView.contentDescription = when {
                 signatureState == PgpSignatureState.INVALID ->
                     itemView.context.getString(R.string.email_row_pgp_bad_signature_description, email.subject)
+                signatureState == PgpSignatureState.KEY_CHANGED ->
+                    itemView.context.getString(R.string.email_row_pgp_key_changed_description, email.subject)
                 pgpState == PgpMessageState.CLIENT_PROTECTED ->
                     itemView.context.getString(R.string.email_row_pgp_locked_description, email.subject)
                 pgpState == PgpMessageState.DECRYPT_FAILED ->

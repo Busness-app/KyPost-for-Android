@@ -65,8 +65,21 @@
     <!-- Shown when the server flagged a message with the $Phishing IMAP keyword. Wording
          matches the webmail and Linux clients. -->
     <string name="email_phishing_warning">This message impersonates KyPost. Links to KyPost app addresses have been blocked. KyPost will never ask you to confirm a pairing request by email — never approve one you did not start yourself, on this device.</string>
-    <string name="email_pgp_client_protected">This message is end-to-end encrypted. Only your browser holds the key, so it can\'t be read here.</string>
+    <string name="email_pgp_client_protected">This message is end-to-end encrypted. The server holds no key for it.</string>
     <string name="email_pgp_open_webmail_button">Open in webmail</string>
+    <string name="email_pgp_decrypt_button">Decrypt here</string>
+    <string name="email_pgp_retry_button">Try again</string>
+    <string name="email_pgp_locked_placeholder_description">This message is encrypted and is not being shown.</string>
+    <string name="email_pgp_can_decrypt_here">This message is end-to-end encrypted. This device holds your key, so it can be opened here.</string>
+    <string name="email_pgp_decrypted_here">Decrypted on this device. The server never saw this content.</string>
+    <string name="email_pgp_not_enrolled">This message is end-to-end encrypted and this device holds no key. Enrol this device in Security settings, or open it in webmail.</string>
+    <string name="email_pgp_hostile_location">This message is end-to-end encrypted. Hostile Location Protection is on, so no key is kept on this device.</string>
+    <string name="email_pgp_no_lock_screen">This device needs a screen lock before it can hold your mail key.</string>
+    <string name="email_pgp_too_large">This message is too large to open on this device.</string>
+    <string name="email_pgp_fetch_failed">Couldn\'t reach the server to fetch this message.</string>
+    <string name="email_pgp_no_encrypted_content">This message doesn\'t carry any encrypted content. Open it in webmail if you expected something here.</string>
+    <string name="email_pgp_decrypt_here_failed">This message couldn\'t be decrypted on this device.</string>
+    <string name="email_pgp_reply_disabled">Replying to encrypted mail isn\'t available in the app yet — use webmail.</string>
     <string name="email_pgp_decrypt_failed">This message is encrypted and couldn\'t be decrypted: %1$s</string>
     <string name="email_pgp_decrypted_by_server">This message was encrypted. The server decrypted it to show it here.</string>
     <string name="email_pgp_body_unavailable">This message is encrypted and isn\'t cached on this device, so its protection can\'t be confirmed here. Refresh the inbox, or open it in webmail.</string>
@@ -77,6 +90,7 @@
     <string name="email_pgp_unseal_failed">This device\'s key could not be opened. Enrol this device again from Security settings.</string>
     <string name="email_row_pgp_locked_description">Encrypted, can\'t be read in this app: %1$s</string>
     <string name="email_row_pgp_bad_signature_description">Signature does not match the sender: %1$s</string>
+    <string name="email_row_pgp_key_changed_description">Sender\'s key has changed since last time: %1$s</string>
     <string name="pgp_qr_bind_confirm_title">Bind this key to these addresses?</string>
     <string name="pgp_qr_bind_confirm_body">This key will be used whenever you write to %1$s at:\n\n%2$s\n\nCheck these are the addresses you expect. Another app on this device can change a contact\'s addresses.</string>
     <string name="pgp_qr_bind_confirm_body_no_addresses">%1$s has no email address on file, so this key will not be used for anything until you add one.</string>

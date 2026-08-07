@@ -1,5 +1,8 @@
 package com.urlxl.mail
 
+import com.urlxl.mail.pgp.DecryptedBody
+import com.urlxl.mail.pgp.PgpSignatureState
+import com.urlxl.mail.pgp.ReadOutcome
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -248,4 +251,47 @@ class EmailDetailActivityTest {
     // Robolectric in this module — see every other test file's Android-framework-free style) —
     // covered instead by buildEmailBodyHtml's own isDark parameter above, and by manual/instrumented
     // verification that a dark theme's palette.bg does trigger the override branch in the real app.
+
+    // ---- showsRetryButton: which ReadOutcome offers a Retry tap ----
+
+    /** Every non-FetchFailed row of the exit table, once each. The two easiest to confuse with a
+     *  transport failure are the actual target: [ReadOutcome.NoEncryptedContent] is terminal (the
+     *  server answered "no payload"; retrying cannot change that) and [ReadOutcome.DecryptFailed]
+     *  is a local decrypt failure, not a fetch failure — neither should offer Retry. */
+    private val nonRetryableOutcomes = listOf(
+        ReadOutcome.Decrypted(
+            body = DecryptedBody(html = "<p>hi</p>", plain = null, protectedSubject = null),
+            signature = PgpSignatureState.NONE,
+            resolvedSender = "bob@example.com",
+        ),
+        ReadOutcome.NeedsUnlock,
+        ReadOutcome.Cancelled,
+        ReadOutcome.NotEnrolled,
+        ReadOutcome.NoSecureLockScreen,
+        ReadOutcome.TooLarge,
+        ReadOutcome.NotClientProtected,
+        ReadOutcome.UnsealFailed("could not open"),
+        ReadOutcome.NoEncryptedContent,
+        ReadOutcome.DecryptFailed("bad padding"),
+    )
+
+    @Test
+    fun showsRetryButton_isTrueOnlyForFetchFailed() {
+        assertTrue(showsRetryButton(ReadOutcome.FetchFailed("network error")))
+    }
+
+    @Test
+    fun showsRetryButton_isFalseForEveryOtherExitTableRow() {
+        nonRetryableOutcomes.forEach { outcome ->
+            assertFalse("expected no Retry for $outcome", showsRetryButton(outcome))
+        }
+    }
+
+    /** [ReadOutcome.NoEncryptedContent] specifically: the server answered, so a Retry button here
+     *  would invite the user to tap it forever. Deliberate-break check inline, not just a shared
+     *  loop assertion, since this is the one row the brief calls out by name as never-Retry. */
+    @Test
+    fun showsRetryButton_isFalseForNoEncryptedContent() {
+        assertFalse(showsRetryButton(ReadOutcome.NoEncryptedContent))
+    }
 }
