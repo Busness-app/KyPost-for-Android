@@ -51,22 +51,31 @@ choice belongs to whoever owns this repo's supply-chain posture; it should stay 
 
 ## What is next, in order
 
-### 1. Run the ceremony end to end against a real browser and relay
+### 1. ~~Run the ceremony end to end~~ DONE, 2026-08-06 — and it passed
 
-**Never done.** This is the highest-value item by a distance and nothing else on this list comes close.
+**Run against a real browser and a real phone, and the device came out holding the key.** That
+exercises the entire chain in one pass: publish the agreement key, derive and display the code,
+transcribe it, the browser verifies and seals, the phone polls, fetches the envelope, opens it under
+GCM with the AAD binding, re-seals under the vault key behind a biometric, and reports enrolled.
 
-The two clients agree only through a shared normative vector and unit tests. That is exactly the kind
-of agreement that can be mutually wrong, and it already has been: the 4-3-4-3 grouping mismatch
-between phone and browser survived both suites, and so did the dismissed-prompt bug fixed in #23. An
-end-to-end run would have caught both on the first attempt.
+This had been the highest-value outstanding item since the ceremony landed, on the grounds that the
+two clients agreed only through a shared vector and unit tests — an agreement that can be mutually
+wrong, and twice had been. It is now agreement observed in the field. The 4-3-4-3 grouping in
+particular is confirmed to match between phone and browser on a code a human actually typed.
 
-Needs a running relay and a browser, so it cannot be done from a headless session.
+**It is also what produced this session's bug reports.** Every finding below came out of that run,
+which is the argument for doing it earlier next time rather than a reason to feel bad about the
+findings:
 
-Watch specifically for:
-- The code the phone displays matching the browser's, character for character, **including hyphens**.
-- Dismissing the fingerprint prompt: the screen must now read "Almost done" and offer "Check again",
-  **not** show the code again. That is #23's change and it has never been seen by a human.
-- Letting a 120-second bucket roll while the prompt is up, then resuming.
+- The detail view rendered an encrypted message as a blank screen with no explanation (PR #26).
+- Button labels ran off the left on the Security page — a shared theme-helper bug that affected every
+  programmatically-created button in the app, not only the two the redesign added (PR #29).
+- The Security page did not fit on one screen (PR #29).
+- The inbox had no pull-to-refresh at all (PR #28), now confirmed working on the device.
+
+What it did **not** cover, and is still unobserved: dismissing the fingerprint prompt to reach
+`ReadyToFinish` (#23's change, still never seen by a human), and letting a 120-second bucket roll
+while the prompt is up. Both are quick to try on the next run.
 
 ### 2. Two comments that are false, one of them newly so
 

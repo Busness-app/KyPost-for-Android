@@ -189,5 +189,12 @@ right signature verdict. The two clients agreeing via unit tests and a shared ve
 kind of agreement that has already been wrong twice on this feature — the 4-3-4-3 grouping mismatch
 and the dismissed-prompt state both survived full suites.
 
-**The end-to-end ceremony itself has still never been run against a real browser and relay.** Do that
-first; it is the cheaper check and it gates everything here.
+**The ceremony has been run end to end and it passed** (2026-08-06, real browser and real phone), so
+this work starts from a device that genuinely holds a key rather than from an assumption that it can.
+That run is also what surfaced the blank-message bug in PR #26 — the one whose root cause, an
+unwarmed `pgpEncrypted` flag, is the dependency named above. Treat the same method as the acceptance
+test here: a real message, a real phone, read by a person.
+
+Worth knowing when planning the manual pass: the run did **not** cover dismissing the fingerprint
+prompt (the `ReadyToFinish` state added in #23 has still never been seen by a human) or letting a
+120-second bucket roll with the prompt up. Both are cheap to fold into the next session at a device.

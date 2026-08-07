@@ -157,8 +157,8 @@ to record it as done, and say where.
 
 Two other items are owed on the ceremony and are **not** part of this handoff:
 
-- The end-to-end ceremony has never been run against a real browser and relay. The two clients agree
-  only by a shared normative vector and unit tests. That is the check that would have caught this
-  grouping mismatch in the first place.
+- ~~The end-to-end ceremony has never been run against a real browser and relay.~~ **Run and passed,
+  2026-08-06.** It is what would have caught this grouping mismatch in the first place, and it has
+  now confirmed the fixed grouping matches between phone and browser on a code a human typed.
 - `SealOutcome.Cancelled` in the Android client re-emits a possibly-stale code; the final review
   asked for an explicit decision on it.
