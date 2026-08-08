@@ -26,6 +26,7 @@ captures/
 keystore.properties
 signing.properties
 app/google-services.json
+.artifacts/
 
 # OS artifacts
 .DS_Store
