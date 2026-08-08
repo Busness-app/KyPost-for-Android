@@ -516,6 +516,7 @@ class EmailDetailActivity : LockedActivity() {
             pgpBar.visibility = if (notice == null) View.GONE else View.VISIBLE
             btnOpenInWebmail.visibility = View.GONE
             pgpText.text = notice.orEmpty()
+            pgpText.visibility = if (notice == null) View.GONE else View.VISIBLE
             return
         }
         pgpBar.visibility = View.VISIBLE
@@ -527,35 +528,28 @@ class EmailDetailActivity : LockedActivity() {
             PgpMessageState.DECRYPTED_BY_SERVER ->
                 pgpText.text = getString(R.string.email_pgp_decrypted_by_server)
             PgpMessageState.CLIENT_PROTECTED -> {
-                // No pairing, or a serverUrl no URL could be built from: we genuinely do not know
-                // this server's web address, which is what email_pgp_no_webmail says. A launch
-                // that fails later is a different problem and gets a different string.
-                //
-                // Recorded in webmailUnavailable, not just written into pgpText here: the automatic
-                // attemptDecrypt below overwrites pgpText with a ReadOutcome notice almost
-                // immediately, and several of those notices ("...or open it in webmail") are
-                // misleading with no button and no address on screen unless showLocked appends this
-                // explanation too.
                 webmailUnavailable = serverUrl == null || webmailUrl == null
-                if (serverUrl == null || webmailUrl == null) {
-                    pgpText.text = getString(R.string.email_pgp_client_protected) +
-                        "\n" + getString(R.string.email_pgp_no_webmail)
-                } else {
-                    pgpText.text = getString(R.string.email_pgp_client_protected)
-                    btnOpenInWebmail.visibility = View.VISIBLE
-                    // A Custom Tab where one is available: the user's real browser, with the
-                    // session webmail already holds, rendered over this activity so a back
-                    // gesture comes straight back to the message list. See WebmailTab for why
-                    // this is not the in-app WebView the old comment here ruled out.
+                // Defer Open in Webmail visibility to renderReadOutcome to avoid a flash
+                // of the fallback button before the on-device decrypt (attemptDecrypt with
+                // unlockIfNeeded=false) resolves. The success path (Decrypted) and the
+                // NeedsUnlock/Cancelled paths both hide webmail; only terminal failures
+                // show it via showLocked's webmailUnavailable guard.
+                if (serverUrl != null && webmailUrl != null) {
                     btnOpenInWebmail.setOnClickListener {
-                        // The address is known — it is on the button. A failure here means nothing
-                        // on the device would open it, so say that rather than blaming the server
-                        // address, which is what this branch used to tell a user with no browser.
+                        // A Custom Tab where one is available: the user's real browser, with the
+                        // session webmail already holds, rendered over this activity so a back
+                        // gesture comes straight back to the message list. See WebmailTab for why
+                        // this is not the in-app WebView the old comment here ruled out.
                         if (!openWebmail(this, serverUrl, webmailUrl)) {
                             Toast.makeText(this, R.string.email_pgp_no_handler, Toast.LENGTH_LONG).show()
                         }
                     }
                 }
+                btnOpenInWebmail.visibility = View.GONE
+                // No pointless "This message is end-to-end encrypted..." paragraph — show only
+                // actionable buttons (Decrypt Email vs Open in webmail). The signature badge,
+                // if any, is rendered at the end of this function.
+                pgpText.text = ""
                 // Explicit taps always may prompt; only the automatic attempt below is silent when
                 // the key is not held.
                 btnDecryptHere.setOnClickListener {
@@ -576,8 +570,10 @@ class EmailDetailActivity : LockedActivity() {
         // Prepended, not appended: a signature that does not match the sender is the more urgent of
         // the two facts, and it should not sit below a paragraph about decryption.
         if (signatureNotice != null) {
-            pgpText.text = signatureNotice + "\n\n" + pgpText.text
+            val current = pgpText.text.toString()
+            pgpText.text = if (current.isBlank()) signatureNotice else signatureNotice + "\n\n" + current
         }
+        pgpText.visibility = if (pgpText.text.isNullOrBlank()) View.GONE else View.VISIBLE
     }
 
     /**
@@ -622,11 +618,11 @@ class EmailDetailActivity : LockedActivity() {
      *  [renderPgpBar] (server-side verdicts) and [renderReadOutcome] (on-device verdicts) so the
      *  wording cannot drift between the two paths that can produce the same six states. */
     private fun signatureNoticeFor(state: PgpSignatureState): String? = when (state) {
-        PgpSignatureState.INVALID -> getString(R.string.email_pgp_signature_invalid)
-        PgpSignatureState.KEY_CHANGED -> getString(R.string.email_pgp_signature_key_changed)
-        PgpSignatureState.VERIFIED_CONFIRMED -> getString(R.string.email_pgp_signature_confirmed)
-        PgpSignatureState.VERIFIED_SEEN_BEFORE -> getString(R.string.email_pgp_signature_seen_before)
-        PgpSignatureState.SIGNER_UNKNOWN -> getString(R.string.email_pgp_signature_signer_unknown)
+        PgpSignatureState.VERIFIED_CONFIRMED -> "✅ " + getString(R.string.email_pgp_signature_confirmed)
+        PgpSignatureState.VERIFIED_SEEN_BEFORE -> "🟢 " + getString(R.string.email_pgp_signature_seen_before)
+        PgpSignatureState.SIGNER_UNKNOWN -> "⬜ " + getString(R.string.email_pgp_signature_signer_unknown)
+        PgpSignatureState.INVALID -> "⚠️ " + getString(R.string.email_pgp_signature_invalid)
+        PgpSignatureState.KEY_CHANGED -> "⚠️ " + getString(R.string.email_pgp_signature_key_changed)
         PgpSignatureState.NONE -> null
     }
 
@@ -733,36 +729,65 @@ class EmailDetailActivity : LockedActivity() {
                 if (verdict != PgpSignatureState.NONE) {
                     fromView.text = getString(R.string.email_from) + " " + outcome.resolvedSender
                 }
-                // Prepended, not appended — matching renderPgpBar just above: a signature that does
-                // not match the sender is the more urgent of the two facts.
-                pgpText.text = listOfNotNull(
-                    signatureNoticeFor(verdict),
-                    getString(R.string.email_pgp_decrypted_here),
-                ).joinToString("\n\n")
+                val notice = signatureNoticeFor(verdict)
+                if (notice != null) {
+                    pgpBar.visibility = View.VISIBLE
+                    pgpText.text = notice
+                    pgpText.visibility = View.VISIBLE
+                } else {
+                    pgpBar.visibility = View.GONE
+                    pgpText.text = ""
+                    pgpText.visibility = View.GONE
+                }
                 btnOpenInWebmail.visibility = View.GONE
             }
             ReadOutcome.NeedsUnlock -> {
-                showLocked(getString(R.string.email_pgp_can_decrypt_here))
+                showLocked("")
                 btnDecryptHere.visibility = View.VISIBLE
+                btnOpenInWebmail.visibility = View.GONE
             }
             // Silent on purpose: the user dismissed a sheet they raised. A toast here would be
             // noise about their own action.
             ReadOutcome.Cancelled -> {
-                showLocked(getString(R.string.email_pgp_can_decrypt_here))
+                showLocked("")
                 btnDecryptHere.visibility = View.VISIBLE
+                btnOpenInWebmail.visibility = View.GONE
             }
-            ReadOutcome.NotEnrolled -> showLocked(getString(R.string.email_pgp_not_enrolled))
-            ReadOutcome.NoSecureLockScreen -> showLocked(getString(R.string.email_pgp_no_lock_screen))
-            ReadOutcome.TooLarge -> showLocked(getString(R.string.email_pgp_too_large))
-            ReadOutcome.NotClientProtected -> showLocked(getString(R.string.email_pgp_client_protected))
-            is ReadOutcome.UnsealFailed -> showLocked(getString(R.string.email_pgp_unseal_failed))
-            is ReadOutcome.FetchFailed -> showLocked(getString(R.string.email_pgp_fetch_failed))
+            ReadOutcome.NotEnrolled -> {
+                showLocked("")
+                btnOpenInWebmail.visibility = if (webmailUnavailable) View.GONE else View.VISIBLE
+            }
+            ReadOutcome.NoSecureLockScreen -> {
+                showLocked("")
+                btnOpenInWebmail.visibility = if (webmailUnavailable) View.GONE else View.VISIBLE
+            }
+            ReadOutcome.TooLarge -> {
+                showLocked("")
+                btnOpenInWebmail.visibility = if (webmailUnavailable) View.GONE else View.VISIBLE
+            }
+            ReadOutcome.NotClientProtected -> {
+                showLocked("")
+                btnOpenInWebmail.visibility = if (webmailUnavailable) View.GONE else View.VISIBLE
+            }
+            is ReadOutcome.UnsealFailed -> {
+                showLocked("")
+                btnOpenInWebmail.visibility = if (webmailUnavailable) View.GONE else View.VISIBLE
+            }
+            is ReadOutcome.FetchFailed -> {
+                showLocked("")
+                btnOpenInWebmail.visibility = if (webmailUnavailable) View.GONE else View.VISIBLE
+            }
             // Terminal, unlike FetchFailed: the server answered, and its answer was that this
             // message carries no OpenPGP payload. Retrying cannot change that, so no Retry button —
             // offering one would invite the user to tap it forever.
-            ReadOutcome.NoEncryptedContent ->
-                showLocked(getString(R.string.email_pgp_no_encrypted_content))
-            is ReadOutcome.DecryptFailed -> showLocked(getString(R.string.email_pgp_decrypt_here_failed))
+            ReadOutcome.NoEncryptedContent -> {
+                showLocked("")
+                btnOpenInWebmail.visibility = if (webmailUnavailable) View.GONE else View.VISIBLE
+            }
+            is ReadOutcome.DecryptFailed -> {
+                showLocked("")
+                btnOpenInWebmail.visibility = if (webmailUnavailable) View.GONE else View.VISIBLE
+            }
         }
         // Routed through the pure decision below rather than set inline per-branch, so the one
         // outcome that must never offer Retry (NoEncryptedContent — see showsRetryButton's KDoc)
@@ -784,13 +809,16 @@ class EmailDetailActivity : LockedActivity() {
         lockedPlaceholder.visibility = View.VISIBLE
         pgpBar.visibility = View.VISIBLE
         val body = if (webmailUnavailable) {
-            notice + "\n" + getString(R.string.email_pgp_no_webmail)
+            if (notice.isBlank()) getString(R.string.email_pgp_no_webmail) else notice + "\n" + getString(R.string.email_pgp_no_webmail)
         } else {
             notice
         }
         // Prepended, not appended — same reasoning as renderPgpBar and the Decrypted branch above: a
         // signature that does not match the sender outranks a readability notice.
-        pgpText.text = listOfNotNull(signatureNoticeFor(pgpSignatureState), body).joinToString("\n\n")
+        val sig = signatureNoticeFor(pgpSignatureState)
+        val bodyPart = body.takeIf { it.isNotBlank() }
+        pgpText.text = listOfNotNull(sig, bodyPart).joinToString("\n\n")
+        pgpText.visibility = if (pgpText.text.isNullOrBlank()) View.GONE else View.VISIBLE
     }
 
     private fun loadAttachments(emailId: String, emailFolder: String) {

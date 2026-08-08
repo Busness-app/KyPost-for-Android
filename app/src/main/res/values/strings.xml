@@ -67,7 +67,7 @@
     <string name="email_phishing_warning">This message impersonates KyPost. Links to KyPost app addresses have been blocked. KyPost will never ask you to confirm a pairing request by email — never approve one you did not start yourself, on this device.</string>
     <string name="email_pgp_client_protected">This message is end-to-end encrypted. The server holds no key for it.</string>
     <string name="email_pgp_open_webmail_button">Open in webmail</string>
-    <string name="email_pgp_decrypt_button">Decrypt here</string>
+    <string name="email_pgp_decrypt_button">Decrypt Email</string>
     <string name="email_pgp_retry_button">Try again</string>
     <string name="email_pgp_locked_placeholder_description">This message is encrypted and is not being shown.</string>
     <string name="email_pgp_can_decrypt_here">This message is end-to-end encrypted. This device holds your key, so it can be opened here.</string>
@@ -95,11 +95,11 @@
     <string name="pgp_qr_bind_confirm_body">This key will be used whenever you write to %1$s at:\n\n%2$s\n\nCheck these are the addresses you expect. Another app on this device can change a contact\'s addresses.</string>
     <string name="pgp_qr_bind_confirm_body_no_addresses">%1$s has no email address on file, so this key will not be used for anything until you add one.</string>
     <string name="pgp_qr_bind_confirm_button">Bind key</string>
-    <string name="email_pgp_signature_invalid">This message\'s signature does not match the sender it claims to be from. Treat its contents, links and attachments as untrusted.</string>
-    <string name="email_pgp_signature_confirmed">Signature verified against a key you confirmed for this sender.</string>
-    <string name="email_pgp_signature_seen_before">Signature matches the key we have always seen from this sender. You have not confirmed that key, so this shows the message is consistent — not who sent it.</string>
-    <string name="email_pgp_signature_signer_unknown">This message is signed, but not by any key you hold for this sender.</string>
-    <string name="email_pgp_signature_key_changed">This sender\'s key has changed since you last heard from them. That can be an ordinary key rotation or an impersonation attempt — confirm the new fingerprint before trusting this message.</string>
+    <string name="email_pgp_signature_invalid">Signing Key Mismatch</string>
+    <string name="email_pgp_signature_confirmed">Key verified by QR Code</string>
+    <string name="email_pgp_signature_seen_before">Key trusted on first use</string>
+    <string name="email_pgp_signature_signer_unknown">No Signing Key</string>
+    <string name="email_pgp_signature_key_changed">Signing Key Mismatch</string>
     <string name="email_row_pgp_failed_description">Encrypted, couldn\'t be decrypted: %1$s</string>
     <string name="attachment_downloading">Downloading %1$s…</string>
     <string name="attachment_opening">Opening %1$s…</string>
