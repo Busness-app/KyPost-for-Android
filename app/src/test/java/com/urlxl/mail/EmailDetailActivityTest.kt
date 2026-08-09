@@ -26,6 +26,24 @@ import org.junit.Test
  */
 class EmailDetailActivityTest {
 
+    @Test
+    fun emailBodyToHtml_preservesPlainTextWhitespaceAndEscapesMarkup() {
+        val html = emailBodyToHtml("one\t two\nthree < four", "plain")
+
+        assertTrue(html.startsWith("<pre class=\"plain-text\">") )
+        assertTrue(html.contains("one\t two\nthree &lt; four"))
+    }
+
+    @Test
+    fun emailBodyToHtml_respectsExplicitHtmlMode() {
+        assertEquals("<p>hello</p>", emailBodyToHtml("<p>hello</p>", "html"))
+    }
+
+    @Test
+    fun emailBodyToHtml_fallbackRecognizesEmailHtmlTags() {
+        assertEquals("<center><p>hello</p></center>", emailBodyToHtml("<center><p>hello</p></center>", ""))
+    }
+
     private val darkPalette = ThemePalette(
         bg = "#1a1a1e",
         panel = "#252530",

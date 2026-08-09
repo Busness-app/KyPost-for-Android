@@ -120,7 +120,12 @@ data class OutgoingAttachment(
 
 data class MailSendOutcome(val sentSaved: Boolean, val warning: String)
 
-data class MailMessageBody(val html: String, val toAddresses: List<String>, val ccAddresses: List<String>)
+data class MailMessageBody(
+    val html: String,
+    val bodyMode: String = "",
+    val toAddresses: List<String>,
+    val ccAddresses: List<String>,
+)
 
 /** One received attachment's metadata (no content), from GET /api/mail/attachments. */
 data class AttachmentInfo(val index: Int, val name: String, val mimeType: String, val size: Int)

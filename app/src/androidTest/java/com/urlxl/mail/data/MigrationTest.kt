@@ -183,6 +183,18 @@ class MigrationTest {
         }
     }
 
+    @Test
+    fun migrate10To11_addsBodyModeWithPlainCompatibilityDefault() {
+        helper.createDatabase(TEST_DB, 10).close()
+
+        val migrated = helper.runMigrationsAndValidate(TEST_DB, 11, true, AppDatabase.MIGRATION_10_11)
+
+        migrated.query("SELECT bodyMode FROM emails LIMIT 1").use { cursor ->
+            // The query also verifies that the additive column exists on old databases.
+            assertEquals(false, cursor.moveToFirst())
+        }
+    }
+
     private companion object {
         const val TEST_DB = "migration-test"
     }

@@ -17,7 +17,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         GroupLinkEntity::class,
         ContactSyncStateEntity::class,
     ],
-    version = 10,
+    version = 11,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -130,6 +130,12 @@ abstract class AppDatabase : RoomDatabase() {
                         "`subscriberId` TEXT NOT NULL, `cursor` INTEGER NOT NULL, " +
                         "PRIMARY KEY(`subscriberId`))",
                 )
+            }
+        }
+
+        val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `emails` ADD COLUMN `bodyMode` TEXT NOT NULL DEFAULT ''")
             }
         }
     }

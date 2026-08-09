@@ -18,6 +18,7 @@ class EmailMappersTest {
             cc = "cc@example.com",
             bcc = "bcc@example.com",
             body = "<p>Body</p>",
+            bodyMode = "html",
             label = "Work",
             status = "read",
             atUtc = "2026-07-07T20:43:25Z",
@@ -35,6 +36,7 @@ class EmailMappersTest {
         assertEquals(email.cc, roundTripped.cc)
         assertEquals(email.bcc, roundTripped.bcc)
         assertEquals(email.body, roundTripped.body)
+        assertEquals(email.bodyMode, roundTripped.bodyMode)
         assertEquals(email.label, roundTripped.label)
         assertEquals(email.status, roundTripped.status)
         assertEquals(email.atUtc, roundTripped.atUtc)
