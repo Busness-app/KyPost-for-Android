@@ -74,7 +74,8 @@ Owns production Android app code and resources.
   `signerKeys` already narrowed to the sender it resolved (`pgp/SignerBinding.signatureStateFor`,
   consumed by `pgp/EncryptedMessageReader`). Do not reintroduce a client-side `From` parser to "wire
   up" that narrowing yourself — a second parser deciding the same binding is exactly the defect that
-  was removed.
+  was removed. `signerKeyIdsOf` also excludes revoked and expired OpenPGP keys before a signature can
+  become a trusted state, and `PgpDecryptor` caps decompressed plaintext at 32 MiB before allocation.
 - **The account's own PGP identity is never in the contacts database.** `ContactEntity.pgpKey` — even
   on the self-contact (`isSelf = 1`) — is an ordinary contact field, written only when a key is
   attached to a contact by hand or by the QR scan; the account's real identity lives server-side.

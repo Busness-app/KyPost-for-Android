@@ -1,8 +1,11 @@
 package com.urlxl.mail.pgp
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 
 /**
  * These run on the JVM against a gpg-produced vector. `isReturnDefaultValues = true` is project-wide,
@@ -12,6 +15,19 @@ import org.junit.Test
  * [PgpDecryptor] uses Bouncy Castle's lightweight `Bc*` operators and no Android imports at all.
  */
 class PgpDecryptorTest {
+
+    @Test
+    fun plaintextCopyStopsAtThePostDecompressionLimit() {
+        val output = ByteArrayOutputStream()
+        val copied = PgpDecryptor.copyWithLimit(
+            ByteArrayInputStream(ByteArray(MAX_DECRYPTED_PLAINTEXT_BYTES + 1)),
+            output,
+            MAX_DECRYPTED_PLAINTEXT_BYTES,
+        )
+
+        assertFalse(copied)
+        assertEquals(MAX_DECRYPTED_PLAINTEXT_BYTES, output.size())
+    }
 
     /** The signer keys the reader will pass in production: [TestPgpPrivateKey.ARMORED_PUBLIC] is
      *  the same key pair's public half, exported separately by `gpg`, exactly the shape a real

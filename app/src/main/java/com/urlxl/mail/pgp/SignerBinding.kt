@@ -3,6 +3,7 @@ package com.urlxl.mail.pgp
 import org.bouncycastle.openpgp.PGPPublicKeyRingCollection
 import org.bouncycastle.openpgp.PGPUtil
 import org.bouncycastle.openpgp.operator.bc.BcKeyFingerprintCalculator
+import java.util.Date
 
 /**
  * One address-bound contact key as the server ships it.
@@ -30,21 +31,29 @@ internal data class SignerKey(
  *
  * A one-pass signature is ordinarily made with a dedicated signing subkey, whose id differs from
  * the primary key's, so matching only the primary key's id would silently reject every normally
- * signed message. Revocation is **not** checked here: a signature made with a subkey whose signing
- * capability has since been revoked still matches by id. Returns an empty set — never throws — on
- * a key that fails to parse: an unparseable bound key must never grant a pass, only ever shrink the
- * candidate set.
+ * signed message. Revoked and expired keys are excluded before matching. Returns an empty set —
+ * never throws — on a key that fails to parse: an unparseable bound key must never grant a pass,
+ * only ever shrink the candidate set.
  */
-internal fun signerKeyIdsOf(armoredPublicKey: String): Set<Long> = runCatching {
+internal fun signerKeyIdsOf(armoredPublicKey: String, now: Date = Date()): Set<Long> = runCatching {
     val rings = PGPPublicKeyRingCollection(
         PGPUtil.getDecoderStream(armoredPublicKey.byteInputStream(Charsets.UTF_8)),
         BcKeyFingerprintCalculator(),
     )
     rings.keyRings.asSequence()
         .flatMap { it.publicKeys.asSequence() }
+        .filter { !it.isRevoked() && !it.isExpiredAt(now) }
         .map { it.keyID }
         .toSet()
 }.getOrDefault(emptySet())
+
+private fun org.bouncycastle.openpgp.PGPPublicKey.isExpiredAt(now: Date): Boolean {
+    val validSeconds = getValidSeconds()
+    if (validSeconds <= 0) return false
+    val createdAt = creationTime.time
+    if (validSeconds > (Long.MAX_VALUE - createdAt) / 1_000L) return false
+    return createdAt + validSeconds * 1_000L <= now.time
+}
 
 /**
  * The signature verdict for a message being displayed as being from a sender the **server** has
