@@ -219,6 +219,29 @@
             android:layout_height="0dp"
             android:layout_weight="1" />
 
+        <ScrollView
+            android:id="@+id/emailPlainTextScroll"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:fillViewport="true"
+            android:scrollbars="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/emailPlainText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:breakStrategy="simple"
+                android:fontFamily="@font/ibm_plex_mono"
+                android:gravity="top|start"
+                android:hyphenationFrequency="none"
+                android:minWidth="0dp"
+                android:scrollHorizontally="false"
+                android:textSize="16sp"
+                android:textIsSelectable="true" />
+        </ScrollView>
+
         <TextView
             android:id="@+id/emailAttachmentsLabel"
             android:layout_width="match_parent"

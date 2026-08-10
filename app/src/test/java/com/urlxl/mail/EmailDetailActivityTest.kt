@@ -30,7 +30,7 @@ class EmailDetailActivityTest {
     fun emailBodyToHtml_preservesPlainTextWhitespaceAndEscapesMarkup() {
         val html = emailBodyToHtml("one\t two\nthree < four", "plain")
 
-        assertTrue(html.startsWith("<pre class=\"plain-text\">") )
+        assertTrue(html.startsWith("<div class=\"kypost-plain-text\">") )
         assertTrue(html.contains("one\t two\nthree &lt; four"))
     }
 
@@ -42,6 +42,34 @@ class EmailDetailActivityTest {
     @Test
     fun emailBodyToHtml_fallbackRecognizesEmailHtmlTags() {
         assertEquals("<center><p>hello</p></center>", emailBodyToHtml("<center><p>hello</p></center>", ""))
+    }
+
+    @Test
+    fun isPlainTextBody_usesHtmlDetectionWhenModeIsMissing() {
+        assertTrue(isPlainTextBody("a very wide line", ""))
+        assertFalse(isPlainTextBody("<p>hello</p>", ""))
+        assertTrue(isPlainTextBody("<user@example.com>", ""))
+        assertTrue(isPlainTextBody("# Security Policy\nSee https://example.com", "html"))
+        assertFalse(isPlainTextBody("<img src=\"cid:image\">", "html"))
+        assertTrue(isPlainTextBody("# Security Policy\nSee the [advisory](https://example.com)", "html"))
+    }
+
+    @Test
+    fun softWrapPlainText_addsInvisibleBreaksOnlyToLongTokens() {
+        val wrapped = softWrapPlainText("short ${"a".repeat(40)}")
+
+        assertEquals("short aaaaaaaaaaaaaaaa\u200Baaaaaaaaaaaaaaaa\u200Baaaaaaaa", wrapped)
+        assertEquals("short text", softWrapPlainText("short text"))
+    }
+
+    @Test
+    fun blockExternalResources_removesImageAndStyleResourceUrls() {
+        val blocked = blockExternalResources(
+            "<img src=\"https://example.com/a.png\"><div style=\"background:url(https://example.com/b.png)\">Hi</div>",
+        )
+
+        assertFalse(blocked.contains("https://example.com"))
+        assertTrue(blocked.contains("Hi"))
     }
 
     private val darkPalette = ThemePalette(
@@ -110,6 +138,23 @@ class EmailDetailActivityTest {
         // The plain (non-important) body rule from before this fix must still be present.
         assertTrue(html.contains("color: ${lightPalette.inkStrong};"))
         assertTrue(html.contains("background-color: ${lightPalette.bg};"))
+    }
+
+    @Test
+    fun plainTextBody_wrapsLongLinesWithoutHorizontalOverflow() {
+        val html = buildEmailBodyHtml(
+            emailBodyToHtml("a".repeat(500), "plain"),
+            lightPalette,
+            monoFontFace = "",
+            isDark = false,
+        )
+
+        assertTrue(html.contains("overflow-x: hidden;"))
+        assertTrue(html.contains("min-width: 0;"))
+        assertTrue(html.contains("max-width: 100%;"))
+        assertTrue(html.contains("width: 100%;"))
+        assertTrue(html.contains("word-wrap: break-word;"))
+        assertTrue(html.contains("word-break: break-all;"))
     }
 
     @Test

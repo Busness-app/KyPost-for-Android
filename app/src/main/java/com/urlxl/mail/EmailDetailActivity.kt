@@ -75,6 +75,8 @@ class EmailDetailActivity : LockedActivity() {
     private var replyForwardState: PgpMessageState = PgpMessageState.CLIENT_PROTECTED
     private lateinit var divider: View
     private lateinit var webView: WebView
+    private lateinit var plainTextScroll: View
+    private lateinit var plainTextView: TextView
     private lateinit var lockedPlaceholder: android.widget.ImageView
     private lateinit var imagesBlockedBar: View
     private lateinit var btnShowImages: Button
@@ -165,6 +167,8 @@ class EmailDetailActivity : LockedActivity() {
         subjectView = findViewById(R.id.emailSubject)
         fromView = findViewById(R.id.emailFrom)
         webView = findViewById(R.id.emailWebView)
+        plainTextScroll = findViewById(R.id.emailPlainTextScroll)
+        plainTextView = findViewById(R.id.emailPlainText)
         lockedPlaceholder = findViewById(R.id.emailLockedPlaceholder)
         divider = findViewById(R.id.emailDivider)
         imagesBlockedBar = findViewById(R.id.emailImagesBlockedBar)
@@ -379,6 +383,11 @@ class EmailDetailActivity : LockedActivity() {
         val monoFontFace = ibmPlexMonoFontFaceCss(this)
 
         val htmlContent = buildEmailBodyHtml(bodyToRender, palette, monoFontFace, isDark = isDarkPalette(palette))
+        val htmlToLoad = if (hasRemoteImages) {
+            buildEmailBodyHtml(blockExternalResources(bodyToRender), palette, monoFontFace, isDark = isDarkPalette(palette))
+        } else {
+            htmlContent
+        }
         // Resolved off the main thread with the URL it builds — pairingForAuthenticatedCall
         // reads Keystore-backed EncryptedSharedPreferences, which is disk I/O. Both are kept:
         // openWebmail re-derives the origin from serverUrl to check the URL it is handed.
@@ -397,7 +406,14 @@ class EmailDetailActivity : LockedActivity() {
             // non-negotiable rule is that a local decrypt must never reach this property, and this
             // makes that explicit rather than relying on the server having nothing to assign.
             fetchedBodyHtml = content?.html?.takeIf { pgpState != PgpMessageState.CLIENT_PROTECTED }
-            webView.loadDataWithBaseURL(null, htmlContent, "text/html", "utf-8", null)
+            val plainTextBody = content?.html?.takeIf { it.isNotBlank() } ?: emailPreview
+            val plainText = plainTextBody.takeIf { isPlainTextBody(it, bodyMode) }
+            plainTextScroll.visibility = if (plainText != null) View.VISIBLE else View.GONE
+            webView.visibility = if (plainText != null) View.GONE else View.VISIBLE
+            plainTextView.text = plainText?.replace('\u00a0', ' ')?.let(::softWrapPlainText)
+            if (plainText == null) {
+                webView.loadDataWithBaseURL(null, htmlToLoad, "text/html", "utf-8", null)
+            }
             loading.visibility = android.view.View.GONE
             imagesBlockedBar.visibility = if (hasRemoteImages) View.VISIBLE else View.GONE
             renderPgpBar(pgpState, pgpDecryptError, serverUrl, webmailUrl, nothingToRender, emailFolder, emailId, emailSender)
@@ -702,9 +718,14 @@ class EmailDetailActivity : LockedActivity() {
                 // ComposeDraftCache and on to POST /api/mail/draft — the server this message was
                 // deliberately never readable by.
                 lockedPlaceholder.visibility = View.GONE
-                webView.visibility = View.VISIBLE
+                val plainText = outcome.body.plain?.takeIf {
+                    isPlainTextBody(it, outcome.body.bodyMode)
+                }
+                plainTextScroll.visibility = if (plainText != null) View.VISIBLE else View.GONE
+                webView.visibility = if (plainText != null) View.GONE else View.VISIBLE
+                plainTextView.text = plainText?.replace('\u00a0', ' ')?.let(::softWrapPlainText)
                 val rawHtml = emailBodyToHtml(
-                    outcome.body.html ?: outcome.body.plain.orEmpty(),
+                    outcome.body.html ?: plainText.orEmpty(),
                     outcome.body.bodyMode,
                 )
                 // Routed through the same dark-theme override every other body gets — without it, a
@@ -717,7 +738,14 @@ class EmailDetailActivity : LockedActivity() {
                     ibmPlexMonoFontFaceCss(this),
                     isDark = isDarkPalette(palette),
                 )
-                webView.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
+                if (plainText == null) {
+                    val htmlToLoad = if (REMOTE_IMAGE_PATTERN.containsMatchIn(rawHtml)) {
+                        buildEmailBodyHtml(blockExternalResources(rawHtml), palette, ibmPlexMonoFontFaceCss(this), isDark = isDarkPalette(palette))
+                    } else {
+                        html
+                    }
+                    webView.loadDataWithBaseURL(null, htmlToLoad, "text/html", "utf-8", null)
+                }
                 // The real subject from the encrypted part's protected headers, when the sender used
                 // them — the outer envelope subject is only ever a placeholder for this path. This is
                 // the entire point of protected headers; leaving it unrendered defeats them.
@@ -812,6 +840,7 @@ class EmailDetailActivity : LockedActivity() {
      *  screen. */
     private fun showLocked(notice: String) {
         webView.visibility = View.GONE
+        plainTextScroll.visibility = View.GONE
         // Otherwise the decrypted plaintext DOM from an earlier Decrypted render lives on behind
         // the padlock, unloaded but still present.
         webView.loadUrl("about:blank")
@@ -1222,11 +1251,18 @@ internal fun buildEmailBodyHtml(bodyToRender: String, palette: ThemePalette, mon
                 a { color: ${palette.accent}; }
                 img { max-width: 100%; height: auto; }
                 pre { white-space: pre-wrap; }
-                pre.plain-text {
+                div.kypost-plain-text {
+                    display: block;
+                    min-width: 0;
+                    max-width: 100%;
+                    width: 100%;
+                    box-sizing: border-box;
                     margin: 0;
                     white-space: pre-wrap;
                     overflow-wrap: anywhere;
-                    word-break: break-word;
+                    word-wrap: break-word;
+                    word-break: break-all;
+                    overflow-x: hidden;
                     tab-size: 4;
                 }
                 $darkModeOverrideCss
@@ -1242,19 +1278,59 @@ internal fun buildEmailBodyHtml(bodyToRender: String, palette: ThemePalette, mon
 internal fun emailBodyToHtml(body: String, mode: String): String {
     when (mode.trim().lowercase()) {
         "html" -> return body
-        "plain" -> return "<pre class=\"plain-text\">${escapeEmailText(body)}</pre>"
+        "plain" -> return "<div class=\"kypost-plain-text\">${escapeEmailText(body)}</div>"
     }
     if (bodyLooksLikeHtml(body)) return body
-    return "<pre class=\"plain-text\">${escapeEmailText(body)}</pre>"
+    return "<div class=\"kypost-plain-text\">${escapeEmailText(body)}</div>"
 }
+
+/** Selects native wrapping for explicit plain bodies and old rows whose mode was not persisted. */
+internal fun isPlainTextBody(body: String, mode: String): Boolean = when (mode.trim().lowercase()) {
+    // Some relay/cache rows incorrectly label Markdown/plain content as HTML. Keep real markup in
+    // WebView, but let text-only bodies use the native wrapping view even when that label is wrong.
+    "html" -> !bodyLooksLikeHtml(body) || looksLikeMarkdown(body)
+    "plain" -> true
+    else -> !bodyLooksLikeHtml(body) || looksLikeMarkdown(body)
+}
+
+private fun looksLikeMarkdown(body: String): Boolean = body.lineSequence().any { line ->
+    line.matches(Regex("^\\s{0,3}#{1,6}\\s+.+")) ||
+        line.contains(Regex("\\[[^]]+\\]\\(https?://[^)]+\\)")) ||
+        line.trimStart().startsWith("```")
+}
+
+private val LONG_PLAIN_TOKEN = Regex("\\S{32,}")
+
+internal fun softWrapPlainText(text: String): String = LONG_PLAIN_TOKEN.replace(text) { match ->
+    match.value.chunked(16).joinToString("\u200B")
+}
+
+/** Removes loadable resource URLs from the initial reader pass; the original HTML is retained
+ *  for the user's explicit Show Images action. */
+internal fun blockExternalResources(html: String): String {
+    val document = runCatching { org.jsoup.Jsoup.parseBodyFragment(html) }.getOrNull() ?: return html
+    document.select("img, iframe, video, audio, source, embed, object").forEach { element ->
+        element.removeAttr("src")
+        element.removeAttr("srcset")
+        element.removeAttr("poster")
+        element.removeAttr("data")
+    }
+    document.select("link").forEach { it.removeAttr("href") }
+    document.select("[style]").forEach { element ->
+        element.attr("style", element.attr("style").replace(RESOURCE_URL_PATTERN, "none"))
+    }
+    document.outputSettings().prettyPrint(false)
+    return document.body().html()
+}
+
+private val RESOURCE_URL_PATTERN = Regex("url\\s*\\([^)]*\\)", RegexOption.IGNORE_CASE)
 
 /** Same conservative fallback as the web reader: use a parser and recognize real HTML tags, so
  *  an address such as `<user@example.com>` remains text while `<center>`/`<o:p>` mail renders. */
 private fun bodyLooksLikeHtml(body: String): Boolean {
     if (!body.contains('<')) return false
     val document = runCatching { org.jsoup.Jsoup.parseBodyFragment(body) }.getOrNull() ?: return false
-    return document.body().children().any { it.tagName().lowercase() in HTML_TAGS } &&
-        document.body().html() != body
+    return document.body().children().any { it.tagName().lowercase() in HTML_TAGS }
 }
 
 private val HTML_TAGS = setOf(

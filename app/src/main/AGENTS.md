@@ -113,8 +113,10 @@ Owns production Android app code and resources.
   is fixed in `strings.xml` and is per-message — never a remembered preference.
 - Inbox tabs come from the relay's `tabs`/`label` response fields.
 - Email bodies carry the relay's `bodyMode` (`html`/`plain`) through the Room cache and into
-  `EmailDetailActivity`; plain bodies must be escaped into whitespace-preserving `<pre>` markup,
-  while HTML bodies must not be detected by content when the server supplied a mode.
+  `EmailDetailActivity`; plain bodies must be escaped into whitespace-preserving block markup for
+  HTML fallback/quoting, while HTML bodies must not be detected by content when the server supplied
+  a mode. The detail screen renders known plain bodies in a native wrapping `TextView`, so email
+  reading never requires horizontal scrolling.
 - Keyword tuning is managed in `KeywordSettingsActivity` and persists hidden/visible keyword headings.
 - Theme selection is managed in `ThemesActivity` and uses the shared theme name list based on `theme.ts` palettes.
 - Keyword refresh is best-effort every 90 seconds while inbox UI is foregrounded (both connection modes).
