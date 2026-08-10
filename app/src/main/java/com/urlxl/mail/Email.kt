@@ -11,6 +11,8 @@ data class Email(
     val cc: String = "",
     val bcc: String = "",
     val body: String? = null,
+    /** MIME mode of [body], supplied by the relay when known: `html` or `plain`. */
+    val bodyMode: String = "",
     val label: String = "",
     val status: String = "unread",
     val atUtc: String? = null,

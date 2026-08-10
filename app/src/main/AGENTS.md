@@ -74,7 +74,8 @@ Owns production Android app code and resources.
   `signerKeys` already narrowed to the sender it resolved (`pgp/SignerBinding.signatureStateFor`,
   consumed by `pgp/EncryptedMessageReader`). Do not reintroduce a client-side `From` parser to "wire
   up" that narrowing yourself — a second parser deciding the same binding is exactly the defect that
-  was removed.
+  was removed. `signerKeyIdsOf` also excludes revoked and expired OpenPGP keys before a signature can
+  become a trusted state, and `PgpDecryptor` caps decompressed plaintext at 32 MiB before allocation.
 - **The account's own PGP identity is never in the contacts database.** `ContactEntity.pgpKey` — even
   on the self-contact (`isSelf = 1`) — is an ordinary contact field, written only when a key is
   attached to a contact by hand or by the QR scan; the account's real identity lives server-side.
@@ -111,6 +112,9 @@ Owns production Android app code and resources.
   stores the message's plaintext on the server for seven days, which is why its confirmation copy
   is fixed in `strings.xml` and is per-message — never a remembered preference.
 - Inbox tabs come from the relay's `tabs`/`label` response fields.
+- Email bodies carry the relay's `bodyMode` (`html`/`plain`) through the Room cache and into
+  `EmailDetailActivity`; plain bodies must be escaped into whitespace-preserving `<pre>` markup,
+  while HTML bodies must not be detected by content when the server supplied a mode.
 - Keyword tuning is managed in `KeywordSettingsActivity` and persists hidden/visible keyword headings.
 - Theme selection is managed in `ThemesActivity` and uses the shared theme name list based on `theme.ts` palettes.
 - Keyword refresh is best-effort every 90 seconds while inbox UI is foregrounded (both connection modes).
@@ -174,6 +178,8 @@ Owns production Android app code and resources.
 - Room DAO behavior (e.g. `EmailDao.replaceFolderSnapshot`, contact upsert/delete) is covered by
   instrumentation tests in `app/src/androidTest/` using `Room.inMemoryDatabaseBuilder` (no
   Robolectric dependency in this project — don't add one for this).
+- The email `bodyMode` column is additive and requires `MIGRATION_10_11` plus a migration test when
+  the schema contract changes again.
 - Add or update unit tests for contact-sync reconciliation/delta-merge logic and relay response
   mapping (HTTP status → `MailOutcome`/`ContactSyncOutcome`, and the `to`/`cc`/`bcc`
   comma-string-not-array request shape) under `app/src/test/`.

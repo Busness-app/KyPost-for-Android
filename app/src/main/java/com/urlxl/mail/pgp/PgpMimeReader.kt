@@ -15,6 +15,8 @@ import java.util.Properties
 internal data class DecryptedBody(
     val html: String?,
     val plain: String?,
+    /** MIME mode paired with the selected body; never infer this from its characters. */
+    val bodyMode: String = "",
     /** The real subject from the encrypted part's protected headers, when the sender used them.
      *  The outer envelope subject is a placeholder for KyPost-to-KyPost mail. */
     val protectedSubject: String?,
@@ -90,6 +92,7 @@ internal object PgpMimeReader {
         DecryptedBody(
             html = html,
             plain = plain,
+            bodyMode = if (html != null) "html" else "plain",
             protectedSubject = message.subject?.takeIf { it.isNotBlank() },
         )
     }.getOrNull()

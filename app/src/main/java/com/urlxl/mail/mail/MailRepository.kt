@@ -87,10 +87,10 @@ class MailRepository(
     fun fetchBody(id: String, folder: String): MailOutcome<MailMessageBody> {
         val cached = emailDao.getBody(id)
         if (!cached.isNullOrBlank()) {
-            return MailOutcome.Success(MailMessageBody(html = cached, toAddresses = emptyList(), ccAddresses = emptyList()))
+            return MailOutcome.Success(MailMessageBody(html = cached, bodyMode = emailDao.getById(id)?.bodyMode.orEmpty(), toAddresses = emptyList(), ccAddresses = emptyList()))
         }
         if (emailDao.getById(id) != null) {
-            return MailOutcome.Success(MailMessageBody(html = "", toAddresses = emptyList(), ccAddresses = emptyList()))
+            return MailOutcome.Success(MailMessageBody(html = "", bodyMode = emailDao.getById(id)?.bodyMode.orEmpty(), toAddresses = emptyList(), ccAddresses = emptyList()))
         }
         return relaySource.fetchMessageBody(id, folder)
     }
@@ -119,7 +119,11 @@ internal fun reconcileFetchResult(emailDao: EmailDao, folder: String, mode: Stri
     val mergedEntities = updated.mapNotNull { email ->
         val incoming = email.toEntity(folder, mode)
         val existing = emailDao.getById(incoming.messageId) ?: return@mapNotNull null
-        incoming.copy(body = existing.body, preview = existing.preview)
+        incoming.copy(
+            body = existing.body,
+            preview = existing.preview,
+            bodyMode = incoming.bodyMode.ifBlank { existing.bodyMode },
+        )
     }
     emailDao.upsertAll(newEntities + mergedEntities)
     result.removedMessageIds.forEach { emailDao.deleteById(it) }

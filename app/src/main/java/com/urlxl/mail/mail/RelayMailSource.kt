@@ -460,6 +460,7 @@ private fun RelayEmailDto.toUiEmail(tab: String): Email {
         cc = cc,
         bcc = bcc,
         body = body,
+        bodyMode = bodyMode,
         label = emailLabel,
         status = status,
         atUtc = atUtc,

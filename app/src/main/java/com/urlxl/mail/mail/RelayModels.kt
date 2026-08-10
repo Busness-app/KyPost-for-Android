@@ -35,6 +35,7 @@ data class RelayEmailDto(
     // Null (not "") distinguishes an omitted body (delta "updated" entries) from a genuinely
     // empty one, so callers know not to overwrite/clear a locally cached body.
     val body: String? = null,
+    val bodyMode: String = "",
     val label: String = "",
     // The message's real IMAP keywords. `omitempty` server-side, so an absent
     // key means none. Previously ignored entirely, which meant Email.keywords

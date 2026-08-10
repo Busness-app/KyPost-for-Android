@@ -143,6 +143,7 @@ class EmailDetailActivity : LockedActivity() {
         val emailSubject = intent.getStringExtra("email_subject") ?: "No subject"
         val emailSender = intent.getStringExtra("email_sender") ?: "Unknown sender"
         val emailPreview = intent.getStringExtra("email_preview") ?: "No content"
+        val emailBodyMode = intent.getStringExtra("email_body_mode").orEmpty()
         val hasAttachments = intent.getBooleanExtra("email_has_attachments", false)
         val pgpEncrypted = intent.getBooleanExtra("email_pgp_encrypted", false)
         // Refines the fail-closed CLIENT_PROTECTED default above as soon as we synchronously know
@@ -323,7 +324,9 @@ class EmailDetailActivity : LockedActivity() {
         // since the message stays in the mailbox. The decode bug is fixed; this makes the next one
         // an unreadable message rather than an unusable app.
         ioExecutor.execute {
-            runCatching { renderBody(emailId, emailFolder, emailSender, emailPreview, pgpEncrypted, pgpDecryptError, loading) }
+            runCatching {
+                renderBody(emailId, emailFolder, emailSender, emailPreview, emailBodyMode, pgpEncrypted, pgpDecryptError, loading)
+            }
                 .onFailure { error ->
                     android.util.Log.e(TAG, "Failed to render message body", error)
                     runOnUiThread {
@@ -343,6 +346,7 @@ class EmailDetailActivity : LockedActivity() {
         emailFolder: String,
         emailSender: String,
         emailPreview: String,
+        emailBodyMode: String,
         pgpEncrypted: Boolean,
         pgpDecryptError: String,
         loading: ProgressBar,
@@ -355,11 +359,14 @@ class EmailDetailActivity : LockedActivity() {
         val pgpState = pgpMessageStateOf(pgpEncrypted, pgpDecryptError, content?.html, bodyUnavailable)
         // A client-protected message has no body to fall back to, and emailPreview is the
         // placeholder subject line — rendering it would look like the message content.
+        val bodyMode = content?.bodyMode?.takeIf { it == "html" || it == "plain" } ?: emailBodyMode
         val bodyToRender = when (pgpState) {
             PgpMessageState.CLIENT_PROTECTED,
             PgpMessageState.DECRYPT_FAILED,
             PgpMessageState.BODY_UNAVAILABLE -> ""
-            else -> content?.html?.takeIf { it.isNotBlank() } ?: TextUtils.htmlEncode(emailPreview)
+            else -> content?.html?.takeIf { it.isNotBlank() }
+                ?.let { emailBodyToHtml(it, bodyMode) }
+                ?: emailBodyToHtml(emailPreview, "plain")
         }
         // Computed from the same inputs the line above used, so the notice cannot claim the screen is
         // empty while something is on it, or stay silent while it is not.
@@ -696,8 +703,10 @@ class EmailDetailActivity : LockedActivity() {
                 // deliberately never readable by.
                 lockedPlaceholder.visibility = View.GONE
                 webView.visibility = View.VISIBLE
-                val rawHtml = outcome.body.html
-                    ?: "<pre>" + android.text.Html.escapeHtml(outcome.body.plain.orEmpty()) + "</pre>"
+                val rawHtml = emailBodyToHtml(
+                    outcome.body.html ?: outcome.body.plain.orEmpty(),
+                    outcome.body.bodyMode,
+                )
                 // Routed through the same dark-theme override every other body gets — without it, a
                 // sender who hardcodes their own colors (buildEmailBodyHtml's own KDoc: "virtually
                 // all of them") renders black-on-black under a dark palette.
@@ -1213,6 +1222,13 @@ internal fun buildEmailBodyHtml(bodyToRender: String, palette: ThemePalette, mon
                 a { color: ${palette.accent}; }
                 img { max-width: 100%; height: auto; }
                 pre { white-space: pre-wrap; }
+                pre.plain-text {
+                    margin: 0;
+                    white-space: pre-wrap;
+                    overflow-wrap: anywhere;
+                    word-break: break-word;
+                    tab-size: 4;
+                }
                 $darkModeOverrideCss
             </style>
         </head>
@@ -1220,6 +1236,40 @@ internal fun buildEmailBodyHtml(bodyToRender: String, palette: ThemePalette, mon
         </html>
     """.trimIndent()
 }
+
+/** Pairs the body with its MIME mode before it reaches the WebView. A server-supplied mode wins;
+ *  sniffing is only the compatibility fallback for old cache rows. */
+internal fun emailBodyToHtml(body: String, mode: String): String {
+    when (mode.trim().lowercase()) {
+        "html" -> return body
+        "plain" -> return "<pre class=\"plain-text\">${escapeEmailText(body)}</pre>"
+    }
+    if (bodyLooksLikeHtml(body)) return body
+    return "<pre class=\"plain-text\">${escapeEmailText(body)}</pre>"
+}
+
+/** Same conservative fallback as the web reader: use a parser and recognize real HTML tags, so
+ *  an address such as `<user@example.com>` remains text while `<center>`/`<o:p>` mail renders. */
+private fun bodyLooksLikeHtml(body: String): Boolean {
+    if (!body.contains('<')) return false
+    val document = runCatching { org.jsoup.Jsoup.parseBodyFragment(body) }.getOrNull() ?: return false
+    return document.body().children().any { it.tagName().lowercase() in HTML_TAGS } &&
+        document.body().html() != body
+}
+
+private val HTML_TAGS = setOf(
+    "a", "article", "aside", "b", "blockquote", "body", "br", "button", "center", "code",
+    "div", "em", "figure", "font", "footer", "h1", "h2", "h3", "h4", "h5", "h6", "head",
+    "header", "hr", "html", "i", "img", "li", "link", "main", "meta", "nav", "ol", "p",
+    "pre", "section", "small", "span", "strong", "sub", "sup", "table", "tbody", "td",
+    "tfoot", "th", "thead", "title", "tr", "u", "ul", "xml",
+)
+
+private fun escapeEmailText(text: String): String = text
+    .replace("&", "&amp;")
+    .replace("<", "&lt;")
+    .replace(">", "&gt;")
+    .replace("\"", "&quot;")
 
 /**
  * Whether [outcome] should offer a Retry button.

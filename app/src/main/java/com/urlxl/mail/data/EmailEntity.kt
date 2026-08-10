@@ -19,6 +19,7 @@ data class EmailEntity(
     val subject: String,
     val preview: String = "",
     val body: String? = null,
+    val bodyMode: String = "",
     val label: String = "",
     val keywordsJson: String = "[]",
     val status: String = "unread",

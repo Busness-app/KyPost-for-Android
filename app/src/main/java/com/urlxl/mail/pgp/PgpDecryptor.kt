@@ -17,6 +17,8 @@ import org.bouncycastle.openpgp.operator.bc.BcPublicKeyDataDecryptorFactory
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 
+internal const val MAX_DECRYPTED_PLAINTEXT_BYTES = 32 * 1024 * 1024
+
 /** What the cryptography alone can say about a signature: nothing about *who* the sender is. */
 internal data class RawSignature(
     val present: Boolean,
@@ -92,7 +94,9 @@ internal object PgpDecryptor {
             return DecryptResult.Failed("this message is not encrypted to a key on this device")
         }
 
-        val (plaintext, signature) = readLiteral(clear, signerPublicKeys)
+        val literal = readLiteral(clear, signerPublicKeys)
+            ?: return DecryptResult.Failed("decrypted message is too large")
+        val (plaintext, signature) = literal
 
         // Integrity protection is not optional. An unprotected message is malleable, and
         // accepting one would let a tampered ciphertext render as an ordinary message. The `||`
@@ -149,7 +153,7 @@ internal object PgpDecryptor {
     private fun readLiteral(
         clear: InputStream,
         signerPublicKeys: List<String>,
-    ): Pair<ByteArray, RawSignature> {
+    ): Pair<ByteArray, RawSignature>? {
         var factory = org.bouncycastle.openpgp.jcajce.JcaPGPObjectFactory(clear)
         var onePass: org.bouncycastle.openpgp.PGPOnePassSignature? = null
         var obj = factory.nextObject()
@@ -164,7 +168,9 @@ internal object PgpDecryptor {
                 }
                 is PGPLiteralData -> {
                     val out = ByteArrayOutputStream()
-                    obj.inputStream.copyTo(out)
+                    if (!copyWithLimit(obj.inputStream, out, MAX_DECRYPTED_PLAINTEXT_BYTES)) {
+                        return null
+                    }
                     val bytes = out.toByteArray()
                     return bytes to verifyOnePass(onePass, bytes, factory, signerPublicKeys)
                 }
@@ -172,6 +178,19 @@ internal object PgpDecryptor {
             obj = factory.nextObject()
         }
         return ByteArray(0) to RawSignature(present = false, valid = false, signerKeyId = 0L)
+    }
+
+    /** Bounds the stream after OpenPGP decompression, before allocating its final byte array. */
+    internal fun copyWithLimit(input: InputStream, output: ByteArrayOutputStream, limit: Int): Boolean {
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        var total = 0
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) return true
+            if (count > limit - total) return false
+            output.write(buffer, 0, count)
+            total += count
+        }
     }
 
     /**
