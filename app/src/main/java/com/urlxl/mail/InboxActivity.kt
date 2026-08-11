@@ -371,10 +371,10 @@ class InboxActivity : LockedActivity() {
      * entries over the existing row and skips entries it has never seen, so the states a user
      * actually pulls down about survive it. `since=0` re-reads the folder and prunes what is gone.
      *
-     * There is already a daily forced resync for the same reason (`MailCursorStore`). This just lets
-     * the user ask for one instead of waiting up to 24 hours for it.
+     * There is already a daily forced resync for the same reason (`MailCursorStore`). A push tap
+     * also forces one: opening its cached match would freeze stale body/bodyMode in the detail view.
      */
-    private fun refreshInbox(forceFullResync: Boolean = false) {
+    private fun refreshInbox(forceFullResync: Boolean = pendingMessageId != null) {
         // No emails held in memory yet (cold open, or a just-switched-to folder) — render the
         // Room cache immediately so the list isn't empty while the network round trip is in
         // flight, then let the fetch below overwrite it with fresh data.

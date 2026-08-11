@@ -63,6 +63,9 @@ Owns the Android app module build, manifest, source sets, resources, and test ex
 - Keep app behavior aligned with project goal: paired backend-relay mail, keyword-based tab
   filtering, and two-way contact sync (`contacts/` package). A local Room database
   (`data/AppDatabase`) is the UI's read model for mail and the persistence layer for contacts.
+- A push notification tap must force a full inbox resync before opening its target message. The
+  Room row may have stale body HTML or `bodyMode`; showing that cached row is fine for the list, but
+  opening it before the resync can render the detail screen with the wrong mode.
 - Avoid hardcoded secrets in committed files.
 - For user-visible behavior changes, update this file or a closer child AGENTS.md.
 - Contact autocomplete (ContactAutocomplete.md): `ComposeActivity`'s TO/CC/BCC fields are
