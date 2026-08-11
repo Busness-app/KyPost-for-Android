@@ -1,5 +1,29 @@
 # Encrypted Send from a Paired Device — Mobile Integration Guide
 
+> **PARTLY SUPERSEDED — read this first.**
+>
+> Everything below about **`server`-custody** send is current and implemented. What is obsolete is
+> this document's central premise, stated in "Scope" and enforced by "Do not build": *"this device
+> pairs by QR and never learns the account password … **This device never holds the account's
+> private key.**"*
+>
+> That stopped being true when the device enrollment ceremony landed. A browser now seals the
+> account's OpenPGP private key to this device's P-256 key, and the phone keeps it in a
+> StrongBox/TEE vault (`pgp/EnrollmentVault`, `pgp/EnrollmentCeremony`). The app already decrypted
+> with it; it now encrypts and signs with it too. See `app/src/main/AGENTS.md` — "There IS an
+> on-device private key" and the "Client-side encrypted send" bullet.
+>
+> Consequently, for a `client`-custody account on an **enrolled** device:
+> - "Out of scope, deliberately: porting OpenPGP to this app" — no longer true (`pgp/PgpEncryptor`,
+>   `pgp/PgpMimeWriter`, `pgp/ClientEncryptedSender`).
+> - "Do not build … any call to `POST /api/mail/send-pgp`" — that is now exactly the send path.
+> - Trap 1, "Use `check`, never `resolve`" — still correct for `server`-custody, and inverted here:
+>   `/api/pgp/recipients/resolve` is the right and only endpoint for client-side send, and 409s only
+>   for the accounts that path excludes.
+> - The webmail handoff (step 6) remains the behaviour for an **unenrolled** device.
+>
+> The rest of this document stands. Do not "fix" the code to match the superseded parts.
+
 This document specifies how this app sends **encrypted and signed mail** through the relay, and
 how it handles a recipient who has no PGP key. It mirrors the shape of `Client_PGP_Update.md` and
 `Client_Contact_Update.md`: concrete API contracts, exact JSON, and clear scoping — written so a

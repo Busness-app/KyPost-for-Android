@@ -54,9 +54,16 @@ private data class RecipientCheckResponseDto(val results: List<RecipientKeyStatu
 /**
  * Asks which recipients have a usable PGP key, via `POST /api/pgp/recipients/check`.
  *
- * **Not `/api/pgp/recipients/resolve`.** That endpoint hands out recipients' actual public keys so
- * a client-custody *browser* can encrypt locally, and it refuses with 409 for any account that is
- * not client-protected — which is every account that can send encrypted from this app.
+ * **Not a replacement for [RecipientResolveClient], and not replaced by it.** This endpoint is the
+ * cheap, contacts-only, no-network preflight behind the inline "no key on file" warning, and it
+ * serves *both* send paths. `/api/pgp/recipients/resolve` hands back actual key material and runs
+ * the full WKD and keyserver ladder; it is only meaningful when this device does the encrypting.
+ *
+ * An earlier revision of this comment said `/resolve` "refuses with 409 for any account that is not
+ * client-protected — which is every account that can send encrypted from this app". The first half
+ * is still true; the second stopped being true when the device enrollment ceremony gave this app the
+ * account's private key, so a client-custody account can now encrypt here and `/resolve` is exactly
+ * the right call for it.
  *
  * Kept parallel to [PgpQrClient]: same device-header auth, same injectable [Call.Factory].
  */

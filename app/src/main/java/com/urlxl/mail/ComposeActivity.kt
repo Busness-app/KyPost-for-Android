@@ -28,10 +28,15 @@ import com.urlxl.mail.mail.MailOutcome
 import com.urlxl.mail.mail.MailRuntime
 import com.urlxl.mail.mail.OutgoingAttachment
 import com.urlxl.mail.mail.userFacingMessage
+import com.urlxl.mail.pgp.AndroidVaultOpener
+import com.urlxl.mail.pgp.ClientEncryptedSender
+import com.urlxl.mail.pgp.ClientSendOutcome
 import com.urlxl.mail.pgp.PgpComposeState
+import com.urlxl.mail.pgp.RecipientResolveClient
 import com.urlxl.mail.pgp.openWebmail
 import com.urlxl.mail.pgp.webmailDraftsUrl
 import com.urlxl.mail.push.PushRuntime
+import com.urlxl.mail.push.pinnedPairingCallFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.launchIn
@@ -72,9 +77,19 @@ class ComposeActivity : LockedActivity() {
     private val pgpController by lazy { ComposePgpController.from(this) }
     private var sendMenuItem: MenuItem? = null
 
-    /** True once the PGP bootstrap has reported this account's key is held only by the browser. The
-     *  Send action is withdrawn while it holds — see [applyPgpComposeState]. */
+    /** True once the PGP bootstrap has reported this account's key is held only by the user *and*
+     *  this device is not enrolled. The Send action is withdrawn while it holds — see
+     *  [applyPgpComposeState]. An enrolled device can encrypt locally, so this stays false there. */
     private var handoffOnlyAccount = false
+
+    /** True when the encryption happens on this device and the send goes to `/api/mail/send-pgp`
+     *  rather than `/api/mail/send`. From [PgpComposeState.clientSide]. */
+    private var clientSideAccount = false
+
+    /** The in-flight client-encrypted send, if any. Guards against a double-tap starting two sends
+     *  — the crypto plus the round trip leaves a wide window. Mirrors EmailDetailActivity's
+     *  decryptJob. */
+    private var sendJob: Job? = null
     private val ioExecutor = Executors.newSingleThreadExecutor()
     private val attachments = mutableListOf<OutgoingAttachment>()
 
@@ -325,15 +340,20 @@ class ComposeActivity : LockedActivity() {
         encryptChip.visibility = if (state.canEncrypt) View.VISIBLE else View.GONE
         signChip.visibility = if (state.canSign) View.VISIBLE else View.GONE
         webmailChip.visibility = if (state.handoffToWebmail) View.VISIBLE else View.GONE
-        // On a client-custody account the key lives only in the user's browser, so this app cannot
-        // encrypt or sign — and because both chips are GONE, sendEmail's
+        // On an UNENROLLED client-custody account the key is held only by the user, so this app
+        // cannot encrypt or sign — and because both chips are GONE, sendEmail's
         // `isChecked && visibility == VISIBLE` computes both wire flags as false. The relay's own
         // client-custody guard is nested inside `if (sign || encrypt)`, so a flagless send skipped
         // it entirely and went out as plain MIME: a silent downgrade to cleartext on the one account
         // type configured for end-to-end encryption. Refuse instead, exactly as the web client does
         // ("quietly sending in the clear instead would be worse than failing") and route the user to
-        // the handoff, which is the only outbound path that can actually protect this message.
+        // the handoff.
+        //
+        // On an ENROLLED one this no longer applies: the chips are VISIBLE, so the same expression
+        // now computes a real user choice, and both unchecked is a deliberate plaintext send rather
+        // than a silent downgrade. Send therefore stays available.
         handoffOnlyAccount = state.handoffToWebmail
+        clientSideAccount = state.clientSide
         applySendAvailability()
         pgpChips.visibility =
             if (state.canEncrypt || state.canSign || state.handoffToWebmail) View.VISIBLE else View.GONE
@@ -346,7 +366,17 @@ class ComposeActivity : LockedActivity() {
                 // superseded preflight must never overwrite the newer (in this case: hidden) state.
                 preflightJob?.cancel()
                 hideKeylessWarning()
+                // Sign-only is impossible on this path: the relay accepts multipart/encrypted and
+                // rejects multipart/signed, so a signed-but-unencrypted delivery is refused
+                // outright. Coupling the chips says so honestly; the web client papers over it by
+                // silently encrypting anyway.
+                // ponytail: lift this once the relay accepts a multipart/signed delivery — needs a
+                // server change first.
+                if (clientSideAccount) signChip.isChecked = false
             }
+        }
+        signChip.setOnCheckedChangeListener { _, checked ->
+            if (checked && clientSideAccount && !encryptChip.isChecked) encryptChip.isChecked = true
         }
         webmailChip.setOnClickListener { handOffToWebmail() }
     }
@@ -577,8 +607,141 @@ class ComposeActivity : LockedActivity() {
                 allowPickupFallback = false,
             )
             sentDraft = draft
-            dispatchSend(draft)
+            // A client-custody account encrypts here, not on the relay. Both chips unchecked is a
+            // deliberate plaintext send and still goes down the ordinary path — which is what the
+            // web client does, and what restores a capability the old withdraw-Send behaviour
+            // removed entirely.
+            if (clientSideAccount && (draft.sign || draft.encrypt)) {
+                dispatchClientSend(draft)
+            } else {
+                dispatchSend(draft)
+            }
         }
+    }
+
+    /**
+     * The client-custody send: encrypt and sign on this device, then hand ciphertext to the relay.
+     *
+     * Threading mirrors [EmailDetailActivity]'s decrypt path. The sender is built on IO because the
+     * pairing lookup reads Keystore-backed storage, and [ClientEncryptedSender.send] runs on
+     * Default because Bouncy Castle is CPU-bound — on the main thread it is ANR-class. The biometric
+     * prompt inside [AndroidVaultOpener] owns its own hop back to Main, so it must not be wrapped.
+     */
+    private fun dispatchClientSend(draft: MailDraft) {
+        if (sendJob?.isActive == true) return
+        sendMenuItem?.isEnabled = false
+        sendJob = lifecycleScope.launch {
+            val sender = withContext(Dispatchers.IO) { clientSender() }
+            val outcome = if (sender == null) {
+                null
+            } else {
+                withContext(Dispatchers.Default) { sender.send(draft, sign = draft.sign) }
+            }
+            // The unlock and the crypto can outlive the Activity: LockedActivity.onStart finishes
+            // this screen outright if the app lock engages mid-send. Same guard dispatchSend uses.
+            if (isFinishing || isDestroyed) return@launch
+            if (outcome == null) {
+                sendMenuItem?.isEnabled = true
+                Toast.makeText(this@ComposeActivity, R.string.compose_pgp_not_paired, Toast.LENGTH_LONG).show()
+                return@launch
+            }
+            renderClientSendOutcome(outcome)
+        }
+    }
+
+    /** One branch per [ClientSendOutcome]; the rule itself is unit-tested in ClientEncryptedSenderTest. */
+    private fun renderClientSendOutcome(outcome: ClientSendOutcome) {
+        when (outcome) {
+            is ClientSendOutcome.Sent -> {
+                val message = outcome.warning.ifBlank { getString(R.string.compose_send_success) }
+                val length = if (outcome.warning.isBlank()) Toast.LENGTH_SHORT else Toast.LENGTH_LONG
+                Toast.makeText(this, message, length).show()
+                sendSucceeded = true
+                ComposeDraftCache.clear()
+                finish()
+            }
+            // The user dismissed their own prompt. Not an error, and nothing to say — the screen
+            // simply goes back to offering Send.
+            is ClientSendOutcome.Cancelled -> sendMenuItem?.isEnabled = true
+            is ClientSendOutcome.KeyChanged -> {
+                sendMenuItem?.isEnabled = true
+                warnKeyChanged(outcome.addresses)
+            }
+            is ClientSendOutcome.KeysMissing -> {
+                sendMenuItem?.isEnabled = true
+                explainMissingKeys(outcome.addresses)
+            }
+            else -> {
+                sendMenuItem?.isEnabled = true
+                Toast.makeText(this, clientSendMessage(outcome), Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun clientSendMessage(outcome: ClientSendOutcome): String = when (outcome) {
+        is ClientSendOutcome.NotEnrolled -> getString(R.string.compose_pgp_not_enrolled)
+        is ClientSendOutcome.NoSecureLockScreen -> getString(R.string.compose_pgp_no_lock_screen)
+        is ClientSendOutcome.UnsealFailed -> getString(R.string.compose_pgp_unseal_failed, outcome.message)
+        is ClientSendOutcome.NotClientProtected -> getString(R.string.compose_pgp_not_client_protected)
+        is ClientSendOutcome.NoAccountAddress -> getString(R.string.compose_pgp_no_account_address)
+        is ClientSendOutcome.TooManyRecipients -> outcome.message
+        is ClientSendOutcome.ResolveFailed -> getString(R.string.compose_pgp_resolve_failed, outcome.message)
+        is ClientSendOutcome.EncryptFailed -> getString(R.string.compose_pgp_encrypt_failed, outcome.message)
+        is ClientSendOutcome.SendFailed -> outcome.outcome.userFacingMessage().orEmpty()
+        else -> getString(R.string.compose_pgp_encrypt_failed, "")
+    }
+
+    /**
+     * A pinned key's fingerprint no longer matches what discovery returned.
+     *
+     * Deliberately louder and more specific than the missing-key case, and never merged into it:
+     * this is what a key rotation looks like *and* what an interception attempt looks like, so the
+     * user has to be told which it might be rather than "no key on file".
+     */
+    private fun warnKeyChanged(addresses: List<String>) {
+        activeDialog = AlertDialog.Builder(this)
+            .setTitle(R.string.compose_pgp_key_changed_title)
+            .setMessage(getString(R.string.compose_pgp_key_changed_body, addresses.joinToString(", ")))
+            .setPositiveButton(android.R.string.ok, null)
+            // FLAG_SECURE on the dialog's own window: it enumerates recipient addresses, and the
+            // Activity's own flag does not extend to a separate dialog window. Same precedent as
+            // confirmPickupFallback.
+            .create()
+            .showSecurely()
+    }
+
+    /**
+     * No usable key for at least one recipient, and nothing was sent.
+     *
+     * There is no pickup fallback here and there must not be: the server-side one works by storing
+     * the message plaintext, which is the thing client-side protection exists to prevent. So the
+     * honest options are to add the key, or to continue in webmail — which has the browser-sealed
+     * pickup path this app deliberately does not build.
+     */
+    private fun explainMissingKeys(addresses: List<String>) {
+        activeDialog = AlertDialog.Builder(this)
+            .setTitle(R.string.compose_pgp_no_key_title)
+            .setMessage(getString(R.string.compose_pgp_no_key_body, addresses.joinToString(", ")))
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.compose_pgp_no_key_webmail) { _, _ -> handOffToWebmail() }
+            .create()
+            .showSecurely()
+    }
+
+    /** Null when the device is not paired or bootstrap never answered, so no From is known. */
+    private suspend fun clientSender(): ClientEncryptedSender? {
+        val pairing = PushRuntime.graph(this).repository.pairingForAuthenticatedCall() ?: return null
+        val deviceId = pairing.deviceId ?: return null
+        val deviceSecret = pairing.deviceSecret ?: return null
+        val address = pgpController.accountAddress()
+        if (address.isBlank()) return null
+        val resolveClient = RecipientResolveClient(callFactory = pinnedPairingCallFactory(this))
+        return ClientEncryptedSender(
+            opener = AndroidVaultOpener(this),
+            resolver = { addresses -> resolveClient.resolve(pairing.serverUrl, deviceId, deviceSecret, addresses) },
+            transport = { message -> MailRuntime.graph(this).repository.sendClientEncrypted(message) },
+            accountAddress = address,
+        )
     }
 
     /** Shared by the first attempt and the confirmed re-send, so the re-send cannot drift. */

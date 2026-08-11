@@ -140,6 +140,25 @@
     <string name="compose_handoff_draft_failed">Couldn\'t save the draft, so webmail wouldn\'t have your message: %1$s</string>
     <string name="compose_handoff_no_webmail">Couldn\'t work out this server\'s web address — open your drafts in your browser.</string>
     <string name="compose_handoff_no_handler">No app on this device can open that link — open your drafts in your browser.</string>
+    <!-- Client-custody send from an enrolled device: this app holds the key and does the crypto.
+         There is deliberately no pickup-link fallback on this path — the server-side one works by
+         storing the message plaintext for 7 days, which is exactly what client-side protection
+         exists to prevent. So a missing key is a dead end, and the copy says so plainly. -->
+    <string name="compose_pgp_no_key_title">No key for some recipients</string>
+    <string name="compose_pgp_no_key_body">We don\'t have a usable PGP key for %1$s, so nothing was sent.\n\nOn this account your key never leaves your devices, so your server can\'t send them a link on your behalf. Add their key in Contacts, or continue in webmail.</string>
+    <string name="compose_pgp_no_key_webmail">Continue in webmail</string>
+    <!-- A broken TOFU pin, deliberately louder and never merged into the missing-key copy: this is
+         what a key rotation looks like AND what an interception attempt looks like. -->
+    <string name="compose_pgp_key_changed_title">A recipient\'s key has changed</string>
+    <string name="compose_pgp_key_changed_body">The PGP key for %1$s has changed since you last saved it. Nothing was sent.\n\nThat is what a key rotation looks like — and also what an interception attempt looks like. Check the new fingerprint with them another way, then update their contact.</string>
+    <string name="compose_pgp_not_enrolled">This device no longer holds your PGP key. Set it up again from the PGP screen to send encrypted mail from here.</string>
+    <string name="compose_pgp_no_lock_screen">Set a screen lock on this device to unlock your PGP key.</string>
+    <string name="compose_pgp_unseal_failed">Couldn\'t unlock your PGP key: %1$s</string>
+    <string name="compose_pgp_not_client_protected">This account\'s key is held by your server, so it encrypts on your behalf. Try sending again.</string>
+    <string name="compose_pgp_no_account_address">Couldn\'t work out this account\'s own email address, so this message can\'t be signed as coming from you.</string>
+    <string name="compose_pgp_resolve_failed">Couldn\'t look up recipients\' keys: %1$s</string>
+    <string name="compose_pgp_encrypt_failed">Couldn\'t encrypt this message: %1$s</string>
+    <string name="compose_pgp_not_paired">This device isn\'t paired with a KyPost server.</string>
     <string name="compose_send_success">Email sent successfully</string>
     <string name="compose_draft_restored">Restored your unsent message</string>
     <string name="address_book_search_hint">Search contacts</string>

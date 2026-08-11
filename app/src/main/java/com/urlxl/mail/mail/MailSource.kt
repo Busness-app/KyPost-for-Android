@@ -120,6 +120,31 @@ data class OutgoingAttachment(
 
 data class MailSendOutcome(val sentSaved: Boolean, val warning: String)
 
+/** One pre-built PGP/MIME message and the SMTP recipients it goes to. */
+data class ClientEncryptedDelivery(val recipients: List<String>, val ciphertext: String)
+
+/**
+ * A send whose PGP work already happened on this device, for `POST /api/mail/send-pgp`.
+ *
+ * [deliveries] is a list rather than one message because each BCC recipient needs their own
+ * ciphertext — a shared one puts every BCC recipient's key id where the others can read it.
+ *
+ * [to]/[cc]/[bcc] stay in the clear deliberately: SMTP needs them, they are already the envelope,
+ * and the Sent listing is unusable without them. Only the body and the real subject are protected.
+ */
+data class ClientEncryptedMessage(
+    val from: String,
+    val to: List<String>,
+    val cc: List<String>,
+    val bcc: List<String>,
+    val deliveries: List<ClientEncryptedDelivery>,
+    /** The same message encrypted to the sender's own key. Never a plaintext body: the server
+     *  refuses an unencrypted copy, and storing one would hand back in the clear exactly what the
+     *  deliveries were protecting. */
+    val sentCopy: String,
+    val mode: String = "html",
+)
+
 data class MailMessageBody(
     val html: String,
     val bodyMode: String = "",
@@ -153,6 +178,11 @@ interface MailSource {
     ): MailOutcome<MailActionOutcome>
     fun saveDraft(draft: MailDraft): MailOutcome<Unit>
     fun sendMail(draft: MailDraft): MailOutcome<MailSendOutcome>
+
+    /** Relays ciphertext this device already built. Separate from [sendMail] rather than a flag on
+     *  it: the request body, the endpoint and the failure modes all differ, and the two must not be
+     *  able to drift into each other. */
+    fun sendClientEncrypted(message: ClientEncryptedMessage): MailOutcome<MailSendOutcome>
     fun fetchMessageBody(messageId: String, folder: String): MailOutcome<MailMessageBody>
     fun listAttachments(messageId: String, folder: String): MailOutcome<List<AttachmentInfo>>
     fun downloadAttachment(messageId: String, folder: String, index: Int): MailOutcome<DownloadedAttachment>

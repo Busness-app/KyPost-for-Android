@@ -94,6 +94,39 @@ class PgpBootstrapClientTest {
         assertTrue("expected Failed, got $result", result is PgpBootstrapResult.Failed)
     }
 
+    /**
+     * The account address every client-encrypted delivery's `From` header must equal.
+     *
+     * `suggestedUserIDs[0]` is the server's own `strings.TrimSpace(payload.Username)` — the very
+     * expression `handleMailSendPGP` feeds to `resolveMailFrom` — so it is authoritative rather than
+     * a guess. Deriving it from the public key's User ID instead would diverge for an imported key,
+     * and the symptom is a 403 after the ciphertext has already been built.
+     */
+    @Test
+    fun parsesTheAccountAddressFromSuggestedUserIds() = runBlocking {
+        val body = """{"hasIdentity":true,"protection":"client","suggestedUserIDs":["me@example.invalid","alias@example.invalid"]}"""
+        val client = PgpBootstrapClient(callFactory = FakeCallFactory { request -> response(request, body, 200) })
+
+        val result = client.fetch("https://relay.example.com", "device-1", "secret-1")
+
+        assertEquals("me@example.invalid", (result as PgpBootstrapResult.Success).accountAddress)
+    }
+
+    /** No mail account configured server-side, so there is no valid `From` to build. Compose must
+     *  degrade to the webmail handoff rather than offer a send that is guaranteed to 403. */
+    @Test
+    fun absentSuggestedUserIdsYieldABlankAccountAddress() = runBlocking {
+        val client = PgpBootstrapClient(
+            callFactory = FakeCallFactory { request ->
+                response(request, """{"hasIdentity":true,"protection":"client"}""", 200)
+            },
+        )
+
+        val result = client.fetch("https://relay.example.com", "device-1", "secret-1")
+
+        assertEquals("", (result as PgpBootstrapResult.Success).accountAddress)
+    }
+
     @Test
     fun unusableServerUrl_isFailed() = runBlocking {
         val client = PgpBootstrapClient(callFactory = FakeCallFactory { request -> response(request, "{}", 200) })
