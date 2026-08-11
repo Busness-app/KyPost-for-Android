@@ -125,6 +125,37 @@ data class RelayMailRequestDto(
     val allowPickupFallback: Boolean = false,
 )
 
+/** One pre-encrypted delivery for POST /api/mail/send-pgp. */
+@Serializable
+data class RelayClientEncryptedDeliveryDto(
+    val recipients: List<String>,
+    val ciphertext: String,
+)
+
+/**
+ * POST /api/mail/send-pgp — a send whose PGP work already happened on this device.
+ *
+ * [subject] is accepted and deliberately IGNORED by the server: the real subject lives inside the
+ * ciphertext as a protected header, so this carries the same fixed placeholder the server-side path
+ * uses. Sending the real one here would hand the server the very thing this path exists to withhold.
+ *
+ * [sentCopyEncrypted] is an assertion *about the bytes* of [sentCopy]. A copy that does not claim it
+ * is not stored at all, so this is hardcoded true at the call site rather than being a caller's
+ * choice — see `RelayMailSource.sendClientEncrypted`.
+ */
+@Serializable
+data class RelayClientEncryptedRequestDto(
+    val from: String,
+    val subject: String,
+    val mode: String = "html",
+    val to: List<String> = emptyList(),
+    val cc: List<String> = emptyList(),
+    val bcc: List<String> = emptyList(),
+    val deliveries: List<RelayClientEncryptedDeliveryDto> = emptyList(),
+    val sentCopy: String = "",
+    val sentCopyEncrypted: Boolean = false,
+)
+
 /** Outgoing attachment wire shape accepted by /api/mail/send and /api/mail/draft. */
 @Serializable
 data class RelayAttachmentDto(

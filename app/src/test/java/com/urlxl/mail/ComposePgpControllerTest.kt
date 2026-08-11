@@ -131,6 +131,64 @@ class ComposePgpControllerTest {
         assertEquals(2, calls)
     }
 
+    /**
+     * Custody mode is fixed at key creation and safe to cache; **enrollment is not**.
+     *
+     * The user can enrol part-way through a session, and the OS can invalidate the Keystore key
+     * underneath us. Caching the composed state would freeze whichever answer came first — leaving
+     * a freshly enrolled device stuck on the webmail handoff for the rest of the process, or
+     * offering a Send whose key no longer opens.
+     */
+    @Test
+    fun composeState_cachesBootstrapButReprobesEnrollment() = runBlocking {
+        var calls = 0
+        var enrolled = false
+        val callFactory = FakeCallFactory { request ->
+            calls++
+            response(
+                request,
+                """{"hasIdentity":true,"protection":"client","suggestedUserIDs":["me@example.com"]}""",
+                200,
+            )
+        }
+        val controller = ComposePgpController(
+            pairingProvider = { testPairing() },
+            bootstrapClient = PgpBootstrapClient(callFactory = callFactory),
+            recipientKeyClient = RecipientKeyClient(callFactory = callFactory),
+            enrollmentProbe = { enrolled },
+        )
+
+        assertTrue(controller.composeState().handoffToWebmail, "unenrolled device hands off")
+
+        enrolled = true
+
+        assertTrue(controller.composeState().clientSide, "enrolling mid-session must take effect")
+        assertEquals(1, calls, "bootstrap itself is still cached")
+    }
+
+    /** The address every delivery's From must carry, read off the cached bootstrap. */
+    @Test
+    fun accountAddress_comesFromSuggestedUserIds() = runBlocking {
+        val controller = controllerWith(
+            bootstrapBody = """{"hasIdentity":true,"protection":"client","suggestedUserIDs":["me@example.com","alias@example.com"]}""",
+        )
+
+        assertEquals("me@example.com", controller.accountAddress())
+    }
+
+    @Test
+    fun accountAddress_isBlankWhenBootstrapFails() = runBlocking {
+        val controller = ComposePgpController(
+            pairingProvider = { testPairing() },
+            bootstrapClient = PgpBootstrapClient(
+                callFactory = FakeCallFactory { request -> response(request, "boom", 503) },
+            ),
+            recipientKeyClient = RecipientKeyClient(callFactory = FakeCallFactory { request -> response(request, "{}", 200) }),
+        )
+
+        assertEquals("", controller.accountAddress())
+    }
+
     // ---- keylessRecipients ----
 
     @Test

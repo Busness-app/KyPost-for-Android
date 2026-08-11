@@ -106,11 +106,45 @@ Owns production Android app code and resources.
   client-custody; no re-send helps, hand off to webmail) and `keylessRecipients` (nothing was
   delivered; re-sending the *same* draft with `allowPickupFallback = true` is safe and cannot
   duplicate). Only those two 409s and the 200 are JSON — every other status returns plain text, so
-  no decoder runs over it. The recipient preflight is `POST /api/pgp/recipients/check`, never
-  `/resolve` (which 409s for every non-client-custody account); it reads contacts only, so
-  `hasKey: false` is a lower bound and must never be worded as a promise. The pickup fallback
+  no decoder runs over it. The recipient preflight is `POST /api/pgp/recipients/check`; it reads
+  contacts only, so `hasKey: false` is a lower bound and must never be worded as a promise.
+  (`/resolve` still 409s for every non-client-custody account, so it remains wrong for *this* path —
+  but it is no longer wrong for the app as a whole; see the client-side send bullet below.) The pickup fallback
   stores the message's plaintext on the server for seven days, which is why its confirmation copy
   is fixed in `strings.xml` and is per-message — never a remembered preference.
+- **Client-side encrypted send.** A client-custody account on an **enrolled** device encrypts and
+  signs on the phone and posts ciphertext to `POST /api/mail/send-pgp`; it no longer falls back to
+  webmail. `pgpComposeStateOf(hasIdentity, protection, deviceEnrolled, accountAddress)` is the whole
+  rule, and its `clientSide` flag is what routes `ComposeActivity.sendEmail` to
+  `ClientEncryptedSender` instead of `MailRepository.send`. Webmail remains the fallback for an
+  unenrolled device, and for an enrolled one whose `accountAddress` is blank (no `From` could be
+  built, so the relay would 403).
+  - Recipient keys come from `POST /api/pgp/recipients/resolve` (`RecipientResolveClient`) — the
+    endpoint the server-custody path must never call. Here 200, 409 and 413 are JSON while 400/500
+    are plain text, which differs from `/check`.
+  - The address split is `splitRecipientFields`, **not** `splitAddresses`: the latter dedupes across
+    To/CC/BCC and would collapse a BCC recipient into the To header.
+  - To+CC share delivery 0; each BCC gets its own ciphertext, so no BCC recipient's key id appears
+    in a packet another recipient can read. Delivery 0 must stay first — index 0 failing is a hard
+    502 while later failures only become a `warning`.
+  - `OutgoingEnvelope` has no `bcc` field by construction, and the writer emits a fixed, closed
+    header set — that is what structurally guarantees the relay's forbidden headers (`Received`,
+    `Authentication-Results`, `Return-Path`, `Bcc`) can never appear.
+  - The real subject rides inside the ciphertext as a protected header; the outer subject is always
+    `OUTER_PLACEHOLDER_SUBJECT`, matching `pgpmail.OuterPlaceholderSubject`.
+  - The Sent copy is encrypted to the public half of the **vault** key (`PgpEncryptor.ownPublicKey`),
+    never to bootstrap's `publicKey`: a hostile server supplying "your" key would otherwise get a
+    readable copy of every message sent.
+  - `tier == "key_changed"` is a broken TOFU pin and must stay a distinct, louder outcome — never
+    folded into "no key on file". There is **no** pickup fallback on this path and there must not be:
+    the server-side one works by storing plaintext, which is what client custody exists to prevent.
+  - `accountAddress` is bootstrap's `suggestedUserIDs[0]` and nothing else — the server derives it
+    from the same expression `handleMailSendPGP` feeds to `resolveMailFrom`. Do not derive it from
+    the public key's User ID or the self-contact.
+  - `ComposePgpController` caches the **bootstrap**, not the composed state: custody is fixed at key
+    creation but enrollment can change mid-process, so it is re-probed on every `composeState()`.
+  - Sign-only is impossible (the relay accepts `multipart/encrypted` only), so the two chips are
+    coupled when `clientSide`.
 - Inbox tabs come from the relay's `tabs`/`label` response fields.
 - Email bodies carry the relay's `bodyMode` (`html`/`plain`) through the Room cache and into
   `EmailDetailActivity`; plain bodies must be escaped into whitespace-preserving block markup for

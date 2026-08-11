@@ -28,6 +28,15 @@ sealed class PgpBootstrapResult {
         val hasIdentity: Boolean,
         val protection: String,
         val publicKey: String,
+        /** The account's own mail address, and the only device-reachable source for it —
+         *  `GET /api/mail/send-as` is session-authenticated, so a paired device cannot ask.
+         *
+         *  Every client-encrypted delivery's `From` header must equal this exactly or the relay
+         *  answers 403, and it is authoritative rather than inferred: the server builds
+         *  `suggestedUserIDs[0]` from the same `strings.TrimSpace(payload.Username)` expression that
+         *  `handleMailSendPGP` hands to `resolveMailFrom`. Blank when no mail account is configured,
+         *  which means no valid `From` can be built at all. */
+        val accountAddress: String = "",
     ) : PgpBootstrapResult()
 
     data class Failed(val message: String) : PgpBootstrapResult()
@@ -44,6 +53,8 @@ private data class PgpBootstrapDto(
     val hasIdentity: Boolean = false,
     val protection: String = "",
     val publicKey: String = "",
+    /** Primary address first, then every verified send-as alias. Only the first is used today. */
+    val suggestedUserIDs: List<String> = emptyList(),
 )
 
 /**
@@ -78,6 +89,7 @@ class PgpBootstrapClient(
             hasIdentity = parsed.hasIdentity,
             protection = parsed.protection,
             publicKey = parsed.publicKey,
+            accountAddress = parsed.suggestedUserIDs.firstOrNull().orEmpty(),
         )
     }
 }

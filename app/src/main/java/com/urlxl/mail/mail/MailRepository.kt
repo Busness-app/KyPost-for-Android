@@ -57,6 +57,10 @@ class MailRepository(
 
     fun send(draft: MailDraft): MailOutcome<MailSendOutcome> = relaySource.sendMail(draft)
 
+    /** The client-custody send: this device already encrypted and signed, the relay only forwards. */
+    fun sendClientEncrypted(message: ClientEncryptedMessage): MailOutcome<MailSendOutcome> =
+        relaySource.sendClientEncrypted(message)
+
     /** Used by the client-custody webmail handoff: the composition is parked as a draft so the
      *  browser has something to open. Drafts carry no crypto flags — see [MailDraft]. */
     fun saveDraft(draft: MailDraft): MailOutcome<Unit> = relaySource.saveDraft(draft)

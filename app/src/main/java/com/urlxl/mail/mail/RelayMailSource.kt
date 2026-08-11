@@ -4,6 +4,7 @@ import com.urlxl.mail.Email
 import com.urlxl.mail.executeSync
 import com.urlxl.mail.pairingAuthHeaders
 import com.urlxl.mail.pairingHttpClient
+import com.urlxl.mail.pgp.OUTER_PLACEHOLDER_SUBJECT
 import com.urlxl.mail.push.PairingData
 import com.urlxl.mail.push.pairingUrlHost
 import kotlinx.serialization.encodeToString
@@ -219,6 +220,44 @@ class RelayMailSource(
         }
     }
 
+    /**
+     * Relays ciphertext this device already built, via `POST /api/mail/send-pgp`.
+     *
+     * `subject` and `sentCopyEncrypted` are fixed here rather than taken from the caller. The
+     * subject is the placeholder because the real one is inside the ciphertext; the flag is `true`
+     * because [ClientEncryptedMessage.sentCopy] is defined to be ciphertext, and a copy that does
+     * not claim it is silently dropped server-side.
+     */
+    override fun sendClientEncrypted(message: ClientEncryptedMessage): MailOutcome<MailSendOutcome> {
+        val pairing = pairingProvider() ?: return MailOutcome.Unauthorized("Device is not paired")
+        val base = baseUrl(pairing, "/api/mail/send-pgp")
+            ?: return MailOutcome.BadRequest("Server URL is not valid")
+        val body = json.encodeToString(
+            RelayClientEncryptedRequestDto(
+                from = message.from,
+                subject = OUTER_PLACEHOLDER_SUBJECT,
+                mode = message.mode,
+                to = message.to,
+                cc = message.cc,
+                bcc = message.bcc,
+                deliveries = message.deliveries.map {
+                    RelayClientEncryptedDeliveryDto(recipients = it.recipients, ciphertext = it.ciphertext)
+                },
+                sentCopy = message.sentCopy,
+                sentCopyEncrypted = true,
+            ),
+        )
+        val request = Request.Builder().url(base).post(body.toRequestBody(JSON_MEDIA_TYPE))
+            .authed(pairing)
+            .build()
+        return execute(request) { code, rawBody ->
+            if (code != 200) return@execute mapErrorCode(code, rawBody)
+            val parsed = runCatching { json.decodeFromString<RelaySendResponseDto>(rawBody) }.getOrNull()
+                ?: return@execute MailOutcome.UpstreamFailure("Malformed send response")
+            MailOutcome.Success(MailSendOutcome(sentSaved = parsed.sentSaved, warning = parsed.warning))
+        }
+    }
+
     override fun fetchMessageBody(messageId: String, folder: String): MailOutcome<MailMessageBody> {
         // /api/inbox already returns each message's full body inline (Mobile_Mail_Relay.md Part 2)
         // — there is no separate fetch-one-message endpoint. MailRepository.fetchBody serves this
@@ -299,6 +338,11 @@ class RelayMailSource(
             MailOutcome.BadRequest(rawBody.ifBlank { "Malformed request" })
         }
         401 -> MailOutcome.Unauthorized("Bad secret or unknown device")
+        // Plain text, and the prose is the whole value: it names an unauthorized From, which is the
+        // one thing the user can act on. Without this branch it fell through to the generic
+        // "Mail relay request failed (403)" and the sentence was discarded — for every endpoint,
+        // not just the client-encrypted send that surfaced it.
+        403 -> MailOutcome.BadRequest(rawBody.ifBlank { "Refused" })
         // Two PGP refusals share this status. clientSideNeeded is checked first to match the
         // server's own precedence: a client-custody account cannot encrypt server-side at all, so
         // its keyless recipients are beside the point and a pickup dialog would be nonsense.

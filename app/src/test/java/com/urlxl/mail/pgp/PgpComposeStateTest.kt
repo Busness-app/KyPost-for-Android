@@ -23,12 +23,75 @@ class PgpComposeStateTest {
         )
     }
 
-    /** The key is unwrapped only in the browser, from a password this device never learns. */
+    /** Not enrolled, so this device holds no key: unchanged behaviour, webmail is the only route. */
     @Test
     fun clientCustody_offersNeitherAndHandsOff() {
         assertEquals(
             PgpComposeState(canEncrypt = false, canSign = false, handoffToWebmail = true),
             pgpComposeStateOf(hasIdentity = true, protection = "client"),
+        )
+    }
+
+    /**
+     * An enrolled device holds the account's private key, so it can encrypt and sign locally.
+     *
+     * [PgpComposeState.clientSide] is what routes the send to `/api/mail/send-pgp` instead of
+     * `/api/mail/send`; without it the compose screen would offer toggles and then post them to the
+     * endpoint that answers 409 for exactly this account type.
+     */
+    @Test
+    fun clientCustodyEnrolled_offersBothAndEncryptsOnThisDevice() {
+        assertEquals(
+            PgpComposeState(
+                canEncrypt = true,
+                canSign = true,
+                handoffToWebmail = false,
+                clientSide = true,
+            ),
+            pgpComposeStateOf(
+                hasIdentity = true,
+                protection = "client",
+                deviceEnrolled = true,
+                accountAddress = "me@example.invalid",
+            ),
+        )
+    }
+
+    /**
+     * Enrolled but no account address: every delivery's `From` must equal the authorized address,
+     * and there is none to write. Offering Send here would build ciphertext the relay 403s, so this
+     * degrades to the handoff instead.
+     */
+    @Test
+    fun clientCustodyEnrolledWithoutAnAccountAddress_handsOffInstead() {
+        assertEquals(
+            PgpComposeState(canEncrypt = false, canSign = false, handoffToWebmail = true),
+            pgpComposeStateOf(
+                hasIdentity = true,
+                protection = "client",
+                deviceEnrolled = true,
+                accountAddress = "   ",
+            ),
+        )
+    }
+
+    /** Server custody is never the client-side path, however enrolled the device is: the server
+     *  holds that key and `/api/pgp/recipients/resolve` refuses this account outright. */
+    @Test
+    fun serverCustody_isNeverClientSideEvenWhenEnrolled() {
+        assertEquals(
+            PgpComposeState(
+                canEncrypt = true,
+                canSign = true,
+                handoffToWebmail = false,
+                clientSide = false,
+            ),
+            pgpComposeStateOf(
+                hasIdentity = true,
+                protection = "server",
+                deviceEnrolled = true,
+                accountAddress = "me@example.invalid",
+            ),
         )
     }
 

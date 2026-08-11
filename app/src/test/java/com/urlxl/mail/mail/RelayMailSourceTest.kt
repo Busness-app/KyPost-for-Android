@@ -2,6 +2,7 @@ package com.urlxl.mail.mail
 
 import com.urlxl.mail.HEADER_DEVICE_ID
 import com.urlxl.mail.HEADER_DEVICE_SECRET
+import com.urlxl.mail.pgp.OUTER_PLACEHOLDER_SUBJECT
 import com.urlxl.mail.push.PairingData
 import com.urlxl.mail.testing.streamingResponse
 import kotlinx.serialization.json.Json
@@ -66,11 +67,13 @@ private class FakeCallFactory(private val responder: (Request) -> Response) : Ca
  *  PGP send flags are body fields. Mirrors MfaResponseClientTest's body-capturing fake. */
 private class BodyRecordingCallFactory(private val responder: (Request) -> Response) : Call.Factory {
     val bodies = mutableListOf<String>()
+    val urls = mutableListOf<String>()
 
     override fun newCall(request: Request): Call {
         val buffer = okio.Buffer()
         request.body?.writeTo(buffer)
         bodies.add(buffer.readUtf8())
+        urls.add(request.url.toString())
         return FakeCall(request, responder(request))
     }
 }
@@ -816,5 +819,94 @@ class RelayMailSourceTest {
         assertEquals(false, sent.sign)
         assertEquals(false, sent.encrypt)
         assertEquals(false, sent.allowPickupFallback)
+    }
+
+    /**
+     * The client-encrypted send posts pre-built ciphertext to a different endpoint entirely.
+     *
+     * `sentCopyEncrypted` is asserted true because it is an assertion *about the bytes*: the server
+     * silently drops a copy that does not claim it, so sending false would quietly cost the user
+     * their Sent folder. The outer subject must be the placeholder — the real one rides inside the
+     * ciphertext, and putting it here would hand the server the very thing this path protects.
+     */
+    @Test
+    fun sendClientEncrypted_postsCiphertextToTheSendPgpEndpoint() {
+        val callFactory = BodyRecordingCallFactory { request ->
+            jsonResponse(request, """{"ok":true,"sentSaved":true,"warning":""}""")
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = callFactory,
+        )
+
+        source.sendClientEncrypted(
+            ClientEncryptedMessage(
+                from = "me@example.com",
+                to = listOf("alice@example.com"),
+                cc = emptyList(),
+                bcc = listOf("carol@example.com"),
+                deliveries = listOf(
+                    ClientEncryptedDelivery(listOf("alice@example.com"), "MIME-A"),
+                    ClientEncryptedDelivery(listOf("carol@example.com"), "MIME-B"),
+                ),
+                sentCopy = "MIME-SENT",
+            ),
+        )
+
+        val wireJson = Json { ignoreUnknownKeys = true }
+        val sent = wireJson.decodeFromString<RelayClientEncryptedRequestDto>(callFactory.bodies.single())
+        assertEquals("https://relay.example.com/api/mail/send-pgp", callFactory.urls.single())
+        assertEquals(2, sent.deliveries.size)
+        assertEquals(listOf("carol@example.com"), sent.deliveries[1].recipients)
+        assertEquals("MIME-SENT", sent.sentCopy)
+        assertEquals(true, sent.sentCopyEncrypted)
+        assertEquals(OUTER_PLACEHOLDER_SUBJECT, sent.subject)
+    }
+
+    @Test
+    fun sendClientEncrypted_200WithWarning_isSuccessCarryingIt() {
+        val body = """{"ok":true,"sentSaved":false,"warning":"1 bcc delivery(s) failed"}"""
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = FakeCallFactory { request -> jsonResponse(request, body) },
+        )
+
+        val outcome = source.sendClientEncrypted(
+            ClientEncryptedMessage(
+                from = "me@example.com",
+                to = listOf("alice@example.com"),
+                cc = emptyList(),
+                bcc = emptyList(),
+                deliveries = listOf(ClientEncryptedDelivery(listOf("alice@example.com"), "MIME")),
+                sentCopy = "SENT",
+            ),
+        )
+
+        val value = (outcome as MailOutcome.Success).value
+        assertEquals("1 bcc delivery(s) failed", value.warning)
+        assertEquals(false, value.sentSaved)
+    }
+
+    /**
+     * 403 is the send-as / From-binding refusal, and its body is plain text naming the problem.
+     *
+     * `mapErrorCode` had no 403 branch, so every endpoint degraded it to "Mail relay request failed
+     * (403)" — discarding the one sentence that tells the user their From is not authorized. Fixed
+     * for the whole class rather than at this one call site.
+     */
+    @Test
+    fun forbidden_carriesTheServersProse() {
+        val reason = "the from address is not a verified send-as alias for this account"
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = FakeCallFactory { request -> jsonResponse(request, reason, code = 403) },
+        )
+
+        val outcome = source.sendMail(MailDraft(to = "a@example.com", subject = "s", body = "b"))
+
+        assertEquals(reason, (outcome as MailOutcome.BadRequest).message)
     }
 }
