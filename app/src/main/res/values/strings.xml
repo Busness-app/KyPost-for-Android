@@ -467,7 +467,7 @@
     <string name="enrollment_title">Set up encrypted mail</string>
     <string name="enrollment_checking">Checking your account…</string>
     <string name="enrollment_publishing">Preparing this device…</string>
-    <string name="enrollment_code_intro">In your browser, open KyPost and go to Settings → Encryption, choose “Set up a device”, and type this code:</string>
+    <string name="enrollment_code_intro">In your browser, open KyPost and go to Settings → Security → Devices, choose “Set up a device”, and type this code:</string>
     <plurals name="enrollment_code_expiry">
         <item quantity="one">This code changes in %1$d second. The new one works just as well.</item>
         <item quantity="other">This code changes in %1$d seconds. The new one works just as well.</item>
