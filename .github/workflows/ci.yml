@@ -78,6 +78,53 @@ jobs:
             cat "$f"
           done || true
 
+  # Builds the release variant on every PR. Nothing else in CI does: `unit` builds debug and
+  # `instrumented` builds debug, so until this job existed the R8 configuration in
+  # app/proguard-rules.pro was shipped unverified. A missing keep rule there does not fail a
+  # build — it produces an APK that installs and then throws at runtime, on the release
+  # artifact only, which is the worst possible place to discover it.
+  #
+  # This also covers lintVitalRelease, which only runs on a release assembly.
+  release-build:
+    name: ci-release-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+
+      - uses: ./.github/actions/placeholder-google-services
+
+      # A throwaway key generated per run, NOT the release key — which must never be reachable
+      # from a workflow that runs on pull_request, where an untrusted branch supplies the code.
+      # The signing identity is irrelevant to what this job checks; packageRelease simply
+      # refuses to run without one, by the guard in app/build.gradle.kts. The APK produced here
+      # is a build artifact of the check and is never published.
+      - name: throwaway signing key
+        run: |
+          keytool -genkeypair -v -keystore "$RUNNER_TEMP/ci-throwaway.jks" -alias ci \
+            -keyalg RSA -keysize 4096 -validity 30 \
+            -storepass ci-throwaway -keypass ci-throwaway \
+            -dname "CN=KyPost CI, O=Verification Only, C=US"
+          printf 'storeFile=%s\nstorePassword=ci-throwaway\nkeyAlias=ci\nkeyPassword=ci-throwaway\n' \
+            "$RUNNER_TEMP/ci-throwaway.jks" > keystore.properties
+
+      - name: assemble release
+        run: ./gradlew :app:assembleRelease
+
+      - name: dependency verification metadata is unchanged
+        run: git diff --exit-code -- gradle/verification-metadata.xml
+
+      - name: lint vital report
+        if: failure()
+        run: |
+          find app/build/reports -name 'lint-results*' -print -exec cat {} + || true
+
   instrumented:
     name: ci-instrumented
     runs-on: ubuntu-latest

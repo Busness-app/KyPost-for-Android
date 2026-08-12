@@ -112,8 +112,14 @@ android {
 // `packageReleaseResources`, which is a resource-merge step in the *compile* chain, so it failed
 // release compilation and dependency-metadata generation rather than only artifact production.
 tasks.matching { it.name == "packageRelease" || it.name == "signReleaseBundle" }.configureEach {
+    // Resolved here, at configuration time, and captured by the action below as a plain Boolean.
+    // Referencing `keystorePropertiesFile` from inside doFirst instead makes the action hold a
+    // reference to the build script itself, which the configuration cache cannot serialize —
+    // every release build then failed a second time with "cannot serialize Gradle script object
+    // references" and discarded its cache entry.
+    val signingMaterialPresent = keystorePropertiesFile.exists()
     doFirst {
-        if (!keystorePropertiesFile.exists()) {
+        if (!signingMaterialPresent) {
             throw GradleException(
                 "keystore.properties is missing: a release variant cannot be signed. " +
                     "Add it, or build only the debug variant.",
