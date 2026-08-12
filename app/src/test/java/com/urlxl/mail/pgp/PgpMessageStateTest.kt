@@ -63,6 +63,43 @@ class PgpMessageStateTest {
     }
 
     @Test
+    fun correctlySignedMailIsNotAnAccusation() {
+        // The relay does not verify signed-but-unencrypted mail at all, so pgpVerified is
+        // permanently false for that whole population. Reading signed && !verified as INVALID
+        // fired "Signing Key Mismatch" on every correctly signed message and marked every such
+        // row with ⚠ — training the user to ignore the marker that also carries KEY_CHANGED.
+        //
+        // An empty fingerprint means nothing was checked against anything.
+        assertEquals(
+            PgpSignatureState.SIGNER_UNKNOWN,
+            pgpSignatureStateOf(pgpSigned = true, pgpVerified = false, pgpSignerFingerprint = ""),
+        )
+        assertNull(
+            pgpRowMarker(
+                PgpMessageState.NONE,
+                pgpSignatureStateOf(pgpSigned = true, pgpVerified = false, pgpSignerFingerprint = ""),
+            ),
+        )
+    }
+
+    @Test
+    fun aNamedSignerThatIsNotTheSenderIsStillAnAccusation() {
+        // A fingerprint means a key produced the signature and it was not the one bound to the
+        // sender. That is the case the warning exists for, and it must survive the fix above.
+        assertEquals(
+            PgpSignatureState.INVALID,
+            pgpSignatureStateOf(pgpSigned = true, pgpVerified = false, pgpSignerFingerprint = "ABCDEF01"),
+        )
+        assertEquals(
+            "⚠",
+            pgpRowMarker(
+                PgpMessageState.NONE,
+                pgpSignatureStateOf(pgpSigned = true, pgpVerified = false, pgpSignerFingerprint = "ABCDEF01"),
+            ),
+        )
+    }
+
+    @Test
     fun aChangedKeyMarksTheRow() {
         assertEquals("⚠", pgpRowMarker(PgpMessageState.NONE, PgpSignatureState.KEY_CHANGED))
     }
