@@ -1,0 +1,196 @@
+name: release
+
+# Publishes a signed APK to a GitHub Release when a version tag is pushed.
+#
+# Deliberately a separate file from ci.yml. This workflow is the only thing in the repository
+# that touches the real signing key and the real Firebase config, and it must never share a
+# trigger with `pull_request` — that event runs code from an untrusted branch, and any job in
+# reach of these secrets would hand the release key to whoever opened the PR. Tag pushes can
+# only come from someone who can already write to this repository.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: publish-apk
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # A protected environment, NOT bare repo secrets. Create it under Settings → Environments
+    # with the required reviewers you want, and store the four secrets below on the environment
+    # rather than on the repository. Without this, every secret here is readable by any workflow
+    # anyone with write access can add. With it, publishing pauses for an approval.
+    environment: release
+
+    permissions:
+      # Only for creating the Release and attaching the APK. Everything else stays read-only.
+      contents: write
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+
+      # The real Firebase config, not the CI placeholder. This is the difference between a
+      # published build where push notifications work and one where they fail silently — the
+      # app builds, installs and runs identically either way, so nothing downstream would
+      # catch a placeholder. Hence the explicit rejection below.
+      - name: production google-services.json
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GOOGLE_SERVICES_JSON}" ]; then
+            echo "GOOGLE_SERVICES_JSON is not set on the 'release' environment." >&2
+            exit 1
+          fi
+          printf '%s' "${GOOGLE_SERVICES_JSON}" > app/google-services.json
+          if grep -q 'kypost-ci-placeholder' app/google-services.json; then
+            echo "GOOGLE_SERVICES_JSON holds the CI placeholder project; push would not work." >&2
+            exit 1
+          fi
+          if ! grep -q '"package_name": *"org.kysecurity.mail"' app/google-services.json; then
+            echo "GOOGLE_SERVICES_JSON does not name package org.kysecurity.mail." >&2
+            exit 1
+          fi
+
+      - name: release signing material
+        env:
+          RELEASE_KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${RELEASE_KEYSTORE_B64}" | base64 -d > "${RUNNER_TEMP}/release.jks"
+          # Written with the passwords in a file rather than passed on a command line, which
+          # would put them in the process table for the life of the build.
+          umask 077
+          {
+            printf 'storeFile=%s\n' "${RUNNER_TEMP}/release.jks"
+            printf 'storePassword=%s\n' "${RELEASE_STORE_PASSWORD}"
+            printf 'keyAlias=%s\n' "${RELEASE_KEY_ALIAS}"
+            printf 'keyPassword=%s\n' "${RELEASE_KEY_PASSWORD}"
+          } > keystore.properties
+
+      - name: assemble release
+        run: ./gradlew :app:assembleRelease
+
+      - name: dependency verification metadata is unchanged
+        run: git diff --exit-code -- gradle/verification-metadata.xml
+
+      # versionCode/versionName are hardcoded in app/build.gradle.kts, so the tag and the
+      # manifest can disagree — and the failure is silent and expensive: Play rejects a
+      # duplicate versionCode outright, and a sideloaded APK whose versionCode did not
+      # increase will not install over the copy already on the device.
+      #
+      # github.ref_name goes through the environment, never into the shell text. Git permits
+      # `$` and backticks in a tag name, so interpolating it directly into a run: block is a
+      # command-injection sink.
+      - name: tag matches the versioned manifest
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          metadata=app/build/outputs/apk/release/output-metadata.json
+          version_name=$(jq -r '.elements[0].versionName' "$metadata")
+          version_code=$(jq -r '.elements[0].versionCode' "$metadata")
+          echo "tag=${TAG} versionName=${version_name} versionCode=${version_code}"
+          if [ "${TAG#v}" != "${version_name}" ]; then
+            echo "Tag ${TAG} does not match versionName ${version_name} in app/build.gradle.kts." >&2
+            exit 1
+          fi
+
+      # Proves the artifact carries the key we think it does, before it reaches anyone. A
+      # swapped or regenerated keystore secret produces a perfectly valid APK signed by the
+      # wrong identity — which no user can install over their existing app, and which cannot
+      # be walked back once published. Store the expected fingerprint as
+      # RELEASE_KEY_SHA256 (the bare uppercase hex digest, colons optional):
+      #   keytool -list -v -keystore your.jks -alias your-alias | grep 'SHA256:'
+      - name: signer identity is the expected release key
+        env:
+          EXPECTED_SHA256: ${{ secrets.RELEASE_KEY_SHA256 }}
+        run: |
+          set -euo pipefail
+          apk=app/build/outputs/apk/release/app-release.apk
+          apksigner=$(find "${ANDROID_HOME}/build-tools" -name apksigner | sort -V | tail -1)
+
+          expected=$(printf '%s' "${EXPECTED_SHA256}" | tr -d ':' | tr '[:upper:]' '[:lower:]')
+          if [ -z "$expected" ]; then
+            echo "RELEASE_KEY_SHA256 is not set on the 'release' environment." >&2
+            exit 1
+          fi
+
+          # The signature is valid at all — separate from, and prior to, asking whose it is.
+          "$apksigner" verify "$apk"
+
+          # Matched on the part of the label that is stable across build-tools versions.
+          # build-tools 36 prints "Signer #1 certificate SHA-256 digest: <hex>" and 37 prints
+          # "V2 Signer: certificate SHA-256 digest: <hex>"; anchoring on the older wording
+          # yielded an empty string on 37, which reads downstream as a key mismatch rather
+          # than as the parse failure it is.
+          actual=$("$apksigner" verify --print-certs "$apk" \
+            | sed -n 's/.*certificate SHA-256 digest: *//p' | head -1)
+          if [ -z "$actual" ]; then
+            echo "Could not read a signer digest out of ${apksigner}; parsing needs updating." >&2
+            exit 1
+          fi
+          if [ "$actual" != "$expected" ]; then
+            echo "APK is signed by ${actual}, expected ${expected}. Refusing to publish." >&2
+            exit 1
+          fi
+          echo "Signer verified: ${actual}"
+
+      - name: name the artifact
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cp app/build/outputs/apk/release/app-release.apk "${RUNNER_TEMP}/kypost-${TAG}.apk"
+          sha256sum "${RUNNER_TEMP}/kypost-${TAG}.apk" \
+            | sed "s|${RUNNER_TEMP}/||" > "${RUNNER_TEMP}/kypost-${TAG}.apk.sha256"
+
+      # R8's mapping file, kept as a workflow artifact rather than attached to the Release.
+      # Without it a crash report from this build is unreadable; published alongside the APK
+      # it also hands an analyst a full symbol table for a security-sensitive binary. Retained
+      # long enough to outlive the release it belongs to.
+      - name: retain the R8 mapping
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mapping-${{ github.ref_name }}
+          path: app/build/outputs/mapping/release/mapping.txt
+          retention-days: 90
+          if-no-files-found: error
+
+      # `gh` is preinstalled on the runner, so this needs no third-party action — one less
+      # entry in the supply chain of a job that holds the signing key.
+      #
+      # --draft on purpose: the release is assembled but not announced, so the APK can be
+      # installed and checked before anyone is told it exists. Publish it from the Releases
+      # page when satisfied.
+      - name: publish draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release create "${TAG}" \
+            --draft \
+            --title "${TAG}" \
+            --generate-notes \
+            "${RUNNER_TEMP}/kypost-${TAG}.apk" \
+            "${RUNNER_TEMP}/kypost-${TAG}.apk.sha256"
+
+      - name: destroy signing material
+        if: always()
+        run: |
+          shred -u "${RUNNER_TEMP}/release.jks" keystore.properties 2>/dev/null || true
