@@ -8,6 +8,9 @@ import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.cardview.widget.CardView
+import androidx.recyclerview.widget.AdapterListUpdateCallback
+import androidx.recyclerview.widget.DiffUtil
+import androidx.recyclerview.widget.ListUpdateCallback
 import androidx.recyclerview.widget.RecyclerView
 import org.kysecurity.mail.pgp.PgpMessageState
 import org.kysecurity.mail.pgp.PgpSignatureState
@@ -93,7 +96,29 @@ class EmailAdapter(
     fun getEmailAt(position: Int): Email = emails[position]
 
     fun updateEmails(newEmails: List<Email>) {
+        val previous = emails
         emails = newEmails
-        notifyDataSetChanged()
+        dispatchEmailListUpdate(previous, newEmails, AdapterListUpdateCallback(this))
     }
+}
+
+/** Reports an inbox list change row by row.
+ *
+ *  Not `notifyDataSetChanged()`: that marks every attached ViewHolder invalid, so adapter positions
+ *  read NO_POSITION until the next layout pass. ItemTouchHelper dispatches a completed swipe from a
+ *  posted runnable that abandons the swipe permanently when it reads NO_POSITION, which strands the
+ *  swipe's recover animation — the delete background then paints under the list until the process
+ *  is killed, and the message is never deleted. Deleting several emails in a row is what lines a
+ *  second swipe up with the first one's list update. */
+internal fun dispatchEmailListUpdate(
+    old: List<Email>,
+    new: List<Email>,
+    callback: ListUpdateCallback,
+) {
+    DiffUtil.calculateDiff(object : DiffUtil.Callback() {
+        override fun getOldListSize(): Int = old.size
+        override fun getNewListSize(): Int = new.size
+        override fun areItemsTheSame(oldPos: Int, newPos: Int): Boolean = old[oldPos].id == new[newPos].id
+        override fun areContentsTheSame(oldPos: Int, newPos: Int): Boolean = old[oldPos] == new[newPos]
+    }).dispatchUpdatesTo(callback)
 }
