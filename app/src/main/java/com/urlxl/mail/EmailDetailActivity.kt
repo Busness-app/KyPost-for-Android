@@ -159,6 +159,7 @@ class EmailDetailActivity : LockedActivity() {
         pgpSignatureState = com.urlxl.mail.pgp.pgpSignatureStateOf(
             pgpSigned = intent.getBooleanExtra("email_pgp_signed", false),
             pgpVerified = intent.getBooleanExtra("email_pgp_verified", false),
+            pgpSignerFingerprint = intent.getStringExtra("email_pgp_signer_fingerprint").orEmpty(),
         )
         val phishingFlagged = intent.getBooleanExtra("email_suspicious", false)
 

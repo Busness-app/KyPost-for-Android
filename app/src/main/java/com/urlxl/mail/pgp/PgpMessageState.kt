@@ -150,13 +150,26 @@ enum class PgpSignatureState {
  *
  * Two booleans cannot express six states, and they cannot distinguish a fingerprint-confirmed key
  * from an Autocrypt-harvested one, so `pgpVerified` maps to the weaker of the two positive claims.
- * [PgpSignatureState.VERIFIED_CONFIRMED], [PgpSignatureState.SIGNER_UNKNOWN] and
- * [PgpSignatureState.KEY_CHANGED] are reachable only through [signatureStateFor], from a local
- * decrypt against a locally-held key.
+ * [PgpSignatureState.VERIFIED_CONFIRMED] and [PgpSignatureState.KEY_CHANGED] are reachable only
+ * through [signatureStateFor], from a local decrypt against a locally-held key.
+ *
+ * `pgpSignerFingerprint` is what keeps this from accusing everyone. The relay does not verify
+ * signed-but-unencrypted mail at all — it cannot, because a detached signature covers the signed
+ * MIME part's transmitted bytes and every server-side path holds a decoded copy — so `pgpVerified`
+ * is permanently false for that entire population. Reading `signed && !verified` as
+ * [PgpSignatureState.INVALID] therefore fired the accusation on **every correctly signed message**,
+ * which is exactly the alarm fatigue that makes the marker worthless when a real key substitution
+ * arrives. An empty fingerprint means nothing was checked against anything; a non-empty one means a
+ * key produced the signature and it was not the sender's. Only the second is an accusation.
  */
-fun pgpSignatureStateOf(pgpSigned: Boolean, pgpVerified: Boolean): PgpSignatureState = when {
+fun pgpSignatureStateOf(
+    pgpSigned: Boolean,
+    pgpVerified: Boolean,
+    pgpSignerFingerprint: String = "",
+): PgpSignatureState = when {
     !pgpSigned -> PgpSignatureState.NONE
     pgpVerified -> PgpSignatureState.VERIFIED_SEEN_BEFORE
+    pgpSignerFingerprint.isBlank() -> PgpSignatureState.SIGNER_UNKNOWN
     else -> PgpSignatureState.INVALID
 }
 
