@@ -27,7 +27,7 @@
         android:padding="16dp"
         android:layout_marginBottom="16dp">
 
-        <com.urlxl.mail.RecipientInputView
+        <org.kysecurity.mail.RecipientInputView
             android:id="@+id/composeToInput"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -39,7 +39,7 @@
             android:layout_height="1dp"
             android:layout_marginBottom="12dp" />
 
-        <com.urlxl.mail.RecipientInputView
+        <org.kysecurity.mail.RecipientInputView
             android:id="@+id/composeCcInput"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -51,7 +51,7 @@
             android:layout_height="1dp"
             android:layout_marginBottom="12dp" />
 
-        <com.urlxl.mail.RecipientInputView
+        <org.kysecurity.mail.RecipientInputView
             android:id="@+id/composeBccInput"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

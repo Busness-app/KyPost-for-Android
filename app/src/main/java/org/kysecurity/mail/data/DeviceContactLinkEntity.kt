@@ -1,0 +1,11 @@
+package org.kysecurity.mail.data
+
+import androidx.room.Entity
+import androidx.room.PrimaryKey
+
+@Entity(tableName = "device_contact_links")
+data class DeviceContactLinkEntity(
+    @PrimaryKey val uid: String,
+    val rawContactId: Long,
+    val deviceUpdatedAtEpochMs: Long,
+)

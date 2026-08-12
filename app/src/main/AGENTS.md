@@ -4,7 +4,7 @@ Owns production Android app code and resources.
 
 # Ownership
 
-- Code: `app/src/main/java/com/urlxl/mail/`
+- Code: `app/src/main/java/org/kysecurity/mail/`
 - Resources: `app/src/main/res/`
 - Manifest: `app/src/main/AndroidManifest.xml`
 

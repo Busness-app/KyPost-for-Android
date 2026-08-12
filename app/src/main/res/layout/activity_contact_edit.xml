@@ -48,7 +48,7 @@
 
         </LinearLayout>
 
-        <com.urlxl.mail.contacts.ExpandableSectionView
+        <org.kysecurity.mail.contacts.ExpandableSectionView
             android:id="@+id/sectionName"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -195,9 +195,9 @@
                 android:inputType="text"
                 android:layout_marginBottom="4dp" />
 
-        </com.urlxl.mail.contacts.ExpandableSectionView>
+        </org.kysecurity.mail.contacts.ExpandableSectionView>
 
-        <com.urlxl.mail.contacts.ExpandableSectionView
+        <org.kysecurity.mail.contacts.ExpandableSectionView
             android:id="@+id/sectionWork"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -245,9 +245,9 @@
                 android:inputType="text"
                 android:layout_marginBottom="4dp" />
 
-        </com.urlxl.mail.contacts.ExpandableSectionView>
+        </org.kysecurity.mail.contacts.ExpandableSectionView>
 
-        <com.urlxl.mail.contacts.ExpandableSectionView
+        <org.kysecurity.mail.contacts.ExpandableSectionView
             android:id="@+id/sectionContact"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -281,9 +281,9 @@
                 android:text="@string/contacts_phones_add"
                 android:layout_marginBottom="4dp" />
 
-        </com.urlxl.mail.contacts.ExpandableSectionView>
+        </org.kysecurity.mail.contacts.ExpandableSectionView>
 
-        <com.urlxl.mail.contacts.ExpandableSectionView
+        <org.kysecurity.mail.contacts.ExpandableSectionView
             android:id="@+id/sectionAddresses"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -303,9 +303,9 @@
                 android:text="@string/contacts_addresses_add"
                 android:layout_marginBottom="4dp" />
 
-        </com.urlxl.mail.contacts.ExpandableSectionView>
+        </org.kysecurity.mail.contacts.ExpandableSectionView>
 
-        <com.urlxl.mail.contacts.ExpandableSectionView
+        <org.kysecurity.mail.contacts.ExpandableSectionView
             android:id="@+id/sectionOnline"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -339,9 +339,9 @@
                 android:text="@string/contacts_ims_add"
                 android:layout_marginBottom="4dp" />
 
-        </com.urlxl.mail.contacts.ExpandableSectionView>
+        </org.kysecurity.mail.contacts.ExpandableSectionView>
 
-        <com.urlxl.mail.contacts.ExpandableSectionView
+        <org.kysecurity.mail.contacts.ExpandableSectionView
             android:id="@+id/sectionPersonal"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -391,9 +391,9 @@
                 android:text="@string/contacts_relations_add"
                 android:layout_marginBottom="4dp" />
 
-        </com.urlxl.mail.contacts.ExpandableSectionView>
+        </org.kysecurity.mail.contacts.ExpandableSectionView>
 
-        <com.urlxl.mail.contacts.ExpandableSectionView
+        <org.kysecurity.mail.contacts.ExpandableSectionView
             android:id="@+id/sectionNotes"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -407,9 +407,9 @@
                 android:minLines="3"
                 android:layout_marginBottom="4dp" />
 
-        </com.urlxl.mail.contacts.ExpandableSectionView>
+        </org.kysecurity.mail.contacts.ExpandableSectionView>
 
-        <com.urlxl.mail.contacts.ExpandableSectionView
+        <org.kysecurity.mail.contacts.ExpandableSectionView
             android:id="@+id/sectionOther"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -429,7 +429,7 @@
                 android:text="@string/contacts_customfields_add"
                 android:layout_marginBottom="4dp" />
 
-        </com.urlxl.mail.contacts.ExpandableSectionView>
+        </org.kysecurity.mail.contacts.ExpandableSectionView>
 
         <Button
             android:id="@+id/btnSaveContact"

@@ -10,24 +10,24 @@
 -keepattributes *Annotation*, InnerClasses
 -dontnote kotlinx.serialization.**
 -keepclassmembers class **$$serializer { *** descriptor; }
--keepclasseswithmembers class com.urlxl.mail.** {
+-keepclasseswithmembers class org.kysecurity.mail.** {
     public static ** Companion;
 }
--if @kotlinx.serialization.Serializable class com.urlxl.mail.**
+-if @kotlinx.serialization.Serializable class org.kysecurity.mail.**
 -keepclassmembers class <1> {
     static <1>$Companion Companion;
     public static **$* *;
     kotlinx.serialization.KSerializer serializer(...);
 }
--keep,includedescriptorclasses class com.urlxl.mail.**$$serializer { *; }
+-keep,includedescriptorclasses class org.kysecurity.mail.**$$serializer { *; }
 
 # --- Manifest-declared components ----------------------------------------------------------
 # Instantiated by class name by the framework, so R8 sees no reference to them.
--keep class com.urlxl.mail.KyPostApp { *; }
--keep class com.urlxl.mail.security.EphemeralAttachmentProvider { *; }
--keep class com.urlxl.mail.push.KyPostFirebaseMessagingService { *; }
--keep class com.urlxl.mail.push.KyPostUnifiedPushService { *; }
--keep class com.urlxl.mail.contacts.device.KyPostContactAuthenticatorService { *; }
+-keep class org.kysecurity.mail.KyPostApp { *; }
+-keep class org.kysecurity.mail.security.EphemeralAttachmentProvider { *; }
+-keep class org.kysecurity.mail.push.KyPostFirebaseMessagingService { *; }
+-keep class org.kysecurity.mail.push.KyPostUnifiedPushService { *; }
+-keep class org.kysecurity.mail.contacts.device.KyPostContactAuthenticatorService { *; }
 
 # WorkManager instantiates workers reflectively via their (Context, WorkerParameters) constructor.
 -keep class * extends androidx.work.ListenableWorker {

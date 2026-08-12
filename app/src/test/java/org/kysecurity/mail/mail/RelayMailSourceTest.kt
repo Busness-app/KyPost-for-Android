@@ -1,0 +1,912 @@
+package org.kysecurity.mail.mail
+
+import org.kysecurity.mail.HEADER_DEVICE_ID
+import org.kysecurity.mail.HEADER_DEVICE_SECRET
+import org.kysecurity.mail.pgp.OUTER_PLACEHOLDER_SUBJECT
+import org.kysecurity.mail.push.PairingData
+import org.kysecurity.mail.testing.streamingResponse
+import kotlinx.serialization.json.Json
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.Protocol
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
+import okio.Timeout
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
+import org.junit.Test
+
+private fun testPairing() = PairingData(
+    subscriberId = "sub-1",
+    serverUrl = "https://relay.example.com",
+    registrationUrl = "",
+    pairingToken = "",
+    deviceId = "device-1",
+    deviceSecret = "secret-1",
+    pairedAtEpochMs = 0L,
+)
+
+/** In-memory fake matching this repo's hand-rolled-fake test style (no mocking framework). */
+private class FakeMailCursorProvider(
+    var storedCursor: String? = null,
+    var forceDue: Boolean = false,
+) : MailCursorProvider {
+    var savedCursor: String? = null
+        private set
+    var fullResyncRecorded = false
+        private set
+
+    override fun cursor(subscriberId: String, folder: String): String? = storedCursor
+    override fun saveCursor(subscriberId: String, folder: String, cursor: String) {
+        savedCursor = cursor
+        storedCursor = cursor
+    }
+    override fun shouldForceFullResync(subscriberId: String, folder: String): Boolean = forceDue
+    override fun recordFullResync(subscriberId: String, folder: String) {
+        fullResyncRecorded = true
+    }
+}
+
+/** Fakes OkHttp's [Call.Factory] so RelayMailSource can be exercised without a real network call
+ *  or a MockWebServer dependency — this repo has neither and prefers hand-rolled fakes. */
+private class FakeCallFactory(private val responder: (Request) -> Response) : Call.Factory {
+    val requests = mutableListOf<Request>()
+
+    override fun newCall(request: Request): Call {
+        requests.add(request)
+        return FakeCall(request, responder(request))
+    }
+}
+
+/** Records request bodies as well as requests — [FakeCallFactory] keeps only the latter, and the
+ *  PGP send flags are body fields. Mirrors MfaResponseClientTest's body-capturing fake. */
+private class BodyRecordingCallFactory(private val responder: (Request) -> Response) : Call.Factory {
+    val bodies = mutableListOf<String>()
+    val urls = mutableListOf<String>()
+
+    override fun newCall(request: Request): Call {
+        val buffer = okio.Buffer()
+        request.body?.writeTo(buffer)
+        bodies.add(buffer.readUtf8())
+        urls.add(request.url.toString())
+        return FakeCall(request, responder(request))
+    }
+}
+
+/** A [Call.Factory] whose call always fails with [exception] — used to verify RelayMailSource's
+ *  exception-to-[MailOutcome] mapping (e.g. a TLS pin mismatch) without a real network/TLS stack. */
+private class ThrowingCallFactory(private val exception: Throwable) : Call.Factory {
+    override fun newCall(request: Request): Call = object : Call {
+        override fun request(): Request = request
+        override fun execute(): Response = throw exception
+        override fun enqueue(responseCallback: Callback) = responseCallback.onFailure(this, java.io.IOException(exception))
+        override fun cancel() {}
+        override fun isExecuted(): Boolean = false
+        override fun isCanceled(): Boolean = false
+        override fun timeout(): Timeout = Timeout.NONE
+        override fun clone(): Call = this
+    }
+}
+
+private class FakeCall(private val req: Request, private val response: Response) : Call {
+    private var executed = false
+    private var canceled = false
+    override fun request(): Request = req
+    override fun execute(): Response {
+        executed = true
+        return response
+    }
+    override fun enqueue(responseCallback: Callback) = responseCallback.onResponse(this, response)
+    override fun cancel() { canceled = true }
+    override fun isExecuted(): Boolean = executed
+    override fun isCanceled(): Boolean = canceled
+    override fun timeout(): Timeout = Timeout.NONE
+    override fun clone(): Call = FakeCall(req, response)
+}
+
+private fun jsonResponse(request: Request, body: String, code: Int = 200): Response = Response.Builder()
+    .request(request)
+    .protocol(Protocol.HTTP_1_1)
+    .code(code)
+    .message("OK")
+    .body(body.toResponseBody("application/json".toMediaType()))
+    .build()
+
+class RelayMailSourceTest {
+
+    @Test
+    fun freshPairing_noPersistedCursor_sendsSinceZero() {
+        val cursorProvider = FakeMailCursorProvider(storedCursor = null)
+        val callFactory = FakeCallFactory { request ->
+            jsonResponse(request, """{"tabs": [], "byTab": {}, "cursor": "c1", "delta": true, "removed": []}""")
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = cursorProvider,
+            callFactory = callFactory,
+        )
+
+        val outcome = source.fetchInbox("INBOX", 50)
+
+        assertTrue(outcome is MailOutcome.Success)
+        assertEquals("0", callFactory.requests.single().url.queryParameter("since"))
+        assertEquals("c1", cursorProvider.savedCursor)
+    }
+
+    @Test
+    fun subsequentPoll_sendsPersistedCursor() {
+        val cursorProvider = FakeMailCursorProvider(storedCursor = "cursor-42")
+        val callFactory = FakeCallFactory { request ->
+            jsonResponse(request, """{"tabs": [], "byTab": {}, "cursor": "cursor-43", "delta": true, "removed": []}""")
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = cursorProvider,
+            callFactory = callFactory,
+        )
+
+        source.fetchInbox("INBOX", 50)
+
+        assertEquals("cursor-42", callFactory.requests.single().url.queryParameter("since"))
+        assertEquals("cursor-43", cursorProvider.savedCursor)
+    }
+
+    @Test
+    fun deltaPoll_parsesNewUpdatedAndRemoved() {
+        val cursorProvider = FakeMailCursorProvider(storedCursor = "cursor-1")
+        val body = """
+            {
+              "tabs": ["Work"],
+              "byTab": {
+                "Work": [
+                  {"messageId": "m1", "sender": "a@example.com", "subject": "New", "body": "Full body", "label": "Work", "status": "unread", "changeType": "new"},
+                  {"messageId": "m2", "sender": "b@example.com", "subject": "Updated", "label": "Work", "status": "read", "changeType": "updated"}
+                ]
+              },
+              "cursor": "cursor-2",
+              "delta": true,
+              "removed": ["m3"]
+            }
+        """.trimIndent()
+        val callFactory = FakeCallFactory { request -> jsonResponse(request, body) }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = cursorProvider,
+            callFactory = callFactory,
+        )
+
+        val outcome = source.fetchInbox("INBOX", 50)
+
+        val result = (outcome as MailOutcome.Success).value
+        assertTrue(result.isDelta)
+        assertEquals(setOf("m2"), result.updatedMessageIds)
+        assertEquals(listOf("m3"), result.removedMessageIds)
+        assertEquals(2, result.messages.size)
+        assertNull(result.messages.first { it.id == "m2" }.body)
+        assertEquals("Full body", result.messages.first { it.id == "m1" }.body)
+        assertEquals("cursor-2", cursorProvider.savedCursor)
+    }
+
+    @Test
+    fun explicitForceFullResync_sendsSinceZero_regardlessOfPersistedCursor() {
+        val cursorProvider = FakeMailCursorProvider(storedCursor = "cursor-99")
+        val callFactory = FakeCallFactory { request ->
+            jsonResponse(request, """{"tabs": [], "byTab": {}, "cursor": "cursor-100", "delta": true, "removed": []}""")
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = cursorProvider,
+            callFactory = callFactory,
+        )
+
+        source.fetchInbox("INBOX", 50, forceFullResync = true)
+
+        assertEquals("0", callFactory.requests.single().url.queryParameter("since"))
+        assertTrue(cursorProvider.fullResyncRecorded)
+    }
+
+    @Test
+    fun cadenceDue_sendsSinceZero_evenWithoutExplicitForce() {
+        val cursorProvider = FakeMailCursorProvider(storedCursor = "cursor-5", forceDue = true)
+        val callFactory = FakeCallFactory { request ->
+            jsonResponse(request, """{"tabs": [], "byTab": {}, "cursor": "cursor-6", "delta": true, "removed": []}""")
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = cursorProvider,
+            callFactory = callFactory,
+        )
+
+        source.fetchInbox("INBOX", 50)
+
+        assertEquals("0", callFactory.requests.single().url.queryParameter("since"))
+        assertTrue(cursorProvider.fullResyncRecorded)
+    }
+
+    @Test
+    fun nonDeltaLegacyResponse_stillParsesAsFullSnapshot() {
+        val cursorProvider = FakeMailCursorProvider(storedCursor = null)
+        val body = """
+            {
+              "tabs": ["Work"],
+              "byTab": {"Work": [{"messageId": "m1", "sender": "a@example.com", "subject": "S", "body": "B", "label": "Work", "status": "unread"}]}
+            }
+        """.trimIndent()
+        val callFactory = FakeCallFactory { request -> jsonResponse(request, body) }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = cursorProvider,
+            callFactory = callFactory,
+        )
+
+        val outcome = source.fetchInbox("INBOX", 50)
+
+        val result = (outcome as MailOutcome.Success).value
+        assertTrue(!result.isDelta)
+        assertEquals(1, result.messages.size)
+        assertNull(cursorProvider.savedCursor)
+    }
+
+    @Test
+    fun fetchInbox_sendsPairingHeaders_notQueryParams() {
+        val cursorProvider = FakeMailCursorProvider(storedCursor = null)
+        val callFactory = FakeCallFactory { request ->
+            jsonResponse(request, """{"tabs": [], "byTab": {}, "cursor": "c1", "delta": true, "removed": []}""")
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = cursorProvider,
+            callFactory = callFactory,
+        )
+
+        source.fetchInbox("INBOX", 50)
+
+        val sentRequest = callFactory.requests.single()
+        assertEquals("device-1", sentRequest.header(HEADER_DEVICE_ID))
+        assertEquals("secret-1", sentRequest.header(HEADER_DEVICE_SECRET))
+        assertNull(sentRequest.url.queryParameter("sub"))
+        assertNull(sentRequest.url.queryParameter("hash"))
+    }
+
+    @Test
+    fun listFolders_sendsPairingHeaders_notQueryParams() {
+        val callFactory = FakeCallFactory { request ->
+            jsonResponse(request, """{"parent": null, "folders": []}""")
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = callFactory,
+        )
+
+        source.listFolders(null)
+
+        val sentRequest = callFactory.requests.single()
+        assertEquals("device-1", sentRequest.header(HEADER_DEVICE_ID))
+        assertEquals("secret-1", sentRequest.header(HEADER_DEVICE_SECRET))
+        assertNull(sentRequest.url.queryParameter("sub"))
+        assertNull(sentRequest.url.queryParameter("hash"))
+    }
+
+    @Test
+    fun createFolder_sendsPairingHeaders_notQueryParams() {
+        val callFactory = FakeCallFactory { request -> jsonResponse(request, "", code = 200) }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = callFactory,
+        )
+
+        source.createFolder("INBOX", "New Folder")
+
+        val sentRequest = callFactory.requests.single()
+        assertEquals("device-1", sentRequest.header(HEADER_DEVICE_ID))
+        assertEquals("secret-1", sentRequest.header(HEADER_DEVICE_SECRET))
+        assertNull(sentRequest.url.queryParameter("sub"))
+        assertNull(sentRequest.url.queryParameter("hash"))
+    }
+
+    @Test
+    fun deleteFolder_sendsPairingHeaders_notQueryParams() {
+        val callFactory = FakeCallFactory { request -> jsonResponse(request, "", code = 200) }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = callFactory,
+        )
+
+        source.deleteFolder("INBOX/Old")
+
+        val sentRequest = callFactory.requests.single()
+        assertEquals("device-1", sentRequest.header(HEADER_DEVICE_ID))
+        assertEquals("secret-1", sentRequest.header(HEADER_DEVICE_SECRET))
+        assertNull(sentRequest.url.queryParameter("sub"))
+        assertNull(sentRequest.url.queryParameter("hash"))
+        assertEquals("INBOX/Old", sentRequest.url.queryParameter("folder"))
+    }
+
+    @Test
+    fun downloadAttachment_sendsPairingHeaders_notQueryParams() {
+        val callFactory = FakeCallFactory { request ->
+            Response.Builder()
+                .request(request)
+                .protocol(Protocol.HTTP_1_1)
+                .code(200)
+                .message("OK")
+                .header("Content-Disposition", "attachment; filename=\"file.pdf\"")
+                .header("Content-Type", "application/pdf")
+                .body("bytes".toResponseBody("application/pdf".toMediaType()))
+                .build()
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = callFactory,
+        )
+
+        source.downloadAttachment("m1", "INBOX", 0)
+
+        val sentRequest = callFactory.requests.single()
+        assertEquals("device-1", sentRequest.header(HEADER_DEVICE_ID))
+        assertEquals("secret-1", sentRequest.header(HEADER_DEVICE_SECRET))
+        assertNull(sentRequest.url.queryParameter("sub"))
+        assertNull(sentRequest.url.queryParameter("hash"))
+    }
+
+    /**
+     * The bytes must survive a body that only yields one okio segment per read, which is what a
+     * real socket does. `readBounded` called `read` once and discarded the returned count, so every
+     * attachment over 8 KiB arrived truncated and was still reported as Success. The existing
+     * download tests all used `Buffer`-backed fixtures, whose `read` has no segment limit, so none
+     * of them could fail. See [streamingResponse].
+     */
+    @Test
+    fun downloadAttachment_readsBodiesLargerThanOneOkioSegment() {
+        // Deliberately not a round multiple of 8192, so a truncation to any segment boundary shows.
+        val payload = ByteArray(200_000) { (it % 251).toByte() }
+        val callFactory = FakeCallFactory { request ->
+            streamingResponse(
+                request,
+                payload,
+                contentType = "application/pdf",
+                headers = mapOf(
+                    "Content-Disposition" to "attachment; filename=\"big.pdf\"",
+                    "Content-Type" to "application/pdf",
+                ),
+            )
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = callFactory,
+        )
+
+        val outcome = source.downloadAttachment("m1", "INBOX", 0)
+
+        assertTrue("expected Success, got $outcome", outcome is MailOutcome.Success)
+        val downloaded = (outcome as MailOutcome.Success).value
+        assertEquals(payload.size, downloaded.bytes.size)
+        assertTrue("attachment bytes were altered in transit", payload.contentEquals(downloaded.bytes))
+        assertEquals("big.pdf", downloaded.name)
+    }
+
+    /** Drives [readBounded] directly with a small limit rather than allocating the real 25 MB bound
+     *  twice per assertion — the logic under test is the boundary, not the constant. Bodies go
+     *  through [streamingResponse] so they read one segment at a time like a real socket. */
+    private fun readBoundedFrom(bytes: ByteArray, limit: Long): ByteArray {
+        val body = streamingResponse(Request.Builder().url("https://relay.example.com/a").build(), bytes).body!!
+        return readBounded(body, limit)
+    }
+
+    @Test
+    fun readBounded_throwsRatherThanTruncatingAnOversizedBody() {
+        // One byte past the bound. readBounded used to return the prefix, and downloadAttachment
+        // wrapped it in Success — so an oversized attachment was saved to Downloads, and carried
+        // into a forward, as a silently corrupt file. There is no checksum on this path to catch it.
+        val oversized = ByteArray(10_001) { (it % 251).toByte() }
+        try {
+            readBoundedFrom(oversized, 10_000L)
+            fail("expected an IOException for a body past the limit")
+        } catch (expected: java.io.IOException) {
+            assertTrue(expected.message.orEmpty().contains("larger than"))
+        }
+    }
+
+    @Test
+    fun readBounded_acceptsABodyExactlyAtTheLimit() {
+        // The boundary the truncation check must not over-reject: a body of exactly the limit is
+        // legitimate, and `exhausted()` has to report end-of-stream rather than "more to come".
+        val exact = ByteArray(10_000) { (it % 251).toByte() }
+        assertTrue(exact.contentEquals(readBoundedFrom(exact, 10_000L)))
+    }
+
+    @Test
+    fun readBounded_readsAMultiSegmentBodyUnderTheLimitWhole() {
+        // Not a round multiple of 8192, so a truncation to any Okio segment boundary shows.
+        val payload = ByteArray(200_000) { (it % 251).toByte() }
+        assertTrue(payload.contentEquals(readBoundedFrom(payload, 25L * 1024 * 1024)))
+    }
+
+    @Test
+    fun relayRequests_refuseAPersistedNonHttpsServerUrl() {
+        // A pairing saved by a build predating NativePairingDeepLinkParser's https gate. Every
+        // request built from it carries X-Kypost-Device-Secret, so it must not be attempted —
+        // and it must fail as a named BadRequest, not as an opaque platform-level network error.
+        var called = false
+        val callFactory = FakeCallFactory { request ->
+            called = true
+            streamingResponse(request, ByteArray(0))
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing().copy(serverUrl = "http://relay.example") },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = callFactory,
+        )
+
+        val outcome = source.fetchInbox("INBOX", 50, forceFullResync = false)
+
+        assertTrue("expected BadRequest, got $outcome", outcome is MailOutcome.BadRequest)
+        assertFalse("the request must never reach the network", called)
+    }
+
+    @Test
+    fun tlsPinMismatch_mapsToCertificateMismatch_notGenericNetworkError() {
+        val callFactory = ThrowingCallFactory(javax.net.ssl.SSLPeerUnverifiedException("pin mismatch"))
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = callFactory,
+        )
+
+        val outcome = source.fetchInbox("INBOX", 50)
+
+        assertTrue(outcome is MailOutcome.CertificateMismatch)
+        assertEquals("pin mismatch", (outcome as MailOutcome.CertificateMismatch).message)
+    }
+
+    @Test
+    fun tlsPinMismatch_onDownloadAttachment_alsoMapsToCertificateMismatch() {
+        val callFactory = ThrowingCallFactory(javax.net.ssl.SSLPeerUnverifiedException("pin mismatch"))
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = callFactory,
+        )
+
+        val outcome = source.downloadAttachment("m1", "INBOX", 0)
+
+        assertTrue(outcome is MailOutcome.CertificateMismatch)
+    }
+
+    /** The backend returns this when a client-protected account asks the server to sign or
+     *  encrypt. Before this mapping it fell through to "Mail relay request failed (409)". */
+    @Test
+    fun send409WithClientSideNeeded_mapsToClientSideNeeded() {
+        val body = """{"error":"this account's PGP key is end-to-end protected, so the server cannot sign or encrypt on your behalf","clientSideNeeded":true}"""
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = FakeCallFactory { request -> jsonResponse(request, body, code = 409) },
+        )
+
+        val outcome = source.sendMail(MailDraft(to = "a@example.com", subject = "s", body = "b"))
+
+        assertTrue("expected ClientSideNeeded, got $outcome", outcome is MailOutcome.ClientSideNeeded)
+    }
+
+    /** A 409 without the marker must not inherit PGP wording — nothing else this app calls
+     *  returns 409 today, but the mapping shouldn't assume that forever. */
+    @Test
+    fun send409WithoutMarker_staysBadRequest() {
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = FakeCallFactory { request -> jsonResponse(request, """{"error":"conflict"}""", code = 409) },
+        )
+
+        val outcome = source.sendMail(MailDraft(to = "a@example.com", subject = "s", body = "b"))
+
+        assertTrue("expected BadRequest, got $outcome", outcome is MailOutcome.BadRequest)
+    }
+
+    /** The keyless-recipient refusal. Nothing was delivered — the 409 happens before any SMTP —
+     *  so re-sending with allowPickupFallback cannot duplicate the message. */
+    @Test
+    fun send409WithKeylessRecipients_mapsToPickupFallbackNeeded() {
+        val body = """{"error":"some recipients have no usable PGP key","keylessRecipients":["carol@example.com"],"pickupFallbackAvailable":true}"""
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = FakeCallFactory { request -> jsonResponse(request, body, code = 409) },
+        )
+
+        val outcome = source.sendMail(
+            MailDraft(to = "carol@example.com", subject = "s", body = "b", encrypt = true),
+        )
+
+        assertTrue("expected PickupFallbackNeeded, got $outcome", outcome is MailOutcome.PickupFallbackNeeded)
+        assertEquals(
+            listOf("carol@example.com"),
+            (outcome as MailOutcome.PickupFallbackNeeded).keylessRecipients,
+        )
+    }
+
+    /** Both refusals are 409 and are told apart by which field is present. A client-custody
+     *  account must keep resolving to ClientSideNeeded — offering it a pickup-link dialog would
+     *  answer a question it never got to ask, and no re-send from this device can fix it. */
+    @Test
+    fun send409WithBothMarkers_prefersClientSideNeeded() {
+        val body = """{"error":"e2e","clientSideNeeded":true,"keylessRecipients":["carol@example.com"]}"""
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = FakeCallFactory { request -> jsonResponse(request, body, code = 409) },
+        )
+
+        val outcome = source.sendMail(
+            MailDraft(to = "carol@example.com", subject = "s", body = "b", encrypt = true),
+        )
+
+        assertTrue("expected ClientSideNeeded, got $outcome", outcome is MailOutcome.ClientSideNeeded)
+    }
+
+    /** An unrecognized 409 must not become a pickup prompt, and must not show the user raw JSON. */
+    @Test
+    fun send409WithNeitherField_isGenericBadRequest() {
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = FakeCallFactory { request -> jsonResponse(request, """{"error":"conflict"}""", code = 409) },
+        )
+
+        val outcome = source.sendMail(MailDraft(to = "a@example.com", subject = "s", body = "b"))
+
+        assertTrue("expected BadRequest, got $outcome", outcome is MailOutcome.BadRequest)
+        assertTrue(
+            "raw JSON must not reach the user: $outcome",
+            !(outcome as MailOutcome.BadRequest).message.contains("{"),
+        )
+    }
+
+    /** A 409 whose keylessRecipients is present but empty carries no addresses to name in the
+     *  dialog, so it cannot drive the confirmation flow. */
+    @Test
+    fun send409WithEmptyKeylessList_isGenericBadRequest() {
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = FakeCallFactory {
+                request -> jsonResponse(request, """{"error":"x","keylessRecipients":[]}""", code = 409)
+            },
+        )
+
+        val outcome = source.sendMail(
+            MailDraft(to = "a@example.com", subject = "s", body = "b", encrypt = true),
+        )
+
+        assertTrue("expected BadRequest, got $outcome", outcome is MailOutcome.BadRequest)
+    }
+
+    /** 502 bodies are plain text and say which of two things happened — SMTP failed, or every
+     *  pickup link failed to deliver. Both mean nothing was sent, and the second is invisible
+     *  under a fixed "Upstream IMAP/SMTP failure" string. */
+    @Test
+    fun send502_carriesTheServersPlainTextReason() {
+        val reason = "failed to deliver a pickup link to any recipient; nothing was sent"
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = FakeCallFactory { request -> jsonResponse(request, reason, code = 502) },
+        )
+
+        val outcome = source.sendMail(
+            MailDraft(to = "a@example.com", subject = "s", body = "b", encrypt = true),
+        )
+
+        assertEquals(reason, (outcome as MailOutcome.UpstreamFailure).message)
+    }
+
+    /** The confirmed re-send must differ from the refused attempt in exactly one field. The
+     *  Activity achieves this by holding the same MailDraft and calling .copy() (Task 8); this
+     *  pins the wire-level property that makes it safe — a rebuilt message could differ subtly,
+     *  and the recipients who *do* have keys would get something other than what was refused. */
+    @Test
+    fun resendWithFallback_differsOnlyInAllowPickupFallback() {
+        val callFactory = BodyRecordingCallFactory { request ->
+            jsonResponse(request, """{"ok":true,"sentSaved":true,"warning":""}""")
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = callFactory,
+        )
+        val draft = MailDraft(
+            to = "carol@example.com", cc = "bob@example.com", subject = "hi", body = "<p>hello</p>",
+            mode = "html", encrypt = true, sign = true,
+        )
+
+        source.sendMail(draft)
+        source.sendMail(draft.copy(allowPickupFallback = true))
+
+        // Compared structurally, not as strings: kotlinx.serialization's encodeDefaults is false,
+        // so the refused attempt omits allowPickupFallback entirely rather than sending false.
+        val wireJson = Json { ignoreUnknownKeys = true }
+        val first = wireJson.decodeFromString<RelayMailRequestDto>(callFactory.bodies[0])
+        val second = wireJson.decodeFromString<RelayMailRequestDto>(callFactory.bodies[1])
+        assertEquals(false, first.allowPickupFallback)
+        assertEquals(true, second.allowPickupFallback)
+        assertEquals(first, second.copy(allowPickupFallback = false))
+    }
+
+    /** A 200 with a non-empty warning is a success with a notice — the message was sent. It must
+     *  never map to a failure, which would invite a retry that duplicates the message. */
+    @Test
+    fun send200WithWarning_isSuccessCarryingTheWarning() {
+        val body = """{"ok":true,"sentSaved":false,"warning":"failed to deliver a pickup link to 1 of 3 recipient(s)"}"""
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = FakeCallFactory { request -> jsonResponse(request, body) },
+        )
+
+        val outcome = source.sendMail(
+            MailDraft(to = "a@example.com", subject = "s", body = "b", encrypt = true),
+        )
+
+        val sent = (outcome as MailOutcome.Success).value
+        assertEquals("failed to deliver a pickup link to 1 of 3 recipient(s)", sent.warning)
+        assertEquals(false, sent.sentSaved)
+    }
+
+    @Test
+    fun rateLimit429_carriesRetryAfterSeconds() {
+        val callFactory = FakeCallFactory { request ->
+            Response.Builder()
+                .request(request)
+                .protocol(Protocol.HTTP_1_1)
+                .code(429)
+                .message("Too Many Requests")
+                .header("Retry-After", "120")
+                .body("too many requests".toResponseBody("text/plain".toMediaType()))
+                .build()
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = callFactory,
+        )
+
+        val outcome = source.fetchInbox("INBOX", 50)
+
+        assertTrue("expected RateLimited, got $outcome", outcome is MailOutcome.RateLimited)
+        assertEquals(120L, (outcome as MailOutcome.RateLimited).retryAfterSeconds)
+    }
+
+    /** A missing or non-numeric Retry-After must not be reported as "retry now" — null means the
+     *  caller renders a generic "try again later". */
+    @Test
+    fun rateLimit429_withoutUsableRetryAfter_hasNullDelay() {
+        val callFactory = FakeCallFactory { request ->
+            Response.Builder()
+                .request(request)
+                .protocol(Protocol.HTTP_1_1)
+                .code(429)
+                .message("Too Many Requests")
+                .header("Retry-After", "Wed, 21 Oct 2026 07:28:00 GMT")
+                .body("too many requests".toResponseBody("text/plain".toMediaType()))
+                .build()
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = callFactory,
+        )
+
+        val outcome = source.fetchInbox("INBOX", 50)
+
+        assertTrue("expected RateLimited, got $outcome", outcome is MailOutcome.RateLimited)
+        assertNull((outcome as MailOutcome.RateLimited).retryAfterSeconds)
+    }
+
+    @Test
+    fun rateLimit429_onDownloadAttachment_alsoMapsToRateLimited() {
+        val callFactory = FakeCallFactory { request ->
+            Response.Builder()
+                .request(request)
+                .protocol(Protocol.HTTP_1_1)
+                .code(429)
+                .message("Too Many Requests")
+                .header("Retry-After", "30")
+                .body("too many requests".toResponseBody("text/plain".toMediaType()))
+                .build()
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = callFactory,
+        )
+
+        val outcome = source.downloadAttachment("m1", "INBOX", 0)
+
+        assertTrue("expected RateLimited, got $outcome", outcome is MailOutcome.RateLimited)
+        assertEquals(30L, (outcome as MailOutcome.RateLimited).retryAfterSeconds)
+    }
+
+    @Test
+    fun inboxResponse_carriesPgpFieldsThroughToUiEmail() {
+        val body = """
+            {"tabs":["Inbox"],"byTab":{"Inbox":[
+              {"messageId":"1","sender":"a@example.com","subject":"[Encrypted] Email Sent by KyPost",
+               "pgpEncrypted":true,"pgpSigned":true,"pgpVerified":true,"pgpSignerFingerprint":"ABCD"},
+              {"messageId":"2","sender":"b@example.com","subject":"plain"}
+            ]},"cursor":"7"}
+        """.trimIndent()
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = FakeCallFactory { request -> jsonResponse(request, body) },
+        )
+
+        val outcome = source.fetchInbox("INBOX", 50)
+
+        assertTrue("expected Success, got $outcome", outcome is MailOutcome.Success)
+        val messages = (outcome as MailOutcome.Success).value.messages
+        val encrypted = messages.first { it.id == "1" }
+        assertTrue(encrypted.pgpEncrypted)
+        assertTrue(encrypted.pgpSigned)
+        assertTrue(encrypted.pgpVerified)
+        assertEquals("ABCD", encrypted.pgpSignerFingerprint)
+        assertEquals("", encrypted.pgpDecryptError)
+        // Absent fields are omitempty server-side, so their defaults are the contract for
+        // ordinary mail — not an unknown state.
+        val plain = messages.first { it.id == "2" }
+        assertEquals(false, plain.pgpEncrypted)
+        assertEquals("", plain.pgpSignerFingerprint)
+    }
+
+    @Test
+    fun sendMail_putsPgpFlagsOnTheWire() {
+        val callFactory = BodyRecordingCallFactory { request ->
+            jsonResponse(request, """{"ok":true,"sentSaved":true,"warning":""}""")
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = callFactory,
+        )
+
+        source.sendMail(
+            MailDraft(
+                to = "bob@example.com", subject = "hi", body = "hello",
+                sign = true, encrypt = true, allowPickupFallback = true,
+            ),
+        )
+
+        val sent = callFactory.bodies.single()
+        assertTrue("expected sign in $sent", sent.contains("\"sign\":true"))
+        assertTrue("expected encrypt in $sent", sent.contains("\"encrypt\":true"))
+        assertTrue("expected allowPickupFallback in $sent", sent.contains("\"allowPickupFallback\":true"))
+    }
+
+    /** Drafts carry no crypto semantics — the server's draft handler ignores these fields — so
+     *  sending them would claim a choice the user did not make at draft-save time. The webmail
+     *  handoff saves a draft from a composition whose Encrypt toggle was on, so this is a live
+     *  path, not a hypothetical.
+     *
+     *  Decoded into the DTO rather than asserted on the raw body string (matches
+     *  resendWithFallback_differsOnlyInAllowPickupFallback above): a raw `!sent.contains("encrypt")`
+     *  would fail spuriously if a fixture subject or body ever happened to contain that word. */
+    @Test
+    fun saveDraft_omitsPgpFlags() {
+        val callFactory = BodyRecordingCallFactory { request -> jsonResponse(request, """{"ok":true}""") }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = callFactory,
+        )
+
+        source.saveDraft(
+            MailDraft(to = "bob@example.com", subject = "hi", body = "hello", encrypt = true, sign = true),
+        )
+
+        val wireJson = Json { ignoreUnknownKeys = true }
+        val sent = wireJson.decodeFromString<RelayMailRequestDto>(callFactory.bodies.single())
+        assertEquals(false, sent.sign)
+        assertEquals(false, sent.encrypt)
+        assertEquals(false, sent.allowPickupFallback)
+    }
+
+    /**
+     * The client-encrypted send posts pre-built ciphertext to a different endpoint entirely.
+     *
+     * `sentCopyEncrypted` is asserted true because it is an assertion *about the bytes*: the server
+     * silently drops a copy that does not claim it, so sending false would quietly cost the user
+     * their Sent folder. The outer subject must be the placeholder — the real one rides inside the
+     * ciphertext, and putting it here would hand the server the very thing this path protects.
+     */
+    @Test
+    fun sendClientEncrypted_postsCiphertextToTheSendPgpEndpoint() {
+        val callFactory = BodyRecordingCallFactory { request ->
+            jsonResponse(request, """{"ok":true,"sentSaved":true,"warning":""}""")
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = callFactory,
+        )
+
+        source.sendClientEncrypted(
+            ClientEncryptedMessage(
+                from = "me@example.com",
+                to = listOf("alice@example.com"),
+                cc = emptyList(),
+                bcc = listOf("carol@example.com"),
+                deliveries = listOf(
+                    ClientEncryptedDelivery(listOf("alice@example.com"), "MIME-A"),
+                    ClientEncryptedDelivery(listOf("carol@example.com"), "MIME-B"),
+                ),
+                sentCopy = "MIME-SENT",
+            ),
+        )
+
+        val wireJson = Json { ignoreUnknownKeys = true }
+        val sent = wireJson.decodeFromString<RelayClientEncryptedRequestDto>(callFactory.bodies.single())
+        assertEquals("https://relay.example.com/api/mail/send-pgp", callFactory.urls.single())
+        assertEquals(2, sent.deliveries.size)
+        assertEquals(listOf("carol@example.com"), sent.deliveries[1].recipients)
+        assertEquals("MIME-SENT", sent.sentCopy)
+        assertEquals(true, sent.sentCopyEncrypted)
+        assertEquals(OUTER_PLACEHOLDER_SUBJECT, sent.subject)
+    }
+
+    @Test
+    fun sendClientEncrypted_200WithWarning_isSuccessCarryingIt() {
+        val body = """{"ok":true,"sentSaved":false,"warning":"1 bcc delivery(s) failed"}"""
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = FakeCallFactory { request -> jsonResponse(request, body) },
+        )
+
+        val outcome = source.sendClientEncrypted(
+            ClientEncryptedMessage(
+                from = "me@example.com",
+                to = listOf("alice@example.com"),
+                cc = emptyList(),
+                bcc = emptyList(),
+                deliveries = listOf(ClientEncryptedDelivery(listOf("alice@example.com"), "MIME")),
+                sentCopy = "SENT",
+            ),
+        )
+
+        val value = (outcome as MailOutcome.Success).value
+        assertEquals("1 bcc delivery(s) failed", value.warning)
+        assertEquals(false, value.sentSaved)
+    }
+
+    /**
+     * 403 is the send-as / From-binding refusal, and its body is plain text naming the problem.
+     *
+     * `mapErrorCode` had no 403 branch, so every endpoint degraded it to "Mail relay request failed
+     * (403)" — discarding the one sentence that tells the user their From is not authorized. Fixed
+     * for the whole class rather than at this one call site.
+     */
+    @Test
+    fun forbidden_carriesTheServersProse() {
+        val reason = "the from address is not a verified send-as alias for this account"
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = FakeCallFactory { request -> jsonResponse(request, reason, code = 403) },
+        )
+
+        val outcome = source.sendMail(MailDraft(to = "a@example.com", subject = "s", body = "b"))
+
+        assertEquals(reason, (outcome as MailOutcome.BadRequest).message)
+    }
+}
