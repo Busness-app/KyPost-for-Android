@@ -35,7 +35,7 @@ KyPost is an Android email client backed by a self-hosted KyPost relay. It shows
 
 ## Firebase setup
 
-1. Create or update the Firebase Android app for the application id `com.urlxl.mail`.
+1. Create or update the Firebase Android app for the application id `org.kysecurity.mail`.
 2. Download `google-services.json`.
 3. Put the file at `app/google-services.json`.
 4. Enable FCM in the Firebase project settings.
@@ -58,7 +58,7 @@ KyPost is an Android email client backed by a self-hosted KyPost relay. It shows
 - Make sure the deep link scheme and host are exactly `kypost://native-pair`. The app no longer supports the legacy `novu-pair` host or the old `llamalabels://` scheme.
 - Make sure the required query parameters exist: `sub`, `hash`, `srv`, and `pt`.
 - Make sure the device can reach the resolved registration endpoint (`reg`, or `{srv}/api/notifications/native/register`).
-- Make sure the Firebase project configuration matches the package `com.urlxl.mail`.
+- Make sure the Firebase project configuration matches the package `org.kysecurity.mail`.
 - If the registration fails with `400`, the request was malformed or missed a field.
 - If the registration fails with `401`, the pairing token (`pt`) is invalid or expired. Scan a new QR code.
 - If the registration fails with `503`, the backend has no `PAIRING_SECRET` configuration. The app cannot retry around this error.

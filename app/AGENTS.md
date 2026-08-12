@@ -6,7 +6,7 @@ Owns the Android app module build, manifest, source sets, resources, and test ex
 
 - Module: `app/`
 - Build contract: `app/build.gradle.kts`
-- Runtime package root: `app/src/main/java/com/urlxl/mail/`
+- Runtime package root: `app/src/main/java/org/kysecurity/mail/`
 
 # Local Contracts
 

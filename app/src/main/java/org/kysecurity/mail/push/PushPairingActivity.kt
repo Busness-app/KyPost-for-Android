@@ -1,0 +1,390 @@
+package org.kysecurity.mail.push
+
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Bundle
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.widget.BaseAdapter
+import android.widget.Button
+import android.widget.ListView
+import android.widget.TextView
+import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
+import androidx.activity.viewModels
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import com.google.android.material.chip.Chip
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
+import org.kysecurity.mail.R
+import org.kysecurity.mail.contacts.device.DeviceContactSyncEnabler
+import org.kysecurity.mail.contacts.device.DeviceContactSyncSettings
+import org.kysecurity.mail.contacts.device.DeviceContactsRuntime
+import org.kysecurity.mail.applyDangerButtonTheme
+import org.kysecurity.mail.applyEmptyStateBackground
+import org.kysecurity.mail.applyPillChipTheme
+import org.kysecurity.mail.applyPrimaryButtonTheme
+import org.kysecurity.mail.applySectionEyebrowLabel
+import org.kysecurity.mail.applyThemeToActivity
+import org.kysecurity.mail.applyTopInsetWithHeader
+import org.kysecurity.mail.getStoredThemePalette
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
+import java.text.DateFormat
+import java.util.Date
+import org.kysecurity.mail.security.LockedActivity
+
+class PushPairingActivity : LockedActivity() {
+    private val viewModel: PushHomeViewModel by viewModels()
+
+    private lateinit var historyList: ListView
+    private lateinit var historyAdapter: PushHistoryAdapter
+    private lateinit var btnResyncToken: Button
+    private lateinit var btnUnpairDevice: Button
+    private lateinit var btnScanQr: Button
+    private lateinit var chipUseUnifiedPush: Chip
+    private lateinit var chipUseFirebase: Chip
+
+    private lateinit var statusText: TextView
+    private lateinit var serverUrlText: TextView
+    private lateinit var subscriberText: TextView
+    private lateinit var deviceIdText: TextView
+    private lateinit var lastSyncText: TextView
+    private lateinit var syncErrorText: TextView
+    private lateinit var transportText: TextView
+    private lateinit var latestSenderText: TextView
+    private lateinit var latestSubjectText: TextView
+    private lateinit var latestKeywordsText: TextView
+    private lateinit var historyEmptyText: TextView
+
+    private val dateFormat: DateFormat = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
+
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (!granted) {
+            Toast.makeText(this, R.string.push_pairing_notifications_denied, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private val contactPermissionLauncher: androidx.activity.result.ActivityResultLauncher<Array<String>> = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { permissions ->
+        val allGranted = permissions.all { it.value }
+        if (allGranted) {
+            syncEnabler.enableAfterPermissionGrant()
+        } else {
+            Toast.makeText(this, R.string.contacts_device_sync_permission_denied, Toast.LENGTH_SHORT).show()
+        }
+        // Whether or not sync got enabled, this is the resolution of the permission flow the
+        // intro popup kicked off — safe to continue to the scanner now that it's settled.
+        scanQr()
+    }
+
+    private val syncEnabler = DeviceContactSyncEnabler(
+        activity = this,
+        permissionLauncher = contactPermissionLauncher,
+    )
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // The app lock redirects and finishes in super.onCreate; nothing below may run,
+        // least of all the network and database work further down this method.
+        if (redirectedToUnlock) return
+        setContentView(R.layout.activity_push_pairing)
+        setTitle(R.string.push_pairing_title)
+
+        PushNotificationDispatcher.ensureChannel(this)
+        requestNotificationPermissionIfNeeded()
+        consumeDeepLink(intent)
+
+        initViews()
+        applyTopInsetWithHeader(this, findViewById(R.id.pushPairingRoot))
+        historyAdapter = PushHistoryAdapter(this)
+        historyList.emptyView = historyEmptyText
+        historyList.adapter = historyAdapter
+
+        btnResyncToken.setOnClickListener { viewModel.resyncToken() }
+        btnUnpairDevice.setOnClickListener { confirmAndUnpairDevice() }
+        btnScanQr.setOnClickListener { onScanQrClicked() }
+        chipUseUnifiedPush.setOnClickListener { viewModel.switchToUnifiedPush(this) }
+        chipUseFirebase.setOnClickListener { viewModel.switchToFirebase() }
+
+        applyThemeToActivity(this)
+
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.uiState.collect { state -> render(state) }
+            }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (redirectedToUnlock) return
+        applyThemeToActivity(this)
+        applyPrimaryButtonTheme(this, btnResyncToken)
+        applyDangerButtonTheme(this, btnUnpairDevice)
+        applyPrimaryButtonTheme(this, btnScanQr)
+        applyPillChipTheme(this, chipUseUnifiedPush)
+        applyPillChipTheme(this, chipUseFirebase)
+        applyEmptyStateBackground(this, historyEmptyText)
+        applySectionEyebrowLabel(this, findViewById(R.id.pushPairingLatestTitle))
+        applySectionEyebrowLabel(this, findViewById(R.id.pushPairingHistoryTitle))
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        // getIntent() keeps returning the Intent that created this instance unless it is replaced,
+        // so without this onCreate's unconditional consumeDeepLink re-parses the ORIGINAL deep link
+        // on every recreation -- a rotation, a dark-mode toggle, a restore after eviction. An
+        // attacker's cancelled "replace your pairing with evil.tld" prompt would resurface later
+        // with no link tap to explain it, after the user had been trained by a legitimate one.
+        setIntent(intent)
+        if (redirectedToUnlock) return
+        consumeDeepLink(intent)
+        // Consumed: a recreation must not replay it.
+        intent.data = null
+    }
+
+    private fun initViews() {
+        historyList = findViewById(R.id.pushPairingHistoryList)
+        btnScanQr = findViewById(R.id.btnScanQr)
+        statusText = findViewById(R.id.pushPairingStatus)
+        serverUrlText = findViewById(R.id.pushPairingServerUrl)
+        subscriberText = findViewById(R.id.pushPairingSubscriber)
+        deviceIdText = findViewById(R.id.pushPairingDeviceId)
+        lastSyncText = findViewById(R.id.pushPairingLastSync)
+        syncErrorText = findViewById(R.id.pushPairingSyncError)
+        transportText = findViewById(R.id.pushPairingTransport)
+        latestSenderText = findViewById(R.id.pushPairingLatestSender)
+        latestSubjectText = findViewById(R.id.pushPairingLatestSubject)
+        latestKeywordsText = findViewById(R.id.pushPairingLatestKeywords)
+        historyEmptyText = findViewById(R.id.pushPairingHistoryEmpty)
+        btnResyncToken = findViewById(R.id.btnResyncToken)
+        btnUnpairDevice = findViewById(R.id.btnUnpairDevice)
+        chipUseUnifiedPush = findViewById(R.id.chipUseUnifiedPush)
+        chipUseFirebase = findViewById(R.id.chipUseFirebase)
+    }
+
+    private fun render(state: PushHomeUiState) {
+        val baseStatus = getString(
+            if (state.pairing == null) R.string.push_pairing_status_not_paired else R.string.push_pairing_status_paired,
+        )
+        val none = getString(R.string.push_pairing_value_none)
+        statusText.text = if (state.pairing == null) {
+            baseStatus
+        } else {
+            val modeLabel = getString(
+                if (state.deliveryMode == DeliveryMode.PULL) R.string.push_pairing_mode_pull
+                else R.string.push_pairing_mode_push,
+            )
+            getString(R.string.push_pairing_status_with_mode, baseStatus, modeLabel)
+        }
+        serverUrlText.text = getString(R.string.push_pairing_server, state.pairing?.serverUrl ?: none)
+        subscriberText.text =
+            getString(R.string.push_pairing_subscriber, state.pairing?.subscriberId?.let { maskTail(it, 6) } ?: none)
+        deviceIdText.text = getString(R.string.push_pairing_device_id, state.pairing?.deviceId ?: none)
+        lastSyncText.text = getString(
+            R.string.push_pairing_last_sync,
+            state.lastTokenSyncAtEpochMs?.let { dateFormat.format(Date(it)) } ?: none,
+        )
+
+        if (state.syncError.isNullOrBlank()) {
+            syncErrorText.visibility = View.GONE
+        } else {
+            syncErrorText.visibility = View.VISIBLE
+            syncErrorText.text = getString(R.string.push_pairing_sync_error, state.syncError)
+        }
+
+        transportText.text = getString(R.string.push_pairing_transport, transportLabel(state.transport))
+
+        latestSenderText.text =
+            getString(R.string.push_pairing_latest_sender, state.latestPayload?.let { PushPayloadParser.title(it) } ?: none)
+        latestSubjectText.text =
+            getString(R.string.push_pairing_latest_subject, state.latestPayload?.let { PushPayloadParser.body(it) } ?: none)
+        latestKeywordsText.text =
+            getString(R.string.push_pairing_latest_keywords, state.latestPayload?.keywords?.joinToString() ?: none)
+
+        historyAdapter.submit(state.history)
+
+        val paired = state.pairing != null
+        val isUnifiedPush = state.transport == PushTransport.UNIFIED_PUSH
+        btnResyncToken.isEnabled = !state.isWorking
+        btnUnpairDevice.isEnabled = !state.isWorking
+        btnScanQr.isEnabled = !state.isWorking
+        chipUseUnifiedPush.isChecked = isUnifiedPush
+        chipUseFirebase.isChecked = !isUnifiedPush
+        chipUseUnifiedPush.isEnabled = !state.isWorking && paired && !isUnifiedPush
+        chipUseFirebase.isEnabled = !state.isWorking && paired && isUnifiedPush
+
+        val message = state.localMessage
+        if (!message.isNullOrBlank()) {
+            Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+            viewModel.consumeLocalMessage()
+        }
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU) return
+
+        val granted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.POST_NOTIFICATIONS,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!granted) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    private fun consumeDeepLink(intent: android.content.Intent?) {
+        val data = intent?.dataString ?: return
+        handleParsedPairing(NativePairingDeepLinkParser.parse(data))
+    }
+
+    private fun onScanQrClicked() {
+        val settings = DeviceContactsRuntime.graph(this).settings
+        if (settings.hasShownSyncIntro()) {
+            scanQr()
+        } else {
+            showSyncIntroDialog(settings)
+        }
+    }
+
+    private fun showSyncIntroDialog(settings: DeviceContactSyncSettings) {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.contact_sync_intro_title)
+            .setMessage(R.string.contact_sync_intro_message)
+            .setPositiveButton(R.string.contact_sync_intro_positive) { _, _ ->
+                // If this needs to request permissions, contactPermissionLauncher's callback
+                // calls scanQr() once that resolves. Calling it here too would launch the QR
+                // scanner on top of the still-open system permission dialog.
+                val requestedPermission = syncEnabler.checkAndEnable()
+                if (!requestedPermission) scanQr()
+            }
+            .setNegativeButton(R.string.contact_sync_intro_negative) { _, _ -> scanQr() }
+            .setOnCancelListener { scanQr() }
+            .setOnDismissListener { settings.setHasShownSyncIntro(true) }
+            .show()
+    }
+
+    private fun scanQr() {
+        lifecycleScope.launch {
+            runCatching {
+                val result = GmsBarcodeScanning.getClient(this@PushPairingActivity).startScan().await()
+                result.rawValue.orEmpty()
+            }.onSuccess { raw ->
+                if (raw.isNotBlank()) {
+                    handleParsedPairing(NativePairingDeepLinkParser.parse(raw))
+                }
+            }.onFailure {
+                Toast.makeText(this@PushPairingActivity, R.string.push_pairing_qr_scan_failed, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun handleParsedPairing(parsed: PairingParseResult) {
+        when (parsed) {
+            is PairingParseResult.Error -> Toast.makeText(this, parsed.reason, Toast.LENGTH_SHORT).show()
+            is PairingParseResult.Success -> confirmAndApplyPairing(parsed.pairing)
+        }
+    }
+
+    /** Every pairing source — deep link, QR scan, or replacing an existing pairing — always
+     *  confirms the destination server before applying it. A QR scan proves the user operated
+     *  the camera, not that they know what server the code encodes: QR codes are trivially
+     *  copyable, photographable, and re-postable, so "physical action" is not proof of trust in
+     *  the destination. */
+    private fun confirmAndApplyPairing(pairing: PairingData) {
+        // Read from the store, not from uiState. uiState is a `stateIn(WhileSubscribed(5_000))`
+        // flow, so before anything subscribes it serves its initialValue — whose `pairing` is null.
+        // consumeDeepLink runs in onCreate ahead of the lifecycle collector, so on the cold,
+        // web-driven path (the one an attacker uses) every replacement looked like a first pairing
+        // and the user was shown "This link wants to pair this device with: …" instead of the
+        // warning that their current server is about to be replaced.
+        val alreadyPaired = PushRuntime.graph(this).repository.isPairedNow()
+        val messageRes = if (alreadyPaired) R.string.pairing_confirm_replace_message else R.string.pairing_confirm_message
+        // The parsed host, never the raw `srv` string. A raw URL in a trust prompt is a phishing
+        // surface: `https://mail.trusted-corp.com@evil.tld/` reads as the trusted host on a
+        // wrapped dialog while every request goes to evil.tld. pairingUrlHost() also refuses such
+        // a URL outright now, so this is the second of two gates, not the only one.
+        val shownHost = pairingUrlHost(pairing.serverUrl)
+        if (shownHost == null) {
+            Toast.makeText(this, R.string.pairing_confirm_bad_url, Toast.LENGTH_LONG).show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.pairing_confirm_title)
+            .setMessage(getString(messageRes, shownHost))
+            .setPositiveButton(R.string.pairing_confirm_positive) { _, _ -> viewModel.applyPairing(pairing) }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    /** Unpairing now revokes server-side access (not just local state), so it gets the same
+     *  confirm-before-destructive-action treatment as [confirmAndApplyPairing]. */
+    private fun confirmAndUnpairDevice() {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.push_pairing_unpair_confirm_title)
+            .setMessage(R.string.push_pairing_unpair_confirm_message)
+            .setPositiveButton(R.string.push_pairing_unpair) { _, _ -> viewModel.unpairDevice() }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private inner class PushHistoryAdapter(context: android.content.Context) : BaseAdapter() {
+        private val inflater = LayoutInflater.from(context)
+        private var items: List<PushPayload> = emptyList()
+
+        fun submit(payloads: List<PushPayload>) {
+            items = payloads
+            notifyDataSetChanged()
+        }
+
+        override fun getCount(): Int = items.size
+        override fun getItem(position: Int): PushPayload = items[position]
+        override fun getItemId(position: Int): Long = items[position].messageId.hashCode().toLong()
+
+        override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+            val view = convertView ?: inflater.inflate(R.layout.item_push_history, parent, false)
+            val payload = items[position]
+            val palette = getStoredThemePalette(view.context)
+
+            val title = view.findViewById<TextView>(R.id.pushHistoryTitle)
+            val subject = view.findViewById<TextView>(R.id.pushHistorySubject)
+            val date = view.findViewById<TextView>(R.id.pushHistoryDate)
+
+            title.text = PushPayloadParser.title(payload)
+            subject.text = PushPayloadParser.body(payload)
+            date.text = dateFormat.format(Date(payload.receivedAtEpochMs))
+
+            val panelColor = android.graphics.Color.parseColor(palette.panel)
+            val inkStrongColor = android.graphics.Color.parseColor(palette.inkStrong)
+            val inkColor = android.graphics.Color.parseColor(palette.ink)
+            (view as? androidx.cardview.widget.CardView)?.setCardBackgroundColor(panelColor)
+            title.setTextColor(inkStrongColor)
+            subject.setTextColor(inkColor)
+            date.setTextColor(inkColor)
+
+            return view
+        }
+    }
+}
+
+private fun maskTail(value: String, keepLast: Int): String {
+    if (value.length <= keepLast) return value
+    val mask = "*".repeat(value.length - keepLast)
+    return "$mask${value.takeLast(keepLast)}"
+}
+
+// Mirrors the badge labels on the web Notifications page; null means never synced yet.
+private fun transportLabel(transport: PushTransport?): String = when (transport) {
+    PushTransport.UNIFIED_PUSH -> "UnifiedPush"
+    PushTransport.APNS -> "APNs"
+    PushTransport.FCM -> "Firebase"
+    null -> "Firebase (default)"
+}

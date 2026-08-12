@@ -26,7 +26,7 @@ runs:
             {
               "client_info": {
                 "mobilesdk_app_id": "1:000000000000:android:0000000000000000",
-                "android_client_info": { "package_name": "com.urlxl.mail" }
+                "android_client_info": { "package_name": "org.kysecurity.mail" }
               },
               "oauth_client": [],
               "api_key": [ { "current_key": "AIzaSyAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" } ],
