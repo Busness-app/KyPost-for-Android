@@ -317,6 +317,13 @@ object SecurityWipe {
             val leftBehind = org.kysecurity.mail.pgp.EnrollmentTeardown.destroy(appContext)
             check(leftBehind.isEmpty()) { "enrollment teardown left $leftBehind" }
         }
+        // Same shape and same reason as enrollmentTeardown above: the sharedPrefs sweep removes the
+        // sealed blob but not the Keystore alias, and a key surviving a wipe nobody chose is exactly
+        // what the incomplete result exists to report.
+        step("biometricUnlockVault") {
+            val leftBehind = BiometricUnlockVault(appContext).destroy()
+            check(leftBehind.isEmpty()) { "biometric unlock vault left $leftBehind" }
+        }
         step("pullWorker") { org.kysecurity.mail.push.PullScheduler.cancelPeriodic(appContext) }
         step("deviceContactWorker") { org.kysecurity.mail.contacts.device.DeviceContactSyncScheduler.cancelPeriodic(appContext) }
 

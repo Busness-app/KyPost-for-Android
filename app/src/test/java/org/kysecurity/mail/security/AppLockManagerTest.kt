@@ -3,8 +3,10 @@ package org.kysecurity.mail.security
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -66,17 +68,27 @@ private object TestPepper : CredentialPepper {
     }
 }
 
+/** Stands in for [BiometricUnlockVault], which needs an AndroidKeyStore. Records what a PIN
+ *  unlock handed over to be sealed. */
+private class FakeSealer : BiometricKeySealer {
+    var sealed: CredentialKeys? = null
+        private set
+    override fun seal(keys: CredentialKeys) { sealed = keys }
+}
+
 class AppLockManagerTest {
     private lateinit var state: FakeAppLockState
     private var wipeCount = 0
     private var wipeResult: WipeResult = WipeResult.Complete
     private var clock = 1_000L
+    private lateinit var sealer: FakeSealer
     private lateinit var manager: AppLockManager
 
     private fun newManager(withState: FakeAppLockState = state) = AppLockManager(
         state = withState,
         elapsedRealtimeMs = { clock },
         pepper = TestPepper,
+        sealer = sealer,
         onWipe = { wipeCount++; wipeResult },
     )
 
@@ -86,6 +98,7 @@ class AppLockManagerTest {
         wipeCount = 0
         wipeResult = WipeResult.Complete
         clock = 1_000L
+        sealer = FakeSealer()
         manager = newManager()
     }
 
@@ -309,6 +322,84 @@ class AppLockManagerTest {
     fun attemptPin_withCredentialGateDisabled_neverCachesKeys() = runBlocking {
         manager.attemptPin("482913")
         assertTrue(manager.cachedCredentialKeys() == null)
+    }
+
+    // --- Biometric unlock -----------------------------------------------------------------------
+
+    /**
+     * A PIN unlock seals the derived keys **whether or not the credential gate is on**, because
+     * sealing is what gives the next biometric unlock something real to unwrap. Without it,
+     * `unlockWithBiometric` was a bare boolean: nothing cryptographic depended on the fingerprint,
+     * so hooking the success callback unlocked the app with no secret ever produced.
+     */
+    @Test
+    fun attemptPin_sealsTheDerivedKeys_evenWithTheGateOff() = runBlocking {
+        assertFalse("precondition: this is the default configuration", state.isCredentialPinGateEnabled())
+
+        manager.attemptPin("482913")
+
+        assertNotNull(sealer.sealed)
+    }
+
+    /** Sealing is a consequence of a *verified* PIN, never of an attempt. */
+    @Test
+    fun attemptPin_withWrongPin_sealsNothing() = runBlocking {
+        manager.attemptPin("000001")
+
+        assertNull(sealer.sealed)
+    }
+
+    @Test
+    fun unlockWithBiometric_unlocksAndResetsAttempts() = runBlocking {
+        manager.attemptPin("000001")
+        val keys = CredentialCipher.deriveKeys("482913", CredentialCipher.randomSalt(), TestPepper)
+
+        manager.unlockWithBiometric(keys)
+
+        assertFalse(manager.locked.value)
+        assertEquals(0, state.failedAttempts)
+    }
+
+    /**
+     * The wart this closes: a biometric-only session used to run with the credential gate
+     * permanently shut, so no authenticated relay call could be made and no MFA challenge could be
+     * answered — for the user whose whole point is that they use the fingerprint reader.
+     */
+    @Test
+    fun unlockWithBiometric_makesTheGatedCredentialUsable() = runBlocking {
+        val gated = FakeAppLockState(credentialSalt = CredentialCipher.randomSalt())
+            .apply { setCredentialPinGateEnabled(true) }
+        val gatedManager = newManager(gated)
+        val keys = CredentialCipher.deriveKeys("482913", gated.credentialSalt()!!, TestPepper)
+
+        gatedManager.unlockWithBiometric(keys)
+
+        assertArrayEquals(keys.current.encoded, gatedManager.cachedCredentialKeys()?.current?.encoded)
+    }
+
+    /** Symmetric with the PIN path: with the gate off nothing needs the key, so nothing holds it. */
+    @Test
+    fun unlockWithBiometric_withTheGateOff_cachesNoKeys() = runBlocking {
+        manager.unlockWithBiometric(
+            CredentialCipher.deriveKeys("482913", CredentialCipher.randomSalt(), TestPepper),
+        )
+
+        assertNull(manager.cachedCredentialKeys())
+    }
+
+    /**
+     * Changing the PIN has to re-seal, or the blob keeps the *old* PIN's keys — and with the
+     * credential gate on, the next biometric unlock would hand out a key that no longer unwraps
+     * `deviceSecret`, so every authenticated call would fail behind a UI still reading "Paired".
+     */
+    @Test
+    fun resealForBiometric_sealsTheKeysOfTheNewPin() {
+        state.setCredentialSalt(CredentialCipher.randomSalt())
+
+        manager.resealForBiometric("112233")
+
+        val expected = CredentialCipher.deriveKeys("112233", state.credentialSalt()!!, TestPepper)
+        assertArrayEquals(expected.current.encoded, sealer.sealed?.current?.encoded)
     }
 
     @Test

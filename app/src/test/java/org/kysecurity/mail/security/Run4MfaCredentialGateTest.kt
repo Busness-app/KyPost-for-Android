@@ -122,17 +122,47 @@ class Run4MfaCredentialGateTest {
         assertNotNull("attemptPin unlocks first, so the key is readable", m.cachedCredentialKeys())
     }
 
-    /** The other branch of credentialGateNeedsPin(): unlocked by biometric, so no PIN key cached.
-     *  Here the MFA PIN prompt does work, which is why the bug above is easy to miss. */
+    /**
+     * A biometric-only session no longer needs the PIN prompt at all.
+     *
+     * This used to assert the opposite — "biometric unlock derives no PIN key" — because
+     * `unlockWithBiometric()` set a flag and produced nothing. It now opens the keys a previous PIN
+     * unlock sealed, so `credentialGateNeedsPin()` is false and the gated credential is usable.
+     */
     @Test
-    fun theBiometricOnlySessionBranchDoesWork() = runBlocking {
-        val state = GateState()
+    fun aBiometricUnlockSuppliesTheGatedCredential() = runBlocking {
+        val state = GateState(credentialSalt = CredentialCipher.randomSalt())
         val m = manager(state)
-        m.unlockWithBiometric()
-        assertNull("biometric unlock derives no PIN key", m.cachedCredentialKeys())
 
-        val result = m.deriveAndCacheCredentialKeys("48291374")
-        assertTrue(result is UnlockAttemptResult.Success)
+        m.unlockWithBiometric(CredentialCipher.deriveKeys("48291374", state.credentialSalt()!!, GatePepper))
+
+        assertNotNull("the sealed keys are the gate's key", m.cachedCredentialKeys())
+    }
+
+    /**
+     * The branch `credentialGateNeedsPin()` still exists for: unlocked, gate on, and no key —
+     * reached when the credential pepper is gone, which is a lost wrapping key rather than a wrong
+     * PIN. The MFA prompt has to keep working there.
+     */
+    @Test
+    fun anUnlockedSessionWithNoDerivableKeyStillPromptsAndRecovers() = runBlocking {
+        val state = GateState()
+        var exploding = true
+        val m = AppLockManager(
+            state = state,
+            elapsedRealtimeMs = { 1_000L },
+            pepper = object : CredentialPepper {
+                override fun mix(derived: ByteArray): ByteArray =
+                    if (exploding) throw PepperUnavailableException("credential-alias") else GatePepper.mix(derived)
+            },
+            onWipe = { WipeResult.Complete },
+        )
+
+        assertTrue(m.attemptPin("48291374") is UnlockAttemptResult.Success)
+        assertNull("a lost pepper leaves the gate shut, without failing the unlock", m.cachedCredentialKeys())
+
+        exploding = false
+        assertTrue(m.deriveAndCacheCredentialKeys("48291374") is UnlockAttemptResult.Success)
         assertNotNull("unlocked already, so the derived key is readable", m.cachedCredentialKeys())
     }
 }

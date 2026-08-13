@@ -48,6 +48,8 @@ class AppLockManager(
     // Injected so credential-key derivation is exercisable off-device; the default needs a real
     // AndroidKeyStore. See [CredentialPepper].
     private val pepper: CredentialPepper = KeystoreCredentialPepper,
+    // Likewise: [BiometricUnlockVault] is the real one, wired in by [SecurityRuntime].
+    private val sealer: BiometricKeySealer = BiometricKeySealer {},
     private val onWipe: suspend () -> WipeResult,
 ) {
     private val _locked = MutableStateFlow(state.isLockEnabled())
@@ -137,12 +139,25 @@ class AppLockManager(
         return false
     }
 
-    fun unlockWithBiometric() {
+    /**
+     * Unlocks with the keys a biometric authentication just produced — [keys] comes out of
+     * [BiometricUnlockVault], sealed there by the last PIN unlock and openable only through a
+     * `BiometricPrompt.CryptoObject`.
+     *
+     * Taking them as a parameter is the whole point. This used to be a no-argument method that set
+     * a flag, so nothing cryptographic depended on the fingerprint at all: the app lock was a UI
+     * gate that an instrumented process could step over by hooking one callback, and a
+     * biometric-only session additionally ran with the credential gate permanently shut. The caller
+     * cannot reach this without having decrypted something the Keystore would not decrypt without
+     * the user.
+     *
+     * Caching mirrors [attemptPin] exactly — only when the gate is on does anything need the key,
+     * and only then is it held.
+     */
+    fun unlockWithBiometric(keys: CredentialKeys) {
         _locked.value = false
         state.resetFailedAttempts()
-        // Biometric unlock can't derive a PIN-based key — the credential gate simply stays
-        // unavailable for the rest of this session if the user unlocks via biometric only,
-        // exactly as documented: it requires the PIN specifically.
+        if (state.isCredentialPinGateEnabled()) credentialKeys = keys
     }
 
     /**
@@ -165,7 +180,7 @@ class AppLockManager(
                 // from the Keystore skipped the unlock and left the user locked out of an app whose
                 // PIN they had just entered correctly.
                 _locked.value = false
-                cacheCredentialKeysIfEnabled(pin)
+                deriveSealAndCache(pin)
             }
         }
     }
@@ -255,6 +270,21 @@ class AppLockManager(
      */
     fun credentialKeysForDecision(): CredentialKeys? = credentialKeys
 
+    /**
+     * Re-seals the biometric blob under [pin], which the caller has just established as the app-lock
+     * PIN.
+     *
+     * Only the PIN-change path needs this. Everything else that seals does so as a consequence of a
+     * *verified* PIN; here the PIN is new, so there is nothing to verify it against. Skipping it
+     * would leave the previous PIN's keys sealed, and with the credential gate on the next biometric
+     * unlock would produce a key that no longer unwraps `deviceSecret` — every authenticated call
+     * failing behind a UI still reading "Paired".
+     */
+    fun resealForBiometric(pin: String) {
+        runCatching { sealer.seal(deriveUsingPersistedSalt(pin)) }
+            .onFailure { android.util.Log.i("AppLockManager", "Could not re-seal after a PIN change", it) }
+    }
+
     /** Drops the cached keys without locking. Needed when the credential gate is switched off: the
      *  keys otherwise stayed cached, and [org.kysecurity.mail.push.PushRepository.savePairing] would
      *  re-wrap a later pairing behind a gate that is no longer enabled and will never open. */
@@ -314,15 +344,31 @@ class AppLockManager(
         }
     }
 
-    /** Best-effort by contract: this runs as a side effect of unlocking, and a Keystore that cannot
-     *  produce the wrapping key leaves the gated secret unavailable for the session — exactly as a
-     *  biometric-only unlock does — rather than failing the unlock. [deriveAndCacheCredentialKeys]
-     *  is the path where the caller actually asked for the key, and it reports the failure. */
-    private fun cacheCredentialKeysIfEnabled(pin: String) {
-        if (!state.isCredentialPinGateEnabled()) return
-        credentialKeys = runCatching { deriveUsingPersistedSalt(pin) }
+    /**
+     * Derives the credential keys, seals them for the next biometric unlock, and caches them if the
+     * gate is on.
+     *
+     * **Derives unconditionally**, where this used to skip the work entirely with the gate off. The
+     * gate is off by default, and the seal is what makes a fingerprint produce real key material
+     * instead of setting a boolean — skipping it on the default configuration would leave the app
+     * lock exactly as bypassable as it was. The gate still decides whether anything is *retained*:
+     * with it off nothing needs the key, so nothing holds it, and the extra derivation costs one
+     * PBKDF2 on a screen that has just run another.
+     *
+     * Best-effort by contract: this runs as a side effect of unlocking, and a Keystore that cannot
+     * produce the wrapping key leaves the gated secret unavailable for the session rather than
+     * failing the unlock. [deriveAndCacheCredentialKeys] is the path where the caller actually asked
+     * for the key, and it reports the failure.
+     */
+    private fun deriveSealAndCache(pin: String) {
+        val keys = runCatching { deriveUsingPersistedSalt(pin) }
             .onFailure { android.util.Log.e("AppLockManager", "Could not derive credential keys on unlock", it) }
-            .getOrNull()
+            .getOrNull() ?: return
+        // Never fails the unlock: a device with no biometric enrolled has nowhere to seal to, which
+        // is not an error, it is that user's normal.
+        runCatching { sealer.seal(keys) }
+            .onFailure { android.util.Log.i("AppLockManager", "Could not seal keys for biometric unlock", it) }
+        if (state.isCredentialPinGateEnabled()) credentialKeys = keys
     }
 
     private fun deriveUsingPersistedSalt(pin: String): CredentialKeys {

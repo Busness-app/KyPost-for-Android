@@ -11,16 +11,20 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import org.kysecurity.mail.R
 import org.kysecurity.mail.security.applySecureFlag
 import org.kysecurity.mail.security.AppLockStore
+import org.kysecurity.mail.security.CredentialEnvelope
 import org.kysecurity.mail.security.SecurityRuntime
 import org.kysecurity.mail.security.SecurityWipe
 import org.kysecurity.mail.security.resolvePinAttempt
 import org.kysecurity.mail.security.showSecurely
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * The only place an MFA challenge can be approved or denied.
@@ -266,33 +270,111 @@ class MfaApprovalActivity : AppCompatActivity() {
     }
 
     /**
-     * Gates both buttons behind a biometric or device-credential check, falling back to this app's
-     * own PIN when the device has neither.
+     * Gates both buttons behind an authentication that **produces the key the decision needs**,
+     * falling back through weaker options only as far as the device forces.
      *
-     * **The app-lock PIN comes first whenever the credential gate is on**, because answering a
-     * challenge needs the PIN-derived key: [MfaResponder] authenticates with `deviceSecret`, which
+     * The order is: the sealed credential keys opened by a fingerprint
+     * ([authenticateWithSealedKeys]), then this app's own PIN, then a device credential, then — on a
+     * device with no authenticator of any kind — nothing. Answering a challenge needs the
+     * PIN-derived key: [MfaResponder] authenticates with `deviceSecret`, which
      * [org.kysecurity.mail.push.PushRepository.pairingForAuthenticatedCall] can only unwrap from a
-     * cached credential key, and a device credential is not that key. Authenticating with a
-     * fingerprint here and then discovering the response cannot be sent is a decision taken and
-     * silently dropped, on the highest-value action in this app.
-     *
-     * The fallback used to be reached on *any* status other than `BIOMETRIC_SUCCESS`, on the
-     * argument that `canAuthenticate(BIOMETRIC_STRONG or DEVICE_CREDENTIAL)` succeeds whenever a
-     * device credential is enrolled, so anything else means no screen lock at all. It does not:
-     * `BIOMETRIC_ERROR_HW_UNAVAILABLE` (sensor temporarily down) and `BIOMETRIC_STATUS_UNKNOWN`
-     * (documented as indeterminate, with the advice to call `authenticate()` anyway) both land
-     * there on a device that *does* have a screen lock — and with this app's own PIN unset, both
-     * buttons went live with no authentication whatsoever. Only the three statuses that definitely
-     * mean "there is no authenticator to use" take the fallback now; everything else shows the
-     * prompt and lets [BiometricPrompt.AuthenticationCallback.onAuthenticationError] finish the
-     * screen.
+     * credential key, and a device credential is not that key. Authenticating and then discovering
+     * the response cannot be sent is a decision taken and silently dropped, on the highest-value
+     * action in this app.
      */
     private fun requireAuthentication() {
         authInFlight = true
+        lifecycleScope.launch {
+            // Keystore and disk, so never on Main. Null means this device has nothing sealed —
+            // no fingerprint enrolled, no PIN unlock since the feature landed, or a key the OS
+            // destroyed when a biometric was enrolled.
+            val unlock = withContext(Dispatchers.IO) {
+                SecurityRuntime.graph(this@MfaApprovalActivity).biometricUnlockVault.prepareUnlock()
+            }
+            // The user left while the vault was being read. Neither a BiometricPrompt nor an
+            // AlertDialog may be raised past a saved state — the first is silently dropped with no
+            // callback ever, the second throws — so leave the decision unmade and let [onStart]
+            // start over on the way back.
+            if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) || supportFragmentManager.isStateSaved) {
+                authInFlight = false
+                return@launch
+            }
+            if (unlock != null) authenticateWithSealedKeys(unlock) else authenticateWithoutSealedKeys()
+        }
+    }
 
-        // The gate is on: nothing but the PIN produces a usable credential, so ask for it directly
-        // rather than collecting a device credential that cannot answer the challenge.
-        if (credentialGateNeedsPin()) {
+    /**
+     * The good path: the fingerprint opens the app's own credential keys.
+     *
+     * This replaces a callback that set `authenticated = true` and nothing else. Nothing
+     * cryptographic depended on the biometric there, so an instrumented process could enable approve
+     * and deny — the highest-value action in this app — by hooking one method. Here the keys come
+     * out of a Keystore blob the OS will not decrypt without the user, and they are the same keys
+     * [MfaResponder] needs to answer a gated challenge, so a forged success produces nothing usable.
+     */
+    private fun authenticateWithSealedKeys(unlock: org.kysecurity.mail.security.BiometricUnlock) {
+        val promptInfo = BiometricPrompt.PromptInfo.Builder()
+            .setTitle(getString(R.string.mfa_auth_title))
+            .setSubtitle(getString(R.string.mfa_auth_subtitle))
+            .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+            .setNegativeButtonText(getString(R.string.unlock_use_pin_button))
+            .build()
+
+        BiometricPrompt(
+            this,
+            ContextCompat.getMainExecutor(this),
+            object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    val cipher = result.cryptoObject?.cipher
+                    val keys = cipher?.let { CredentialEnvelope.open(unlock.sealed, it) }
+                    if (keys == null) {
+                        // The blob and the key are out of step; the PIN both authenticates and
+                        // re-seals, so route there rather than failing the screen.
+                        authenticateWithoutSealedKeys()
+                        return
+                    }
+                    authInFlight = false
+                    // Held for this decision only, exactly as the PIN path does — this screen is
+                    // deliberately not an unlock, so the keys must not go into the manager's cache.
+                    decisionKeys = keys
+                    authenticated = true
+                    setButtonsEnabled(true)
+                }
+
+                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                    // Includes "Use PIN". The app-lock PIN is the one fallback that still produces
+                    // the credential, so offer it rather than ending the screen.
+                    if (SecurityRuntime.graph(this@MfaApprovalActivity).appLockStore.isLockEnabled()) {
+                        promptAppLockPin()
+                        return
+                    }
+                    authInFlight = false
+                    Toast.makeText(this@MfaApprovalActivity, R.string.mfa_auth_required, Toast.LENGTH_SHORT).show()
+                    finish()
+                }
+            },
+        ).authenticate(promptInfo, BiometricPrompt.CryptoObject(unlock.cipher))
+    }
+
+    /**
+     * Nothing is sealed on this device, so there is no key a biometric could produce.
+     *
+     * **This app's own PIN comes first whenever a lock is configured**, ahead of the device
+     * credential: it is throttled by the same lockout ladder and wipe threshold as every other PIN
+     * check, it is specific to this app, and when the credential gate is on it is the only thing
+     * that makes the challenge answerable at all.
+     *
+     * The device-credential fallback below is reached on *any* `canAuthenticate` status other than
+     * the three that definitely mean "no authenticator exists". It used to be reached on anything
+     * other than `BIOMETRIC_SUCCESS`, on the argument that
+     * `canAuthenticate(BIOMETRIC_STRONG or DEVICE_CREDENTIAL)` succeeds whenever a device credential
+     * is enrolled — which is not what the API guarantees: `BIOMETRIC_ERROR_HW_UNAVAILABLE` (sensor
+     * temporarily down) and `BIOMETRIC_STATUS_UNKNOWN` (documented as indeterminate, with the advice
+     * to call `authenticate()` anyway) both occur on devices that *do* have a screen lock, and with
+     * this app's PIN unset both buttons went live with no authentication whatsoever.
+     */
+    private fun authenticateWithoutSealedKeys() {
+        if (SecurityRuntime.graph(this).appLockStore.isLockEnabled()) {
             promptAppLockPin()
             return
         }
@@ -300,15 +382,11 @@ class MfaApprovalActivity : AppCompatActivity() {
         val authenticators = BiometricManager.Authenticators.BIOMETRIC_STRONG or
             BiometricManager.Authenticators.DEVICE_CREDENTIAL
         if (mfaHasNoAuthenticator(BiometricManager.from(this).canAuthenticate(authenticators))) {
-            if (SecurityRuntime.graph(this).appLockStore.isLockEnabled()) {
-                promptAppLockPin()
-            } else {
-                // Genuinely nothing to authenticate against: no sensor, no enrolled device
-                // credential, and no app-lock PIN configured either.
-                authInFlight = false
-                authenticated = true
-                setButtonsEnabled(true)
-            }
+            // Genuinely nothing to authenticate against: no sensor, no enrolled device credential,
+            // and no app-lock PIN configured either.
+            authInFlight = false
+            authenticated = true
+            setButtonsEnabled(true)
             return
         }
 
@@ -322,6 +400,13 @@ class MfaApprovalActivity : AppCompatActivity() {
             this,
             ContextCompat.getMainExecutor(this),
             object : BiometricPrompt.AuthenticationCallback() {
+                /**
+                 * No `CryptoObject` here, and there cannot be one: this branch is reached only when
+                 * the user has configured no app-lock PIN, so the app holds no secret to bind the
+                 * authentication to. The device credential is a real gate on a real screen lock, and
+                 * it is strictly better than the alternative below it, which is no gate at all.
+                 */
+                // codeql[java/android/insecure-local-authentication]
                 override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
                     authInFlight = false
                     authenticated = true

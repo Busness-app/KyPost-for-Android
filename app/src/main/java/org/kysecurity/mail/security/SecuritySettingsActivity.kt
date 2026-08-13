@@ -289,7 +289,17 @@ class SecuritySettingsActivity : LockedActivity() {
         // not something a click listener may do on the main thread. Every other write on this
         // screen already goes through SecurityWork; this one had been missed.
         biometricSwitch.setOnCheckedChangeListener { _, checked ->
-            lifecycleScope.launch { withContext(SecurityWork) { appLockStore.setBiometricEnabled(checked) } }
+            lifecycleScope.launch {
+                withContext(SecurityWork) {
+                    appLockStore.setBiometricEnabled(checked)
+                    // Switching it off destroys the sealed keys, rather than leaving a
+                    // biometric-openable copy of the credential behind a disabled setting. The next
+                    // PIN unlock re-seals if it is switched back on.
+                    if (!checked) {
+                        SecurityRuntime.graph(this@SecuritySettingsActivity).biometricUnlockVault.destroy()
+                    }
+                }
+            }
         }
 
         // Encrypted mail. Built hidden and filled in asynchronously: deciding the row needs a
@@ -778,6 +788,10 @@ class SecuritySettingsActivity : LockedActivity() {
                     withContext(SecurityWork) {
                         appLockStore.setPin(pin)
                         appLockStore.setLockEnabled(true)
+                        // Seal now rather than at the first unlock, so turning the biometric switch
+                        // on below actually offers a fingerprint the first time the app locks.
+                        SecurityRuntime.graph(this@SecuritySettingsActivity)
+                            .appLockManager.resealForBiometric(pin)
                     }
                     changePinButton.visibility = View.VISIBLE
                     lockGraceButton.isEnabled = true
@@ -868,6 +882,8 @@ class SecuritySettingsActivity : LockedActivity() {
         }
 
         appLockStore.setPin(newPin)
+        // The sealed blob still holds the old PIN's keys until this runs.
+        appLockManager.resealForBiometric(newPin)
 
         if (gateEnabled && salt != null) {
             // Re-derive under the new PIN and cache, so savePairing's gate-on branch can wrap.
@@ -928,7 +944,12 @@ class SecuritySettingsActivity : LockedActivity() {
             return
         }
 
-        withContext(SecurityWork) { appLockStore.reset() }
+        withContext(SecurityWork) {
+            appLockStore.reset()
+            // The sealed keys belong to the PIN that was just discarded. Leaving them would keep a
+            // biometric-openable copy of a credential the user has asked the app to forget.
+            SecurityRuntime.graph(this@SecuritySettingsActivity).biometricUnlockVault.destroy()
+        }
 
         if (prior.hostileLocation) {
             runSecurityChangeThenReset(

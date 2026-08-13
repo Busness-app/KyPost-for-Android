@@ -374,7 +374,7 @@
     <string name="unlock_wrong_pin">Wrong PIN</string>
     <string name="unlock_locked_out">Too many attempts — try again in %1$s</string>
     <string name="unlock_use_pin_button">Use PIN</string>
-    <string name="unlock_pin_required_for_credential_gate">Secure messaging is on, so your PIN is required. A fingerprint cannot unlock the credential this device sends mail and answers sign-ins with.</string>
+    <string name="unlock_biometric_unavailable">Fingerprint unlock is unavailable — enter your PIN</string>
 
     <string name="security_settings_title">Security</string>
     <string name="security_require_unlock_title">Require Unlock to Open</string>

@@ -23,12 +23,17 @@ class SecurityGraph(context: Context) {
 
     val appLockSettings = AppLockSettings(appContext)
 
+    /** Shared so [UnlockActivity]'s read of the sealed blob and [AppLockManager]'s write of it are
+     *  the same object, rather than two views of one prefs file. */
+    val biometricUnlockVault = BiometricUnlockVault(appContext)
+
     // onWipe is a suspend lambda now: it used to be wrapped in runBlocking, which put a Room
     // teardown plus two Keystore-backed prefs commits on the main thread, reached from
     // UnlockActivity's click listener. AppLockManager.attemptPin is itself suspend, so the wipe
     // simply runs on the caller's IO context.
     val appLockManager: AppLockManager = AppLockManager(
         state = appLockStore,
+        sealer = biometricUnlockVault,
         onWipe = { SecurityWipe.wipeAndResetApp(appContext) },
     )
 }

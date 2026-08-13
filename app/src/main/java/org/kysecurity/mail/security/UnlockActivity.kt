@@ -12,11 +12,14 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import org.kysecurity.mail.MainActivity
 import org.kysecurity.mail.R
 import org.kysecurity.mail.applyThemeToActivity
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Full-screen PIN gate shown whenever [AppLockManager.locked] is true. Biometric unlock layers on
@@ -50,15 +53,10 @@ class UnlockActivity : AppCompatActivity() {
         submitButton = findViewById(R.id.unlockSubmitButton)
         submitButton.setOnClickListener { attemptUnlock() }
 
-        // Not offered at all when the credential gate is on: the prompt would succeed and then be
-        // refused by requirePinForCredentialGate anyway, and asking for a fingerprint the app is
-        // about to decline is worse than asking for the PIN in the first place. The check in the
-        // success callback stays as the backstop for a gate switched on mid-session.
-        val store = SecurityRuntime.graph(this).appLockStore
-        if (store.isCredentialPinGateEnabled()) {
-            errorText.visibility = View.VISIBLE
-            errorText.text = getString(R.string.unlock_pin_required_for_credential_gate)
-        } else if (store.isBiometricEnabled()) {
+        // The credential gate is no longer a reason to refuse a fingerprint: biometric unlock now
+        // opens the same PIN-derived keys the gate wants, so it is a complete unlock rather than a
+        // partial one that has to be topped up with a PIN.
+        if (SecurityRuntime.graph(this).appLockStore.isBiometricEnabled()) {
             showBiometricPromptIfAvailable()
         }
     }
@@ -80,18 +78,7 @@ class UnlockActivity : AppCompatActivity() {
         submitButton.isEnabled = false
         lifecycleScope.launch {
             when (val result = appLockManager.attemptPin(pin)) {
-                is UnlockAttemptResult.Success -> {
-                    // Closes the gap where a background FCM token rotation saved the pairing
-                    // unwrapped because no credential key was cached yet in this process, and
-                    // migrates any pre-pepper wrap — see rewrapPairingIfNeeded.
-                    rewrapPairingIfNeeded(this@UnlockActivity, appLockManager)
-                    // A PIN unlock is the only event that makes a gated device secret usable, so it
-                    // is the only event that can deliver an enrollment-state report the gate made
-                    // undeliverable. The worker is unique work, so re-enqueueing is idempotent and
-                    // costs nothing when there is no report owed.
-                    org.kysecurity.mail.pgp.EnrollmentStateWorker.enqueue(this@UnlockActivity)
-                    proceedIntoApp()
-                }
+                is UnlockAttemptResult.Success -> completeUnlock()
                 is UnlockAttemptResult.Wiped -> restartToFirstRun()
                 is UnlockAttemptResult.WipeFailed -> {
                     // The wipe ran but did not finish, so local data may still be on disk. Say so
@@ -120,6 +107,24 @@ class UnlockActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    /**
+     * What a completed unlock owes the rest of the app, whichever credential produced it.
+     *
+     * Shared by the PIN and biometric paths deliberately. Both now yield the same credential keys,
+     * so both can close the gap where a background FCM token rotation saved the pairing unwrapped
+     * with nothing cached in this process, and both can migrate a pre-pepper wrap (see
+     * [rewrapPairingIfNeeded]). While biometric derived nothing, this work hung off the PIN alone
+     * and a user who only ever used the fingerprint reader never ran any of it.
+     *
+     * [org.kysecurity.mail.pgp.EnrollmentStateWorker] is unique work, so re-enqueueing is idempotent
+     * and costs nothing when there is no report owed.
+     */
+    private suspend fun completeUnlock() {
+        rewrapPairingIfNeeded(this, appLockManager)
+        org.kysecurity.mail.pgp.EnrollmentStateWorker.enqueue(this)
+        proceedIntoApp()
     }
 
     /**
@@ -160,37 +165,38 @@ class UnlockActivity : AppCompatActivity() {
     }
 
     /**
-     * When "require unlock to receive push/MFA" is on, the PIN is demanded **now** — not deferred
-     * to whenever the user next happens to type it.
+     * Offers the fingerprint only when there is something for it to open.
      *
-     * The credential gate wraps `deviceSecret` behind a key only the PIN can derive, and
-     * [AppLockManager.unlockWithBiometric] derives nothing. A biometric-only session therefore ran
-     * with the gate permanently shut: no authenticated relay call could be made, MFA challenges
-     * could not be answered, and every migration hung off a PIN unlock
-     * ([rewrapPairingIfNeeded]) simply never ran — for a user whose whole point is that they use
-     * the fingerprint reader and not the PIN.
+     * [BiometricUnlockVault.prepareUnlock] returns null on a device that has never completed a PIN
+     * unlock since this feature landed, and on one whose key the OS destroyed because a biometric
+     * was enrolled. Both leave the always-visible PIN field as the only route, and the next PIN
+     * unlock re-seals — so the fallback repairs itself and needs no user-facing recovery step.
      *
-     * The unlock is left *incomplete* rather than granted-then-topped-up: returning true keeps the
-     * app locked and hands the user back to the PIN field, so there is no window in which the app
-     * is open and the key is still missing. Entering the PIN goes through the ordinary
-     * [attemptUnlock] path, which caches the key and runs the rewrap.
-     *
-     * Returns true when the PIN is now required, i.e. the caller must not proceed.
+     * The vault call is Keystore and disk work, hence the hop off the main thread.
      */
-    private fun requirePinForCredentialGate(): Boolean {
-        val store = SecurityRuntime.graph(this).appLockStore
-        if (!store.isCredentialPinGateEnabled()) return false
-        errorText.visibility = View.VISIBLE
-        errorText.text = getString(R.string.unlock_pin_required_for_credential_gate)
-        pinField.requestFocus()
-        return true
+    private fun showBiometricPromptIfAvailable() {
+        if (BiometricManager.from(this).canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG) !=
+            BiometricManager.BIOMETRIC_SUCCESS
+        ) {
+            return
+        }
+
+        lifecycleScope.launch {
+            val unlock = withContext(Dispatchers.IO) {
+                SecurityRuntime.graph(this@UnlockActivity).biometricUnlockVault.prepareUnlock()
+            } ?: return@launch
+
+            // A prompt requested after the FragmentManager has saved its state is silently dropped
+            // by BiometricPrompt with no callback ever — see AndroidVaultOpener, which closes the
+            // same race in the same place. Checked here, on Main, immediately before authenticate().
+            if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) || supportFragmentManager.isStateSaved) {
+                return@launch
+            }
+            authenticate(unlock)
+        }
     }
 
-    private fun showBiometricPromptIfAvailable() {
-        val biometricManager = BiometricManager.from(this)
-        val canAuthenticate = biometricManager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG)
-        if (canAuthenticate != BiometricManager.BIOMETRIC_SUCCESS) return
-
+    private fun authenticate(unlock: BiometricUnlock) {
         val promptInfo = BiometricPrompt.PromptInfo.Builder()
             .setTitle(getString(R.string.unlock_title))
             .setNegativeButtonText(getString(R.string.unlock_use_pin_button))
@@ -201,22 +207,32 @@ class UnlockActivity : AppCompatActivity() {
             this,
             ContextCompat.getMainExecutor(this),
             object : BiometricPrompt.AuthenticationCallback() {
+                /**
+                 * The authentication is *used*, not merely observed. The cipher handed back here is
+                 * the one the Keystore refused to operate until the user authenticated, and the keys
+                 * it opens are the same ones a PIN unlock derives — so there is no longer a version
+                 * of this callback that grants access without producing a secret.
+                 */
                 override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                    // With the credential gate on, biometric is not a complete unlock and must not
-                    // be treated as one — see [requirePinForCredentialGate]. Do NOT unlock first
-                    // and ask afterwards: `unlockWithBiometric()` flips the app to unlocked, and
-                    // Back from this screen then drops the user into a live app with the PIN never
-                    // entered, which is the deferral this exists to remove.
-                    if (requirePinForCredentialGate()) return
-                    appLockManager.unlockWithBiometric()
-                    proceedIntoApp()
+                    val cipher = result.cryptoObject?.cipher
+                    val keys = cipher?.let { CredentialEnvelope.open(unlock.sealed, it) }
+                    if (keys == null) {
+                        // The blob and the key have gone out of step. Nothing here is recoverable by
+                        // trying again, and the PIN both unlocks and re-seals.
+                        errorText.visibility = View.VISIBLE
+                        errorText.text = getString(R.string.unlock_biometric_unavailable)
+                        pinField.requestFocus()
+                        return
+                    }
+                    appLockManager.unlockWithBiometric(keys)
+                    lifecycleScope.launch { completeUnlock() }
                 }
                 // onAuthenticationError (includes the user tapping "Use PIN") and
                 // onAuthenticationFailed both just leave the always-visible PIN field as the
                 // fallback — no separate handling needed.
             },
         )
-        prompt.authenticate(promptInfo)
+        prompt.authenticate(promptInfo, BiometricPrompt.CryptoObject(unlock.cipher))
     }
 
     private fun restartToFirstRun() {
