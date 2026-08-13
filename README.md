@@ -8,7 +8,7 @@ KyPost is an Android email client backed by a self-hosted KyPost relay. It shows
 - **Keyword tabs**: Inbox tabs come from server tab and label fields. Tune the tabs in the Keywords screen.
 - **Compose**: The To, Cc, and Bcc fields complete recipients from local contacts. An address-book picker adds recipients directly.
 - **Contacts**: A two-way contact sync runs against a self-hosted KyPost server. Open it from the Inbox overflow menu.
-- **PGP key signing**: One screen shows your own PGP public-key QR code. The same screen scans the QR code of another person and saves that key onto an existing contact.
+- **PGP**: One screen shows your own PGP public-key QR code and scans another person's, saving that key onto an existing contact. The app also encrypts outgoing mail to a recipient's key, and decrypts client-custody mail on the device once it holds a sealed key envelope — see **Device enrollment** in [SECURITY.md](SECURITY.md). Without that envelope, encrypted mail hands off to webmail instead.
 - **MFA push approval**: Push notifications approve or deny KyPost account logins. An in-app screen does the same when OEM background limits block the action notification.
 - **Themes**: The app shares theme presets with the KyPost web app. The default theme is **Patina Ky**. Select a theme in the Themes screen.
 - **Push notifications**: The app shows system notifications and keeps an in-app notification history for new mail. Each user selects a delivery mode (`push` or `pull`).
@@ -16,9 +16,11 @@ KyPost is an Android email client backed by a self-hosted KyPost relay. It shows
 ## Push notification pairing
 
 - The app pairs the device from a desktop deep link or QR code:
-  `kypost://native-pair?sub=<subscriberId>&hash=<subscriberHash>&srv=<serverUrl>&reg=<registrationUrl>&pt=<pairingToken>`
-- The app stores the pairing proof material in a Keystore-backed `EncryptedSharedPreferences` file. This material is the subscriber id, the subscriber hash, the server URL, the registration URL, the pairing token, and the last known device id. The app does not store this material in the plaintext DataStore that holds the notification history and the sync status.
-- The app registers the FCM token against the native registration endpoint of the backend. It uses `reg` from the QR code. If `reg` is absent, it derives `{srv}/api/notifications/native/register`. The app repeats this call on pair and on each token refresh.
+  `kypost://native-pair?sub=<subscriberId>&srv=<serverUrl>&reg=<registrationUrl>&pt=<pairingToken>`
+- The link must use `https` for both `srv` and `reg`, and `reg` must be the same origin as `srv`. The app refuses the link otherwise, because `reg` is where the device secret is minted and the confirmation dialog shows the user `srv`.
+- **Authentication is per device, not per account.** Registration exchanges the one-time `pairingToken` for a `deviceId` and a `deviceSecret` minted by the server. Every later request sends them as the `X-Kypost-Device-Id` and `X-Kypost-Device-Secret` headers. There is no `hash` parameter and no account-wide subscriber HMAC; the server no longer accepts them. Revoke a single device from the server's Security page.
+- The app stores the pairing proof material in a Keystore-backed `EncryptedSharedPreferences` file: the subscriber id, the server URL, the registration URL, the pairing token, the device id, and the device secret. The app does not store this material in the plaintext DataStore that holds the notification history and the sync status.
+- The app registers the FCM token against the native registration endpoint of the backend. It uses `reg` from the QR code. If `reg` is absent, it derives `{srv}/api/notifications/native/register`. The app repeats this call on pair and on each token refresh. Each successful registration mints a **new** device secret and invalidates the previous one.
 - The app marks the device as paired only after the registration call succeeds (`ok:true` or `synced:true`). A QR code scan alone does not pair the device.
 - The app handles these FCM data payload keys: `messageId`, `senderName`, `emailSubject`, and `Keywords`.
 - The app shows system notifications and keeps an in-app notification history.
@@ -27,7 +29,7 @@ KyPost is an Android email client backed by a self-hosted KyPost relay. It shows
 ## Pull mode (FCM and relay bypass)
 
 - The native registration response also returns `deliveryMode` (`push` or `pull`) and `pullEndpoint`. The app stores both values. If `pullEndpoint` is absent, the app derives `{srv}/api/notifications/native/pull`.
-- In `pull` mode the app polls `GET {pullEndpoint}?sub=&hash=&after=<cursor>`. The query parameters are the only authentication. The `hash` value is the same URL-encoded subscriber HMAC. The request uses no session and no bearer token. FCM stays registered but is not the source of truth.
+- In `pull` mode the app polls `GET {pullEndpoint}?after=<cursor>`. The cursor is the only query parameter. Authentication is the `X-Kypost-Device-Id` and `X-Kypost-Device-Secret` headers, never a query parameter — credentials in a URL end up in server access logs and browser history. The request uses no session and no bearer token. FCM stays registered but is not the source of truth.
 - The app renders each returned notification through the dispatcher that handles an FCM data message. The tap behavior is therefore identical.
 - The strictly increasing `seq` value removes duplicates. The app advances a durable per-subscriber `lastCursor` to `max(lastCursor, response.cursor)`. It advances the cursor only after it hands off the notifications, so a crash causes a re-fetch instead of a lost notification.
 - The `deliveryMode` value in the register response and in the pull response is authoritative. A change to `push` on the web stops the polling. A change to `pull` starts the polling again. The app reads the value again on every app foreground.
@@ -47,16 +49,16 @@ KyPost is an Android email client backed by a self-hosted KyPost relay. It shows
 
 ## Pairing from a desktop QR code
 
-1. The desktop web app shows a QR code with the deep link. The link contains `sub`, `hash`, `srv`, `pt`, and optionally `reg`.
+1. The desktop web app shows a QR code with the deep link. The link contains `sub`, `srv`, `pt`, and optionally `reg`.
 2. In the Push Notifications screen, tap **Scan QR Code**. You can also open the deep link directly, because the app is a handler for `kypost://native-pair`.
-3. The app validates the required parameters (`sub`, `hash`, `srv`, `pt`) and resolves the registration endpoint.
-4. The app calls the native registration endpoint with the FCM token. The app marks the device as paired only on success.
+3. The app validates the required parameters (`sub`, `srv`, `pt`), checks that `srv` and any `reg` are `https` and the same origin, and resolves the registration endpoint.
+4. The app shows a confirmation dialog naming the server host, then calls the native registration endpoint with the FCM token. The app marks the device as paired only on success, and stores the `deviceId` and `deviceSecret` the response returns.
 5. On each later FCM token refresh, the app repeats the same registration call with the stored pairing.
 
 ## Troubleshooting checklist
 
 - Make sure the deep link scheme and host are exactly `kypost://native-pair`. The app no longer supports the legacy `novu-pair` host or the old `llamalabels://` scheme.
-- Make sure the required query parameters exist: `sub`, `hash`, `srv`, and `pt`.
+- Make sure the required query parameters exist: `sub`, `srv`, and `pt`. A link that still carries `hash` comes from an outdated server; the app ignores the parameter and the server no longer accepts it.
 - Make sure the device can reach the resolved registration endpoint (`reg`, or `{srv}/api/notifications/native/register`).
 - Make sure the Firebase project configuration matches the package `org.kysecurity.mail`.
 - If the registration fails with `400`, the request was malformed or missed a field.
@@ -81,11 +83,25 @@ KyPost is an Android email client backed by a self-hosted KyPost relay. It shows
 ./gradlew assembleDebug
 ```
 
-Instrumented tests need a connected device or emulator. They cover the pairing store that uses `EncryptedSharedPreferences`.
+Instrumented tests need a connected device or emulator, **with a secure lock screen set**. The Keystore-backed enrollment vault refuses to create a key without one by design, so on a bare emulator the vault suites fail as though the code were broken. CI sets a PIN first; see the `instrumented` job in `.github/workflows/ci.yml`.
 
 ```sh
 ./gradlew connectedDebugAndroidTest
 ```
+
+### Release builds
+
+`:app:assembleRelease` **fails without signing material**, and that is deliberate: AGP does not fall back to the debug keystore, so without the guard the build emits an unsigned `app-release-unsigned.apk` on a green run. Add a `keystore.properties` at the repository root (it is gitignored):
+
+```properties
+storeFile=/absolute/path/to/your.jks
+storePassword=…
+keyAlias=…
+keyPassword=…
+```
+
+- CI's `release-build` job generates a throwaway key per run, so every PR still verifies the R8 configuration and `lintVitalRelease` without the real key ever being reachable from a `pull_request` trigger.
+- Published builds come from `.github/workflows/release.yml` on a `v*` tag. It reads the real key from the protected `release` environment, checks the tag against `versionName`, and refuses to publish unless `apksigner` reports the expected `RELEASE_KEY_SHA256` signer. Never build a release for distribution from a workstation.
 
 ## Test coverage
 

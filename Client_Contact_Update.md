@@ -248,7 +248,8 @@ need to touch any contact's membership rows.
   through the sync payload itself, that was a deliberate backend design
   choice to keep sync payloads small (see `llama-labels`' plan doc in
   its `.claude/plans` history if you want the full rationale).
-- Endpoint: `GET /api/contacts/{id}/photo?sub=...&hash=...` (once Part 0
+- Endpoint: `GET /api/contacts/{id}/photo`, authenticated with the
+  `X-Kypost-Device-Id` / `X-Kypost-Device-Secret` headers (once Part 0
   lands). Cache the bytes locally keyed by `photoRef` (the filename is
   content-hashed server-side, so it's a safe, immutable cache key — no
   need to ever invalidate a cached entry, just add new ones as `photoRef`

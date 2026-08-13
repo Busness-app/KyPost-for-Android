@@ -21,6 +21,14 @@ class DeviceContactSyncWorker(
         // the coordinator's Hostile Location Protection veto has to be repeated here — an already
         // enqueued periodic run would otherwise keep writing contacts to the OS provider after
         // protection was turned on.
+        // Same shape as the protection veto below, and for a stronger reason: after an abandoned
+        // wipe this worker would write the account's contacts back into the OS provider — outside
+        // this app's sandbox — on a device the wipe had just tried to remove them from.
+        if (org.kysecurity.mail.security.SecurityWipe.blockedByAbandonedWipe(applicationContext)) {
+            android.util.Log.e("DeviceContactSyncWorker", "Cancelling sync: a previous wipe was abandoned")
+            DeviceContactSyncScheduler.cancelPeriodic(applicationContext)
+            return Result.success()
+        }
         if (!graph.syncPermitted() || !graph.settings.isEnabled()) {
             DeviceContactSyncScheduler.cancelPeriodic(applicationContext)
             return Result.success()

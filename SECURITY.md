@@ -53,6 +53,12 @@ A PIN or biometric gate on opening the app (`security/AppLockManager.kt`).
   (`security/LockoutPolicy.kt`).
 - After `WIPE_THRESHOLD` consecutive wrong attempts with no intervening success, local
   data is wiped (`security/SecurityWipe.kt`).
+- **The wipe fails closed.** It reports each step it could not complete rather than
+  claiming a clean erasure, and resumes at the next launch. If it still cannot finish
+  after three resumes it stops retrying — but it does *not* forget: the marker persists,
+  and every launch from then on blocks the whole app behind "manual recovery required"
+  instead of presenting a first-run screen over data that is still on disk. Reinstalling
+  is the recovery.
 - Because an attacker gets a bounded number of guesses, common PINs are rejected at
   set time (`security/PinPolicy.kt`). The sequences and repeats that dominate published
   leaked-PIN datasets would otherwise all fit inside the free guesses.
@@ -115,15 +121,29 @@ is minted by the server at registration and returned exactly once.
 
 ### Mail content and PGP
 
-- **Encrypted mail is not decrypted in the app today.** PGP operations happen in webmail
-  via Custom Tabs. See `docs/superpowers/specs/2026-07-29-on-device-pgp-decryption-design.md`.
+- **Encrypted mail is decrypted on the device**, but only once this device holds a sealed
+  key envelope (see below). Until it does — and on any device where enrollment is
+  unavailable — encrypted mail is not decrypted here at all: the app hands the message off
+  to webmail in the user's own browser, or the installed webmail PWA, and never in a
+  Custom Tab. A Custom Tab renders inside KyPost's task, where this app's `FLAG_SECURE`
+  does not cover the browser's window, so the Recents preview could show plaintext. See
+  `pgp/WebmailTab.kt`.
+- **Composing to a recipient's PGP key encrypts on the device.** The plaintext body is
+  never sent to the relay for that path.
 - **Encrypted mail is excluded from push payloads by the server**, regardless of the
   Content Preview setting, because native push travels through a relay and on to FCM/APNs
   in cleartext at every hop.
-- A device-sealed envelope for on-device decryption is accepted **gated behind Hostile
-  Location Protection** — available only when HLP is off, and destroyed when HLP is
-  turned on. The trade is recorded in full in the design spec above; it is a deliberate,
-  user-chosen posture change, not a default.
+#### Device enrollment
+
+- The sealed envelope that makes on-device decryption possible is accepted **gated behind
+  Hostile Location Protection** — available only when HLP is off, and destroyed when HLP
+  is turned on. It is a deliberate, user-chosen posture change, not a default. The trade
+  is recorded in full in
+  `docs/superpowers/specs/2026-07-29-on-device-pgp-decryption-design.md`.
+- The envelope is unwrapped under a Keystore key that requires the device's secure lock
+  screen. A device with no lock screen cannot enrol at all.
+- A security wipe destroys the envelope. If it cannot, the wipe reports itself incomplete
+  and the app fails closed — see **App lock** above.
 
 ### What is out of scope
 

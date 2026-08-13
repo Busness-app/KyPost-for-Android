@@ -16,6 +16,7 @@ import org.kysecurity.mail.R
 import org.kysecurity.mail.security.applySecureFlag
 import org.kysecurity.mail.security.AppLockStore
 import org.kysecurity.mail.security.SecurityRuntime
+import org.kysecurity.mail.security.SecurityWipe
 import org.kysecurity.mail.security.resolvePinAttempt
 import org.kysecurity.mail.security.showSecurely
 import kotlinx.coroutines.Job
@@ -84,6 +85,23 @@ class MfaApprovalActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.applySecureFlag()
+
+        // This screen is deliberately outside LockedActivity — see the class KDoc — so it does not
+        // get that class's terminal block on an abandoned wipe, and it has to carry its own.
+        // Approving a sign-in is the highest-value action in this app, and an abandoned wipe means
+        // the app tried to erase itself from this device and failed: the last thing it may do is
+        // let whoever is holding it approve an account login. Hand off to MainActivity, which
+        // renders the "manual recovery required" block rather than leaving a dead notification tap.
+        if (SecurityWipe.blockedByAbandonedWipe(applicationContext)) {
+            android.util.Log.e("MfaApproval", "Refusing an MFA challenge: a previous wipe was abandoned")
+            startActivity(
+                Intent(this, org.kysecurity.mail.MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            )
+            finish()
+            return
+        }
+
         setContentView(R.layout.activity_mfa_approval)
 
         denyButton = findViewById(R.id.btnMfaDeny)

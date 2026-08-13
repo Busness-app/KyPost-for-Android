@@ -569,10 +569,9 @@ class EmailDetailActivity : LockedActivity() {
                 // show it via showLocked's webmailUnavailable guard.
                 if (serverUrl != null && webmailUrl != null) {
                     btnOpenInWebmail.setOnClickListener {
-                        // A Custom Tab where one is available: the user's real browser, with the
-                        // session webmail already holds, rendered over this activity so a back
-                        // gesture comes straight back to the message list. See WebmailTab for why
-                        // this is not the in-app WebView the old comment here ruled out.
+                        // The installed PWA, else the user's real browser — with the session
+                        // webmail already holds, and in that app's own task. See WebmailTab for
+                        // why this is neither an in-app WebView nor a Custom Tab.
                         if (!openWebmail(this, serverUrl, webmailUrl)) {
                             Toast.makeText(this, R.string.email_pgp_no_handler, Toast.LENGTH_LONG).show()
                         }
@@ -1062,12 +1061,10 @@ class EmailDetailActivity : LockedActivity() {
      *  installed app's non-browsable exported activities. Callers must already have checked the
      *  scheme and the user gesture; see [SAFE_LINK_SCHEMES].
      *
-     *  Deliberately NOT a Custom Tab, unlike the webmail handoff in renderPgpBar. A Custom Tab
-     *  renders inside this app's task wearing this app's toolbar colour, so a page opened in one
-     *  reads to the user as part of the app. That is the right frame for the user's own webmail
-     *  and precisely the wrong one for a URL chosen by whoever sent the email. Sender-controlled
-     *  links go to a separate browser app, where the address bar and the app switch are the
-     *  cues that this is somewhere else. */
+     *  FLAG_ACTIVITY_NEW_TASK, so a sender-controlled page never renders inside this app's task:
+     *  the address bar and the app switch are the cues that this is somewhere else, and this task's
+     *  Recents card stays under this app's FLAG_SECURE. The webmail handoff in renderPgpBar reaches
+     *  the same conclusion by a different route — see WebmailTab. */
     private fun openExternally(uri: android.net.Uri) {
         val intent = Intent(Intent.ACTION_VIEW, uri)
             .addCategory(Intent.CATEGORY_BROWSABLE)

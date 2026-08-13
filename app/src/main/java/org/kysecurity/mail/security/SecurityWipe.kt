@@ -64,6 +64,24 @@ private const val KEY_WIPE_IN_PROGRESS = "wipe_in_progress"
 private const val KEY_WIPE_ATTEMPTS = "wipe_attempts"
 
 /**
+ * Set once a wipe has exhausted [MAX_WIPE_RESUMES] with steps still failing. It stops the app
+ * re-running the destructive pass at every launch **without** clearing [KEY_WIPE_IN_PROGRESS] —
+ * which is the distinction this flag exists for.
+ *
+ * Clearing the marker was how giving up used to be expressed, and it discarded the only durable
+ * record that data may still be on disk: `wipeInterrupted` answered false from then on, so the
+ * final "some data may still be on this device" notice was shown exactly once, on the run that
+ * gave up, and never again. Every later launch presented a clean first-run app over plaintext mail,
+ * contacts or attachments that were never deleted. The marker now survives until a run completes
+ * cleanly; this flag only says "stop retrying by itself".
+ */
+private const val KEY_WIPE_ABANDONED = "wipe_abandoned"
+
+/** The step names of the abandoned wipe, so the permanent state can name what was left behind on
+ *  every later launch rather than only on the run that gave up. */
+private const val KEY_WIPE_FAILED_STEPS = "wipe_failed_steps"
+
+/**
  * The Hostile Location Protection posture captured at the *start* of the wipe, stored in the one
  * preferences file the wipe retains.
  *
@@ -103,11 +121,15 @@ sealed class WipeResult {
     object Complete : WipeResult()
 
     /**
-     * [willRetry] is false once [MAX_WIPE_RESUMES] has been reached and the marker has been
-     * cleared, because at that point the app has stopped resuming the wipe. The distinction exists
-     * so the UI does not promise a retry that will never happen — `security_wipe_incomplete_notice`
-     * says "it will be retried when the app next starts", which was shown on precisely the run that
-     * gave up.
+     * [willRetry] is false once [MAX_WIPE_RESUMES] has been reached, because at that point the app
+     * has stopped resuming the wipe by itself. The distinction exists so the UI does not promise a
+     * retry that will never happen — `security_wipe_incomplete_notice` says "it will be retried
+     * when the app next starts", which was shown on precisely the run that gave up.
+     *
+     * `willRetry = false` is terminal, not merely informational:
+     * [org.kysecurity.mail.security.LockedActivity] blocks every gated screen behind
+     * `security_wipe_incomplete_final_notice` on it, and the state persists across launches (see
+     * [KEY_WIPE_ABANDONED]) until a reinstall.
      */
     data class Incomplete(
         val failedSteps: List<String>,
@@ -351,13 +373,17 @@ object SecurityWipe {
             WipeResult.Complete
         } else {
             android.util.Log.e(TAG, "WIPE INCOMPLETE — failed steps: $failed")
-            // Past the ceiling, stop asking the app to re-wipe itself at every launch. The steps
-            // that did succeed are still done; what remains is reported, not retried forever.
+            // Past the ceiling, stop asking the app to re-wipe itself at every launch — that was a
+            // brick, and it is why the ceiling exists. What must NOT happen alongside it is
+            // clearing the marker: deletion failed, so the app has to keep knowing that. Fail
+            // closed instead — [KEY_WIPE_ABANDONED] ends the automatic retries, the marker and the
+            // failed step names persist, and [enforceTripwire] reports the same permanent
+            // "incomplete, manual recovery required" verdict on every launch from here on.
             val givingUp = wipeAttempts(appContext) >= MAX_WIPE_RESUMES
             if (givingUp) {
                 android.util.Log.e(TAG, "Wipe failed $MAX_WIPE_RESUMES times; giving up on resuming it")
-                clearWipeMarker(appContext)
             }
+            recordFailedSteps(appContext, failed, abandoned = givingUp)
             WipeResult.Incomplete(failed, willRetry = !givingUp)
         }
     }
@@ -370,6 +396,49 @@ object SecurityWipe {
 
     private fun wipeAttempts(appContext: Context): Int =
         appContext.getSharedPreferences(WIPE_STATE_PREFS, Context.MODE_PRIVATE).getInt(KEY_WIPE_ATTEMPTS, 0)
+
+    /**
+     * The terminal state described in [KEY_WIPE_ABANDONED], or null while the wipe is still being
+     * resumed (or has never run).
+     *
+     * Public so a screen can ask directly rather than inferring it from a bare `wipeInterrupted`,
+     * which is true of both a resumable wipe and an abandoned one and means opposite things.
+     */
+    fun abandonedWipe(context: Context): WipeResult.Incomplete? {
+        val prefs = context.applicationContext
+            .getSharedPreferences(WIPE_STATE_PREFS, Context.MODE_PRIVATE)
+        if (!prefs.getBoolean(KEY_WIPE_ABANDONED, false)) return null
+        val steps = prefs.getStringSet(KEY_WIPE_FAILED_STEPS, emptySet()).orEmpty().sorted()
+        return WipeResult.Incomplete(steps, willRetry = false)
+    }
+
+    /**
+     * "Refuse to do anything at all" — the abandoned-wipe state as a guard, for the entry points
+     * that are not Activities and so cannot go through [LockedActivity]'s terminal block.
+     *
+     * The state that reaches here is precisely: a wipe ran because the device was presumed
+     * hostile, it could not delete everything, and it has stopped trying. The pairing credential
+     * is very often part of what survived — `sharedPrefs` is the step that holds it and one of the
+     * likelier ones to fail — so the app can still receive push, still render sender and subject
+     * on a lock screen, and still approve an account login, on a device it has already decided is
+     * in the wrong hands. Every one of those is the thing the wipe existed to prevent.
+     *
+     * Reads one boolean out of SharedPreferences: no graph, no coroutine, no Keystore. Safe from a
+     * Service's or a Worker's first line, and deliberately independent of [startupVerdict], which
+     * is published asynchronously and may not be complete when a push arrives.
+     */
+    fun blockedByAbandonedWipe(context: Context): Boolean = abandonedWipe(context) != null
+
+    /** Persists what this run could not destroy, in the retained wipe-state file, alongside whether
+     *  the app has stopped resuming it. `commit()` because the process may be killed at any point
+     *  during a wipe — that is the whole premise of the marker. */
+    private fun recordFailedSteps(appContext: Context, failed: List<String>, abandoned: Boolean) {
+        appContext.getSharedPreferences(WIPE_STATE_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putStringSet(KEY_WIPE_FAILED_STEPS, failed.toSet())
+            .putBoolean(KEY_WIPE_ABANDONED, abandoned)
+            .commit()
+    }
 
     /**
      * Sets the marker, counts this attempt and records the protection posture, in one `commit()`,
@@ -391,12 +460,19 @@ object SecurityWipe {
         // (turning off "Require Unlock to Open" with the credential gate on runs one), the budget is
         // spent long before the wipe that matters: a thief burning PIN attempts, which would then
         // abandon itself on its first failed step and tell the user to reinstall.
-        val resuming = prefs.getBoolean(KEY_WIPE_IN_PROGRESS, false)
+        //
+        // An abandoned episode is over, even though its marker is still set (see
+        // [KEY_WIPE_ABANDONED]) — so a wipe triggered after one, by a thief burning PIN attempts on
+        // the reinstall-less device the user kept, starts a NEW episode with the full budget rather
+        // than inheriting a spent counter and abandoning itself on its first failed step.
+        val resuming = prefs.getBoolean(KEY_WIPE_IN_PROGRESS, false) &&
+            !prefs.getBoolean(KEY_WIPE_ABANDONED, false)
         val attempts = if (resuming) prefs.getInt(KEY_WIPE_ATTEMPTS, 0) + 1 else 1
         prefs.edit()
             .putBoolean(KEY_WIPE_IN_PROGRESS, true)
             .putBoolean(KEY_HOSTILE_LOCATION_WAS_ENABLED, posture)
             .putInt(KEY_WIPE_ATTEMPTS, attempts)
+            .putBoolean(KEY_WIPE_ABANDONED, false)
             .commit()
         return posture
     }
@@ -420,6 +496,10 @@ object SecurityWipe {
             .edit()
             .remove(KEY_WIPE_IN_PROGRESS)
             .remove(KEY_HOSTILE_LOCATION_WAS_ENABLED)
+            // Only ever reached from the clean-run branch, which is the one place these may go:
+            // they record that destruction is still owed.
+            .remove(KEY_WIPE_ABANDONED)
+            .remove(KEY_WIPE_FAILED_STEPS)
             .commit()
     }
 
@@ -602,6 +682,16 @@ object SecurityWipe {
         // tripwire check itself — the interrupted run may have deleted the app-lock state that
         // tripwireBroken() reads, so relying on the tripwire alone would let the rest of the wipe
         // stay undone forever. Re-running is safe: every step is idempotent.
+        // Checked before the resume, and never cleared by anything but a clean run: past
+        // MAX_WIPE_RESUMES the app stops re-running the destructive pass, but it does not stop
+        // knowing that data may still be here. Every launch from now on lands on
+        // `security_wipe_incomplete_final_notice` instead of a first-run screen that implies the
+        // erasure succeeded.
+        abandonedWipe(appContext)?.let {
+            android.util.Log.e(TAG, "Previous wipe was abandoned with steps still failing: ${it.failedSteps}")
+            return it
+        }
+
         if (wipeInterrupted(appContext)) {
             android.util.Log.e(TAG, "Previous wipe did not complete; resuming")
             return wipeAndResetApp(appContext)

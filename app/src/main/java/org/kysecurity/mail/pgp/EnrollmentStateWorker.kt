@@ -65,6 +65,14 @@ internal class EnrollmentStateWorker(
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
+        // Before the credential is even read. This worker exists to tell the server what key
+        // material this device holds; after an abandoned wipe that is a claim the app has no
+        // business making, on a device it failed to erase.
+        if (org.kysecurity.mail.security.SecurityWipe.blockedByAbandonedWipe(applicationContext)) {
+            android.util.Log.e("EnrollmentStateWorker", "Skipping state report: a previous wipe was abandoned")
+            return Result.success()
+        }
+
         // Read at run time, never carried in inputData: WorkManager writes input to its own
         // database in plaintext, and this is the credential every authenticated call uses.
         //

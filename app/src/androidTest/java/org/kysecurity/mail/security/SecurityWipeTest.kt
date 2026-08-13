@@ -168,9 +168,14 @@ class SecurityWipeTest {
      * failing step meant the app wiped itself at every launch, forever, with no way for the user to
      * get past it. `clearWebViewState` recursively deleted `cacheDir` in a live process where
      * OkHttp, WebView and ART were still creating files inside it; losing that race is routine.
+     *
+     * The first fix overcorrected in the other direction: it expressed "stop resuming" by clearing
+     * the marker, which threw away the record that data was still on disk. Stopping the retries and
+     * forgetting the failure are separate things, and this asserts both halves — no resume, and no
+     * forgetting. See [WipeResurrectionTest.pastTheCeiling_theIncompleteStateIsPermanentAndNotForgotten].
      */
     @Test
-    fun anIncompleteWipe_stopsResumingAfterTheCeiling() = runBlocking {
+    fun anIncompleteWipe_stopsResumingAfterTheCeiling_butStaysOnRecord() = runBlocking {
         val sharedPrefsDir = File(context.dataDir, "shared_prefs")
         val couldBlock = sharedPrefsDir.exists() && sharedPrefsDir.setReadable(false, false)
         org.junit.Assume.assumeTrue("Could not make shared_prefs unreadable on this device", couldBlock)
@@ -179,9 +184,14 @@ class SecurityWipeTest {
             repeat(6) { lastResult = SecurityWipe.wipeAndResetApp(context) }
             // Still honestly reported as incomplete...
             assertTrue(lastResult is WipeResult.Incomplete)
-            // ...but no longer scheduled to run again at every launch.
-            assertFalse(
-                "Wipe is still marked in progress; the app would re-wipe itself forever",
+            // ...no longer scheduled to run again at every launch...
+            assertTrue(
+                "The app must have stopped resuming the wipe by itself",
+                SecurityWipe.abandonedWipe(context) != null,
+            )
+            // ...and still on record, because the data it could not delete is still here.
+            assertTrue(
+                "The marker must outlive the retries; clearing it erases the evidence",
                 SecurityWipe.wipeInterrupted(context),
             )
         } finally {

@@ -100,20 +100,24 @@ client work below, and verify it's callable via pairing auth before any
 client code depends on it:
 
 ```
-curl -X POST 'https://<server>/api/contacts/dedupe?sub=<subscriberId>&hash=<subscriberHash>'
+curl -X POST 'https://<server>/api/contacts/dedupe' \
+  -H 'X-Kypost-Device-Id: <deviceId>' \
+  -H 'X-Kypost-Device-Secret: <deviceSecret>'
 ```
 
 Expect `200` with a `DedupeReport` body (see next section) — or `401` if
-the hash is wrong, matching `/api/contacts/sync`'s existing error
-contract.
+the secret is wrong or the device was revoked, matching
+`/api/contacts/sync`'s existing error contract.
 
 ---
 
 ## Shared contract (all three clients)
 
-**Request.** `POST /api/contacts/dedupe?sub=<subscriberId>&hash=<subscriberHash>`,
-empty body — same query-param pairing convention as
-`/api/contacts/sync`, not headers, not a cookie.
+**Request.** `POST /api/contacts/dedupe`, empty body, authenticated with the
+`X-Kypost-Device-Id` / `X-Kypost-Device-Secret` headers — the same per-device
+pairing convention as `/api/contacts/sync`, not query params, not a cookie.
+The account-wide `sub`/`hash` query params this originally specified were
+removed; the server rejects them.
 
 **Response** (`DedupeReport`, `backend/internal/contacts/store.go:254`):
 
@@ -191,14 +195,13 @@ sealed class ContactDedupeResult {
     data class Retryable(val message: String) : ContactDedupeResult()
 }
 
-suspend fun dedupe(serverUrl: String, subscriberId: String, subscriberHash: String): ContactDedupeResult {
-    val base = "${serverUrl.trimEnd('/')}/api/contacts/dedupe".toHttpUrlOrNull()
+suspend fun dedupe(serverUrl: String, deviceId: String, deviceSecret: String): ContactDedupeResult {
+    val url = pairingEndpoint(serverUrl, "/api/contacts/dedupe")
         ?: return ContactDedupeResult.Retryable("Server URL is not valid")
-    val url = base.newBuilder()
-        .addQueryParameter("sub", subscriberId)
-        .addQueryParameter("hash", subscriberHash)
+    val request = Request.Builder().url(url)
+        .post("".toRequestBody(JSON_MEDIA_TYPE))
+        .pairingAuthHeaders(deviceId, deviceSecret)
         .build()
-    val request = Request.Builder().url(url).post("".toRequestBody(JSON_MEDIA_TYPE)).build()
     // parse via json.decodeFromString<ContactDedupeReportDto>, same shape as execute()'s
     // 200 branch for pull/push — 401/503/other map to the result types above the same way.
 }
@@ -235,7 +238,9 @@ sealed class ContactDedupeOutcome {
 
 suspend fun dedupe(): ContactDedupeOutcome {
     val pairing = pairingProvider() ?: return ContactDedupeOutcome.NotPaired
-    return when (val result = client.dedupe(pairing.serverUrl, pairing.subscriberId, pairing.subscriberHash)) {
+    val deviceId = pairing.deviceId ?: return ContactDedupeOutcome.NotPaired
+    val deviceSecret = pairing.deviceSecret ?: return ContactDedupeOutcome.NotPaired
+    return when (val result = client.dedupe(pairing.serverUrl, deviceId, deviceSecret)) {
         is ContactDedupeResult.Success -> ContactDedupeOutcome.Success(result.report)
         is ContactDedupeResult.Unauthorized -> ContactDedupeOutcome.Unauthorized
         is ContactDedupeResult.ServiceUnavailable -> ContactDedupeOutcome.ServiceUnavailable(result.message)

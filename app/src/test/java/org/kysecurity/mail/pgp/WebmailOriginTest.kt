@@ -6,11 +6,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Covers the guard that decides whether a URL may be opened in a Custom Tab.
+ * Covers the guard on the webmail handoff, and the launch order it feeds.
  *
- * A Custom Tab renders inside this app's task, so opening an attacker-chosen URL in one would
- * lend the app's trust to a phishing page. Only URLs whose origin equals the paired server's
- * are eligible; everything else falls back to an external browser or is refused.
+ * The handoff is the one place the app tells the user "this is your mail, sign in here", so
+ * only URLs whose origin equals the paired server's are eligible; everything else is refused
+ * outright rather than degraded to a browser launch.
  */
 class WebmailOriginTest {
 
@@ -71,41 +71,35 @@ class WebmailOriginTest {
      * must lead with it and still hold a fallback for the (usual) case where it fails.
      */
     @Test
-    fun `tries the pwa first, then a custom tab, then any browser`() {
+    fun `tries the pwa first, then any browser`() {
         assertEquals(
-            listOf(
-                WebmailLaunchMode.NATIVE_APP,
-                WebmailLaunchMode.CUSTOM_TAB,
-                WebmailLaunchMode.EXTERNAL_BROWSER,
-            ),
-            webmailLaunchOrder(isFirstParty = true, customTabsPackage = "com.android.chrome"),
+            listOf(WebmailLaunchMode.NATIVE_APP, WebmailLaunchMode.EXTERNAL_BROWSER),
+            webmailLaunchOrder(isFirstParty = true),
         )
     }
 
-    /** No Custom Tabs-capable browser: the tab is dropped from the chain, not the PWA attempt. */
+    /**
+     * A Custom Tab renders inside KyPost's own task, where this app's FLAG_SECURE does not reach
+     * the browser's window — so decrypted mail could appear in the KyPost Recents card. Every mode
+     * that survives here launches into some other app's task. This is the regression test for that;
+     * `WebmailLaunchMode` no longer has a CUSTOM_TAB entry to return, and re-adding one has to fail
+     * here before it can ship.
+     */
     @Test
-    fun `drops the custom tab when no capable browser is installed`() {
+    fun `never launches webmail inside this app's own task`() {
         assertEquals(
-            listOf(WebmailLaunchMode.NATIVE_APP, WebmailLaunchMode.EXTERNAL_BROWSER),
-            webmailLaunchOrder(isFirstParty = true, customTabsPackage = null),
+            listOf(WebmailLaunchMode.NATIVE_APP, WebmailLaunchMode.EXTERNAL_BROWSER, WebmailLaunchMode.NONE),
+            WebmailLaunchMode.entries,
         )
     }
 
     /** Refusal is an empty chain, so nothing is attempted at all — not a browser fallback, which
      *  would hide the programming error that produced a foreign URL. */
     @Test
-    fun `refuses a url that is not first party even when a custom tab is available`() {
+    fun `refuses a url that is not first party`() {
         assertEquals(
             emptyList<WebmailLaunchMode>(),
-            webmailLaunchOrder(isFirstParty = false, customTabsPackage = "com.android.chrome"),
-        )
-    }
-
-    @Test
-    fun `refuses a url that is not first party when no browser is available either`() {
-        assertEquals(
-            emptyList<WebmailLaunchMode>(),
-            webmailLaunchOrder(isFirstParty = false, customTabsPackage = null),
+            webmailLaunchOrder(isFirstParty = false),
         )
     }
 }
