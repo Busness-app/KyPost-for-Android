@@ -26,10 +26,14 @@ android {
         applicationId = "org.kysecurity.mail"
         minSdk = 31
         targetSdk = 36
-        versionCode = 1
+        versionCode = 2
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // FLAG_SECURE is unconditional unless this is overridden, and only the debug type below
+        // can override it. See security/SecureWindow.kt for why the escape hatch exists at all.
+        buildConfigField("boolean", "ALLOW_SCREENSHOTS", "false")
     }
 
     signingConfigs {
@@ -44,6 +48,13 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Screenshot capture, opt-in per invocation: `./gradlew :app:assembleDebug
+            // -PallowScreenshots=true`. Read at configuration time so the value is a plain Boolean
+            // by the time the configuration cache serializes this block.
+            val allowScreenshots = project.findProperty("allowScreenshots") == "true"
+            buildConfigField("boolean", "ALLOW_SCREENSHOTS", allowScreenshots.toString())
+        }
         release {
             // R8 was disabled outright, shipping a security-sensitive binary with every class,
             // method and field name intact and no shrinking. Rules live in proguard-rules.pro.
@@ -139,26 +150,26 @@ configurations.all {
 }
 
 dependencies {
-    implementation("androidx.activity:activity-ktx:1.10.1")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.4")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.9.4")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")
-    implementation("androidx.datastore:datastore-preferences:1.1.7")
+    implementation(libs.androidx.activity.ktx)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.viewmodel.ktx)
+    implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.kotlinx.coroutines.play.services)
+    implementation(libs.androidx.datastore.preferences)
     implementation(libs.androidx.security.crypto)
     implementation(libs.androidx.biometric)
     implementation(libs.androidx.browser)
     implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.androidx.lifecycle.process)
-    implementation("com.squareup.okhttp3:okhttp:5.2.1")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
-    implementation(platform("com.google.firebase:firebase-bom:34.2.0"))
-    implementation("com.google.firebase:firebase-messaging")
-    implementation("org.unifiedpush.android:connector:3.3.3")
-    implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
+    implementation(libs.okhttp)
+    implementation(libs.kotlinx.serialization.json)
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.messaging)
+    implementation(libs.unifiedpush.connector)
+    implementation(libs.play.services.code.scanner)
     // QR *generation* for the "My QR Code" screen — play-services-code-scanner above only scans.
-    implementation("com.google.zxing:core:3.5.3")
-    implementation("com.github.infomaniak:android-rich-html-editor:1.1.0")
+    implementation(libs.zxing.core)
+    implementation(libs.rich.html.editor)
     // Sanitizes sender HTML before it is quoted into the compose editor, which is a JavaScript
     // enabled WebView with a bound @JavascriptInterface. Parser-backed rather than hand-rolled on
     // purpose: an allowlist applied to a real DOM is the only form that survives mXSS and

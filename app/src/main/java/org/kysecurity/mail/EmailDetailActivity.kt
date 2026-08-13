@@ -474,12 +474,21 @@ class EmailDetailActivity : LockedActivity() {
                         Toast.LENGTH_LONG,
                     ).show()
                 }
-                openCompose(
-                    to = "",
-                    subject = withPrefix(emailSubject, "Fwd:"),
-                    bodyHtml = quoteForForward(emailSender, emailSubject, emailPreview),
-                    attachments = orderedForwardAttachments(),
-                )
+                // Same sanitize-or-escape hop as the no-missing-attachments branch above. This one
+                // used to interpolate `emailPreview` — 140 characters of the sender's raw HTML —
+                // straight into the quote, which is the only path into the compose editor that did
+                // not reach QuotedHtmlSanitizer. The editor is a JavaScript-enabled WebView with a
+                // bound @JavascriptInterface, and its `exportHtml` global is what produces the body
+                // that actually gets sent, so markup surviving to it can rewrite the outgoing
+                // message under the sender's own identity and signature.
+                quotedBodyHtmlAsync(emailPreview) { quoted ->
+                    openCompose(
+                        to = "",
+                        subject = withPrefix(emailSubject, "Fwd:"),
+                        bodyHtml = quoteForForward(emailSender, emailSubject, quoted),
+                        attachments = orderedForwardAttachments(),
+                    )
+                }
             }
         }
     }

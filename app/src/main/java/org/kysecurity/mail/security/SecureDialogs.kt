@@ -1,7 +1,6 @@
 package org.kysecurity.mail.security
 
 import android.app.Dialog
-import android.view.WindowManager
 
 /**
  * Shows [this] with `FLAG_SECURE` set, so it is excluded from screenshots, screen recordings and
@@ -19,10 +18,7 @@ import android.view.WindowManager
  * for anything else.
  */
 fun <T : Dialog> T.showSecurely(): T {
-    window?.setFlags(
-        WindowManager.LayoutParams.FLAG_SECURE,
-        WindowManager.LayoutParams.FLAG_SECURE,
-    )
+    window?.applySecureFlag()
     show()
     return this
 }

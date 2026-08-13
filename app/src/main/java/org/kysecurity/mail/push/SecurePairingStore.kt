@@ -1,3 +1,6 @@
+// See AppLockStore: androidx.security-crypto is deprecated in full with no replacement API.
+@file:Suppress("DEPRECATION")
+
 package org.kysecurity.mail.push
 
 import android.content.Context

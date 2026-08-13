@@ -80,7 +80,9 @@ internal object PgpDecryptor {
         var encrypted: PGPPublicKeyEncryptedData? = null
         for (item in encryptedList.encryptedDataObjects) {
             val pked = item as? PGPPublicKeyEncryptedData ?: continue
-            val secretKey = secretKeys.getSecretKey(pked.keyID) ?: continue
+            // PGPSecretKeyRingCollection has no KeyIdentifier overload, so the id is routed through
+            // the non-deprecated accessor; it returns the same long as the deprecated getKeyID().
+            val secretKey = secretKeys.getSecretKey(pked.keyIdentifier.keyId) ?: continue
             // Empty passphrase: the armored key came out of the device envelope already
             // unwrapped. A key that still needs one is not a key this device can use.
             val privateKey = secretKey.extractPrivateKey(

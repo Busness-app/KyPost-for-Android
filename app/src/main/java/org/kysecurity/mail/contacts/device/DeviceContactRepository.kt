@@ -504,6 +504,9 @@ class DeviceContactRepository(
         }
     }
 
+    // ContactsContract.CommonDataKinds.Im is deprecated with no replacement mimetype, and the IM
+    // rows it names are still the ones present on device.
+    @Suppress("DEPRECATION")
     private suspend fun createRawContactForDto(dto: ContactDto) = withContext(Dispatchers.IO) {
         val ops = arrayListOf<android.content.ContentProviderOperation>()
 
@@ -907,6 +910,8 @@ class DeviceContactRepository(
         return@withContext 0L
     }
 
+    // See createRawContactForDto: reads back the same deprecated Im rows it writes.
+    @Suppress("DEPRECATION")
     private suspend fun readRawContactSnapshot(rawContactId: Long): DeviceRawContactSnapshot? =
         withContext(Dispatchers.IO) {
             val rawContactProjection = arrayOf(

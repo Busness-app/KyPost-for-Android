@@ -42,7 +42,7 @@ internal fun signerKeyIdsOf(armoredPublicKey: String, now: Date = Date()): Set<L
     )
     rings.keyRings.asSequence()
         .flatMap { it.publicKeys.asSequence() }
-        .filter { !it.isRevoked() && !it.isExpiredAt(now) }
+        .filter { !it.hasRevocation() && !it.isExpiredAt(now) }
         .map { it.keyID }
         .toSet()
 }.getOrDefault(emptySet())
