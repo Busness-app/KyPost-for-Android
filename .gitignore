@@ -16,6 +16,9 @@ build/
 captures/
 .externalNativeBuild/
 .cxx/
+# Android Studio's Generate Signed Bundle/APK wizard writes here, NOT into build/, so the
+# rules above miss it and git offers to commit a multi-megabyte signed artifact.
+app/release/
 
 # Logs
 *.log
@@ -36,6 +39,8 @@ app/google-services.json
 
 # APK / native debug artifacts
 *.apk
+# App Bundles were not covered while *.apk was, so a wizard-built .aab was committable.
+*.aab
 *.ap_
 *.dex
 *.hprof
