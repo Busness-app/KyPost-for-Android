@@ -48,12 +48,25 @@ object PgpFingerprint {
         format(primary.fingerprint)
     }.getOrNull()
 
+    /**
+     * The **Bc** verifier, not the Jca one, matching [PgpDecryptor]'s identical `signature.init`.
+     *
+     * The Jca operator converts the primary key to a JCE `PublicKey` first, which needs an EdDSA
+     * `KeyFactory` from the platform JCA. Android ships no such provider — its "BC" is stripped and
+     * the only Ed25519 signer is `AndroidKeyStoreBCWorkaround`, for Keystore-resident keys — so
+     * every ed25519 key threw "exception constructing public key" here, the subkey read as unbound,
+     * and the whole key was rejected as unparseable. That surfaced as "couldn't check whether your
+     * account uses encrypted mail" on the Security page, with no way to enroll. The JVM tests
+     * passed throughout: desktop JDKs *do* have EdDSA, and every fixture was a bare primary key
+     * with no subkey, so this function never ran. Bc uses BouncyCastle's own lightweight math and
+     * asks the platform for nothing.
+     */
     private fun hasValidBindingSignature(
         primary: org.bouncycastle.openpgp.PGPPublicKey,
         subkey: org.bouncycastle.openpgp.PGPPublicKey,
     ): Boolean {
-        val verifierProvider = org.bouncycastle.openpgp.operator.jcajce
-            .JcaPGPContentVerifierBuilderProvider()
+        val verifierProvider = org.bouncycastle.openpgp.operator.bc
+            .BcPGPContentVerifierBuilderProvider()
         val signatures = subkey.getSignaturesOfType(
             org.bouncycastle.openpgp.PGPSignature.SUBKEY_BINDING,
         )
