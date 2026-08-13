@@ -7,22 +7,11 @@
     <uses-permission android:name="android.permission.WRITE_CONTACTS" />
 
     <!--
-      Package visibility for apps that host the Custom Tabs service, so
-      CustomTabsClient.getPackageName can find one. androidx.browser 1.8.0 contributes no <queries>
-      of its own, so this block is load-bearing: without it minSdk 31's filtering hides every
-      browser and the Custom Tab path silently degrades to an external-browser launch everywhere.
-
-      Narrower than the VIEW/BROWSABLE-for-https filter it replaces, which granted sight of every
-      app claiming any https link. That breadth existed for a queryIntentActivities probe of the
-      webmail host that could never work (see launchNonBrowser in WebmailTab.kt) and is now
-      unused — the PWA preference asks the system at launch time instead. This is the query the
-      AndroidX Custom Tabs docs specify, and it answers only the question actually being asked.
+      No <queries> block. The Custom Tabs service query that used to be here existed solely for
+      CustomTabsClient.getPackageName, and the Custom Tab handoff is gone — see WebmailTab.kt for
+      why. Nothing this app does now needs to see which packages are installed: both remaining
+      webmail launch modes ask the system to resolve an intent rather than asking what is there.
     -->
-    <queries>
-        <intent>
-            <action android:name="android.support.customtabs.action.CustomTabsService" />
-        </intent>
-    </queries>
 
     <application
         android:name=".KyPostApp"

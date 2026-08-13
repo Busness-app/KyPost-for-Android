@@ -409,6 +409,8 @@
     <string name="security_wiped_notice">Too many wrong PIN attempts. Local data on this device has been erased.</string>
     <string name="security_wipe_incomplete_notice">Too many wrong PIN attempts. Erasing local data did not finish; it will be retried when the app next starts.</string>
     <string name="security_wipe_incomplete_final_notice">Erasing local data did not finish and will not be retried automatically. Some data may still be on this device — reinstall the app to remove it.</string>
+    <string name="security_wipe_blocked_title">Manual recovery required</string>
+    <string name="security_wipe_blocked_close">Close</string>
     <string name="security_verifier_unavailable">This device\'s secure key store has changed, so your PIN can no longer be checked. This attempt was not counted. Reinstall the app to set it up again.</string>
     <string name="security_change_pin_secret_unreadable">Your PIN was not changed. The paired credential could not be read with your current PIN, and changing it would make this device unable to reach the server. Unpair and pair again to fix this.</string>
     <string name="security_hostile_location_confirm_enable_title">Turn on Hostile Location Protection?</string>

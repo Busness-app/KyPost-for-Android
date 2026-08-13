@@ -41,8 +41,10 @@ suspend fun Activity.resolvePinAttempt(result: UnlockAttemptResult): Boolean = w
     }
     is UnlockAttemptResult.WipeFailed -> {
         // Two different messages: the wipe is only retried while SecurityWipe is still resuming it.
-        // Once MAX_WIPE_RESUMES is reached the marker is cleared and nothing will re-run, so
-        // promising a retry there tells the user their data will be erased when it will not be.
+        // Once MAX_WIPE_RESUMES is reached nothing will re-run by itself, so promising a retry
+        // there tells the user their data will be erased when it will not be. The relaunch below
+        // then lands on LockedActivity's terminal block, which is where that state is enforced
+        // rather than merely announced.
         val message =
             if (result.willRetry) R.string.security_wipe_incomplete_notice
             else R.string.security_wipe_incomplete_final_notice

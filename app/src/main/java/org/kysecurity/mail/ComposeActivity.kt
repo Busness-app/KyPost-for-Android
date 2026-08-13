@@ -908,9 +908,9 @@ class ComposeActivity : LockedActivity() {
     }
 
     private fun openHandoffTarget(serverUrl: String, url: String) {
-        // Prefers the installed PWA, then an in-app Custom Tab, which carries the browser session
-        // webmail already holds, so the user is not asked to log in again just to press send. Falls
-        // back to an external browser where no Custom Tabs-capable browser exists. Still no
+        // Prefers the installed PWA, then any browser — either way the browser session webmail
+        // already holds comes with it, so the user is not asked to log in again just to press
+        // send. Both land in another app's task, never this one's; see WebmailTab. Still no
         // resolveActivity: see WebmailTab.launchExternalBrowser.
         if (openWebmail(this, serverUrl, url)) {
             finish()

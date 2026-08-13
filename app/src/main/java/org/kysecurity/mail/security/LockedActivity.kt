@@ -97,6 +97,19 @@ abstract class LockedActivity : AppCompatActivity() {
         // straight to pairing — UnlockActivity would prompt for a PIN that no longer exists. The
         // CAS makes it exactly one screen: the others come up after the relaunch and carry on.
         val verdict = SecurityWipe.startupVerdict.getCompleted()
+
+        // Terminal, and checked before the one-shot below because it is NOT one-shot: the wipe
+        // gave up with steps still failing, so plaintext mail, contacts or attachments may be on
+        // this device right now. Relaunching into a first-run screen — what the branch below does —
+        // presents a clean, usable app over exactly that, which is the same false "your data is
+        // gone" claim in a different form. There is nothing here it is safe to show, and only a
+        // reinstall clears it, so every gated screen blocks on every launch until one happens.
+        if (verdict is WipeResult.Incomplete && !verdict.willRetry) {
+            redirectedToUnlock = true
+            blockOnAbandonedWipe(verdict.failedSteps)
+            return false
+        }
+
         if (verdict != null && startupWipeHandled.compareAndSet(false, true)) {
             redirectedToUnlock = true
             // Which message depends on whether the wipe actually finished. Announcing a completed
@@ -123,6 +136,29 @@ abstract class LockedActivity : AppCompatActivity() {
 
         window.decorView.visibility = View.VISIBLE
         return true
+    }
+
+    /**
+     * The permanent "wipe incomplete — manual recovery required" state: a non-dismissable notice
+     * over a blank window, and the only way out is closing the app.
+     *
+     * Posted rather than shown inline because this runs from `onCreate`, before the window has a
+     * token to attach a dialog to.
+     */
+    private fun blockOnAbandonedWipe(failedSteps: List<String>) {
+        android.util.Log.e("LockedActivity", "Wipe abandoned; blocking the app. Failed steps: $failedSteps")
+        window.decorView.visibility = View.INVISIBLE
+        window.decorView.post {
+            if (isFinishing || isDestroyed) return@post
+            androidx.appcompat.app.AlertDialog.Builder(this)
+                .setCancelable(false)
+                .setTitle(org.kysecurity.mail.R.string.security_wipe_blocked_title)
+                .setMessage(org.kysecurity.mail.R.string.security_wipe_incomplete_final_notice)
+                .setPositiveButton(org.kysecurity.mail.R.string.security_wipe_blocked_close) { _, _ ->
+                    finishAffinity()
+                }
+                .show()
+        }
     }
 
     /** The resume-time half of the gate: the app can lock while this screen sits in the back

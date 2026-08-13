@@ -27,6 +27,12 @@ class KyPostUnifiedPushService : PushService() {
     }
 
     override fun onNewEndpoint(endpoint: PushEndpoint, instance: String) {
+        // As in KyPostFirebaseMessagingService.onNewToken: this re-registers, and registration
+        // mints a new device secret. An abandoned wipe must not have its credential renewed.
+        if (org.kysecurity.mail.security.SecurityWipe.blockedByAbandonedWipe(applicationContext)) {
+            android.util.Log.e(TAG, "Refusing to re-register: a previous wipe was abandoned")
+            return
+        }
         val graph = PushRuntime.graph(applicationContext)
         serviceScope.launch {
             // pubKeySet carries the WebPush (RFC 8291) encryption keys the connector generated
@@ -63,6 +69,13 @@ class KyPostUnifiedPushService : PushService() {
     }
 
     override fun onMessage(message: PushMessage, instance: String) {
+        // Same guard, same reason, as the FCM receive path: no sender or subject on the lock
+        // screen of a device whose wipe could not finish.
+        if (org.kysecurity.mail.security.SecurityWipe.blockedByAbandonedWipe(applicationContext)) {
+            android.util.Log.e(TAG, "Dropping push: a previous wipe was abandoned with data still on this device")
+            return
+        }
+
         if (!message.decrypted) {
             // The connector couldn't decrypt this message — almost always means the server
             // encrypted with a p256dh/auth key that doesn't match what we last registered

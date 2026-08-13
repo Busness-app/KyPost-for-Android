@@ -204,6 +204,51 @@ class WipeResurrectionTest {
     }
 
     /**
+     * Giving up on the retries must not mean forgetting that deletion failed.
+     *
+     * The run that hit the ceiling used to call `clearWipeMarker()`, which is how "stop resuming"
+     * was expressed — and it discarded the only durable evidence that data may still be on disk.
+     * `wipeInterrupted` answered false from then on, the "some data may still be on this device"
+     * notice was shown exactly once and never again, and every later launch presented a clean
+     * first-run app over plaintext mail, contacts or attachments that were never deleted.
+     *
+     * Fail closed instead: the marker and the failed step names persist, and `enforceTripwire`
+     * returns the same terminal `Incomplete(willRetry = false)` on every launch — which
+     * [LockedActivity] blocks the whole app behind — without re-running the destructive pass.
+     */
+    @Test
+    fun pastTheCeiling_theIncompleteStateIsPermanentAndNotForgotten(): Unit = runBlocking {
+        val dir = File(context.dataDir, "shared_prefs")
+        org.junit.Assume.assumeTrue(dir.exists() && dir.setReadable(false, false))
+        try {
+            repeat(3) { SecurityWipe.wipeAndResetApp(context) }
+
+            assertTrue(
+                "the marker must survive: deletion failed, so the app has to keep knowing that",
+                SecurityWipe.wipeInterrupted(context),
+            )
+            val abandoned = SecurityWipe.abandonedWipe(context)
+            assertTrue("the abandoned state must name what was left behind", abandoned != null)
+            assertTrue(
+                "the failed steps must be recorded, got ${abandoned?.failedSteps}",
+                abandoned!!.failedSteps.contains("sharedPrefs"),
+            )
+        } finally {
+            dir.setReadable(true, false)
+        }
+
+        // Readable again: a resume WOULD now succeed. enforceTripwire must still refuse to run one
+        // and must still report the terminal state, or "permanent" is only true while the original
+        // failure persists — and the user gets a clean app back the moment the file unlocks.
+        val verdict = SecurityWipe.enforceTripwire(context)
+        assertTrue("the terminal verdict must be reported on every later launch", verdict is WipeResult.Incomplete)
+        assertFalse(
+            "and it must never promise a retry",
+            (verdict as WipeResult.Incomplete).willRetry,
+        )
+    }
+
+    /**
      * A wipe that promises a retry must leave the retry something to do.
      *
      * `step("downloadedAttachments")` keeps the URIs it could not delete and throws, producing

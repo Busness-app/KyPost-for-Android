@@ -6,10 +6,11 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 /**
  * Whether [candidateUrl] belongs to the same origin as the paired server.
  *
- * The gate on opening a URL in a Custom Tab. Unlike an external browser, a Custom Tab renders
- * inside this app's task with this app's toolbar colour, so a page opened in one reads to the
- * user as part of the app. Handing an attacker-chosen URL to that is a phishing primitive, which
- * is why this compares the whole origin — scheme, host and port — and not merely the host.
+ * The gate on the webmail handoff. Every caller builds its URL from the pairing's own `serverUrl`,
+ * and this refuses anything else rather than trusting that: the handoff is the one place the app
+ * tells the user "this is your mail, sign in here", so an attacker-chosen URL reaching it is a
+ * credential-harvest primitive. Compares the whole origin — scheme, host and port — not the host
+ * alone.
  *
  * Uses OkHttp's [HttpUrl] rather than `android.net.Uri` so it is unit-testable on a plain JVM,
  * matching [webmailMessageUrl] in `WebmailDeepLink.kt`. [HttpUrl] additionally refuses any
@@ -35,18 +36,13 @@ enum class WebmailLaunchMode {
      * see `launchNonBrowser` in `WebmailTab.kt` for why package-visibility filtering made the PWA
      * invisible on every device.
      *
-     * Ranked above [CUSTOM_TAB] because it is already the best experience available: a standalone
-     * window with the session it holds, and no browser chrome. A Custom Tab targets a browser and
-     * does not honour verified app links, so preferring one here would take the PWA away from the
-     * users who currently have the smoothest path.
+     * Ranked first because it is the best experience available: a standalone window with the
+     * session it holds, and no browser chrome.
      */
     NATIVE_APP,
 
-    /** In-app Custom Tab: shares the browser's session, no task switch. */
-    CUSTOM_TAB,
-
     /**
-     * A plain `ACTION_VIEW` intent, for a device with no Custom Tabs-capable browser.
+     * A plain `ACTION_VIEW` intent — the user's browser, in the browser's own task.
      *
      * Whether *any* handler exists cannot be determined in advance — see the note on
      * `resolveActivity` in this plan's constraints — so this mode means "attempt it and catch
@@ -68,10 +64,6 @@ enum class WebmailLaunchMode {
  * on every device. Handing the caller a fallback chain lets the system answer the question at
  * launch time, where it is the only party that can.
  *
- * [customTabsPackage] is probed by the caller — see `WebmailTab.kt` — rather than read here, so
- * this stays a pure function with no Android dependency and the precedence order itself is
- * unit-testable.
- *
  * A non-first-party URL yields an empty list — refuse, in the sense of [WebmailLaunchMode.NONE] —
  * rather than degrading to [WebmailLaunchMode.EXTERNAL_BROWSER]: every caller of this builds its
  * URL from the pairing's own `serverUrl`, so a failure here is a programming error, not a user
@@ -79,15 +71,6 @@ enum class WebmailLaunchMode {
  * also what keeps the guard ahead of the launch attempts, so a refused URL is never handed to the
  * system at all.
  */
-fun webmailLaunchOrder(
-    isFirstParty: Boolean,
-    customTabsPackage: String?,
-): List<WebmailLaunchMode> = when {
-    !isFirstParty -> emptyList()
-    customTabsPackage != null -> listOf(
-        WebmailLaunchMode.NATIVE_APP,
-        WebmailLaunchMode.CUSTOM_TAB,
-        WebmailLaunchMode.EXTERNAL_BROWSER,
-    )
-    else -> listOf(WebmailLaunchMode.NATIVE_APP, WebmailLaunchMode.EXTERNAL_BROWSER)
-}
+fun webmailLaunchOrder(isFirstParty: Boolean): List<WebmailLaunchMode> =
+    if (!isFirstParty) emptyList()
+    else listOf(WebmailLaunchMode.NATIVE_APP, WebmailLaunchMode.EXTERNAL_BROWSER)

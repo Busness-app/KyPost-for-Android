@@ -24,7 +24,6 @@ playServicesCodeScanner = "16.1.0"
 googleServices = "4.4.4"
 securityCrypto = "1.1.0"
 biometric = "1.1.0"
-browser = "1.8.0"
 workRuntime = "2.10.1"
 lifecycleProcess = "2.9.4"
 room = "2.8.4"
@@ -63,7 +62,6 @@ rich-html-editor = { group = "com.github.infomaniak", name = "android-rich-html-
 unifiedpush-connector = { group = "org.unifiedpush.android", name = "connector", version.ref = "unifiedPush" }
 androidx-security-crypto = { group = "androidx.security", name = "security-crypto", version.ref = "securityCrypto" }
 androidx-biometric = { group = "androidx.biometric", name = "biometric", version.ref = "biometric" }
-androidx-browser = { group = "androidx.browser", name = "browser", version.ref = "browser" }
 androidx-work-runtime-ktx = { group = "androidx.work", name = "work-runtime-ktx", version.ref = "workRuntime" }
 androidx-work-testing = { group = "androidx.work", name = "work-testing", version.ref = "workRuntime" }
 androidx-lifecycle-process = { group = "androidx.lifecycle", name = "lifecycle-process", version.ref = "lifecycleProcess" }

@@ -8,6 +8,7 @@ import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import org.kysecurity.mail.security.SecurityWipe
 import java.util.concurrent.TimeUnit
 
 /**
@@ -27,6 +28,16 @@ class PullWorker(
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
+        // An abandoned wipe often leaves the pairing credential on disk, and this worker is what
+        // turns that into live mail metadata: it polls the relay and renders sender and subject as
+        // notifications. Cancel rather than merely skip — the work is already enqueued, and nothing
+        // in a blocked app will ever legitimately want it back before a reinstall.
+        if (SecurityWipe.blockedByAbandonedWipe(applicationContext)) {
+            android.util.Log.e("PullWorker", "Cancelling pull: a previous wipe was abandoned")
+            PullScheduler.cancelPeriodic(applicationContext)
+            return Result.success()
+        }
+
         val graph = PushRuntime.graph(applicationContext)
         return when (graph.pullCoordinator.pullOnce()) {
             // Transient server/network failure — let WorkManager back off exponentially.
