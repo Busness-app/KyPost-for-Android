@@ -64,6 +64,13 @@ KyPost is an Android email client backed by a self-hosted KyPost relay. It shows
 - If the registration fails with `503`, the backend has no `PAIRING_SECRET` configuration. The app cannot retry around this error.
 - If Android 13 or later shows no notification, make sure the user granted the notification permission.
 
+## Privacy and data collection
+
+- The app does not use the Android advertising ID (AAID). No source file calls `AdvertisingIdClient`, and no merged manifest declares `com.google.android.gms.permission.AD_ID`.
+- No advertising or attribution library is in the dependency graph. The resolved Google Play services artifacts are `play-services-base`, `-basement`, `-cloud-messaging`, `-code-scanner`, `-stats`, and `-tasks`. Neither `play-services-ads-identifier` nor `play-services-appset` is present.
+- Firebase Analytics is not included. The build pulls `firebase-messaging`, `firebase-installations`, and their support artifacts. FCM identifies the device with the Firebase installation id, not with an advertising id.
+- The device identifiers the app does hold are the FCM token and the pairing material described in **Push notification pairing**. Both go only to the paired KyPost relay.
+
 ## Build and test
 
 ```sh
@@ -88,4 +95,3 @@ Instrumented tests need a connected device or emulator. They cover the pairing s
 - Payload parser tests (`messageId`, `senderName`, `emailSubject`, `Keywords`)
 - Native registration request mapper tests (`NativeRegistrationRequestMapperTest`)
 - Secure pairing store round-trip and encryption tests (`SecurePairingStoreTest`, instrumented)
-```
