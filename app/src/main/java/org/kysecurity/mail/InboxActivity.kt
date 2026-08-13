@@ -730,7 +730,7 @@ class InboxActivity : LockedActivity() {
             }
 
             override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) {
-                val position = viewHolder.adapterPosition
+                val position = viewHolder.bindingAdapterPosition
                 if (position < 0 || position >= adapter.itemCount) return
                 val email = adapter.getEmailAt(position)
                 // Remove the row immediately and let the IMAP call finish on its own; waiting for

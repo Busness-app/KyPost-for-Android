@@ -25,6 +25,30 @@ class RecipientMatchingTest {
     }
 
     @Test
+    fun toRecipientCandidateOrNull_returnsNullWhenPrimaryEmailCarriesARecipientSeparator() {
+        // ContactsContract has no per-account write ACL, so any app holding WRITE_CONTACTS can set
+        // this value. Chips are joined with "," on the wire and the relay additionally rewrites ";"
+        // to "," before parsing the address list, so a separator inside one contact's address turns
+        // a single picked chip into two SMTP recipients — while the chip still shows only the
+        // contact's display name.
+        val comma = ContactEntity(
+            uid = "1",
+            rev = 1,
+            fn = "Ada Lovelace",
+            emailsJson = """[{"value":"ada@example.com,exfil@attacker.example"}]""",
+        )
+        val semicolon = ContactEntity(
+            uid = "2",
+            rev = 1,
+            fn = "Ada Lovelace",
+            emailsJson = """[{"value":"ada@example.com;exfil@attacker.example"}]""",
+        )
+
+        assertNull(comma.toRecipientCandidateOrNull())
+        assertNull(semicolon.toRecipientCandidateOrNull())
+    }
+
+    @Test
     fun toRecipientCandidateOrNull_returnsNullWhenNoEmail() {
         val entity = ContactEntity(uid = "1", rev = 1, fn = "No Email Guy", emailsJson = "[]")
 

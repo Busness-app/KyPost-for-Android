@@ -1,3 +1,8 @@
+// androidx.security-crypto is deprecated in full with no replacement API. Swapping it out is a
+// migration of the at-rest credential format, not a warning fix, so it is deliberately not done
+// here. File-scoped because the deprecation also fires on the imports below.
+@file:Suppress("DEPRECATION")
+
 package org.kysecurity.mail.security
 
 import android.content.Context

@@ -83,7 +83,7 @@ jobs:
           } > keystore.properties
 
       - name: assemble release
-        run: ./gradlew :app:assembleRelease
+        run: ./gradlew :app:assembleRelease :app:bundleRelease
 
       - name: dependency verification metadata is unchanged
         run: git diff --exit-code -- gradle/verification-metadata.xml
@@ -159,6 +159,11 @@ jobs:
           sha256sum "${RUNNER_TEMP}/kypost-${TAG}.apk" \
             | sed "s|${RUNNER_TEMP}/||" > "${RUNNER_TEMP}/kypost-${TAG}.apk.sha256"
 
+          # App Bundle for Google Play
+          cp app/build/outputs/bundle/release/app-release.aab "${RUNNER_TEMP}/kypost-${TAG}.aab"
+          sha256sum "${RUNNER_TEMP}/kypost-${TAG}.aab" \
+            | sed "s|${RUNNER_TEMP}/||" > "${RUNNER_TEMP}/kypost-${TAG}.aab.sha256"
+
       # R8's mapping file, kept as a workflow artifact rather than attached to the Release.
       # Without it a crash report from this build is unreadable; published alongside the APK
       # it also hands an analyst a full symbol table for a security-sensitive binary. Retained
@@ -188,7 +193,9 @@ jobs:
             --title "${TAG}" \
             --generate-notes \
             "${RUNNER_TEMP}/kypost-${TAG}.apk" \
-            "${RUNNER_TEMP}/kypost-${TAG}.apk.sha256"
+            "${RUNNER_TEMP}/kypost-${TAG}.apk.sha256" \
+            "${RUNNER_TEMP}/kypost-${TAG}.aab" \
+            "${RUNNER_TEMP}/kypost-${TAG}.aab.sha256"
 
       - name: destroy signing material
         if: always()

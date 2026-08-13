@@ -34,6 +34,13 @@ fun ContactDto.toEntity(
         previousFingerprint != null && newFingerprint != null && previousFingerprint != newFingerprint
     val stillNeedsReverification = !verifiedInPerson &&
         previous?.pgpKeyNeedsReverification == true && newFingerprint == previousFingerprint
+    // [PgpFingerprint.compute] returns null for the shapes it refuses to vouch for — an appended
+    // second key ring, a subkey bound by a foreign signature or by none — and its KDoc requires
+    // callers to treat that as "reject this key". Reading it as "no information" meant a key the
+    // local parser rejects raised nothing, which is the one alarm here that does not depend on the
+    // relay's own verdict. It also cleared an outstanding alarm, because stillNeedsReverification
+    // asks for newFingerprint == previousFingerprint and a null fingerprint never matches.
+    val keyUnparseable = !verifiedInPerson && !pgpKey.isNullOrBlank() && newFingerprint == null
     // The mirror of [keyRotated]: same person, different key vs. same key, different person. A
     // device-side merge carries pgpKey over untouched, so the fingerprint is unchanged and the
     // rotation check cannot fire — but ContactsContract has no per-account write ACL, so any app
@@ -88,7 +95,7 @@ fun ContactDto.toEntity(
         pgpKeyFingerprint = newFingerprint ?: previousFingerprint,
         // The KEY alarm only. A QR fingerprint comparison answers this one, so verifiedInPerson
         // clearing it is correct.
-        pgpKeyNeedsReverification = keyRotated || stillNeedsReverification,
+        pgpKeyNeedsReverification = keyRotated || keyUnparseable || stillNeedsReverification,
         // The IDENTITY alarm, in its own column so the ceremony cannot clear it. A fingerprint
         // comparison attests to the key; it says nothing about which addresses that key is displayed
         // beside, and the save path builds its DTO from the current — possibly already tampered —

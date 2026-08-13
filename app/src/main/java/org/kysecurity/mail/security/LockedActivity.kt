@@ -3,9 +3,9 @@ package org.kysecurity.mail.security
 import android.content.Intent
 import android.os.Bundle
 import android.view.View
-import android.view.WindowManager
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 
 /**
@@ -51,7 +51,7 @@ abstract class LockedActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (secureWindow) {
-            window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
+            window.applySecureFlag()
         }
         if (!passesStartupTripwire()) return
         redirectToUnlockIfLocked()
@@ -78,6 +78,8 @@ abstract class LockedActivity : AppCompatActivity() {
      * recreated, and the check below is synchronous from then on: the deferred is process-scoped,
      * so this costs at most one recreate on the first screen of a cold start.
      */
+    // getCompleted() below is guarded by the isCompleted check that opens this function.
+    @OptIn(ExperimentalCoroutinesApi::class)
     private fun passesStartupTripwire(): Boolean {
         if (!SecurityWipe.startupVerdict.isCompleted) {
             redirectedToUnlock = true

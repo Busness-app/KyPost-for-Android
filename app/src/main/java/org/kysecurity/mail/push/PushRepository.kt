@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.tasks.await
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.IOException
@@ -335,9 +336,53 @@ class PushRepository(
         } else {
             DeregisterResult.Error("Device is not paired")
         }
+        tearDownPushTransport()
         clearPairing()
         PullScheduler.cancelPeriodic(context)
         return networkResult
+    }
+
+    /**
+     * Severs the delivery channel itself, not just the record of who we were paired with.
+     *
+     * [clearPairing] drops this app's *copy* of the endpoint and purges account data, but it leaves
+     * the FCM registration token unrotated and the UnifiedPush subscription live at the distributor
+     * — so the relay a user just walked away from kept a working push channel into a device the UI
+     * reports as detached, and could still post sender/subject under this app's identity. Unpair is
+     * the app's own remedy for a relay the user no longer trusts, so it has to cut the channel.
+     * [org.kysecurity.mail.security.SecurityWipe] already does all of this; only this path did not.
+     *
+     * Deliberately NOT shared with the wipe's versions of these steps: the wipe runs each inside its
+     * own fault-isolated `step(...)` because its Complete/Incomplete verdict is what tells a user
+     * whether their data is really gone. Keep the two in sync by hand.
+     *
+     * Every operation is best-effort. A failure here must never prevent [clearPairing] below — the
+     * contract this method documents is that local state can never be stuck "paired", and a
+     * network-backed token delete is exactly the step most likely to fail offline.
+     *
+     * NOT called from the account-replacement path in [PushSyncCoordinator]: that branch
+     * re-registers immediately afterwards and reads the FCM token to do it, so rotating the token
+     * there would break the pairing it is in the middle of performing.
+     */
+    private suspend fun tearDownPushTransport() {
+        runCatching {
+            context.getSystemService(android.app.NotificationManager::class.java)?.cancelAll()
+        }
+        // Unregister before deleting the connector's own state, for the reason SecurityWipe gives:
+        // reversed, the unregister has no registration records left to tell the distributor about,
+        // so the device stays subscribed at the distributor and its push server.
+        runCatching { UnifiedPushRegistrar.unregister(context) }
+        // Holds the WebPush ECDH private key and auth secret.
+        runCatching { context.deleteDatabase("unifiedpush-connector") }
+        // UnifiedPush.unregister keeps the distributor selection on purpose so a later re-register
+        // reuses it; after an unpair that record should not outlive the pairing.
+        runCatching { context.deleteSharedPreferences("unifiedpush.connector") }
+        runCatching {
+            com.google.firebase.messaging.FirebaseMessaging.getInstance().deleteToken().await()
+            // Rotating the messaging token leaves the Firebase installation and its stable Fid in
+            // place, which keeps the device linkable across an unpair and a later re-pair.
+            com.google.firebase.installations.FirebaseInstallations.getInstance().delete().await()
+        }
     }
 
     /** Persist the authoritative delivery mode and (derived or server-provided) pull endpoint. */

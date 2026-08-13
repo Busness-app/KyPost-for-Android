@@ -146,14 +146,25 @@ internal object PgpEncryptor {
      *
      * For the ed25519/cv25519 pairs this product generates the master key signs and only the subkey
      * encrypts, so taking the master would produce a message the recipient cannot open.
+     *
+     * Recipient key material comes from the relay, which client-side custody exists precisely not to
+     * trust, so the blob is validated locally before any of it is used. [PgpFingerprint.compute] is
+     * the same validator the QR and contact-sync paths already apply, and it rejects the two shapes
+     * that leave the primary fingerprint — the string a user compares out of band — describing only
+     * part of what gets used: an appended second key ring, and a subkey bound by a foreign signature
+     * or by none at all. Revocation is then filtered here because [PGPPublicKey.isEncryptionKey]
+     * ignores it, so a subkey its own owner has retired was otherwise still a valid selection.
+     *
+     * Returning null is a hard failure at the call site, never a skipped recipient — see [encrypt].
      */
     private fun encryptionKeyOf(armoredPublicKey: String): PGPPublicKey? = runCatching {
+        if (PgpFingerprint.compute(armoredPublicKey) == null) return@runCatching null
         PGPPublicKeyRingCollection(
             PGPUtil.getDecoderStream(armoredPublicKey.byteInputStream(Charsets.UTF_8)),
             BcKeyFingerprintCalculator(),
         ).keyRings.asSequence()
             .flatMap { ring -> ring.publicKeys.asSequence() }
-            .filter { it.isEncryptionKey }
+            .filter { it.isEncryptionKey && !it.hasRevocation() }
             .lastOrNull()
     }.getOrNull()
 

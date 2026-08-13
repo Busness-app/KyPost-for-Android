@@ -3,7 +3,6 @@ package org.kysecurity.mail.push
 import android.content.Intent
 import android.os.Bundle
 import android.view.View
-import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -14,6 +13,7 @@ import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import org.kysecurity.mail.R
+import org.kysecurity.mail.security.applySecureFlag
 import org.kysecurity.mail.security.AppLockStore
 import org.kysecurity.mail.security.SecurityRuntime
 import org.kysecurity.mail.security.resolvePinAttempt
@@ -83,7 +83,7 @@ class MfaApprovalActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
+        window.applySecureFlag()
         setContentView(R.layout.activity_mfa_approval)
 
         denyButton = findViewById(R.id.btnMfaDeny)

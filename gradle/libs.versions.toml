@@ -2,6 +2,7 @@
 agp = "9.3.1"
 kotlin = "2.2.20"
 coreKtx = "1.10.1"
+activityKtx = "1.10.1"
 junit = "4.13.2"
 junitVersion = "1.1.5"
 espressoCore = "3.5.1"
@@ -30,10 +31,14 @@ room = "2.8.4"
 ksp = "2.3.2"
 bouncyCastlePgp = "1.79"
 jsoup = "1.18.3"
+zxingCore = "3.5.3"
+richHtmlEditor = "1.1.0"
+unifiedPush = "3.3.3"
 
 [libraries]
 jsoup = { group = "org.jsoup", name = "jsoup", version.ref = "jsoup" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+androidx-activity-ktx = { group = "androidx.activity", name = "activity-ktx", version.ref = "activityKtx" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
@@ -53,6 +58,9 @@ kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
 firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging" }
 play-services-code-scanner = { group = "com.google.android.gms", name = "play-services-code-scanner", version.ref = "playServicesCodeScanner" }
+zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxingCore" }
+rich-html-editor = { group = "com.github.infomaniak", name = "android-rich-html-editor", version.ref = "richHtmlEditor" }
+unifiedpush-connector = { group = "org.unifiedpush.android", name = "connector", version.ref = "unifiedPush" }
 androidx-security-crypto = { group = "androidx.security", name = "security-crypto", version.ref = "securityCrypto" }
 androidx-biometric = { group = "androidx.biometric", name = "biometric", version.ref = "biometric" }
 androidx-browser = { group = "androidx.browser", name = "browser", version.ref = "browser" }

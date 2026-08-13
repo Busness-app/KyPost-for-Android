@@ -240,12 +240,47 @@ class ContactMappersTest {
     }
 
     @Test
-    fun toEntity_unparseableKey_storesNoFingerprint() {
+    fun toEntity_unparseableKey_storesNoFingerprintAndFlagsForReverification() {
         val dto = ContactDto(uid = "uid-8", fn = "Bad Key", pgpKey = "not a real pgp key")
 
         val entity = dto.toEntity(previous = null)
 
         assertNull(entity.pgpKeyFingerprint)
+        // PgpFingerprint.compute returns null for the shapes it refuses to vouch for — an appended
+        // second key ring, a subkey bound by a foreign signature — and its KDoc says callers must
+        // treat null as "reject this key". Reading it as "no information" let an attacker silence
+        // the only key alarm that does not depend on the relay's own verdict, simply by choosing an
+        // encoding the local parser rejects.
+        assertTrue(entity.pgpKeyNeedsReverification)
+    }
+
+    @Test
+    fun toEntity_unparseableKey_doesNotClearAnAlreadyRaisedAlarm() {
+        val previous = ContactEntity(
+            uid = "uid-8b",
+            rev = 1,
+            fn = "Bad Key",
+            pgpKeyFingerprint = TEST_KEY_FINGERPRINT,
+            pgpKeyNeedsReverification = true,
+        )
+        val dto = ContactDto(uid = "uid-8b", rev = 2, fn = "Bad Key", pgpKey = "not a real pgp key")
+
+        val entity = dto.toEntity(previous)
+
+        // stillNeedsReverification requires newFingerprint == previousFingerprint, which a null
+        // fingerprint can never satisfy — so an outstanding alarm was being cleared rather than
+        // carried forward.
+        assertTrue(entity.pgpKeyNeedsReverification)
+    }
+
+    @Test
+    fun toEntity_unparseableKeyVerifiedInPerson_isNotFlagged() {
+        val dto = ContactDto(uid = "uid-8c", fn = "Bad Key", pgpKey = "not a real pgp key")
+
+        val entity = dto.toEntity(previous = null, verifiedInPerson = true)
+
+        // The !verifiedInPerson guard is load-bearing: raising this badge on the QR-ceremony path is
+        // what trained users to dismiss the app's only TOFU alarm (see the KDoc on toEntity).
         assertFalse(entity.pgpKeyNeedsReverification)
     }
 
