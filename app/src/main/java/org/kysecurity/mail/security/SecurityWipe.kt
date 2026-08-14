@@ -324,6 +324,13 @@ object SecurityWipe {
             val leftBehind = BiometricUnlockVault(appContext).destroy()
             check(leftBehind.isEmpty()) { "biometric unlock vault left $leftBehind" }
         }
+        // Same again for the MFA approval screen's gate key. It seals nothing, so what survives is
+        // only an alias — but a Keystore entry outliving a wipe is exactly what the incomplete
+        // result exists to report, whatever it holds.
+        step("authGateKey") {
+            val leftBehind = AuthGateKey.destroy()
+            check(leftBehind.isEmpty()) { "auth gate key left $leftBehind" }
+        }
         step("pullWorker") { org.kysecurity.mail.push.PullScheduler.cancelPeriodic(appContext) }
         step("deviceContactWorker") { org.kysecurity.mail.contacts.device.DeviceContactSyncScheduler.cancelPeriodic(appContext) }
 

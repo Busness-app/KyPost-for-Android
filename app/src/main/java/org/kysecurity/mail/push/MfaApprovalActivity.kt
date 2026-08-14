@@ -16,6 +16,7 @@ import androidx.lifecycle.lifecycleScope
 import org.kysecurity.mail.R
 import org.kysecurity.mail.security.applySecureFlag
 import org.kysecurity.mail.security.AppLockStore
+import org.kysecurity.mail.security.AuthGateKey
 import org.kysecurity.mail.security.CredentialEnvelope
 import org.kysecurity.mail.security.SecurityRuntime
 import org.kysecurity.mail.security.SecurityWipe
@@ -291,11 +292,9 @@ class MfaApprovalActivity : AppCompatActivity() {
             val unlock = withContext(Dispatchers.IO) {
                 SecurityRuntime.graph(this@MfaApprovalActivity).biometricUnlockVault.prepareUnlock()
             }
-            // The user left while the vault was being read. Neither a BiometricPrompt nor an
-            // AlertDialog may be raised past a saved state — the first is silently dropped with no
-            // callback ever, the second throws — so leave the decision unmade and let [onStart]
-            // start over on the way back.
-            if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) || supportFragmentManager.isStateSaved) {
+            // The user left while the vault was being read: leave the decision unmade and let
+            // [onStart] start over on the way back.
+            if (!canRaisePrompt()) {
                 authInFlight = false
                 return@launch
             }
@@ -372,6 +371,11 @@ class MfaApprovalActivity : AppCompatActivity() {
      * temporarily down) and `BIOMETRIC_STATUS_UNKNOWN` (documented as indeterminate, with the advice
      * to call `authenticate()` anyway) both occur on devices that *do* have a screen lock, and with
      * this app's PIN unset both buttons went live with no authentication whatsoever.
+     *
+     * The prompt has no app secret to produce, so it is bound to [AuthGateKey] instead: a Keystore
+     * key the OS releases only for a live authentication. It protects no data — there is none to
+     * protect on this path — but it is what makes the success callback evidence rather than a
+     * boolean an instrumented process can set.
      */
     private fun authenticateWithoutSealedKeys() {
         if (SecurityRuntime.graph(this).appLockStore.isLockEnabled()) {
@@ -396,32 +400,58 @@ class MfaApprovalActivity : AppCompatActivity() {
             .setAllowedAuthenticators(authenticators)
             .build()
 
-        BiometricPrompt(
-            this,
-            ContextCompat.getMainExecutor(this),
-            object : BiometricPrompt.AuthenticationCallback() {
-                /**
-                 * No `CryptoObject` here, and there cannot be one: this branch is reached only when
-                 * the user has configured no app-lock PIN, so the app holds no secret to bind the
-                 * authentication to. The device credential is a real gate on a real screen lock, and
-                 * it is strictly better than the alternative below it, which is no gate at all.
-                 */
-                // codeql[java/android/insecure-local-authentication]
-                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                    authInFlight = false
-                    authenticated = true
-                    setButtonsEnabled(true)
-                }
+        lifecycleScope.launch {
+            // Keystore, so never on Main.
+            val gate = withContext(Dispatchers.IO) { AuthGateKey.cipher() }
+            // The user left while the key was being minted; [onStart] starts over on the way back.
+            if (!canRaisePrompt()) {
+                authInFlight = false
+                return@launch
+            }
+            if (gate == null) {
+                // An authenticator exists but the OS will not bind a key to it. Fail closed: a
+                // prompt with nothing to prove it ran is the alert this path was written to answer.
+                abandonDecision()
+                return@launch
+            }
 
-                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                    authInFlight = false
-                    // Cancelled or unavailable: leave the decision unmade rather than falling
-                    // through to enabled buttons.
-                    Toast.makeText(this@MfaApprovalActivity, R.string.mfa_auth_required, Toast.LENGTH_SHORT).show()
-                    finish()
-                }
-            },
-        ).authenticate(promptInfo)
+            BiometricPrompt(
+                this@MfaApprovalActivity,
+                ContextCompat.getMainExecutor(this@MfaApprovalActivity),
+                object : BiometricPrompt.AuthenticationCallback() {
+                    override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                        authInFlight = false
+                        val cipher = result.cryptoObject?.cipher
+                        if (cipher == null || !AuthGateKey.proves(cipher)) {
+                            // Success reported, but the OS did not release the key: a hooked
+                            // callback, not a user.
+                            abandonDecision()
+                            return
+                        }
+                        authenticated = true
+                        setButtonsEnabled(true)
+                    }
+
+                    override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                        // Cancelled or unavailable: leave the decision unmade rather than falling
+                        // through to enabled buttons.
+                        abandonDecision()
+                    }
+                },
+            ).authenticate(promptInfo, BiometricPrompt.CryptoObject(gate))
+        }
+    }
+
+    /** Neither a `BiometricPrompt` nor an `AlertDialog` may be raised past a saved state — the first
+     *  is silently dropped with no callback ever, the second throws. */
+    private fun canRaisePrompt(): Boolean =
+        lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) && !supportFragmentManager.isStateSaved
+
+    /** Ends the screen with the decision unmade. */
+    private fun abandonDecision() {
+        authInFlight = false
+        Toast.makeText(this, R.string.mfa_auth_required, Toast.LENGTH_SHORT).show()
+        finish()
     }
 
     /** The credential gate is on and this process has no PIN-derived key, so only the app-lock PIN
