@@ -7,7 +7,6 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.After
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
@@ -50,9 +49,17 @@ class AuthGateKeyTest {
         val info = SecretKeyFactory.getInstance(key.algorithm, "AndroidKeyStore")
             .getKeySpec(key, KeyInfo::class.java) as KeyInfo
         assertTrue("must require user authentication", info.isUserAuthenticationRequired)
-        // -1 is the Keystore's marker for "authenticate for every use", the opposite of a time
-        // window in which one earlier unlock keeps paying for later operations.
-        assertEquals(-1, info.userAuthenticationValidityDurationSeconds)
+        // What matters is that there is no time window in which one earlier unlock keeps paying for
+        // later operations. The two Keystore APIs spell "authenticate for every use" differently:
+        // the legacy setUserAuthenticationValidityDurationSeconds uses -1, while
+        // setUserAuthenticationParameters — the only one this codebase calls, and the only one
+        // available at minSdk 31 — uses 0, which is what KeyInfo then reports back. Pinning -1 here
+        // pinned the sentinel of an API AuthGateKey never uses. Any POSITIVE value is the real
+        // regression, so that is what this rules out.
+        assertTrue(
+            "a per-use key must have no validity window, got ${info.userAuthenticationValidityDurationSeconds}s",
+            info.userAuthenticationValidityDurationSeconds <= 0,
+        )
 
         // init succeeds on a user-auth key; the refusal lands at doFinal.
         assertThrows(Exception::class.java) { cipher!!.doFinal(ByteArray(16)) }
