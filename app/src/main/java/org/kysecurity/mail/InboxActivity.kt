@@ -19,7 +19,7 @@ import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import com.google.android.material.bottomnavigation.BottomNavigationView
+import com.google.android.material.navigation.NavigationBarView
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
 import org.kysecurity.mail.mail.FolderInfo
@@ -40,7 +40,7 @@ class InboxActivity : LockedActivity() {
     private lateinit var recyclerView: RecyclerView
     private lateinit var keywordChipScroll: View
     private lateinit var keywordChips: ChipGroup
-    private lateinit var bottomNav: BottomNavigationView
+    private lateinit var bottomNav: NavigationBarView
     private lateinit var loadingOverlay: View
     private lateinit var swipeRefresh: androidx.swiperefreshlayout.widget.SwipeRefreshLayout
     private lateinit var loadingStatus: TextView
@@ -111,7 +111,7 @@ class InboxActivity : LockedActivity() {
         supportActionBar?.setDisplayShowTitleEnabled(false)
         applyFolderTitle()
         applyTopInsetWithHeader(this, headerFolderTitle)
-        applyBottomInset(bottomNav)
+        if (resources.getBoolean(R.bool.nav_is_rail)) applyRailInsets(bottomNav) else applyBottomInset(bottomNav)
         applyInboxThemeChrome()
         setupRecyclerView()
         setupTabs()

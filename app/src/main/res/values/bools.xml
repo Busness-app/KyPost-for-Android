@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- True only where layout-w600dp resolved, so code and layout cannot disagree about which
+         navigation widget was inflated. Read it instead of recomputing a width in Kotlin. -->
+    <bool name="nav_is_rail">false</bool>
+</resources>

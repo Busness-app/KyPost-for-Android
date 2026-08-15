@@ -163,6 +163,29 @@ fun applyBottomInset(view: View) {
     ViewCompat.requestApplyInsets(view)
 }
 
+/**
+ * The rail equivalent of [applyBottomInset]. A vertical rail spans the full height at the start
+ * edge, so the bottom-only padding that suits a bottom bar leaves its top item under the status bar
+ * and its first icon under the gesture handle.
+ */
+fun applyRailInsets(view: View) {
+    val basePaddingStart = view.paddingStart
+    val basePaddingTop = view.paddingTop
+    val basePaddingBottom = view.paddingBottom
+    ViewCompat.setOnApplyWindowInsetsListener(view) { v, insets ->
+        val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+        val startInset = if (v.layoutDirection == View.LAYOUT_DIRECTION_RTL) bars.right else bars.left
+        v.setPaddingRelative(
+            basePaddingStart + startInset,
+            basePaddingTop + bars.top,
+            v.paddingEnd,
+            basePaddingBottom + bars.bottom,
+        )
+        insets
+    }
+    ViewCompat.requestApplyInsets(view)
+}
+
 fun applyTopInsetWithHeader(activity: Activity, root: View) {
     val basePaddingLeft = root.paddingLeft
     val basePaddingTop = root.paddingTop

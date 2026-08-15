@@ -191,6 +191,7 @@ dependencies {
     testImplementation(kotlin("test-junit"))
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.androidx.test.core)
     androidTestImplementation(libs.androidx.room.runtime)
     androidTestImplementation(libs.androidx.room.testing)
     // Test-only, and the same shape as room-testing above. Without it a WorkManager test would have
