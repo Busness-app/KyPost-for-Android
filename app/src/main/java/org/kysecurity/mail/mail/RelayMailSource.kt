@@ -105,6 +105,7 @@ class RelayMailSource(
                     isDelta = parsed.delta,
                     updatedMessageIds = entries.filter { it.second == CHANGE_TYPE_UPDATED }.map { it.first.id }.toSet(),
                     removedMessageIds = parsed.removed,
+                    isFullWindow = since == FULL_RESYNC_SINCE,
                 ),
             )
         }
