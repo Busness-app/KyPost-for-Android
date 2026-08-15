@@ -523,10 +523,10 @@ class InboxActivity : LockedActivity() {
     private fun renderFilteredEmails() {
         val filtered = KeywordTabs.filterEmails(allEmails, selectedTab)
         adapter.updateEmails(filtered)
-        if (pendingScrollPosition > 0) {
+        if (pendingScrollPosition > 0 && adapter.itemCount > 0) {
             val target = pendingScrollPosition.coerceAtMost(adapter.itemCount - 1)
             pendingScrollPosition = 0
-            if (target >= 0) recyclerView.scrollToPosition(target)
+            recyclerView.scrollToPosition(target)
         }
     }
 
@@ -791,6 +791,14 @@ class InboxActivity : LockedActivity() {
 
     @androidx.annotation.VisibleForTesting
     internal fun selectedTabForTest(): String = selectedTab
+
+    @androidx.annotation.VisibleForTesting
+    internal fun setPendingScrollPositionForTest(position: Int) {
+        pendingScrollPosition = position
+    }
+
+    @androidx.annotation.VisibleForTesting
+    internal fun pendingScrollPositionForTest(): Int = pendingScrollPosition
 
     companion object {
         private const val REFRESH_INTERVAL_MS = 90_000L
