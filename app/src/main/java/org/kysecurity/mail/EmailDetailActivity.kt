@@ -128,11 +128,23 @@ class EmailDetailActivity : LockedActivity() {
     private var toRecipients: List<String> = emptyList()
     private var ccRecipients: List<String> = emptyList()
 
+    /** A configuration-change recreate is not a new open. Reopening after the task was cleared is,
+     *  and that path builds a fresh instance with no saved state, so it marks read again. */
+    private var markReadSubmitted = false
+    private var markReadSubmitCount = 0
+
+    @androidx.annotation.VisibleForTesting
+    internal fun markReadSubmitCountForTest(): Int = markReadSubmitCount
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // The app lock redirects and finishes in super.onCreate; nothing below may run,
         // least of all the network and database work further down this method.
         if (redirectedToUnlock) return
+        savedInstanceState?.let { state ->
+            markReadSubmitted = state.getBoolean(STATE_MARK_READ_SUBMITTED, false)
+            markReadSubmitCount = state.getInt(STATE_MARK_READ_COUNT, 0)
+        }
         setContentView(R.layout.activity_email_detail)
         applyThemeToActivity(this)
         lastAppliedThemeName = getStoredThemeName(this)
@@ -206,7 +218,11 @@ class EmailDetailActivity : LockedActivity() {
 
         // markRead stays non-reporting on purpose: it is incidental to opening the message, and a
         // toast about it would fire on top of the message the user just opened.
-        MailBackgroundExecutor.submit { mailRepository.markRead(emailId, emailFolder) }
+        if (!markReadSubmitted) {
+            markReadSubmitted = true
+            markReadSubmitCount++
+            MailBackgroundExecutor.submit { mailRepository.markRead(emailId, emailFolder) }
+        }
 
         actionArchive.setOnClickListener {
             runMailActionAndFinish(getString(R.string.action_archive), emailId) { it.archive(emailId, emailFolder) }
@@ -1012,6 +1028,13 @@ class EmailDetailActivity : LockedActivity() {
         applyDetailChrome()
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        if (redirectedToUnlock) return
+        outState.putBoolean(STATE_MARK_READ_SUBMITTED, markReadSubmitted)
+        outState.putInt(STATE_MARK_READ_COUNT, markReadSubmitCount)
+    }
+
     private fun applyDetailChrome() {
         val palette = getStoredThemePalette(this)
         divider.setBackgroundColor(Color.parseColor(palette.line))
@@ -1156,6 +1179,9 @@ class EmailDetailActivity : LockedActivity() {
         private const val TAG = "EmailDetailActivity"
 
         const val EXTRA_REMOVED_EMAIL_ID = "removed_email_id"
+
+        private const val STATE_MARK_READ_SUBMITTED = "mark_read_submitted"
+        private const val STATE_MARK_READ_COUNT = "mark_read_count"
 
         /** Schemes an email link may open. `intent:`, `file:`, `content:` and any third-party
          *  app's custom scheme are refused: routing untrusted sender content into an arbitrary
