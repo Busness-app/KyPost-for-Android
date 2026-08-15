@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:window="http://schemas.android.com/apk/res-auto">
+
+    <!-- finishPrimaryWithSecondary="never": closing a message must not close the inbox.
+         finishSecondaryWithPrimary="always": the detail pane cannot outlive its list. -->
+    <SplitPairRule
+        window:splitRatio="0.4"
+        window:splitLayoutDirection="locale"
+        window:splitMinWidthDp="600"
+        window:finishPrimaryWithSecondary="never"
+        window:finishSecondaryWithPrimary="always"
+        window:clearTop="true">
+        <SplitPairFilter
+            window:primaryActivityName=".InboxActivity"
+            window:secondaryActivityName=".EmailDetailActivity" />
+    </SplitPairRule>
+
+    <SplitPairRule
+        window:splitRatio="0.4"
+        window:splitLayoutDirection="locale"
+        window:splitMinWidthDp="600"
+        window:finishPrimaryWithSecondary="never"
+        window:finishSecondaryWithPrimary="always"
+        window:clearTop="true">
+        <SplitPairFilter
+            window:primaryActivityName=".contacts.ContactsListActivity"
+            window:secondaryActivityName=".contacts.ContactDetailActivity" />
+        <SplitPairFilter
+            window:primaryActivityName=".contacts.ContactsListActivity"
+            window:secondaryActivityName=".contacts.ContactEditActivity" />
+        <SplitPairFilter
+            window:primaryActivityName=".contacts.ContactDetailActivity"
+            window:secondaryActivityName=".contacts.ContactEditActivity" />
+    </SplitPairRule>
+
+</resources>

@@ -29,6 +29,10 @@
 -keep class org.kysecurity.mail.push.KyPostUnifiedPushService { *; }
 -keep class org.kysecurity.mail.contacts.device.KyPostContactAuthenticatorService { *; }
 
+# Referenced only by name from AndroidManifest metadata, so R8 cannot see the reference and would
+# strip it — leaving splits silently dead in release while they work in debug.
+-keep class org.kysecurity.mail.ui.SplitInitializer { *; }
+
 # WorkManager instantiates workers reflectively via their (Context, WorkerParameters) constructor.
 -keep class * extends androidx.work.ListenableWorker {
     public <init>(android.content.Context, androidx.work.WorkerParameters);

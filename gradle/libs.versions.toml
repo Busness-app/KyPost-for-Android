@@ -34,6 +34,8 @@ jsoup = "1.18.3"
 zxingCore = "3.5.3"
 richHtmlEditor = "1.1.0"
 unifiedPush = "3.3.3"
+window = "1.5.1"
+startupRuntime = "1.1.1"
 
 [libraries]
 jsoup = { group = "org.jsoup", name = "jsoup", version.ref = "jsoup" }
@@ -72,6 +74,8 @@ androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = 
 androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
 androidx-room-testing = { group = "androidx.room", name = "room-testing", version.ref = "room" }
 bouncycastle-bcpg = { group = "org.bouncycastle", name = "bcpg-jdk18on", version.ref = "bouncyCastlePgp" }
+androidx-window = { group = "androidx.window", name = "window", version.ref = "window" }
+androidx-startup-runtime = { group = "androidx.startup", name = "startup-runtime", version.ref = "startupRuntime" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

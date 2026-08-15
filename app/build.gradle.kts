@@ -186,6 +186,8 @@ dependencies {
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
+    implementation(libs.androidx.window)
+    implementation(libs.androidx.startup.runtime)
 
     testImplementation(libs.junit)
     testImplementation(kotlin("test-junit"))

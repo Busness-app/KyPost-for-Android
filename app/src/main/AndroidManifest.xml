@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -39,6 +40,22 @@
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_channel_id"
             android:value="kypost_push" />
+
+        <!-- Required by androidx.window 1.1.0-alpha06 and later; without it the system ignores
+             every split rule and the app renders exactly as it did before. -->
+        <property
+            android:name="android.window.PROPERTY_ACTIVITY_EMBEDDING_SPLITS_ENABLED"
+            android:value="true" />
+
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="org.kysecurity.mail.ui.SplitInitializer"
+                android:value="androidx.startup" />
+        </provider>
 
         <activity
             android:name=".ThemesActivity"
