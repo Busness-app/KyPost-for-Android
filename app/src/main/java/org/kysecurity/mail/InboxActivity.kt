@@ -199,8 +199,13 @@ class InboxActivity : LockedActivity() {
         // system-managed storage outside the app's control.
         outState.putString(STATE_FOLDER, currentFolder)
         outState.putString(STATE_TAB, selectedTab)
+        // A still-unconsumed pending target wins over the live list, matching
+        // ContactsListActivity: until the folder has loaded the RecyclerView is empty and
+        // findFirstVisibleItemPosition() reports -1, so two folds inside the data-load window
+        // used to overwrite the restored target with nothing.
         val layoutManager = recyclerView.layoutManager as? LinearLayoutManager
-        outState.putInt(STATE_SCROLL, layoutManager?.findFirstVisibleItemPosition() ?: 0)
+        val visible = layoutManager?.findFirstVisibleItemPosition() ?: 0
+        outState.putInt(STATE_SCROLL, if (pendingScrollPosition > 0) pendingScrollPosition else visible)
     }
 
     private fun initViews() {

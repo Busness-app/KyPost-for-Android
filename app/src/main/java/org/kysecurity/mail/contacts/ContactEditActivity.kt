@@ -80,7 +80,15 @@ class ContactEditActivity : LockedActivity() {
         if (redirectedToUnlock) return
         setContentView(R.layout.activity_contact_edit)
         applyThemeToActivity(this)
-        applyTopInsetWithHeader(this, findViewById(R.id.contactEditRoot))
+        val formRoot = findViewById<View>(R.id.contactEditRoot)
+        // Keeps this form out of the saved-state Bundle. Every EditText below freezes its own text,
+        // so the framework's default view-hierarchy save writes the whole contact — names, numbers,
+        // addresses, notes, birthday — into `ActivityRecord.mIcicle` over Binder, where the app
+        // lock, SecurityWipe and ProcessState.resetAll() cannot reach it. A parent skips a child
+        // with this cleared and does not descend into it, so the entire subtree stays out.
+        // ContactEditDraftCache is what carries an in-progress edit across a recreate instead.
+        formRoot.isSaveFromParentEnabled = false
+        applyTopInsetWithHeader(this, formRoot)
         setTitle(R.string.contacts_edit_title)
 
         avatarView = findViewById(R.id.contactEditAvatar)

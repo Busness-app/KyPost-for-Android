@@ -153,6 +153,13 @@ Folding must not become a side door around it.
 Message plaintext keeps living only in the process-scoped holders that register with `ProcessState`
 and are cleared at session boundaries by `ProcessState.resetAll()`.
 
+Stating this is not enough to make it true, because the default `Activity` view-hierarchy save runs
+whether or not a screen overrides `onSaveInstanceState`, and `EditText` freezes its own text. The two
+screens made of editable fields — `ContactEditActivity` and `ComposeActivity` — therefore clear
+`isSaveFromParentEnabled` on their form root in `onCreate` (fix round 2), which makes the parent skip
+the subtree entirely rather than descend into it. Their `ProcessState`-registered caches are what
+carry the in-progress edit across the recreate instead.
+
 ---
 
 ## Files
@@ -266,12 +273,35 @@ Both limits pre-date and are independent of this task's code.
 
 ### The spec's five instrumented items
 
+**Precondition for items 1–3, and it is not the shipped default.** All three lock tests live in
+`FoldLockBehaviourTest`, and none of them means anything unless the app lock is **enabled with a
+credential configured**. On a clean install it is neither: `AppLockStore.isLockEnabled()` defaults to
+false and no PIN exists, and `AppLockManager.lockNow()` deliberately does nothing to the locked flag
+in that state. Until fix round 2 the class had no setup at all, so on real hardware items 2 and 3
+would have failed outright and item 1 would have passed for the wrong reason. The class now carries a
+`@Before` that sets a test PIN, enables the lock and unlocks it, and an `@After` that unlocks and
+calls `AppLockStore.reset()` — the latter is not tidiness: `AppLockManager` is a process singleton, so
+a locked state left behind cascade-fails every other class that launches a `LockedActivity`
+(`InboxRailTest`, `InboxStateRestoreTest`, `ContactsListStateRestoreTest`, `ContactEditDraftTest`).
+Anyone running these on hardware should expect the run to **overwrite the app-lock PIN on that
+device**. None of this has been executed; it is reasoning about the setup, not a report of it.
+
 1. **A live resize must not engage the app lock.**
    **Written, unverified.** `FoldLockBehaviourTest.aLiveResizeDoesNotEngageTheAppLock()`
    (`app/src/androidTest/java/org/kysecurity/mail/security/FoldLockBehaviourTest.kt`) launches
    `InboxActivity`, calls `scenario.recreate()`, and asserts `appLockManager.isLockedNow()` is false.
    It compiles and packages — `:app:assembleDebugAndroidTest` succeeded, which exercises
    `compileDebugAndroidTestKotlin` against this file — but it has never run.
+
+   **What it actually asserts, and what it asserted before fix round 2.** As originally written this
+   assertion was *vacuous on a default device*: `AppLockStore.isLockEnabled()` returns false on a
+   clean install, `AppLockManager.lockNow()` only sets the locked flag when it is true, and the test
+   class had no setup that enabled the lock. "The app did not lock" was therefore guaranteed by the
+   lock being off, not by the recreate leaving an armed lock alone — the property was never tested.
+   Fix round 2 added a `@Before` that sets a PIN, enables the lock and then unlocks it via
+   `AppLockManager.attemptPin`, so the test now runs with the lock **enabled but not engaged** and
+   opens by asserting `isLockEnabled()` — the recreate must leave an armed lock unengaged, which is
+   the property the spec asked for. It is still unrun.
 
 2. **Close-and-lock past the grace window must still lock.**
    **Written, partial, unverified.** `FoldLockBehaviourTest.lockNowStillGatesTheInbox()` calls

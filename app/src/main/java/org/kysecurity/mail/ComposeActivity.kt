@@ -111,6 +111,30 @@ class ComposeActivity : LockedActivity() {
      *  [onDestroy] so it does not outlive the Activity's window. */
     private var activeDialog: AlertDialog? = null
 
+    /** Encrypt/Sign as a restored draft left them, until [applyRestoredPgpToggles] can apply them. */
+    private var restoredPgpToggles: Pair<Boolean, Boolean>? = null
+
+    /** Set by [applyPgpComposeState], which is where the chips' listeners are installed. The draft
+     *  restore and that call can land in either order — `composeState()` only actually suspends on a
+     *  cold bootstrap — so whichever is second is what applies the toggles. */
+    private var pgpChipListenersReady = false
+
+    /**
+     * Restores the Encrypt/Sign toggles a fold destroyed, once both halves are ready.
+     *
+     * Not left to the framework: the compose form is excluded from the saved-state Bundle, and the
+     * chips' unchecked layout default would otherwise silently send in the clear a message the user
+     * had asked to encrypt.
+     */
+    private fun applyRestoredPgpToggles() {
+        if (!pgpChipListenersReady) return
+        val (encrypt, sign) = restoredPgpToggles ?: return
+        restoredPgpToggles = null
+        // Encrypt first: signChip's listener turns Encrypt on by itself on a client-custody account.
+        encryptChip.isChecked = encrypt
+        signChip.isChecked = sign
+    }
+
     private val pickAttachments = registerForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments(),
     ) { uris -> if (!uris.isNullOrEmpty()) addAttachments(uris) }
@@ -123,7 +147,15 @@ class ComposeActivity : LockedActivity() {
         setContentView(R.layout.activity_compose)
         applyThemeToActivity(this)
 
+        // Resolved by id, not by cast: layout-w600dp/activity_compose.xml uses a different root
+        // element than the phone layout.
         rootView = findViewById(R.id.composeRoot)
+        // Keeps the composition out of the saved-state Bundle, exactly as ContactEditActivity does
+        // for the contact form. composeSubjectField and the recipient inputs freeze their own text,
+        // so the framework's default view-hierarchy save would hand the subject and every address
+        // to system_server, outside the app lock and outside SecurityWipe. ComposeDraftCache is
+        // what carries the composition across a recreate instead.
+        rootView.isSaveFromParentEnabled = false
         applyTopInsetWithHeader(this, rootView)
 
         setTitle(R.string.compose_email)
@@ -204,6 +236,10 @@ class ComposeActivity : LockedActivity() {
             attachments.addAll(restored.attachments)
             renderAttachmentChips()
             bodyEditor.setHtml(restored.bodyHtml)
+            // Deferred rather than set directly: the chips' listeners are installed by
+            // applyPgpComposeState, and re-checking Encrypt has to re-run the keyless preflight.
+            restoredPgpToggles = restored.encrypt to restored.sign
+            applyRestoredPgpToggles()
             // The restored draft already carries its own attachments; a handoff left over from an
             // abandoned forward must not be merged into it.
             ForwardAttachmentHandoff.clear()
@@ -379,6 +415,11 @@ class ComposeActivity : LockedActivity() {
             if (checked && clientSideAccount && !encryptChip.isChecked) encryptChip.isChecked = true
         }
         webmailChip.setOnClickListener { handOffToWebmail() }
+
+        // Last, so a restored draft's toggles go through the listeners above rather than around
+        // them: checking Encrypt re-runs the preflight, and the two chips stay coupled.
+        pgpChipListenersReady = true
+        applyRestoredPgpToggles()
     }
 
     /** Runs when Encrypt is switched on, and again on every committed recipient change while it
@@ -945,6 +986,8 @@ class ComposeActivity : LockedActivity() {
         val bcc = bccInput.commaJoinedRecipients()
         val subject = subjectField.text.toString()
         val currentAttachments = attachments.toList()
+        val encrypt = encryptChip.isChecked
+        val sign = signChip.isChecked
         bodyEditor.exportHtml { html ->
             // Guarded like every other exportHtml callback in this file — this one had been missed,
             // and it is the one that writes into a process-scoped static. A security wipe clears
@@ -961,6 +1004,8 @@ class ComposeActivity : LockedActivity() {
                     subject = subject,
                     bodyHtml = html,
                     attachments = currentAttachments,
+                    encrypt = encrypt,
+                    sign = sign,
                 ),
             )
         }

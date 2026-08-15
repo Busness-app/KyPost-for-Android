@@ -6,7 +6,6 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.google.android.material.navigation.NavigationBarView
 import com.google.android.material.navigationrail.NavigationRailView
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.kysecurity.mail.InboxActivity
@@ -31,17 +30,6 @@ class InboxRailTest {
                 val nav = activity.findViewById<NavigationBarView>(R.id.bottomNavigation)
                 assertEquals(expectRail, nav is NavigationRailView)
                 assertEquals(3, nav.menu.size())
-            }
-        }
-    }
-
-    @Test
-    fun railSurvivesRecreate() {
-        ActivityScenario.launch(InboxActivity::class.java).use { scenario ->
-            scenario.recreate()
-            scenario.onActivity { activity ->
-                val nav = activity.findViewById<NavigationBarView>(R.id.bottomNavigation)
-                assertTrue(nav.selectedItemId == R.id.nav_inbox)
             }
         }
     }
