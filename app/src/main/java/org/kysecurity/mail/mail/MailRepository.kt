@@ -131,6 +131,17 @@ internal fun reconcileFetchResult(emailDao: EmailDao, folder: String, mode: Stri
     }
     emailDao.upsertAll(newEntities + mergedEntities)
     result.removedMessageIds.forEach { emailDao.deleteById(it) }
+    // On an older relay `removed` is delivered once and never repeated: it is computed against that
+    // server's own prior window, which the same call then replaces, so a notification that went to
+    // another device — or into a response this one never applied — is gone for good, and mail
+    // deleted on the web sat in the inbox forever. A since=0 fetch is the whole window, so it can
+    // say what is *absent*; pruning against it is the only self-heal for a removal we were never
+    // told about, and it costs nothing against a relay that does retain removals. Partial (cursor)
+    // deltas must not prune: they only describe what changed, and everything they omit is still
+    // legitimately in the mailbox.
+    if (result.isFullWindow) {
+        emailDao.pruneStaleInFolder(folder, result.messages.map { it.id })
+    }
 }
 
 private fun <T> MailOutcome<T>.toUnitOutcome(): MailOutcome<Unit> = when (this) {
