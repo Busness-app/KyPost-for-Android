@@ -117,7 +117,7 @@ class InboxActivity : LockedActivity() {
         supportActionBar?.setDisplayShowTitleEnabled(false)
         applyFolderTitle()
         applyTopInsetWithHeader(this, headerFolderTitle)
-        if (resources.getBoolean(R.bool.nav_is_rail)) applyRailInsets(bottomNav) else applyBottomInset(bottomNav)
+        if (resources.getBoolean(R.bool.nav_is_rail)) applyRailInsets(this, bottomNav) else applyBottomInset(bottomNav)
         applyInboxThemeChrome()
         setupRecyclerView()
         setupTabs()
