@@ -92,12 +92,29 @@ So the real behaviour is: **rail while browsing, bottom bar once a message is op
 rule is that navigation type follows the pane's width, and a 370dp pane wants a bottom bar, so this
 is the idiomatic outcome rather than a compromise — but it is not what this section first described.
 
-`splitMinWidthDp` is therefore **720**, not the 600 of the layout qualifier. The two numbers answer
-different questions: 600dp is where one screen earns a wider layout, 720dp is where the window can
-hold two of them. At 600 the Fold splits in portrait into a 246-282dp inbox — narrower than the cover
-screen, so unfolding the device would make the list *worse*. At 720 portrait stays single-pane with
-the full-width rail and wide list, and landscape still splits into a comfortable ~370dp list beside
-the message.
+`splitMinWidthDp` is therefore **800**, not the 600 of the layout qualifier. The two numbers answer
+different questions: 600dp is where one screen earns a wider layout, 800dp is where a window can hold
+two of them.
+
+These are measured, not estimated. On a Galaxy Z Fold 8 (SM-F971U1, Android 17, density 420):
+
+| Surface | Physical | Width | Rail (≥600) | Splits (≥800) | List pane |
+| ------- | -------- | ----- | ----------- | ------------- | --------- |
+| Cover, portrait | 1248x1972 | 475dp | no | no | — |
+| Cover, landscape | — | 751dp | yes | no | — |
+| Inner, book | 2448x1848 | 704dp | yes | no | — |
+| Inner, rotated | — | 932dp | yes | yes | 373dp |
+
+800 is the only threshold that gets all four right. Two earlier values were wrong for instructive
+reasons. 600 split the inner display in book orientation into a 282dp inbox. 720 fixed that but still
+split the **cover** screen in landscape (751dp) into a 300dp list — narrower than the same screen in
+portrait — because it had been sized against the inner display alone. The lesson is in the spec
+because it will recur: a threshold reasoned from one surface will be wrong on another, and the fold
+has four.
+
+No Activity declares `screenOrientation`, so none of this is Fold-specific. An ordinary phone in
+landscape also clears 600dp and gets the rail. The claim earlier in this document that "every
+ordinary phone plus the cover screen keeps today's layouts unchanged" holds in portrait only.
 
 **Asked and answered: the nav bar cannot borrow space from the message pane.** A floating "island"
 nav that took its footprint from the preview rather than the list is not buildable under embedding —
