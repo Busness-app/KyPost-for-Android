@@ -82,6 +82,12 @@ data class MailFetchResult(
     val isDelta: Boolean = false,
     val updatedMessageIds: Set<String> = emptySet(),
     val removedMessageIds: List<String> = emptyList(),
+    // True when this response describes the server's entire window rather than just what changed
+    // (i.e. we sent since=0). A relay predating the matching server fix labels such a response
+    // `delta: true` all the same, so this — not the wire flag — is what tells us `messages` is
+    // complete enough to prune the folder against. See [reconcileFetchResult], which needs it to
+    // self-heal a removal we were never told about.
+    val isFullWindow: Boolean = false,
 )
 data class FolderInfo(val path: String, val deletable: Boolean)
 data class FolderListResult(val parent: String, val folders: List<FolderInfo>)

@@ -58,6 +58,70 @@ class MailRepositoryTest {
         assertEquals(setOf("m1"), dao.rows.keys)
     }
 
+    /**
+     * The self-heal. A since=0 fetch returns the server's whole window, but an older relay labels
+     * it `delta: true`, so pruning used to be skipped and a removal the device never received (its
+     * one-shot `removed` notification went to another poller, or to a response that never arrived)
+     * stayed in the inbox forever. Mail deleted on the web is exactly that case.
+     */
+    @Test
+    fun fullWindowDeltaResult_prunesIdsAbsentFromTheResponse() {
+        val dao = FakeEmailDao()
+        dao.rows["deleted-on-web"] =
+            EmailEntity(messageId = "deleted-on-web", folder = "INBOX", sender = "x", subject = "x", sourceMode = "relay")
+
+        val result = MailFetchResult(
+            tabs = emptyList(),
+            messages = listOf(email("m1")),
+            isDelta = true,
+            isFullWindow = true,
+            removedMessageIds = emptyList(),
+        )
+        reconcileFetchResult(dao, "INBOX", "relay", result)
+
+        assertEquals(setOf("m1"), dao.rows.keys)
+    }
+
+    /** Pruning on a full window must not cost us the bodies of entries the window reports as
+     *  `updated` — those entries never carry one, so the merge still has to win. */
+    @Test
+    fun fullWindowDeltaResult_prunesButPreservesCachedBodyOfUpdatedEntries() {
+        val dao = FakeEmailDao()
+        dao.rows["m1"] = EmailEntity(
+            messageId = "m1", folder = "INBOX", sender = "x", subject = "old",
+            body = "cached-body", preview = "cached-preview", sourceMode = "relay",
+        )
+        dao.rows["gone"] =
+            EmailEntity(messageId = "gone", folder = "INBOX", sender = "x", subject = "x", sourceMode = "relay")
+
+        val result = MailFetchResult(
+            tabs = emptyList(),
+            messages = listOf(email("m1", body = null)),
+            isDelta = true,
+            isFullWindow = true,
+            updatedMessageIds = setOf("m1"),
+        )
+        reconcileFetchResult(dao, "INBOX", "relay", result)
+
+        assertEquals(setOf("m1"), dao.rows.keys)
+        assertEquals("cached-body", dao.rows["m1"]?.body)
+        assertEquals("cached-preview", dao.rows["m1"]?.preview)
+    }
+
+    /** A cursor-based (partial) delta must keep pruning to itself — it only ever describes what
+     *  changed, so anything it doesn't mention is still legitimately in the mailbox. */
+    @Test
+    fun partialDeltaResult_doesNotPruneUnmentionedRows() {
+        val dao = FakeEmailDao()
+        dao.rows["untouched"] =
+            EmailEntity(messageId = "untouched", folder = "INBOX", sender = "x", subject = "x", sourceMode = "relay")
+
+        val result = MailFetchResult(tabs = emptyList(), messages = listOf(email("m1")), isDelta = true)
+        reconcileFetchResult(dao, "INBOX", "relay", result)
+
+        assertEquals(setOf("untouched", "m1"), dao.rows.keys)
+    }
+
     @Test
     fun deltaResult_insertsNewEntries() {
         val dao = FakeEmailDao()

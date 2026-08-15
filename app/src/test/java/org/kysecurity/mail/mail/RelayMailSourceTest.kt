@@ -138,6 +138,46 @@ class RelayMailSourceTest {
         assertEquals("c1", cursorProvider.savedCursor)
     }
 
+    /**
+     * A since=0 fetch asks for the whole window, and an older relay answers `delta: true` all the
+     * same (it treats any `since` at all as a delta request). Only this layer knows what it sent,
+     * so it is what tells the cache the response is complete enough to prune against.
+     */
+    @Test
+    fun sinceZeroResponse_isFlaggedAsAFullWindow() {
+        val cursorProvider = FakeMailCursorProvider(storedCursor = null)
+        val callFactory = FakeCallFactory { request ->
+            jsonResponse(request, """{"tabs": [], "byTab": {}, "cursor": "c1", "delta": true, "removed": []}""")
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = cursorProvider,
+            callFactory = callFactory,
+        )
+
+        val outcome = source.fetchInbox("INBOX", 50)
+
+        assertEquals("0", callFactory.requests.single().url.queryParameter("since"))
+        assertTrue((outcome as MailOutcome.Success).value.isFullWindow)
+    }
+
+    @Test
+    fun cursorResponse_isNotFlaggedAsAFullWindow() {
+        val cursorProvider = FakeMailCursorProvider(storedCursor = "cursor-42")
+        val callFactory = FakeCallFactory { request ->
+            jsonResponse(request, """{"tabs": [], "byTab": {}, "cursor": "cursor-43", "delta": true, "removed": []}""")
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = cursorProvider,
+            callFactory = callFactory,
+        )
+
+        val outcome = source.fetchInbox("INBOX", 50)
+
+        assertEquals(false, (outcome as MailOutcome.Success).value.isFullWindow)
+    }
+
     @Test
     fun subsequentPoll_sendsPersistedCursor() {
         val cursorProvider = FakeMailCursorProvider(storedCursor = "cursor-42")
