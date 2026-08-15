@@ -380,12 +380,36 @@ class ContactEditActivity : LockedActivity() {
         existingUid = intent.getStringExtra(EXTRA_UID).orEmpty()
         if (existingUid.isBlank()) {
             deleteButton.visibility = View.GONE
-        } else {
-            loadExisting(existingUid)
+        }
+
+        // A draft was .copy()-ed off the loaded contact, so it already carries every field the form
+        // does not show and there is nothing left to read. Restoring it *instead of* loading keeps
+        // the database read from landing afterwards and overwriting the user's edits: populateForm
+        // only suspends for the self-contact, so "the draft writes last" is not a race worth having.
+        val draft = ContactEditDraftCache.take()
+        when {
+            draft != null -> lifecycleScope.launch { populateForm(draft) }
+            existingUid.isNotBlank() -> loadExisting(existingUid)
         }
 
         saveButton.setOnClickListener { save() }
         deleteButton.setOnClickListener { confirmDelete() }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // onCreate bailed before assigning any view: there is nothing to stash, and touching the
+        // lateinit fields below would throw.
+        if (redirectedToUnlock) return
+        // Leaving this screen for good is not the "came back to a destroyed form" case this cache
+        // exists for — a successful save already wrote to the database, and a back-out was
+        // deliberate. Clearing matches ComposeActivity, and stops an earlier stash from
+        // resurrecting one contact's PII into the next contact opened.
+        if (isFinishing) {
+            ContactEditDraftCache.clear()
+            return
+        }
+        ContactEditDraftCache.save(currentFormDto(fnField.text.toString().trim()))
     }
 
     override fun onResume() {
@@ -400,65 +424,101 @@ class ContactEditActivity : LockedActivity() {
     private fun loadExisting(uid: String) {
         lifecycleScope.launch {
             val entity = DataRuntime.graph(this@ContactEditActivity).database.contactDao().getByUid(uid) ?: return@launch
-            val dto = entity.toDto()
-            loadedDto = dto
-            existingRev = dto.rev
-            fnField.setText(dto.fn)
-            orgField.setText(dto.org.orEmpty())
-            titleField.setText(dto.title.orEmpty())
-            departmentField.setText(dto.department.orEmpty())
-            notesField.setText(dto.notes.orEmpty())
-            givenNameField.setText(dto.givenName.orEmpty())
-            familyNameField.setText(dto.familyName.orEmpty())
-            middleNameField.setText(dto.middleName.orEmpty())
-            prefixField.setText(dto.prefix.orEmpty())
-            suffixField.setText(dto.suffix.orEmpty())
-            nicknameField.setText(dto.nickname.orEmpty())
-            phoneticGivenNameField.setText(dto.phoneticGivenName.orEmpty())
-            phoneticFamilyNameField.setText(dto.phoneticFamilyName.orEmpty())
-            pronounsField.setText(dto.pronouns.orEmpty())
-            selfBadge.visibility = if (dto.isSelf) View.VISIBLE else View.GONE
-            if (dto.isSelf) {
-                selfBadge.text = getString(R.string.contact_self_label)
-                applyStatusBadgeTheme(this@ContactEditActivity, selfBadge, active = true)
-            }
-            // Only the self-contact needs the extra (network) identity check — every other
-            // contact's badge is fully determined by its own pgpKey field.
-            val selfHasPgpIdentity = if (dto.isSelf) hasPgpIdentity(this@ContactEditActivity) else null
-            val hasKey = contactHasLinkedPgpKey(dto.pgpKey, dto.isSelf, selfHasPgpIdentity)
-            pgpBadge.visibility = if (hasKey) View.VISIBLE else View.GONE
-            if (hasKey) {
-                pgpBadge.text = getString(R.string.contacts_pgp_badge_visible)
-                applyStatusBadgeTheme(this@ContactEditActivity, pgpBadge, active = true)
-            }
-            findViewById<ExpandableSectionView>(R.id.sectionWork).setExpanded(
-                dto.org != null || dto.title != null || dto.department != null,
-            )
-            emailList.setItems(dto.emails)
-            phoneList.setItems(dto.phones)
-            findViewById<ExpandableSectionView>(R.id.sectionContact).setExpanded(dto.emails.isNotEmpty() || dto.phones.isNotEmpty())
-            findViewById<ExpandableSectionView>(R.id.sectionContact).setItemCount(dto.emails.size + dto.phones.size)
-            addressList.setItems(dto.addresses)
-            findViewById<ExpandableSectionView>(R.id.sectionAddresses).setExpanded(dto.addresses.isNotEmpty())
-            findViewById<ExpandableSectionView>(R.id.sectionAddresses).setItemCount(dto.addresses.size)
-            websiteList.setItems(dto.websites)
-            imList.setItems(dto.ims)
-            findViewById<ExpandableSectionView>(R.id.sectionOnline).setExpanded(dto.websites.isNotEmpty() || dto.ims.isNotEmpty())
-            findViewById<ExpandableSectionView>(R.id.sectionOnline).setItemCount(dto.websites.size + dto.ims.size)
-            birthdayValue = dto.birthday
-            birthdayField.setText(dto.birthday.orEmpty())
-            eventList.setItems(dto.events)
-            relationList.setItems(dto.relations)
-            findViewById<ExpandableSectionView>(R.id.sectionNotes).setExpanded(!dto.notes.isNullOrBlank())
-            customFieldList.setItems(dto.customFields)
-            findViewById<ExpandableSectionView>(R.id.sectionOther).setExpanded(dto.customFields.isNotEmpty())
-            findViewById<ExpandableSectionView>(R.id.sectionOther).setItemCount(dto.customFields.size)
-            findViewById<ExpandableSectionView>(R.id.sectionPersonal).setExpanded(
-                dto.birthday != null || dto.events.isNotEmpty() || dto.relations.isNotEmpty(),
-            )
-            findViewById<ExpandableSectionView>(R.id.sectionPersonal).setItemCount(dto.events.size + dto.relations.size)
+            populateForm(entity.toDto())
         }
     }
+
+    /** Writes a [ContactDto] into the form. Shared by the database load and the draft restore, so
+     *  a restored draft cannot drift from a loaded contact. */
+    private suspend fun populateForm(dto: ContactDto) {
+        loadedDto = dto
+        existingRev = dto.rev
+        fnField.setText(dto.fn)
+        orgField.setText(dto.org.orEmpty())
+        titleField.setText(dto.title.orEmpty())
+        departmentField.setText(dto.department.orEmpty())
+        notesField.setText(dto.notes.orEmpty())
+        givenNameField.setText(dto.givenName.orEmpty())
+        familyNameField.setText(dto.familyName.orEmpty())
+        middleNameField.setText(dto.middleName.orEmpty())
+        prefixField.setText(dto.prefix.orEmpty())
+        suffixField.setText(dto.suffix.orEmpty())
+        nicknameField.setText(dto.nickname.orEmpty())
+        phoneticGivenNameField.setText(dto.phoneticGivenName.orEmpty())
+        phoneticFamilyNameField.setText(dto.phoneticFamilyName.orEmpty())
+        pronounsField.setText(dto.pronouns.orEmpty())
+        selfBadge.visibility = if (dto.isSelf) View.VISIBLE else View.GONE
+        if (dto.isSelf) {
+            selfBadge.text = getString(R.string.contact_self_label)
+            applyStatusBadgeTheme(this@ContactEditActivity, selfBadge, active = true)
+        }
+        // Only the self-contact needs the extra (network) identity check — every other
+        // contact's badge is fully determined by its own pgpKey field.
+        val selfHasPgpIdentity = if (dto.isSelf) hasPgpIdentity(this@ContactEditActivity) else null
+        val hasKey = contactHasLinkedPgpKey(dto.pgpKey, dto.isSelf, selfHasPgpIdentity)
+        pgpBadge.visibility = if (hasKey) View.VISIBLE else View.GONE
+        if (hasKey) {
+            pgpBadge.text = getString(R.string.contacts_pgp_badge_visible)
+            applyStatusBadgeTheme(this@ContactEditActivity, pgpBadge, active = true)
+        }
+        findViewById<ExpandableSectionView>(R.id.sectionWork).setExpanded(
+            dto.org != null || dto.title != null || dto.department != null,
+        )
+        emailList.setItems(dto.emails)
+        phoneList.setItems(dto.phones)
+        findViewById<ExpandableSectionView>(R.id.sectionContact).setExpanded(dto.emails.isNotEmpty() || dto.phones.isNotEmpty())
+        findViewById<ExpandableSectionView>(R.id.sectionContact).setItemCount(dto.emails.size + dto.phones.size)
+        addressList.setItems(dto.addresses)
+        findViewById<ExpandableSectionView>(R.id.sectionAddresses).setExpanded(dto.addresses.isNotEmpty())
+        findViewById<ExpandableSectionView>(R.id.sectionAddresses).setItemCount(dto.addresses.size)
+        websiteList.setItems(dto.websites)
+        imList.setItems(dto.ims)
+        findViewById<ExpandableSectionView>(R.id.sectionOnline).setExpanded(dto.websites.isNotEmpty() || dto.ims.isNotEmpty())
+        findViewById<ExpandableSectionView>(R.id.sectionOnline).setItemCount(dto.websites.size + dto.ims.size)
+        birthdayValue = dto.birthday
+        birthdayField.setText(dto.birthday.orEmpty())
+        eventList.setItems(dto.events)
+        relationList.setItems(dto.relations)
+        findViewById<ExpandableSectionView>(R.id.sectionNotes).setExpanded(!dto.notes.isNullOrBlank())
+        customFieldList.setItems(dto.customFields)
+        findViewById<ExpandableSectionView>(R.id.sectionOther).setExpanded(dto.customFields.isNotEmpty())
+        findViewById<ExpandableSectionView>(R.id.sectionOther).setItemCount(dto.customFields.size)
+        findViewById<ExpandableSectionView>(R.id.sectionPersonal).setExpanded(
+            dto.birthday != null || dto.events.isNotEmpty() || dto.relations.isNotEmpty(),
+        )
+        findViewById<ExpandableSectionView>(R.id.sectionPersonal).setItemCount(dto.events.size + dto.relations.size)
+    }
+
+    /** Reads the form into a DTO, merged onto [loadedDto] so unshown fields survive. Shared by the
+     *  save path and the draft stash. */
+    private fun currentFormDto(fn: String): ContactDto = mergedContactDto(
+        loaded = loadedDto,
+        uid = existingUid,
+        rev = existingRev,
+        fn = fn,
+        givenName = givenNameField.text.toString().trim().ifBlank { null },
+        familyName = familyNameField.text.toString().trim().ifBlank { null },
+        middleName = middleNameField.text.toString().trim().ifBlank { null },
+        prefix = prefixField.text.toString().trim().ifBlank { null },
+        suffix = suffixField.text.toString().trim().ifBlank { null },
+        nickname = nicknameField.text.toString().trim().ifBlank { null },
+        org = orgField.text.toString().trim().ifBlank { null },
+        title = titleField.text.toString().trim().ifBlank { null },
+        department = departmentField.text.toString().trim().ifBlank { null },
+        notes = notesField.text.toString().trim().ifBlank { null },
+        birthday = birthdayValue,
+        emails = emailList.items(),
+        phones = phoneList.items(),
+        addresses = addressList.items(),
+        websites = websiteList.items(),
+        ims = imList.items(),
+        relations = relationList.items(),
+        events = eventList.items(),
+        phoneticGivenName = phoneticGivenNameField.text.toString().trim().ifBlank { null },
+        phoneticFamilyName = phoneticFamilyNameField.text.toString().trim().ifBlank { null },
+        customFields = customFieldList.items(),
+        pronouns = pronounsField.text.toString().trim().ifBlank { null },
+    )
 
     private fun save() {
         val fn = fnField.text.toString().trim()
@@ -466,34 +526,7 @@ class ContactEditActivity : LockedActivity() {
             Toast.makeText(this, R.string.contacts_name_required, Toast.LENGTH_SHORT).show()
             return
         }
-        val dto = mergedContactDto(
-            loaded = loadedDto,
-            uid = existingUid,
-            rev = existingRev,
-            fn = fn,
-            givenName = givenNameField.text.toString().trim().ifBlank { null },
-            familyName = familyNameField.text.toString().trim().ifBlank { null },
-            middleName = middleNameField.text.toString().trim().ifBlank { null },
-            prefix = prefixField.text.toString().trim().ifBlank { null },
-            suffix = suffixField.text.toString().trim().ifBlank { null },
-            nickname = nicknameField.text.toString().trim().ifBlank { null },
-            org = orgField.text.toString().trim().ifBlank { null },
-            title = titleField.text.toString().trim().ifBlank { null },
-            department = departmentField.text.toString().trim().ifBlank { null },
-            notes = notesField.text.toString().trim().ifBlank { null },
-            birthday = birthdayValue,
-            emails = emailList.items(),
-            phones = phoneList.items(),
-            addresses = addressList.items(),
-            websites = websiteList.items(),
-            ims = imList.items(),
-            relations = relationList.items(),
-            events = eventList.items(),
-            phoneticGivenName = phoneticGivenNameField.text.toString().trim().ifBlank { null },
-            phoneticFamilyName = phoneticFamilyNameField.text.toString().trim().ifBlank { null },
-            customFields = customFieldList.items(),
-            pronouns = pronounsField.text.toString().trim().ifBlank { null },
-        )
+        val dto = currentFormDto(fn)
 
         lifecycleScope.launch {
             val graph = ContactsRuntime.graph(this@ContactEditActivity)
@@ -568,6 +601,12 @@ class ContactEditActivity : LockedActivity() {
         override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
         override fun afterTextChanged(s: Editable?) = onChanged()
     }
+
+    @androidx.annotation.VisibleForTesting
+    internal fun setNameForTest(name: String) = fnField.setText(name)
+
+    @androidx.annotation.VisibleForTesting
+    internal fun nameForTest(): String = fnField.text.toString()
 
     companion object {
         const val EXTRA_UID = "contact_uid"
