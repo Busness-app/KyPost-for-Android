@@ -99,6 +99,19 @@ screen, so unfolding the device would make the list *worse*. At 720 portrait sta
 the full-width rail and wide list, and landscape still splits into a comfortable ~370dp list beside
 the message.
 
+**Asked and answered: the nav bar cannot borrow space from the message pane.** A floating "island"
+nav that took its footprint from the preview rather than the list is not buildable under embedding —
+the panes are separate Activities in separate window containers, each clipped to its own bounds, and
+no cross-pane compositing is exposed to app views. Only abandoning embedding for a single
+two-pane Activity would allow it, which means the `EmailDetailActivity` extraction this design exists
+to avoid.
+
+An island *within* the list pane is buildable, and was declined. It would need a runtime check
+(`ActivityEmbeddingController.isActivityEmbedded`, verified present in `androidx.window` 1.5.1)
+rather than a resource qualifier, because a ~370dp split pane and a ~411dp phone are
+indistinguishable by width — the split pane resolves the same phone layout a real phone does. The
+full-width bar stays.
+
 ---
 
 ## Transitions
