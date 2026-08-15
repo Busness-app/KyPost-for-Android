@@ -243,9 +243,11 @@ reader does not implement it as a missing feature.
 
 ## Verification results
 
-Recorded 2026-08-15, at the end of Task 8. **Nothing in this section may be read as "the fold
-behaviour works."** It has not been observed working, on any device, by anyone, at any point in this
-plan. What follows is a precise account of what ran, what only compiles, and what was never written.
+Recorded 2026-08-15, at the end of Task 8, updated the same day after fix round 1 added the missing
+third lock test and a JVM test for `ComposeDraftCache`. **Nothing in this section may be read as
+"the fold behaviour works."** It has not been observed working, on any device, by anyone, at any
+point in this plan. What follows is a precise account of what ran, what only compiles, and what was
+never written.
 
 ### Environment limits, established before anything else
 
@@ -280,15 +282,33 @@ Both limits pre-date and are independent of this task's code.
    It has never run.
 
 3. **Two embedded panes locking at once must produce exactly one unlock prompt.**
-   **Not written.** No test for this exists anywhere in the repository. The brief that specified
-   `FoldLockBehaviourTest.kt` motivates this exact scenario in prose — `UnlockActivity` is
-   `singleInstance`, so two simultaneous `startActivity` calls from two visible `LockedActivity`
-   instances should collapse into one prompt — but the test file it specifies verbatim contains only
-   the two tests above. This is the property Activity Embedding introduces that has never existed in
-   this app before, and it has **no automated coverage at all**, written or run.
+   **Written (fix round 1), unverified.**
+   `FoldLockBehaviourTest.lockingTwoEmbeddedPanesProducesExactlyOneUnlockPrompt()` launches
+   `InboxActivity` as the primary pane and `EmailDetailActivity` as the secondary, locks the app,
+   recreates both, and asserts two things: neither pane survives (`isFinishing`/`isDestroyed`, the
+   same proxy item 2 uses), and — the property's actual point — an `Application.ActivityLifecycleCallbacks`
+   registered process-wide observed exactly **one** `onActivityCreated` call for `UnlockActivity`.
+   That count is a direct assertion of `UnlockActivity`'s `singleInstance` launch mode: a second
+   `startActivity` against an already-running `singleInstance` Activity is delivered as
+   `onNewIntent`, not a fresh `onCreate`, so a count of 1 is what the manifest's contract predicts
+   and a count of 2 would mean the two panes had stacked two prompts. It compiles
+   (`:app:assembleDebugAndroidTest` succeeded). It has never run, for the same emulator reason as
+   items 1 and 2 — this environment cannot launch this app's Activities at all, so the launch-mode
+   collapse this test depends on has not been observed here either.
 
 4. **The compose draft survives both transition classes, attachments included.**
-   **Not written.** No test referencing `ComposeDraftCache` exists under `app/src/androidTest`.
+   **Partially written (fix round 1), the JVM half verified.**
+   `app/src/test/java/org/kysecurity/mail/ComposeDraftCacheTest.kt` — 7 JVM tests covering
+   `save`/`take` ownership transfer, that `hasContent()` rejects an untouched draft, that a lone
+   attachment with no text anywhere is still worth keeping (the spec's own "attachments included"
+   case), that `clear()` seals against a late write, that `take()` unseals for the next session, and
+   that `resetForNewSession()` drops everything. **This part genuinely ran**: `./gradlew
+   :app:testDebugUnitTest` — all 7 pass, 0 failures. It is Android-framework-free, so unlike
+   everything else in this section it needed no emulator. What it does **not** cover, and what
+   remains entirely unwritten, is the actual transition behaviour — an `ActivityScenario.recreate()`
+   or a real fold/close-and-lock proving `ComposeActivity` actually stashes into and restores from
+   this cache. The cache's own contract is now proven; whether `ComposeActivity` honours it under a
+   real transition is not.
 
 5. **A contact edit in progress survives a live resize, and is cleared by `ProcessState.resetAll()`
    like every other plaintext holder.**
@@ -299,16 +319,18 @@ Both limits pre-date and are independent of this task's code.
 
 ### What did run
 
-`./gradlew :app:testDebugUnitTest` — **BUILD SUCCESSFUL**, 815 tests, 0 failures, 0 errors, 0 skipped.
-This is the JVM suite only; it does not touch anything foldable-specific, since this task adds no JVM
-test. No regressions.
+`./gradlew :app:testDebugUnitTest` — **BUILD SUCCESSFUL**, 822 tests, 0 failures, 0 errors, 0 skipped
+(815 before fix round 1, +7 from the new `ComposeDraftCacheTest`). No regressions. This is the one
+genuinely executed piece of foldable-specific coverage in this whole plan — everything else below is
+either unrun instrumented code or a manual pass that never happened.
 
 `./gradlew :app:assembleDebug` — **BUILD SUCCESSFUL**.
 
 `./gradlew :app:assembleDebugAndroidTest` — **BUILD SUCCESSFUL**. `compileDebugAndroidTestKotlin`
-executed and succeeded, which is the proof that `FoldLockBehaviourTest.kt` compiles and its symbols
-(`SecurityRuntime.graph`, `AppLockManager.lockNow`/`isLockedNow`, `InboxActivity`) resolve. This is
-compilation evidence only — it is not execution evidence.
+executed and succeeded, which is the proof that `FoldLockBehaviourTest.kt` — now three tests —
+compiles and its symbols (`SecurityRuntime.graph`, `AppLockManager.lockNow`/`isLockedNow`,
+`InboxActivity`, `EmailDetailActivity`, `UnlockActivity`, `Application.ActivityLifecycleCallbacks`)
+resolve. This is compilation evidence only — it is not execution evidence.
 
 ### Manual foldable pass (Step 4) — not performed
 
@@ -325,10 +347,16 @@ has real hardware or can provision a foldable/large-screen AVD:
 
 ### Bottom line
 
-Of the three app-lock security properties this task exists to check: the live-resize property and the
-close-and-lock property each have a test written against them, and neither has ever been run. The
-two-panes-one-prompt property has no test at all — it is exactly as unverified today as it was before
-this task, except now the gap is written down instead of implied. The large-screen and fold behaviour
-described throughout this spec has not been observed working, on any device, at any point in this
-plan. A reader relying on this document for a release decision should treat every layout, embedding,
-and state-restore claim above as design intent, not as demonstrated fact.
+All three app-lock security properties this task exists to check now have a test written against
+them. **None has ever run.** The two-panes-one-prompt test is a genuine assertion of
+`UnlockActivity`'s `singleInstance` contract via a process-wide `ActivityLifecycleCallbacks` count,
+not a placeholder — but it is exactly as unexecuted as the other two, for the same environmental
+reason. Separately, `ComposeDraftCache`'s own contract (save/take/clear/reseal, attachments included)
+is now covered by 7 JVM tests that **did** run and pass — the one piece of foldable-adjacent
+verification in this entire plan that is not an unrun promise. It proves the cache; it does not prove
+`ComposeActivity` uses it correctly under a real transition, which remains untested.
+
+The large-screen and fold behaviour described throughout this spec has not been observed working, on
+any device, at any point in this plan. A reader relying on this document for a release decision should
+treat every layout, embedding, and state-restore claim above as design intent, not as demonstrated
+fact — the one exception, noted explicitly above, is `ComposeDraftCache`'s own in-memory contract.
