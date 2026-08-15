@@ -169,7 +169,7 @@ fun applyBottomInset(view: View) {
  * edge, so the bottom-only padding that suits a bottom bar leaves its top item under the status bar
  * and its first icon under the gesture handle.
  */
-fun applyRailInsets(view: View) {
+fun applyRailInsets(activity: Activity, view: View) {
     val basePaddingStart = view.paddingStart
     val basePaddingTop = view.paddingTop
     val basePaddingBottom = view.paddingBottom
@@ -178,7 +178,12 @@ fun applyRailInsets(view: View) {
         val startInset = if (v.layoutDirection == View.LAYOUT_DIRECTION_RTL) bars.right else bars.left
         v.setPaddingRelative(
             basePaddingStart + startInset,
-            basePaddingTop + bars.top,
+            // + actionBarSize for the same reason [applyTopInsetWithHeader] adds it: under enforced
+            // edge-to-edge the content view starts at the top of the window, and the app bar floats
+            // above it. A full-height rail therefore begins *behind* the app bar, and padding by the
+            // status-bar inset alone leaves its first destination hidden under it. Anything spanning
+            // the full height of this content area has to clear the app bar itself.
+            basePaddingTop + bars.top + actionBarSize(activity),
             v.paddingEnd,
             basePaddingBottom + bars.bottom,
         )
