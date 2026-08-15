@@ -241,9 +241,14 @@ fun applyGhostButtonTheme(context: Context, button: Button) {
 /** 1dp stroke + 12% fill of the fixed danger red, mirrors web's `.users-action-danger` /
  *  `.contacts-action-danger`. Use for destructive actions (delete), never theme-accent. */
 fun applyDangerButtonTheme(context: Context, button: Button) {
+    val (fill, border, text) = accentAffordanceColors(
+        context,
+        Color.parseColor(COLOR_DANGER),
+        Color.parseColor(COLOR_DANGER_ACTION_TEXT),
+    )
     button.backgroundTintList = null
-    button.background = dangerButtonBackground()
-    button.setTextColor(Color.parseColor(COLOR_DANGER_ACTION_TEXT))
+    button.background = dangerButtonBackground(fill, border)
+    button.setTextColor(text)
     applyButtonPadding(button)
 }
 
@@ -252,8 +257,13 @@ fun applyDangerButtonTheme(context: Context, button: Button) {
  *  fixed warning yellow (STYLE_GUIDE.md §1) and applied to a TextView since callouts aren't
  *  buttons. Caller sets its own padding/margins; this only sets background + text color. */
 fun applyWarningCalloutTheme(context: Context, textView: TextView) {
-    textView.background = warningCalloutBackground()
-    textView.setTextColor(Color.parseColor(COLOR_WARNING_ACTION_TEXT))
+    val (fill, border, text) = accentAffordanceColors(
+        context,
+        Color.parseColor(COLOR_WARNING),
+        Color.parseColor(COLOR_WARNING_ACTION_TEXT),
+    )
+    textView.background = warningCalloutBackground(fill, border)
+    textView.setTextColor(text)
 }
 
 /** Success/"added" state for the address-book picker's TO/CC/BCC action chips — mirrors
@@ -671,21 +681,47 @@ private fun ghostButtonBackground(palette: ThemePalette): GradientDrawable {
     }
 }
 
-private fun dangerButtonBackground(): GradientDrawable {
+private fun dangerButtonBackground(fill: Int, border: Int): GradientDrawable {
     return GradientDrawable().apply {
         shape = GradientDrawable.RECTANGLE
         cornerRadius = 10f * density
-        setColor(Color.parseColor(COLOR_DANGER_ACTION_FILL))
-        setStroke((1 * density).toInt(), Color.parseColor(COLOR_DANGER_ACTION_BORDER))
+        setColor(fill)
+        setStroke((1 * density).toInt(), border)
     }
 }
 
-private fun warningCalloutBackground(): GradientDrawable {
+/**
+ * The stroke/fill/text triple for a danger or warning affordance, resolved against the active theme.
+ *
+ * The constants in STYLE_GUIDE.md §1 are stated as pale tints — `#ffd8d3`, `#fff0b8` — which are
+ * chosen to read as *light text on a dark panel*. On the light themes ("Light Matter" and friends,
+ * panel `#fff8ee`) that same pale text lands on near-white, and the measured WCAG contrast is
+ * **1.08:1 for the warning text and 1.24:1 for the danger text** — indistinguishable from the
+ * background. That is what made the "remove key from this device" button and the push-relay warning
+ * illegible on light themes.
+ *
+ * Rather than introduce new named colors, this keeps each affordance's documented hue
+ * ([COLOR_DANGER] / [COLOR_WARNING]) and drives it toward black for light themes, so the guide's
+ * palette still decides *what colour* the thing is and only the shade tracks the background. The
+ * derived shades measure 5.84:1 (warning) and 9.57:1 (danger) on `#fff8ee`, both past WCAG AA;
+ * the dark-theme path is byte-for-byte what it was (13.28:1 and 11.56:1 on `#252530`).
+ */
+private fun accentAffordanceColors(context: Context, hue: Int, darkThemeText: Int): Triple<Int, Int, Int> {
+    return if (isDarkPalette(getStoredThemePalette(context))) {
+        Triple(withAlpha(hue, 0.12f), withAlpha(hue, 0.40f), darkThemeText)
+    } else {
+        // A heavier fill and stroke because a 12%/40% tint of a bright hue is nearly invisible on a
+        // near-white panel, and text driven most of the way to black so it clears 4.5:1 there.
+        Triple(withAlpha(hue, 0.18f), withAlpha(hue, 0.65f), blend(hue, Color.BLACK, 0.55f))
+    }
+}
+
+private fun warningCalloutBackground(fill: Int, border: Int): GradientDrawable {
     return GradientDrawable().apply {
         shape = GradientDrawable.RECTANGLE
         cornerRadius = 10f * density
-        setColor(Color.parseColor(COLOR_WARNING_ACTION_FILL))
-        setStroke((1 * density).toInt(), Color.parseColor(COLOR_WARNING_ACTION_BORDER))
+        setColor(fill)
+        setStroke((1 * density).toInt(), border)
     }
 }
 
