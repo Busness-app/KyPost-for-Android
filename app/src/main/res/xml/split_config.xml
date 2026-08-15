@@ -1,12 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources xmlns:window="http://schemas.android.com/apk/res-auto">
 
-    <!-- finishPrimaryWithSecondary="never": closing a message must not close the inbox.
+    <!-- splitMinWidthDp is 720, NOT the 600 of the layout qualifier, and the two are deliberately
+         different numbers answering different questions.
+
+         600dp is where a screen has room for a wider layout. 720dp is where it has room for two of
+         them. An embedded Activity is measured against its own pane, not the display, so a split at
+         600dp hands the primary 40% of 600 — 240dp, narrower than any phone. On a Fold 8's inner
+         display (2448x1848) that is the portrait case: a 616-704dp window splitting into a 246-282dp
+         inbox, so unfolding the device would produce a *more* cramped list than the cover screen.
+         720 keeps portrait single-pane — full-width rail, wide list — and lets landscape (816-933dp)
+         split into a comfortable ~370dp list beside the message.
+
+         The rail does not survive into either pane at any ratio: the primary would need a ~1500dp
+         window to reach the 600dp qualifier. That is Material's own rule — navigation type follows
+         the pane's width, and a 370dp pane wants a bottom bar — not a workaround.
+
+         finishPrimaryWithSecondary="never": closing a message must not close the inbox.
          finishSecondaryWithPrimary="always": the detail pane cannot outlive its list. -->
     <SplitPairRule
         window:splitRatio="0.4"
         window:splitLayoutDirection="locale"
-        window:splitMinWidthDp="600"
+        window:splitMinWidthDp="720"
         window:finishPrimaryWithSecondary="never"
         window:finishSecondaryWithPrimary="always"
         window:clearTop="true">
@@ -15,10 +30,11 @@
             window:secondaryActivityName=".EmailDetailActivity" />
     </SplitPairRule>
 
+    <!-- Same 720 threshold and the same reasoning as the rule above. -->
     <SplitPairRule
         window:splitRatio="0.4"
         window:splitLayoutDirection="locale"
-        window:splitMinWidthDp="600"
+        window:splitMinWidthDp="720"
         window:finishPrimaryWithSecondary="never"
         window:finishSecondaryWithPrimary="always"
         window:clearTop="true">

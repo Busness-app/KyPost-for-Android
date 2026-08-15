@@ -79,6 +79,26 @@ The rail anchors to `start`, so the detail pane keeps the opposite edge and RTL 
 together. A rail on the trailing edge would collide with the detail pane and land in the middle of
 the screen.
 
+**Correction — the rail and the split never appear together.** This section originally promised a
+rail beside a detail pane. That is not achievable and the claim was wrong.
+
+An embedded Activity is measured against its own pane, not the display, so the inbox in a 40% primary
+pane asks "how wide am *I*", not "how wide is the screen". Reaching the 600dp qualifier from a 40%
+pane needs a ~1500dp window; a Fold 8's inner display (2448x1848) is 616-704dp in portrait and
+816-933dp in landscape. No split ratio closes that gap — 600dp in portrait would demand a ratio near
+0.85, leaving the message about 105dp.
+
+So the real behaviour is: **rail while browsing, bottom bar once a message is open.** Material's own
+rule is that navigation type follows the pane's width, and a 370dp pane wants a bottom bar, so this
+is the idiomatic outcome rather than a compromise — but it is not what this section first described.
+
+`splitMinWidthDp` is therefore **720**, not the 600 of the layout qualifier. The two numbers answer
+different questions: 600dp is where one screen earns a wider layout, 720dp is where the window can
+hold two of them. At 600 the Fold splits in portrait into a 246-282dp inbox — narrower than the cover
+screen, so unfolding the device would make the list *worse*. At 720 portrait stays single-pane with
+the full-width rail and wide list, and landscape still splits into a comfortable ~370dp list beside
+the message.
+
 ---
 
 ## Transitions
