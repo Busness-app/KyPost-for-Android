@@ -238,3 +238,97 @@ and the download ledger live.
 
 **Restoring deep context after an app lock.** Refused above, on purpose. Recorded here so a later
 reader does not implement it as a missing feature.
+
+---
+
+## Verification results
+
+Recorded 2026-08-15, at the end of Task 8. **Nothing in this section may be read as "the fold
+behaviour works."** It has not been observed working, on any device, by anyone, at any point in this
+plan. What follows is a precise account of what ran, what only compiles, and what was never written.
+
+### Environment limits, established before anything else
+
+Instrumented tests do not execute on this machine. The API 37 emulator boots and runs system apps,
+but cannot launch this app's own Activities — `am start` reports "Activity class does not exist" even
+with the package installed for user 0 and the activity present in the resolver table, and Gradle's
+`connectedDebugAndroidTest` run resolves the intent against the `.test` package instead of the app's.
+This is environmental, not a defect in any code this plan touches.
+
+The only AVD on this machine is `Pixel_10`, a phone at 411dp wide. There is no large-screen or
+foldable AVD, `avdmanager`/`sdkmanager` are not on `PATH` to create one, and `adb shell cmd
+device_state` has no foldable device to drive. The manual pass in Task 8's Step 4 could not be
+attempted for want of a device to run it on, not skipped for lack of time.
+
+Both limits pre-date and are independent of this task's code.
+
+### The spec's five instrumented items
+
+1. **A live resize must not engage the app lock.**
+   **Written, unverified.** `FoldLockBehaviourTest.aLiveResizeDoesNotEngageTheAppLock()`
+   (`app/src/androidTest/java/org/kysecurity/mail/security/FoldLockBehaviourTest.kt`) launches
+   `InboxActivity`, calls `scenario.recreate()`, and asserts `appLockManager.isLockedNow()` is false.
+   It compiles and packages — `:app:assembleDebugAndroidTest` succeeded, which exercises
+   `compileDebugAndroidTestKotlin` against this file — but it has never run.
+
+2. **Close-and-lock past the grace window must still lock.**
+   **Written, partial, unverified.** `FoldLockBehaviourTest.lockNowStillGatesTheInbox()` calls
+   `appLockManager.lockNow()` directly, then recreates `InboxActivity` and asserts the Activity is
+   finishing or destroyed. This is a proxy for "once the app is locked, a gated screen does not
+   survive a recreate" — it does not drive the real close → 30s grace window elapses → reopen path
+   through `KyPostApp`/`ProcessLifecycleOwner`. No test anywhere in this plan does. It compiles.
+   It has never run.
+
+3. **Two embedded panes locking at once must produce exactly one unlock prompt.**
+   **Not written.** No test for this exists anywhere in the repository. The brief that specified
+   `FoldLockBehaviourTest.kt` motivates this exact scenario in prose — `UnlockActivity` is
+   `singleInstance`, so two simultaneous `startActivity` calls from two visible `LockedActivity`
+   instances should collapse into one prompt — but the test file it specifies verbatim contains only
+   the two tests above. This is the property Activity Embedding introduces that has never existed in
+   this app before, and it has **no automated coverage at all**, written or run.
+
+4. **The compose draft survives both transition classes, attachments included.**
+   **Not written.** No test referencing `ComposeDraftCache` exists under `app/src/androidTest`.
+
+5. **A contact edit in progress survives a live resize, and is cleared by `ProcessState.resetAll()`
+   like every other plaintext holder.**
+   **Partially written, unverified.** `ContactEditDraftTest.typedNameSurvivesRecreate()`
+   (`app/src/androidTest/java/org/kysecurity/mail/ui/ContactEditDraftTest.kt`, from an earlier task
+   in this plan) covers the live-resize-survives half. No test asserts the cache is cleared by
+   `ProcessState.resetAll()`. What exists has never run.
+
+### What did run
+
+`./gradlew :app:testDebugUnitTest` — **BUILD SUCCESSFUL**, 815 tests, 0 failures, 0 errors, 0 skipped.
+This is the JVM suite only; it does not touch anything foldable-specific, since this task adds no JVM
+test. No regressions.
+
+`./gradlew :app:assembleDebug` — **BUILD SUCCESSFUL**.
+
+`./gradlew :app:assembleDebugAndroidTest` — **BUILD SUCCESSFUL**. `compileDebugAndroidTestKotlin`
+executed and succeeded, which is the proof that `FoldLockBehaviourTest.kt` compiles and its symbols
+(`SecurityRuntime.graph`, `AppLockManager.lockNow`/`isLockedNow`, `InboxActivity`) resolve. This is
+compilation evidence only — it is not execution evidence.
+
+### Manual foldable pass (Step 4) — not performed
+
+Not attempted, for the environment reasons above. The seven checks are outstanding for whoever next
+has real hardware or can provision a foldable/large-screen AVD:
+
+1. Open the app unfolded → rail on the left, two panes once a message is open.
+2. Fold while reading a message → phone layout, message full-screen, list behind it.
+3. Unfold again within the 30s grace → returns to two panes, no PIN prompt.
+4. Fold, wait past the grace window, unfold → PIN prompt, then the inbox at defaults.
+5. Type a contact name, unfold mid-edit → the typed name is still there.
+6. Type a message body, fold and unfold → the draft is still there.
+7. With two panes open, lock the app → **one** unlock prompt, no pane visible behind it.
+
+### Bottom line
+
+Of the three app-lock security properties this task exists to check: the live-resize property and the
+close-and-lock property each have a test written against them, and neither has ever been run. The
+two-panes-one-prompt property has no test at all — it is exactly as unverified today as it was before
+this task, except now the gap is written down instead of implied. The large-screen and fold behaviour
+described throughout this spec has not been observed working, on any device, at any point in this
+plan. A reader relying on this document for a release decision should treat every layout, embedding,
+and state-restore claim above as design intent, not as demonstrated fact.
