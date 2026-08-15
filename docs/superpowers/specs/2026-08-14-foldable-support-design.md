@@ -375,6 +375,19 @@ has real hardware or can provision a foldable/large-screen AVD:
 6. Type a message body, fold and unfold → the draft is still there.
 7. With two panes open, lock the app → **one** unlock prompt, no pane visible behind it.
 
+### Known behaviour change: an Encrypt toggle with nothing typed
+
+Excluding the compose and contact form subtrees from the saved-state Bundle (the fix that keeps form
+PII out of `system_server`) also removed the framework's incidental restore of `CompoundButton`
+state. The Encrypt and Sign toggles now travel in `ComposeDraftCache` instead, and that cache
+deliberately ignores a draft with no content — so checking Encrypt, typing nothing, and folding loses
+the toggle.
+
+This is not a silent-cleartext path, and the distinction is the whole reason it is acceptable:
+`sendEmail` reads the chip widgets themselves as the wire flags, so the screen comes back visibly
+blank with the toggle visibly unchecked. What is shown and what would be sent never diverge. Checking
+Encrypt with *any* content typed caches and restores normally.
+
 ### Bottom line
 
 All three app-lock security properties this task exists to check now have a test written against

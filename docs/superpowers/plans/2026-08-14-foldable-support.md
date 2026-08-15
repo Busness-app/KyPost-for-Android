@@ -31,6 +31,47 @@ Two changes were forced by details found while writing this plan. Both are narro
 
 ---
 
+## Corrections applied during execution
+
+Execution found defects in this plan. The task text below is left as written, so this section is the
+authoritative correction list — **read it before reusing any step verbatim.**
+
+1. **Task 2, Step 5 — the scroll block was wrong.** It consumed `pendingScrollPosition` on the empty
+   first render (`onResume` renders before the async fetch returns), so the position was discarded
+   before data ever arrived and the feature was a runtime no-op. It must be guarded on
+   `adapter.itemCount > 0`. Shipped fix: `388842c`.
+2. **Task 3 — the test's intent extra keys were wrong.** `MarkReadOnceTest` used `"emailId"` and
+   `"folder"`; the real keys at `InboxActivity.kt:282-288` are `"email_id"` and `"email_folder"`.
+3. **Task 6, Step 7 — "the draft is the last writer and wins" was backwards.** `loadExisting`
+   suspends at the Room read while `populateForm` only suspends for a self-contact, so on
+   `Dispatchers.Main.immediate` the draft restores first and the DB read then overwrites it — losing
+   the user's edits for every non-self contact. Implemented as mutual exclusion instead: a draft, if
+   present, replaces the DB load. Shipped in `c15c975`.
+4. **Task 6 — the cache must be keyed by contact uid.** As planned it was identity-blind, which let
+   the app-lock path leave contact A's draft cached and load it into contact B, whose save would
+   overwrite B locally and on the server. Shipped fix: `d11f16e`.
+5. **Task 6 — `tearDown() = clear()` is an ordering trap.** `clear()` seals the process-wide object,
+   so the next test's `save()` silently no-ops. Use `clear(); take()`.
+6. **Task 8, Step 1 — only two of the three promised lock tests were specified.** The spec's
+   verification list names three security properties; the missing one (two embedded panes locking
+   produce exactly one unlock prompt) is the only genuinely new code path the feature introduces.
+   Added in `c0d920d`. The lock tests also need a `@Before` enabling the lock and setting a
+   credential — `lockNow()` no-ops while `isLockEnabled()` is false, so without it two tests fail and
+   one passes vacuously. Added in `42267aa`.
+7. **Every instrumented-run command.** `--tests` is unsupported for `connectedDebugAndroidTest` on
+   this AGP; use `-Pandroid.testInstrumentationRunnerArguments.class=<FQCN>`. `--tests` remains
+   correct for `:app:testDebugUnitTest`.
+8. **Task 4, Step 1 prose says "23 ids"** — the real count is 24. The XML in the step is complete.
+9. **Task 5, Step 6 references `detailScrollView`**, which does not exist. The layout root itself is
+   a `ScrollView` with id `contactDetailRoot`.
+10. **Not anticipated anywhere in this plan:** the repo gates builds on Gradle dependency
+    verification, so Task 7 also had to add `androidx.window` hashes to
+    `gradle/verification-metadata.xml`. And excluding form subtrees from the saved-state Bundle
+    (the final PII fix) removes the framework's incidental restore of the Encrypt/Sign toggles,
+    which therefore had to move into `ComposeDraftCache` — see the spec's "Known behaviour change".
+
+---
+
 ### Task 1: Navigation rail on large screens
 
 Swaps `BottomNavigationView` for `NavigationRailView` above 600dp. `InboxActivity` keeps one code path because Material 1.10.0 has both types extending `NavigationBarView`.
