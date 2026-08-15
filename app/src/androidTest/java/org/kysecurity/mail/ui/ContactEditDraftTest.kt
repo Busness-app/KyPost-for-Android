@@ -13,11 +13,11 @@ import org.kysecurity.mail.contacts.ContactEditDraftCache
 class ContactEditDraftTest {
 
     /** clear() seals the cache; take() drops the draft and unseals it, which is the pristine state
-     *  the next test needs. */
+     *  the next test needs. The uid is irrelevant here — a mismatched take drops the draft too. */
     @After
     fun tearDown() {
         ContactEditDraftCache.clear()
-        ContactEditDraftCache.take()
+        ContactEditDraftCache.take("")
     }
 
     @Test

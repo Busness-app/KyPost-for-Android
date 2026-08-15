@@ -386,7 +386,7 @@ class ContactEditActivity : LockedActivity() {
         // does not show and there is nothing left to read. Restoring it *instead of* loading keeps
         // the database read from landing afterwards and overwriting the user's edits: populateForm
         // only suspends for the self-contact, so "the draft writes last" is not a race worth having.
-        val draft = ContactEditDraftCache.take()
+        val draft = ContactEditDraftCache.take(existingUid)
         when {
             draft != null -> lifecycleScope.launch { populateForm(draft) }
             existingUid.isNotBlank() -> loadExisting(existingUid)
@@ -409,7 +409,7 @@ class ContactEditActivity : LockedActivity() {
             ContactEditDraftCache.clear()
             return
         }
-        ContactEditDraftCache.save(currentFormDto(fnField.text.toString().trim()))
+        ContactEditDraftCache.save(existingUid, currentFormDto(fnField.text.toString().trim()))
     }
 
     override fun onResume() {
