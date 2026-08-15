@@ -109,19 +109,20 @@ fun themePaletteFor(themeName: String): ThemePalette {
 fun applyThemeToActivity(activity: Activity) {
     val palette = getStoredThemePalette(activity)
     val bgColor = Color.parseColor(palette.bg)
-    val panelColor = Color.parseColor(palette.panel)
     val accentColor = Color.parseColor(palette.accent)
 
-    @Suppress("DEPRECATION")
-    run {
-        activity.window.statusBarColor = accentColor
-        activity.window.navigationBarColor = panelColor
-    }
-    // Edge-to-edge (API 35+) ignores statusBarColor, leaving the raw window background (light by
-    // default) visible behind the status bar. Paint the window itself so it matches the toolbar.
+    // Every screen calls enableEdgeToEdge before setContentView, so the system bars are transparent
+    // on every API level: what shows behind the status bar is the window background, and behind the
+    // navigation bar the content background. Window.statusBarColor/navigationBarColor used to paint
+    // those and are gone — deprecated in API 35 and no-ops under the edge-to-edge that targetSdk 36
+    // enforces, so they only ever styled API 31-34 and left the two paths to drift.
     activity.window.decorView.setBackgroundColor(accentColor)
-    WindowInsetsControllerCompat(activity.window, activity.window.decorView).isAppearanceLightStatusBars =
-        readableOn(accentColor) == Color.BLACK
+    WindowInsetsControllerCompat(activity.window, activity.window.decorView).run {
+        isAppearanceLightStatusBars = readableOn(accentColor) == Color.BLACK
+        // ponytail: bg, not panel — the bottom bar's panel background only reaches under the
+        // navigation bar on the inbox; every other screen shows bg there.
+        isAppearanceLightNavigationBars = readableOn(bgColor) == Color.BLACK
+    }
 
     if (activity is AppCompatActivity) {
         activity.supportActionBar?.setBackgroundDrawable(ColorDrawable(accentColor))
