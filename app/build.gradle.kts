@@ -26,8 +26,8 @@ android {
         applicationId = "org.kysecurity.mail"
         minSdk = 31
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.0"
+        versionCode = 4
+        versionName = "0.3.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -186,11 +186,14 @@ dependencies {
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
+    implementation(libs.androidx.window)
+    implementation(libs.androidx.startup.runtime)
 
     testImplementation(libs.junit)
     testImplementation(kotlin("test-junit"))
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.androidx.test.core)
     androidTestImplementation(libs.androidx.room.runtime)
     androidTestImplementation(libs.androidx.room.testing)
     // Test-only, and the same shape as room-testing above. Without it a WorkManager test would have

@@ -1,7 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- fitsSystemWindows because this screen applies no insets of its own: under edge-to-edge the
+     approve/deny buttons would otherwise sit under the navigation bar, and a partly obscured Deny
+     is not an acceptable state for an authentication prompt. -->
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="match_parent">
+    android:layout_height="match_parent"
+    android:fitsSystemWindows="true">
 
     <LinearLayout
         android:id="@+id/mfaApprovalRoot"

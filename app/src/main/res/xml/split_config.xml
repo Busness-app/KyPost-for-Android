@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:window="http://schemas.android.com/apk/res-auto">
+
+    <!-- splitMinWidthDp is 800, NOT the 600 of the layout qualifier, and the two are deliberately
+         different numbers answering different questions.
+
+         600dp is where one screen earns a wider layout. 800dp is where a window can hold two of
+         them. An embedded Activity is measured against its own pane, not the display, so splitting
+         too early hands the primary 40% of a small window and produces a list narrower than a phone.
+
+         Every threshold below was MEASURED on a Galaxy Z Fold 8 (SM-F971U1, Android 17), not taken
+         from a spec sheet — density 420, so 2.625 px/dp:
+
+           cover  1248x1972 px -> 475dp portrait, 751dp landscape
+           inner  2448x1848 px -> 704dp book,     932dp rotated
+
+         800 is the only threshold that gets all four right. It leaves the cover screen single-pane
+         in both orientations and the inner display single-pane in book orientation, while still
+         splitting the rotated inner display (932dp) into a comfortable 373/559 pair. An earlier
+         value of 720 looked correct against the inner display alone and was wrong: the cover screen
+         in landscape is 751dp, so it split into a 300dp list — narrower than the same screen in
+         portrait, which is the exact failure this threshold exists to prevent.
+
+         The rail does not survive into either pane at any ratio: the primary would need a ~1500dp
+         window to reach the 600dp qualifier. That is Material's own rule — navigation type follows
+         the pane's width, and a 373dp pane wants a bottom bar — not a workaround.
+
+         finishPrimaryWithSecondary="never": closing a message must not close the inbox.
+         finishSecondaryWithPrimary="always": the detail pane cannot outlive its list. -->
+    <SplitPairRule
+        window:splitRatio="0.4"
+        window:splitLayoutDirection="locale"
+        window:splitMinWidthDp="800"
+        window:finishPrimaryWithSecondary="never"
+        window:finishSecondaryWithPrimary="always"
+        window:clearTop="true">
+        <SplitPairFilter
+            window:primaryActivityName=".InboxActivity"
+            window:secondaryActivityName=".EmailDetailActivity" />
+    </SplitPairRule>
+
+    <!-- Same 800 threshold and the same reasoning as the rule above. -->
+    <SplitPairRule
+        window:splitRatio="0.4"
+        window:splitLayoutDirection="locale"
+        window:splitMinWidthDp="800"
+        window:finishPrimaryWithSecondary="never"
+        window:finishSecondaryWithPrimary="always"
+        window:clearTop="true">
+        <SplitPairFilter
+            window:primaryActivityName=".contacts.ContactsListActivity"
+            window:secondaryActivityName=".contacts.ContactDetailActivity" />
+        <SplitPairFilter
+            window:primaryActivityName=".contacts.ContactsListActivity"
+            window:secondaryActivityName=".contacts.ContactEditActivity" />
+        <SplitPairFilter
+            window:primaryActivityName=".contacts.ContactDetailActivity"
+            window:secondaryActivityName=".contacts.ContactEditActivity" />
+    </SplitPairRule>
+
+</resources>

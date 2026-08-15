@@ -24,8 +24,9 @@
         <item name="colorSurface">@color/app_chrome_surface</item>
         <item name="colorOnSurface">@color/app_chrome_on_surface</item>
         <item name="android:colorBackground">@color/app_chrome_surface</item>
-        <!-- Status bar color. -->
-        <item name="android:statusBarColor">?attr/colorPrimaryVariant</item>
+        <!-- No android:statusBarColor. It is deprecated in API 35 and ignored under the
+             edge-to-edge that targetSdk 36 enforces; the status bar is transparent and the window
+             background painted by applyThemeToActivity shows through it instead. -->
         <!-- Space Grotesk is the default UI typeface app-wide, mirroring web's sans font var.
              IBM Plex Mono is applied per-view where the guide calls for a monospace field. -->
         <item name="android:fontFamily">@font/space_grotesk</item>

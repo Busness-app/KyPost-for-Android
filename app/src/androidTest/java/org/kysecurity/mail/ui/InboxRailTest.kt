@@ -1,0 +1,36 @@
+package org.kysecurity.mail.ui
+
+import androidx.test.core.app.ActivityScenario
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import com.google.android.material.navigation.NavigationBarView
+import com.google.android.material.navigationrail.NavigationRailView
+import org.junit.Assert.assertEquals
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.kysecurity.mail.InboxActivity
+import org.kysecurity.mail.R
+
+/**
+ * The bool resource and the layout resolve through the same qualifier, so they can never disagree.
+ * This asserts exactly that pairing: wherever nav_is_rail is true a NavigationRailView was
+ * inflated, and wherever it is false one was not. It therefore passes on a phone and on a tablet
+ * without the test knowing which it is running on.
+ */
+@RunWith(AndroidJUnit4::class)
+class InboxRailTest {
+
+    @Test
+    fun navWidgetMatchesTheBoolResource() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val expectRail = context.resources.getBoolean(R.bool.nav_is_rail)
+
+        ActivityScenario.launch(InboxActivity::class.java).use { scenario ->
+            scenario.onActivity { activity ->
+                val nav = activity.findViewById<NavigationBarView>(R.id.bottomNavigation)
+                assertEquals(expectRail, nav is NavigationRailView)
+                assertEquals(3, nav.menu.size())
+            }
+        }
+    }
+}

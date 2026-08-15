@@ -72,6 +72,12 @@ data class CachedDraft(
     val subject: String,
     val bodyHtml: String,
     val attachments: List<OutgoingAttachment>,
+    /** The Encrypt and Sign toggles. Carried here because the compose form is excluded from the
+     *  saved-state Bundle (see `ComposeActivity.onCreate`), and a fold that silently reset Encrypt
+     *  to its unchecked layout default would send in the clear a message the user had asked to
+     *  encrypt. Not part of [hasContent]: a toggle with nothing typed is not a draft. */
+    val encrypt: Boolean = false,
+    val sign: Boolean = false,
 ) {
     /** An untouched compose screen is not worth restoring, and caching it would silently
      *  resurrect an empty draft over a later Reply's prefilled fields. */

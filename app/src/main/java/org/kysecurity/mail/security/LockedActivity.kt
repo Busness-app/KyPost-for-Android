@@ -3,6 +3,7 @@ package org.kysecurity.mail.security
 import android.content.Intent
 import android.os.Bundle
 import android.view.View
+import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -50,6 +51,11 @@ abstract class LockedActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Here rather than in each subclass: this runs from the subclass's `super.onCreate(...)`,
+        // which is the last point before its `setContentView` — where enableEdgeToEdge has to be
+        // called for the display-cutout mode it sets to reach the window. UnlockActivity and
+        // MfaApprovalActivity are not subclasses and call it themselves.
+        enableEdgeToEdge()
         if (secureWindow) {
             window.applySecureFlag()
         }
