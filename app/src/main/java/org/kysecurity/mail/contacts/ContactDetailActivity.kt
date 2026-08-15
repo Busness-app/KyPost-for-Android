@@ -10,6 +10,7 @@ import android.view.Menu
 import android.view.MenuItem
 import android.view.View
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.lifecycle.lifecycleScope
@@ -40,18 +41,22 @@ class ContactDetailActivity : LockedActivity() {
     private lateinit var selfBadge: Chip
     private lateinit var pgpBadge: Chip
     private lateinit var fieldsContainer: LinearLayout
+    private lateinit var detailScrollView: ScrollView
 
     private var uid: String = ""
+    private var pendingScrollY: Int = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // The app lock redirects and finishes in super.onCreate; nothing below may run,
         // least of all the network and database work further down this method.
         if (redirectedToUnlock) return
+        pendingScrollY = savedInstanceState?.getInt(STATE_SCROLL_Y, 0) ?: 0
         setContentView(R.layout.activity_contact_detail)
         applyThemeToActivity(this)
         applyTopInsetWithHeader(this, findViewById(R.id.contactDetailRoot))
         applyThemedTitle(this, getString(R.string.contacts_edit_title))
+        detailScrollView = findViewById(R.id.contactDetailRoot)
 
         uid = intent.getStringExtra(EXTRA_UID).orEmpty()
         if (uid.isBlank()) {
@@ -72,6 +77,13 @@ class ContactDetailActivity : LockedActivity() {
         if (redirectedToUnlock) return
         applyThemeToActivity(this)
         loadContact()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        if (redirectedToUnlock) return
+        // A scroll offset. No names, addresses, numbers or PGP keys reach this Bundle.
+        outState.putInt(STATE_SCROLL_Y, detailScrollView.scrollY)
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
@@ -223,6 +235,12 @@ class ContactDetailActivity : LockedActivity() {
             addSectionHeader(getString(R.string.contacts_section_other))
             dto.customFields.forEach { field -> addRow(field.label, field.value) }
         }
+
+        if (pendingScrollY > 0) {
+            val target = pendingScrollY
+            pendingScrollY = 0
+            detailScrollView.post { detailScrollView.scrollTo(0, target) }
+        }
     }
 
     private fun addSectionHeader(title: String) {
@@ -285,6 +303,8 @@ class ContactDetailActivity : LockedActivity() {
 
         private const val MENU_EDIT = 1
         const val EXTRA_UID = "contact_uid"
+
+        private const val STATE_SCROLL_Y = "contact_detail_scroll_y"
     }
 }
 

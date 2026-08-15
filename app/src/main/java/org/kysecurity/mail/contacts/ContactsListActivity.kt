@@ -33,6 +33,7 @@ class ContactsListActivity : LockedActivity() {
     private lateinit var emptyText: View
     private lateinit var adapter: ContactAdapter
     private var pickMode: Boolean = false
+    private var pendingScrollPosition: Int = 0
     private val contactPermissionLauncher: androidx.activity.result.ActivityResultLauncher<Array<String>> = registerForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions(),
     ) { permissions ->
@@ -55,6 +56,7 @@ class ContactsListActivity : LockedActivity() {
         // The app lock redirects and finishes in super.onCreate; nothing below may run,
         // least of all the network and database work further down this method.
         if (redirectedToUnlock) return
+        pendingScrollPosition = savedInstanceState?.getInt(STATE_SCROLL, 0) ?: 0
         try {
             pickMode = intent.getBooleanExtra(EXTRA_PICK_MODE, false)
             setContentView(R.layout.activity_contacts_list)
@@ -149,7 +151,27 @@ class ContactsListActivity : LockedActivity() {
     private fun render(contacts: List<ContactEntity>) {
         adapter.updateContacts(contacts)
         emptyText.visibility = if (contacts.isEmpty()) View.VISIBLE else View.GONE
+        if (pendingScrollPosition > 0 && adapter.itemCount > 0) {
+            val target = pendingScrollPosition.coerceAtMost(adapter.itemCount - 1)
+            pendingScrollPosition = 0
+            if (target >= 0) recyclerView.scrollToPosition(target)
+        }
     }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        if (redirectedToUnlock) return
+        // A position, not a contact. No names, addresses or numbers reach this Bundle.
+        val layoutManager = recyclerView.layoutManager as? LinearLayoutManager
+        val visible = layoutManager?.findFirstVisibleItemPosition() ?: 0
+        outState.putInt(STATE_SCROLL, if (pendingScrollPosition > 0) pendingScrollPosition else visible)
+    }
+
+    @androidx.annotation.VisibleForTesting
+    internal fun setPendingScrollForTest(position: Int) { pendingScrollPosition = position }
+
+    @androidx.annotation.VisibleForTesting
+    internal fun pendingScrollForTest(): Int = pendingScrollPosition
 
     override fun onCreateOptionsMenu(menu: Menu?): Boolean {
         if (redirectedToUnlock) return false
@@ -264,5 +286,7 @@ class ContactsListActivity : LockedActivity() {
          *  that need the caller to pick an existing contact. */
         const val EXTRA_PICK_MODE = "pick_mode"
         const val EXTRA_RESULT_UID = "result_uid"
+
+        private const val STATE_SCROLL = "contacts_scroll"
     }
 }
