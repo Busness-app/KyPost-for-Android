@@ -55,6 +55,7 @@ class InboxActivity : LockedActivity() {
     private lateinit var keywordSettings: KeywordSettings
     private var currentFolder = "INBOX"
     private var lastAppliedThemeName: String = ""
+    private var pendingScrollPosition: Int = 0
 
     private var selectedTab = KeywordTabs.ALL
     // BottomNavigationView routes setSelectedItemId() through the RESELECTED listener (not the
@@ -100,6 +101,11 @@ class InboxActivity : LockedActivity() {
         // The app lock redirects and finishes in super.onCreate; nothing below may run,
         // least of all the network and database work further down this method.
         if (redirectedToUnlock) return
+        savedInstanceState?.let { state ->
+            currentFolder = state.getString(STATE_FOLDER, currentFolder)
+            selectedTab = state.getString(STATE_TAB, selectedTab)
+            pendingScrollPosition = state.getInt(STATE_SCROLL, 0)
+        }
         setContentView(R.layout.activity_inbox)
         applyThemeToActivity(this)
         lastAppliedThemeName = getStoredThemeName(this)
@@ -184,6 +190,17 @@ class InboxActivity : LockedActivity() {
         // No redirectedToUnlock guard: ioExecutor is a property initializer, so it exists even
         // when onCreate bailed, and skipping shutdown would leak its thread.
         ioExecutor.shutdownNow()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        if (redirectedToUnlock) return
+        // Identifiers and positions only. No subjects, senders or bodies: this Bundle is
+        // system-managed storage outside the app's control.
+        outState.putString(STATE_FOLDER, currentFolder)
+        outState.putString(STATE_TAB, selectedTab)
+        val layoutManager = recyclerView.layoutManager as? LinearLayoutManager
+        outState.putInt(STATE_SCROLL, layoutManager?.findFirstVisibleItemPosition() ?: 0)
     }
 
     private fun initViews() {
@@ -506,6 +523,11 @@ class InboxActivity : LockedActivity() {
     private fun renderFilteredEmails() {
         val filtered = KeywordTabs.filterEmails(allEmails, selectedTab)
         adapter.updateEmails(filtered)
+        if (pendingScrollPosition > 0) {
+            val target = pendingScrollPosition.coerceAtMost(adapter.itemCount - 1)
+            pendingScrollPosition = 0
+            if (target >= 0) recyclerView.scrollToPosition(target)
+        }
     }
 
     override fun onCreateOptionsMenu(menu: Menu?): Boolean {
@@ -758,6 +780,18 @@ class InboxActivity : LockedActivity() {
         itemTouchHelper.attachToRecyclerView(recyclerView)
     }
 
+    @androidx.annotation.VisibleForTesting
+    internal fun setFolderForTest(folder: String, tab: String) {
+        currentFolder = folder
+        selectedTab = tab
+    }
+
+    @androidx.annotation.VisibleForTesting
+    internal fun currentFolderForTest(): String = currentFolder
+
+    @androidx.annotation.VisibleForTesting
+    internal fun selectedTabForTest(): String = selectedTab
+
     companion object {
         private const val REFRESH_INTERVAL_MS = 90_000L
         private const val PENDING_MESSAGE_POLL_INTERVAL_MS = 3_000L
@@ -769,6 +803,9 @@ class InboxActivity : LockedActivity() {
         private const val MENU_PUSH_PAIRING = 3
         private const val MENU_SECURITY = 4
         private const val MENU_ABOUT = 5
+        const val STATE_FOLDER = "inbox_folder"
+        const val STATE_TAB = "inbox_tab"
+        const val STATE_SCROLL = "inbox_scroll"
         private val SWIPE_ARCHIVE_COLOR = Color.parseColor(COLOR_WARNING)
         private val SWIPE_DELETE_COLOR = Color.parseColor(COLOR_DANGER)
     }
