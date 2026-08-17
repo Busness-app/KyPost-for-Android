@@ -29,7 +29,7 @@ class InboxRailTest {
             scenario.onActivity { activity ->
                 val nav = activity.findViewById<NavigationBarView>(R.id.bottomNavigation)
                 assertEquals(expectRail, nav is NavigationRailView)
-                assertEquals(3, nav.menu.size())
+                assertEquals(5, nav.menu.size())
             }
         }
     }
