@@ -1,67 +1,57 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Scrollable so the focused field (recipient/subject/body editor) can scroll above the
-     keyboard instead of being clipped by it — composeRoot's bottom padding already grows by the
-     IME inset (see AppTheme.applyTopInsetWithHeader), which only helps if there's a scroll
-     container to reveal the extra space. -->
-<androidx.core.widget.NestedScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:fillViewport="true">
-
-<LinearLayout
     android:id="@+id/composeRoot"
     android:layout_width="match_parent"
-    android:layout_height="wrap_content"
+    android:layout_height="match_parent"
     android:orientation="vertical"
-    android:padding="16dp">
+    android:paddingStart="12dp"
+    android:paddingTop="8dp"
+    android:paddingEnd="12dp">
 
-    <!-- Details card: To/Cc/Bcc/Subject grouped as one form, thin dividers between rows
-         (composeDetailsDivider1/2/3, themed to palette.line in ComposeActivity, same pattern as
-         EmailDetailActivity's emailDivider). -->
     <LinearLayout
         android:id="@+id/composeDetailsCard"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:layout_marginBottom="8dp"
         android:orientation="vertical"
-        android:padding="16dp"
-        android:layout_marginBottom="16dp">
+        android:padding="10dp">
 
         <org.kysecurity.mail.RecipientInputView
             android:id="@+id/composeToInput"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="12dp" />
+            android:layout_marginBottom="6dp" />
 
         <View
             android:id="@+id/composeDetailsDivider1"
             android:layout_width="match_parent"
             android:layout_height="1dp"
-            android:layout_marginBottom="12dp" />
+            android:layout_marginBottom="6dp" />
 
         <org.kysecurity.mail.RecipientInputView
             android:id="@+id/composeCcInput"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="12dp" />
+            android:layout_marginBottom="6dp" />
 
         <View
             android:id="@+id/composeDetailsDivider2"
             android:layout_width="match_parent"
             android:layout_height="1dp"
-            android:layout_marginBottom="12dp" />
+            android:layout_marginBottom="6dp" />
 
         <org.kysecurity.mail.RecipientInputView
             android:id="@+id/composeBccInput"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="12dp" />
+            android:layout_marginBottom="6dp" />
 
         <View
             android:id="@+id/composeDetailsDivider3"
             android:layout_width="match_parent"
             android:layout_height="1dp"
-            android:layout_marginBottom="12dp" />
+            android:layout_marginBottom="6dp" />
 
         <LinearLayout
             android:layout_width="match_parent"
@@ -71,10 +61,10 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="@string/compose_subject"
-                android:textSize="12sp"
+                android:layout_marginEnd="8dp"
                 android:gravity="center_vertical"
-                android:layout_marginEnd="8dp" />
+                android:text="@string/compose_subject"
+                android:textSize="12sp" />
 
             <EditText
                 android:id="@+id/composeSubjectField"
@@ -87,22 +77,21 @@
 
     </LinearLayout>
 
-    <!-- Message card: icon-only formatting toolbar sits flush above the body editor (a hairline
-         divider, not a gap, separates them) so the two read as one control. -->
     <LinearLayout
         android:id="@+id/composeMessageCard"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
+        android:layout_height="0dp"
+        android:layout_marginBottom="8dp"
+        android:layout_weight="1"
         android:orientation="vertical"
-        android:padding="12dp"
-        android:layout_marginBottom="16dp">
+        android:padding="10dp">
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="horizontal"
+            android:layout_marginBottom="8dp"
             android:gravity="center_vertical"
-            android:layout_marginBottom="12dp">
+            android:orientation="horizontal">
 
             <com.google.android.material.chip.ChipGroup
                 android:layout_width="0dp"
@@ -114,29 +103,29 @@
                     android:id="@+id/composeBold"
                     style="@style/Widget.KyPost.IconOnlyChip"
                     android:checkable="true"
-                    app:chipIcon="@drawable/ic_bold"
-                    android:contentDescription="@string/compose_format_bold" />
+                    android:contentDescription="@string/compose_format_bold"
+                    app:chipIcon="@drawable/ic_bold" />
 
                 <com.google.android.material.chip.Chip
                     android:id="@+id/composeItalic"
                     style="@style/Widget.KyPost.IconOnlyChip"
                     android:checkable="true"
-                    app:chipIcon="@drawable/ic_italic"
-                    android:contentDescription="@string/compose_format_italic" />
+                    android:contentDescription="@string/compose_format_italic"
+                    app:chipIcon="@drawable/ic_italic" />
 
                 <com.google.android.material.chip.Chip
                     android:id="@+id/composeUnderline"
                     style="@style/Widget.KyPost.IconOnlyChip"
                     android:checkable="true"
-                    app:chipIcon="@drawable/ic_underline"
-                    android:contentDescription="@string/compose_format_underline" />
+                    android:contentDescription="@string/compose_format_underline"
+                    app:chipIcon="@drawable/ic_underline" />
 
                 <com.google.android.material.chip.Chip
                     android:id="@+id/composeLink"
                     style="@style/Widget.KyPost.IconOnlyChip"
                     android:checkable="true"
-                    app:chipIcon="@drawable/ic_link"
-                    android:contentDescription="@string/compose_format_link" />
+                    android:contentDescription="@string/compose_format_link"
+                    app:chipIcon="@drawable/ic_link" />
 
             </com.google.android.material.chip.ChipGroup>
 
@@ -144,22 +133,20 @@
                 android:id="@+id/composeAttachButton"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
                 android:checkable="false"
-                app:chipIcon="@drawable/ic_attach"
-                app:chipIconSize="18dp"
                 android:text="@string/compose_attach"
-                android:layout_marginStart="4dp" />
+                app:chipIcon="@drawable/ic_attach"
+                app:chipIconSize="18dp" />
 
         </LinearLayout>
 
-        <!-- PGP row: hidden entirely unless GET /api/pgp/bootstrap said this account has an identity.
-             Never shown optimistically — a toggle that 409s is worse than no toggle. -->
         <com.google.android.material.chip.ChipGroup
             android:id="@+id/composePgpChips"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp"
             android:visibility="gone"
-            android:layout_marginBottom="12dp"
             app:chipSpacingHorizontal="6dp">
 
             <com.google.android.material.chip.Chip
@@ -167,51 +154,45 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:checkable="true"
-                android:visibility="gone"
-                android:text="@string/compose_pgp_encrypt" />
+                android:text="@string/compose_pgp_encrypt"
+                android:visibility="gone" />
 
             <com.google.android.material.chip.Chip
                 android:id="@+id/composeSignChip"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:checkable="true"
-                android:visibility="gone"
-                android:text="@string/compose_pgp_sign" />
+                android:text="@string/compose_pgp_sign"
+                android:visibility="gone" />
 
             <com.google.android.material.chip.Chip
                 android:id="@+id/composeWebmailChip"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:checkable="false"
-                android:visibility="gone"
-                android:text="@string/compose_pgp_webmail" />
+                android:text="@string/compose_pgp_webmail"
+                android:visibility="gone" />
 
         </com.google.android.material.chip.ChipGroup>
 
-        <!-- "No key on file" notice. A warning callout, not an error: the send may still encrypt to
-             these addresses via key discovery. -->
         <TextView
             android:id="@+id/composeKeylessWarning"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:visibility="gone"
-            android:padding="12dp"
-            android:layout_marginBottom="12dp" />
+            android:layout_marginBottom="8dp"
+            android:padding="10dp"
+            android:visibility="gone" />
 
         <View
             android:id="@+id/composeMessageDivider"
             android:layout_width="match_parent"
             android:layout_height="1dp"
-            android:layout_marginBottom="12dp" />
+            android:layout_marginBottom="8dp" />
 
-        <!-- Fixed height (not 0dp+weight): the RichHtmlEditorWebView forcibly overrides its own
-             layoutParams.height to its content height via updateWebViewHeight, and NestedScrollView's
-             fillViewport only re-stretches the content when the scroll view itself is measured with an
-             EXACTLY spec. Under 0dp+layout_weight the child ends up collapsed to the empty editor's
-             ~1-line content height, leaving the body blank. A concrete height keeps the box visible. -->
         <androidx.core.widget.NestedScrollView
             android:layout_width="match_parent"
-            android:layout_height="320dp"
+            android:layout_height="0dp"
+            android:layout_weight="1"
             android:fillViewport="true">
 
             <FrameLayout
@@ -223,8 +204,6 @@
                     android:layout_width="match_parent"
                     android:layout_height="match_parent" />
 
-                <!-- The editor has no native hint mechanism (it's a WebView); this mirrors it via
-                     ComposeActivity toggling visibility off ComposeActivity's isEmptyFlow collector. -->
                 <TextView
                     android:id="@+id/composeBodyPlaceholder"
                     android:layout_width="wrap_content"
@@ -238,15 +217,20 @@
 
     </LinearLayout>
 
-    <!-- Attachments card: hidden entirely (not just its ChipGroup) when there are no attachments. -->
     <com.google.android.material.chip.ChipGroup
         android:id="@+id/composeAttachmentsCard"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:padding="12dp"
-        android:layout_marginBottom="8dp"
+        android:layout_marginBottom="6dp"
+        android:padding="10dp"
         android:visibility="gone"
         app:chipSpacingHorizontal="6dp" />
 
+    <com.google.android.material.bottomnavigation.BottomNavigationView
+        android:id="@+id/bottomNavigation"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        app:labelVisibilityMode="labeled"
+        app:menu="@menu/bottom_nav_menu" />
+
 </LinearLayout>
-</androidx.core.widget.NestedScrollView>

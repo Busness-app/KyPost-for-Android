@@ -23,7 +23,7 @@ Owns production Android app code and resources.
   unpaired devices to `PushPairingActivity`, then finishes itself. It passes `EXTRA_MESSAGE_ID`
   from push notifications to `InboxActivity` to
   enable deep-linking directly to a new email. It does not manage pairing, token sync, or push
-  history UI — that lives in `push/PushPairingActivity`, reached from the Inbox overflow menu.
+  history UI — that lives in `push/PushPairingActivity`, reached from the Settings hub.
 - The device must be paired via `PushPairingActivity` to use relay mail; there is no separate
   mobile login or mail-password form. Never build UI for the server's web-only mail configuration
   endpoints; an unconfigured relay is an empty state, not a form.
@@ -153,6 +153,16 @@ Owns production Android app code and resources.
   reading never requires horizontal scrolling.
 - Keyword tuning is managed in `KeywordSettingsActivity` and persists hidden/visible keyword headings.
 - Theme selection is managed in `ThemesActivity` and uses the shared theme name list based on `theme.ts` palettes.
+- `SettingsActivity` is only a hub for existing settings surfaces: Security, Themes, Keywords,
+  Pairing, PGP Key, and About. Keep settings logic in the destination screens rather than
+  duplicating it in the hub.
+- Primary navigation uses `bottom_nav_menu.xml` for both phone bottom navigation and the `w600dp`
+  rail on Inbox, Compose, Contacts, and Settings. The item order is Inbox, Compose, Lock, Contacts,
+  Settings; Lock is an action that either locks immediately or opens Security when app lock is
+  disabled, not a selected destination. Keep the destination behavior in `AppNavigation.kt`. Primary
+  destination switches reuse existing destination activities with `FLAG_ACTIVITY_REORDER_TO_FRONT`
+  and use the 120ms card-slide animations in `res/anim/nav_card_*`; settings subpages and security
+  handoff use normal platform transitions.
 - Keyword refresh is best-effort every 90 seconds while inbox UI is foregrounded (both connection modes).
 - Background keyword staleness is accepted; app catches up on next foreground refresh.
 - Contact sync (`contacts/` package) mirrors `push/`'s repository+coordinator+singleton-graph shape:
@@ -161,8 +171,8 @@ Owns production Android app code and resources.
   correlation id in v1 — matched by content/order, see `ContactSyncReconciliation`), and
   `ContactCursorStore` persists a per-subscriber cursor in Room alongside the contact outbox so
   acknowledgement is atomic.
-  Entry point is the Inbox overflow menu ("Contacts") — the bottom nav's 4 fixed items are untouched.
-  CardDAV (the doc's alternative sync surface) has no mobile client — it is web/OS-driven.
+  Entry point is the Contacts nav item and the settings hub; CardDAV (the doc's alternative sync
+  surface) has no mobile client — it is web/OS-driven.
 - Room (`androidx.room`, `data/AppDatabase`) is a deliberate, user-requested exception to "do not
   add new dependencies unless they reduce overall code size/complexity" below — it's the local email
   and contacts cache. KSP (Room's annotation processor) needs

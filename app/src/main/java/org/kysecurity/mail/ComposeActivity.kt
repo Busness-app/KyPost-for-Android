@@ -17,6 +17,7 @@ import androidx.appcompat.app.AlertDialog
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
+import com.google.android.material.navigation.NavigationBarView
 import com.infomaniak.lib.richhtmleditor.RichHtmlEditorWebView
 import org.kysecurity.mail.contacts.AddressBookSheet
 import org.kysecurity.mail.contacts.RecipientCandidate
@@ -69,6 +70,7 @@ class ComposeActivity : LockedActivity() {
     private lateinit var detailsDividers: List<android.view.View>
     private lateinit var messageDivider: android.view.View
     private lateinit var rootView: android.view.View
+    private lateinit var bottomNav: NavigationBarView
     private lateinit var pgpChips: ChipGroup
     private lateinit var encryptChip: Chip
     private lateinit var signChip: Chip
@@ -156,9 +158,13 @@ class ComposeActivity : LockedActivity() {
         // to system_server, outside the app lock and outside SecurityWipe. ComposeDraftCache is
         // what carries the composition across a recreate instead.
         rootView.isSaveFromParentEnabled = false
-        applyTopInsetWithHeader(this, rootView)
+        applyTopInsetWithHeader(this, findViewById<View?>(R.id.composeContent) ?: rootView)
 
-        setTitle(R.string.compose_email)
+        bottomNav = findViewById(R.id.bottomNavigation)
+        applyPrimaryNavigationInsets(this, bottomNav)
+        setupPrimaryNavigation(this, bottomNav, R.id.nav_compose)
+        applyPrimaryNavigationTheme(this, bottomNav)
+        applyKyPostTopBar(this, getString(R.string.nav_compose))
 
         subjectField = findViewById(R.id.composeSubjectField)
         bodyEditor = findViewById(R.id.composeBodyEditor)
@@ -293,6 +299,8 @@ class ComposeActivity : LockedActivity() {
         super.onResume()
         if (redirectedToUnlock) return
         applyThemeToActivity(this)
+        applyKyPostTopBar(this, getString(R.string.nav_compose))
+        applyPrimaryNavigationTheme(this, bottomNav)
         applyToolbarChipsTheme()
         applySendMenuItemTheme()
         applyEditorThemeCss()

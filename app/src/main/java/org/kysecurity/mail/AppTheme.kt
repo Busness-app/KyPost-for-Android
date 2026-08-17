@@ -4,10 +4,12 @@ import android.app.Activity
 import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.Color
+import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.text.SpannableString
 import android.text.style.ForegroundColorSpan
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
@@ -109,24 +111,23 @@ fun themePaletteFor(themeName: String): ThemePalette {
 fun applyThemeToActivity(activity: Activity) {
     val palette = getStoredThemePalette(activity)
     val bgColor = Color.parseColor(palette.bg)
-    val accentColor = Color.parseColor(palette.accent)
 
     // Every screen calls enableEdgeToEdge before setContentView, so the system bars are transparent
     // on every API level: what shows behind the status bar is the window background, and behind the
     // navigation bar the content background. Window.statusBarColor/navigationBarColor used to paint
     // those and are gone — deprecated in API 35 and no-ops under the edge-to-edge that targetSdk 36
     // enforces, so they only ever styled API 31-34 and left the two paths to drift.
-    activity.window.decorView.setBackgroundColor(accentColor)
+    activity.window.decorView.setBackgroundColor(bgColor)
     WindowInsetsControllerCompat(activity.window, activity.window.decorView).run {
-        isAppearanceLightStatusBars = readableOn(accentColor) == Color.BLACK
+        isAppearanceLightStatusBars = readableOn(bgColor) == Color.BLACK
         // ponytail: bg, not panel — the bottom bar's panel background only reaches under the
         // navigation bar on the inbox; every other screen shows bg there.
         isAppearanceLightNavigationBars = readableOn(bgColor) == Color.BLACK
     }
 
     if (activity is AppCompatActivity) {
-        activity.supportActionBar?.setBackgroundDrawable(ColorDrawable(accentColor))
-        activity.supportActionBar?.title = styledTitle(activity.title?.toString().orEmpty(), readableOn(accentColor))
+        activity.supportActionBar?.setBackgroundDrawable(ColorDrawable(bgColor))
+        activity.supportActionBar?.title = styledTitle(activity.title?.toString().orEmpty(), readableOn(bgColor))
     }
 
     // The overflow ("more options") icon isn't part of the content view tree, so it never gets
@@ -134,7 +135,7 @@ fun applyThemeToActivity(activity: Activity) {
     // theme, which disappears against light accent colors (Sun, Sky, White Cliffs, ...). The menu
     // only exists once onCreateOptionsMenu has run, so defer the lookup by a frame.
     activity.window.decorView.post {
-        tintOverflowIcon(activity, readableOn(accentColor))
+        tintOverflowIcon(activity, readableOn(bgColor))
     }
 
     val root: View = activity.findViewById(android.R.id.content)
@@ -147,8 +148,55 @@ fun applyThemeToActivity(activity: Activity) {
 fun applyThemedTitle(activity: Activity, title: CharSequence) {
     activity.title = title
     if (activity is AppCompatActivity) {
-        val accent = Color.parseColor(getStoredThemePalette(activity).accent)
-        activity.supportActionBar?.title = styledTitle(title.toString(), readableOn(accent))
+        val bg = Color.parseColor(getStoredThemePalette(activity).bg)
+        activity.supportActionBar?.title = styledTitle(title.toString(), readableOn(bg))
+    }
+}
+
+/** Top app bar brand treatment: KyPost name + launcher mark, with the screen/folder as subtitle. */
+fun applyKyPostTopBar(activity: Activity, subtitle: CharSequence) {
+    applyThemedTitle(activity, activity.getString(R.string.app_name))
+    if (activity is AppCompatActivity) {
+        val palette = getStoredThemePalette(activity)
+        val bg = Color.parseColor(palette.bg)
+        val accent = Color.parseColor(palette.accent)
+        val ink = Color.parseColor(palette.ink)
+        activity.supportActionBar?.run {
+            setBackgroundDrawable(ColorDrawable(bg))
+            setDisplayShowHomeEnabled(false)
+            setDisplayUseLogoEnabled(false)
+            setDisplayShowTitleEnabled(false)
+            setDisplayShowCustomEnabled(true)
+            customView = LinearLayout(activity).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, 4 * density.toInt(), 0, 4 * density.toInt())
+                addView(ImageView(activity).apply {
+                    setImageResource(R.mipmap.ic_launcher_foreground)
+                    scaleType = ImageView.ScaleType.CENTER_INSIDE
+                }, LinearLayout.LayoutParams((56 * density).toInt(), (56 * density).toInt()))
+                addView(LinearLayout(activity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding((12 * density).toInt(), 0, 0, 0)
+                    addView(TextView(activity).apply {
+                        text = activity.getString(R.string.app_name)
+                        textSize = 32f
+                        typeface = Typeface.DEFAULT_BOLD
+                        setTextColor(accent)
+                        includeFontPadding = false
+                    })
+                    addView(TextView(activity).apply {
+                        text = subtitle
+                        textSize = 12f
+                        typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+                        letterSpacing = 0.18f
+                        setTextColor(ink)
+                        includeFontPadding = false
+                        isAllCaps = true
+                    })
+                })
+            }
+        }
     }
 }
 
@@ -178,12 +226,7 @@ fun applyRailInsets(activity: Activity, view: View) {
         val startInset = if (v.layoutDirection == View.LAYOUT_DIRECTION_RTL) bars.right else bars.left
         v.setPaddingRelative(
             basePaddingStart + startInset,
-            // + actionBarSize for the same reason [applyTopInsetWithHeader] adds it: under enforced
-            // edge-to-edge the content view starts at the top of the window, and the app bar floats
-            // above it. A full-height rail therefore begins *behind* the app bar, and padding by the
-            // status-bar inset alone leaves its first destination hidden under it. Anything spanning
-            // the full height of this content area has to clear the app bar itself.
-            basePaddingTop + bars.top + actionBarSize(activity),
+            basePaddingTop + bars.top,
             v.paddingEnd,
             basePaddingBottom + bars.bottom,
         )
@@ -206,13 +249,34 @@ fun applyTopInsetWithHeader(activity: Activity, root: View) {
         val imeInset = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
         view.setPadding(
             basePaddingLeft,
-            basePaddingTop + topInset + actionBarSize(activity),
+            basePaddingTop + topInset,
             basePaddingRight,
             basePaddingBottom + imeInset,
         )
         insets
     }
     ViewCompat.requestApplyInsets(root)
+}
+
+fun applyPrimaryNavigationTheme(context: Context, nav: com.google.android.material.navigation.NavigationBarView) {
+    val palette = getStoredThemePalette(context)
+    val panel = Color.parseColor(palette.panel)
+    val ink = Color.parseColor(palette.ink)
+    val inkStrong = Color.parseColor(palette.inkStrong)
+    val accent = Color.parseColor(palette.accent)
+
+    nav.backgroundTintList = null
+    nav.setBackgroundColor(panel)
+    val states = arrayOf(
+        intArrayOf(android.R.attr.state_checked),
+        intArrayOf(),
+    )
+    val colors = intArrayOf(inkStrong, ink)
+    val list = ColorStateList(states, colors)
+    nav.itemTextColor = list
+    nav.itemIconTintList = list
+    nav.itemRippleColor = ColorStateList.valueOf(withAlpha(accent, 0.20f))
+    nav.itemActiveIndicatorColor = ColorStateList.valueOf(withAlpha(accent, 0.30f))
 }
 
 fun applyPrimaryButtonTheme(context: Context, button: Button) {
@@ -774,13 +838,4 @@ private fun isGrayscale(color: Int): Boolean {
     val g = Color.green(color)
     val b = Color.blue(color)
     return (maxOf(r, g, b) - minOf(r, g, b)) <= 10
-}
-
-private fun actionBarSize(activity: Activity): Int {
-    val typedArray = activity.theme.obtainStyledAttributes(intArrayOf(android.R.attr.actionBarSize))
-    return try {
-        typedArray.getDimensionPixelSize(0, 0)
-    } finally {
-        typedArray.recycle()
-    }
 }

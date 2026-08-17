@@ -14,16 +14,20 @@ import androidx.recyclerview.widget.RecyclerView
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.WorkManager
 import com.google.android.material.floatingactionbutton.FloatingActionButton
+import com.google.android.material.navigation.NavigationBarView
 import org.kysecurity.mail.R
 import org.kysecurity.mail.applyEmptyStateBackground
+import org.kysecurity.mail.applyKyPostTopBar
+import org.kysecurity.mail.applyPrimaryNavigationInsets
+import org.kysecurity.mail.applyPrimaryNavigationTheme
 import org.kysecurity.mail.applyThemeToActivity
-import org.kysecurity.mail.applyThemedTitle
 import org.kysecurity.mail.applyTopInsetWithHeader
 import org.kysecurity.mail.contacts.device.DeviceContactsRuntime
 import org.kysecurity.mail.contacts.device.DeviceContactSyncEnabler
 import org.kysecurity.mail.contacts.device.DeviceContactSyncScheduler
 import org.kysecurity.mail.data.ContactEntity
 import org.kysecurity.mail.pgp.hasPgpIdentity
+import org.kysecurity.mail.setupPrimaryNavigation
 import kotlinx.coroutines.launch
 import org.kysecurity.mail.security.LockedActivity
 
@@ -31,6 +35,7 @@ class ContactsListActivity : LockedActivity() {
 
     private lateinit var recyclerView: RecyclerView
     private lateinit var emptyText: View
+    private lateinit var bottomNav: NavigationBarView
     private lateinit var adapter: ContactAdapter
     private var pickMode: Boolean = false
     private var pendingScrollPosition: Int = 0
@@ -61,11 +66,19 @@ class ContactsListActivity : LockedActivity() {
             pickMode = intent.getBooleanExtra(EXTRA_PICK_MODE, false)
             setContentView(R.layout.activity_contacts_list)
             applyThemeToActivity(this)
-            applyThemedTitle(this, getString(if (pickMode) R.string.contacts_pick_title else R.string.contacts_title))
-            applyTopInsetWithHeader(this, findViewById(R.id.contactsRoot))
+            applyTopInsetWithHeader(this, findViewById(R.id.contactsContent))
+            applyKyPostTopBar(this, getString(if (pickMode) R.string.contacts_pick_title else R.string.contacts_title))
 
             recyclerView = findViewById(R.id.recyclerViewContacts)
             emptyText = findViewById(R.id.contactsEmptyText)
+            bottomNav = findViewById(R.id.bottomNavigation)
+            if (pickMode) {
+                bottomNav.visibility = View.GONE
+            } else {
+                applyPrimaryNavigationInsets(this, bottomNav)
+                setupPrimaryNavigation(this, bottomNav, R.id.nav_contacts)
+                applyPrimaryNavigationTheme(this, bottomNav)
+            }
             val addButton = findViewById<FloatingActionButton>(R.id.btnAddContact)
 
             adapter = ContactAdapter { contact ->
@@ -144,6 +157,8 @@ class ContactsListActivity : LockedActivity() {
         super.onResume()
         if (redirectedToUnlock) return
         applyThemeToActivity(this)
+        applyKyPostTopBar(this, getString(if (pickMode) R.string.contacts_pick_title else R.string.contacts_title))
+        if (!pickMode) applyPrimaryNavigationTheme(this, bottomNav)
         applyEmptyStateBackground(this, emptyText)
         adapter.notifyDataSetChanged()
     }

@@ -8,8 +8,6 @@ import android.graphics.Typeface
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.view.Menu
-import android.view.MenuItem
 import android.view.View
 import android.widget.PopupMenu
 import android.widget.TextView
@@ -29,7 +27,6 @@ import org.kysecurity.mail.mail.MailRepository
 import org.kysecurity.mail.mail.MailRuntime
 import org.kysecurity.mail.mail.isFlaggedPhishing
 import org.kysecurity.mail.mail.userFacingMessage
-import org.kysecurity.mail.pgp.PgpKeyActivity
 import org.kysecurity.mail.push.PushNotificationDispatcher
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -47,7 +44,6 @@ class InboxActivity : LockedActivity() {
     private lateinit var cancelLoading: View
     private lateinit var inboxRoot: View
     private lateinit var inboxContent: View
-    private lateinit var headerFolderTitle: TextView
     private lateinit var adapter: EmailAdapter
     private val ioExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -58,14 +54,6 @@ class InboxActivity : LockedActivity() {
     private var pendingScrollPosition: Int = 0
 
     private var selectedTab = KeywordTabs.ALL
-    // BottomNavigationView routes setSelectedItemId() through the RESELECTED listener (not the
-    // SELECTED listener) whenever the target item is already selected — and nav_inbox is always
-    // the selected item here, since nav_compose/nav_contacts return false to avoid stealing
-    // selection (see the comment on that below). So both listener branches below must check this
-    // flag, and it must be raised around every programmatic `bottomNav.selectedItemId = R.id.nav_inbox`
-    // assignment, or that assignment re-enters the reselected listener and reopens the popup
-    // (this broke cold launch and post-pick behavior before this flag was added).
-    private var suppressFolderPickerReentry = false
     private var allEmails: List<Email> = emptyList()
     private var pendingMessageId: String? = null
     private var pendingSender: String? = null
@@ -114,10 +102,9 @@ class InboxActivity : LockedActivity() {
         keywordSettings = KeywordSettings(this)
 
         initViews()
-        supportActionBar?.setDisplayShowTitleEnabled(false)
         applyFolderTitle()
-        applyTopInsetWithHeader(this, headerFolderTitle)
-        if (resources.getBoolean(R.bool.nav_is_rail)) applyRailInsets(this, bottomNav) else applyBottomInset(bottomNav)
+        applyTopInsetWithHeader(this, inboxContent)
+        applyPrimaryNavigationInsets(this, bottomNav)
         applyInboxThemeChrome()
         setupRecyclerView()
         setupTabs()
@@ -150,8 +137,8 @@ class InboxActivity : LockedActivity() {
             else -> getString(R.string.nav_inbox)
         }
         val title = getString(R.string.inbox_heading, folderLabel)
-        applyThemedTitle(this, title)
-        headerFolderTitle.text = title
+        setTitle(title)
+        applyKyPostTopBar(this, folderLabel)
     }
 
     override fun onStart() {
@@ -211,7 +198,6 @@ class InboxActivity : LockedActivity() {
     private fun initViews() {
         inboxRoot = findViewById(R.id.inboxRoot)
         inboxContent = findViewById(R.id.inboxContent)
-        headerFolderTitle = findViewById(R.id.headerFolderTitle)
         recyclerView = findViewById(R.id.recyclerViewInbox)
         keywordChipScroll = findViewById(R.id.keywordChipScroll)
         keywordChips = findViewById(R.id.keywordChipGroup)
@@ -235,16 +221,12 @@ class InboxActivity : LockedActivity() {
     private fun applyInboxThemeChrome() {
         val palette = getStoredThemePalette(this)
         val bg = Color.parseColor(palette.bg)
-        val panel = Color.parseColor(palette.panel)
-        val ink = Color.parseColor(palette.ink)
-        val inkStrong = Color.parseColor(palette.inkStrong)
-        val accent = Color.parseColor(palette.accent)
 
         inboxRoot.setBackgroundColor(bg)
         inboxContent.setBackgroundColor(bg)
         recyclerView.setBackgroundColor(bg)
 
-        headerFolderTitle.setTextColor(inkStrong)
+        applyKyPostTopBar(this, supportActionBar?.subtitle ?: getString(R.string.nav_inbox))
 
         // Rounded panel bar behind the keyword pills — shared STYLE_GUIDE.md §3 Card/panel radius.
         applyPanelBackground(this, keywordChipScroll)
@@ -255,23 +237,7 @@ class InboxActivity : LockedActivity() {
             (keywordChips.getChildAt(index) as? Chip)?.let { styleKeywordChip(it) }
         }
 
-        bottomNav.backgroundTintList = null
-        bottomNav.setBackgroundColor(panel)
-        val states = arrayOf(
-            intArrayOf(android.R.attr.state_checked),
-            intArrayOf()
-        )
-        val colors = intArrayOf(inkStrong, ink)
-        val list = ColorStateList(states, colors)
-        bottomNav.itemTextColor = list
-        bottomNav.itemIconTintList = list
-        bottomNav.itemRippleColor = ColorStateList.valueOf(adjustAlpha(accent, 0.20f))
-        bottomNav.itemActiveIndicatorColor = ColorStateList.valueOf(adjustAlpha(accent, 0.30f))
-    }
-
-    private fun adjustAlpha(color: Int, factor: Float): Int {
-        val alpha = (Color.alpha(color) * factor).toInt().coerceIn(0, 255)
-        return Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
+        applyPrimaryNavigationTheme(this, bottomNav)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -535,47 +501,6 @@ class InboxActivity : LockedActivity() {
         }
     }
 
-    override fun onCreateOptionsMenu(menu: Menu?): Boolean {
-        if (redirectedToUnlock) return false
-        menu?.add(0, MENU_PGP_KEY, 0, R.string.menu_pgp_key)
-        menu?.add(0, MENU_KEYWORDS, 1, R.string.menu_keywords)
-        menu?.add(0, MENU_THEMES, 2, R.string.menu_themes)
-        menu?.add(0, MENU_PUSH_PAIRING, 3, R.string.menu_pairing)
-        menu?.add(0, MENU_SECURITY, 4, R.string.menu_security)
-        menu?.add(0, MENU_ABOUT, 5, R.string.menu_about)
-        return super.onCreateOptionsMenu(menu)
-    }
-
-    override fun onOptionsItemSelected(item: MenuItem): Boolean {
-        return when (item.itemId) {
-            MENU_PGP_KEY -> {
-                startActivity(Intent(this, PgpKeyActivity::class.java))
-                true
-            }
-            MENU_KEYWORDS -> {
-                startActivity(Intent(this, KeywordSettingsActivity::class.java))
-                true
-            }
-            MENU_THEMES -> {
-                startActivity(Intent(this, ThemesActivity::class.java))
-                true
-            }
-            MENU_PUSH_PAIRING -> {
-                startActivity(Intent(this, org.kysecurity.mail.push.PushPairingActivity::class.java))
-                true
-            }
-            MENU_SECURITY -> {
-                startActivity(Intent(this, org.kysecurity.mail.security.SecuritySettingsActivity::class.java))
-                true
-            }
-            MENU_ABOUT -> {
-                showAboutDialog(this)
-                true
-            }
-            else -> super.onOptionsItemSelected(item)
-        }
-    }
-
     private fun switchFolder(folder: String) {
         currentFolder = folder
         selectedTab = KeywordTabs.ALL
@@ -646,40 +571,7 @@ class InboxActivity : LockedActivity() {
             showFolderPickerPopup(anchor)
         }
 
-        bottomNav.setOnItemSelectedListener { item ->
-            when (item.itemId) {
-                R.id.nav_inbox -> {
-                    if (!suppressFolderPickerReentry) {
-                        openFolderPickerFromTab()
-                    }
-                    true
-                }
-                // Return false for items that launch a separate screen: the tap still fires the
-                // action, but the nav selection stays on Inbox. Returning true would mark the item
-                // selected, and BottomNavigationView never re-fires the selected listener for an
-                // already-selected item — making the button dead after returning via back.
-                R.id.nav_compose -> {
-                    startActivity(Intent(this, ComposeActivity::class.java))
-                    false
-                }
-                R.id.nav_contacts -> {
-                    startActivity(Intent(this, org.kysecurity.mail.contacts.ContactsListActivity::class.java))
-                    false
-                }
-                else -> false
-            }
-        }
-        bottomNav.setOnItemReselectedListener { item ->
-            if (item.itemId == R.id.nav_inbox && !suppressFolderPickerReentry) {
-                openFolderPickerFromTab()
-            }
-        }
-        suppressFolderPickerReentry = true
-        try {
-            bottomNav.selectedItemId = R.id.nav_inbox
-        } finally {
-            suppressFolderPickerReentry = false
-        }
+        setupPrimaryNavigation(this, bottomNav, R.id.nav_inbox, ::openFolderPickerFromTab)
     }
 
     private fun setupSwipeGestures() {
@@ -810,12 +702,6 @@ class InboxActivity : LockedActivity() {
         private const val PENDING_MESSAGE_POLL_INTERVAL_MS = 3_000L
         private const val PENDING_MESSAGE_TIMEOUT_MS = 30_000L
         private const val ARCHIVE_PARENT_FOLDER = "Archive"
-        private const val MENU_PGP_KEY = 0
-        private const val MENU_KEYWORDS = 1
-        private const val MENU_THEMES = 2
-        private const val MENU_PUSH_PAIRING = 3
-        private const val MENU_SECURITY = 4
-        private const val MENU_ABOUT = 5
         const val STATE_FOLDER = "inbox_folder"
         const val STATE_TAB = "inbox_tab"
         const val STATE_SCROLL = "inbox_scroll"

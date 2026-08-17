@@ -9,7 +9,15 @@
         android:icon="@drawable/ic_edit"
         android:title="@string/nav_compose" />
     <item
+        android:id="@+id/nav_lock"
+        android:icon="@drawable/ic_lock"
+        android:title="@string/nav_lock" />
+    <item
         android:id="@+id/nav_contacts"
         android:icon="@drawable/ic_person"
         android:title="@string/nav_contacts" />
+    <item
+        android:id="@+id/nav_settings"
+        android:icon="@drawable/ic_settings"
+        android:title="@string/nav_settings" />
 </menu>
