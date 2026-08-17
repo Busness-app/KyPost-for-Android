@@ -226,7 +226,7 @@ fun applyRailInsets(activity: Activity, view: View) {
         val startInset = if (v.layoutDirection == View.LAYOUT_DIRECTION_RTL) bars.right else bars.left
         v.setPaddingRelative(
             basePaddingStart + startInset,
-            basePaddingTop + bars.top,
+            basePaddingTop + bars.top + actionBarSize(activity),
             v.paddingEnd,
             basePaddingBottom + bars.bottom,
         )
@@ -249,7 +249,7 @@ fun applyTopInsetWithHeader(activity: Activity, root: View) {
         val imeInset = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
         view.setPadding(
             basePaddingLeft,
-            basePaddingTop + topInset,
+            basePaddingTop + topInset + actionBarSize(activity),
             basePaddingRight,
             basePaddingBottom + imeInset,
         )
@@ -838,4 +838,13 @@ private fun isGrayscale(color: Int): Boolean {
     val g = Color.green(color)
     val b = Color.blue(color)
     return (maxOf(r, g, b) - minOf(r, g, b)) <= 10
+}
+
+private fun actionBarSize(activity: Activity): Int {
+    val typedArray = activity.theme.obtainStyledAttributes(intArrayOf(android.R.attr.actionBarSize))
+    return try {
+        typedArray.getDimensionPixelSize(0, 0)
+    } finally {
+        typedArray.recycle()
+    }
 }

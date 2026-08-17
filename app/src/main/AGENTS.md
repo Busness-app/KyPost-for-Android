@@ -162,7 +162,11 @@ Owns production Android app code and resources.
   disabled, not a selected destination. Keep the destination behavior in `AppNavigation.kt`. Primary
   destination switches reuse existing destination activities with `FLAG_ACTIVITY_REORDER_TO_FRONT`
   and use the 120ms card-slide animations in `res/anim/nav_card_*`; settings subpages and security
-  handoff use normal platform transitions.
+  handoff use normal platform transitions. Rail insets must clear both the status bar and top app
+  bar; content top insets must clear both too, because edge-to-edge content otherwise starts under
+  the custom ActionBar. Inbox remains the selected primary destination for mail folders, but its
+  displayed label must mirror the active folder so Junk/Trash/Archive do not leave Inbox highlighted
+  by name.
 - Keyword refresh is best-effort every 90 seconds while inbox UI is foregrounded (both connection modes).
 - Background keyword staleness is accepted; app catches up on next foreground refresh.
 - Contact sync (`contacts/` package) mirrors `push/`'s repository+coordinator+singleton-graph shape:

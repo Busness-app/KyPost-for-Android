@@ -30,6 +30,10 @@ class InboxRailTest {
                 val nav = activity.findViewById<NavigationBarView>(R.id.bottomNavigation)
                 assertEquals(expectRail, nav is NavigationRailView)
                 assertEquals(5, nav.menu.size())
+                assertEquals(context.getString(R.string.nav_inbox), nav.menu.findItem(R.id.nav_inbox).title.toString())
+
+                activity.setFolderForTest("Junk", "All")
+                assertEquals(context.getString(R.string.nav_junk), nav.menu.findItem(R.id.nav_inbox).title.toString())
             }
         }
     }

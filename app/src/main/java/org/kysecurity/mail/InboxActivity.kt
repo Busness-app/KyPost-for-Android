@@ -130,15 +130,23 @@ class InboxActivity : LockedActivity() {
     }
 
     private fun applyFolderTitle() {
-        val folderLabel = when {
-            currentFolder == "Junk" -> getString(R.string.nav_junk)
-            currentFolder == "Trash" -> getString(R.string.nav_trash)
-            currentFolder.startsWith("$ARCHIVE_PARENT_FOLDER/") -> currentFolder.substringAfterLast('/')
-            else -> getString(R.string.nav_inbox)
-        }
+        val folderLabel = currentFolderLabel()
         val title = getString(R.string.inbox_heading, folderLabel)
         setTitle(title)
         applyKyPostTopBar(this, folderLabel)
+        if (::bottomNav.isInitialized) {
+            bottomNav.menu.findItem(R.id.nav_inbox)?.title = folderLabel
+        }
+    }
+
+    private fun currentFolderLabel(): String {
+        return when {
+            currentFolder == "Junk" -> getString(R.string.nav_junk)
+            currentFolder == "Trash" -> getString(R.string.nav_trash)
+            currentFolder == ARCHIVE_PARENT_FOLDER -> getString(R.string.nav_archive)
+            currentFolder.startsWith("$ARCHIVE_PARENT_FOLDER/") -> currentFolder.substringAfterLast('/')
+            else -> getString(R.string.nav_inbox)
+        }
     }
 
     override fun onStart() {
@@ -226,7 +234,7 @@ class InboxActivity : LockedActivity() {
         inboxContent.setBackgroundColor(bg)
         recyclerView.setBackgroundColor(bg)
 
-        applyKyPostTopBar(this, supportActionBar?.subtitle ?: getString(R.string.nav_inbox))
+        applyFolderTitle()
 
         // Rounded panel bar behind the keyword pills — shared STYLE_GUIDE.md §3 Card/panel radius.
         applyPanelBackground(this, keywordChipScroll)
@@ -510,10 +518,12 @@ class InboxActivity : LockedActivity() {
 
     private fun showFolderPickerPopup(anchor: View) {
         val popupMenu = PopupMenu(this, anchor)
-        popupMenu.menu.add(0, 0, 0, getString(R.string.nav_inbox))
-        popupMenu.menu.add(0, 1, 1, getString(R.string.nav_junk))
-        popupMenu.menu.add(0, 2, 2, getString(R.string.nav_trash))
-        popupMenu.menu.add(0, 3, 3, getString(R.string.nav_archive))
+        popupMenu.menu.add(0, 0, 0, getString(R.string.nav_inbox)).isChecked = currentFolder == "INBOX"
+        popupMenu.menu.add(0, 1, 1, getString(R.string.nav_junk)).isChecked = currentFolder == "Junk"
+        popupMenu.menu.add(0, 2, 2, getString(R.string.nav_trash)).isChecked = currentFolder == "Trash"
+        popupMenu.menu.add(0, 3, 3, getString(R.string.nav_archive)).isChecked =
+            currentFolder == ARCHIVE_PARENT_FOLDER || currentFolder.startsWith("$ARCHIVE_PARENT_FOLDER/")
+        popupMenu.menu.setGroupCheckable(0, true, true)
 
         popupMenu.setOnMenuItemClickListener { menuItem ->
             val folder = when (menuItem.itemId) {
@@ -555,8 +565,10 @@ class InboxActivity : LockedActivity() {
         }
         val popupMenu = PopupMenu(this, anchor)
         folders.forEachIndexed { index, folder ->
-            popupMenu.menu.add(0, index, index, folder.path.substringAfterLast('/'))
+            popupMenu.menu.add(0, index, index, folder.path.substringAfterLast('/')).isChecked =
+                currentFolder == folder.path
         }
+        popupMenu.menu.setGroupCheckable(0, true, true)
         popupMenu.setOnMenuItemClickListener { menuItem ->
             val folder = folders.getOrNull(menuItem.itemId) ?: return@setOnMenuItemClickListener false
             switchFolder(folder.path)
@@ -681,6 +693,9 @@ class InboxActivity : LockedActivity() {
     internal fun setFolderForTest(folder: String, tab: String) {
         currentFolder = folder
         selectedTab = tab
+        if (::bottomNav.isInitialized) {
+            applyFolderTitle()
+        }
     }
 
     @androidx.annotation.VisibleForTesting
