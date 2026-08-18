@@ -40,11 +40,8 @@ class DataGraph(context: Context) : org.kysecurity.mail.ClosableGraph {
     /**
      * SQLCipher, keyed from [DatabaseKey].
      *
-     * `kypost_mail.db` was a plain SQLite file holding every cached message body, the contact book
-     * and contacts' PGP keys. [org.kysecurity.mail.security.AppLockStore]'s own KDoc said the app lock
-     * "does nothing against someone who simply reads `kypost_mail.db` offline", and Hostile
-     * Location Protection — the answer it pointed at — is off by default. Encryption at rest is now
-     * unconditional; protection remains the stronger mode, where there is no file at all.
+     * Encryption at rest is unconditional. Hostile Location Protection remains the stronger mode,
+     * where there is no file at all.
      *
      * The conversion of an existing plaintext file runs here, before Room opens it, because Room
      * would otherwise fail to open a database it cannot read. See [DatabaseMigration].
@@ -53,13 +50,17 @@ class DataGraph(context: Context) : org.kysecurity.mail.ClosableGraph {
         // Before anything touches SQLCipher. See [sqlCipherLoaded] — the library ships the .so and
         // loads it nowhere, so without this the first Room query throws UnsatisfiedLinkError on a
         // background thread.
-        check(sqlCipherLoaded) { "libsqlcipher.so could not be loaded" }
+        if (!sqlCipherLoaded) throw DatabaseUnavailableException("libsqlcipher.so could not be loaded")
         // The framework's SQLiteOpenHelper creates `databases/` on demand; SQLCipher's does not,
-        // and on a fresh install nothing else has created it. Caught by DatabaseEncryptionTest,
-        // which failed with SQLITE_CANTOPEN "Directory … does not exist" before this line existed.
+        // and on a fresh install nothing else has created it.
         appContext.getDatabasePath(DATABASE_NAME).parentFile?.mkdirs()
         val passphrase = DatabaseKey.passphrase(appContext)
-        DatabaseMigration.encryptIfNeeded(appContext, DATABASE_NAME, passphrase)
+        // Checked. On false the file on disk is still plaintext, and building the factory anyway
+        // hands a plaintext file to SQLCipher — which surfaces as SQLITE_NOTADB on the first query,
+        // on a background thread, on every launch, with the cause nowhere near the symptom.
+        if (!DatabaseMigration.encryptIfNeeded(appContext, DATABASE_NAME, passphrase)) {
+            throw DatabaseUnavailableException("$DATABASE_NAME could not be converted to an encrypted database")
+        }
         // A fresh array each time: SupportOpenHelperFactory zeroes the one it is given once the
         // database is open.
         return SupportOpenHelperFactory(passphrase.toByteArray(Charsets.UTF_8))
@@ -85,6 +86,15 @@ class DataGraph(context: Context) : org.kysecurity.mail.ClosableGraph {
 /** The one place the file name is written. [org.kysecurity.mail.security.SecurityWipe] deletes it and
  *  [DatabaseMigration] converts it, and a third spelling of the string is a bug waiting to happen. */
 const val DATABASE_NAME = "kypost_mail.db"
+
+/**
+ * The local database cannot be opened, and serving the app without it would mean presenting an
+ * empty mailbox over data that is still on disk.
+ *
+ * Named rather than a bare `IllegalStateException` so the failure is greppable in a crash report
+ * and distinguishable from a Room schema problem.
+ */
+class DatabaseUnavailableException(message: String) : IllegalStateException(message)
 
 /** Standalone singleton, kept independent of PushGraph/KyPostApp — mirrors how PushGraph itself
  *  stands alone rather than nesting inside another graph. */

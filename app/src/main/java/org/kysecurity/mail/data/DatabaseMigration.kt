@@ -10,15 +10,9 @@ private const val TAG = "DatabaseMigration"
 private val SQLITE_MAGIC = "SQLite format 3".toByteArray(Charsets.US_ASCII) + 0
 
 /**
- * Loads SQLCipher's native library, once.
- *
- * **Nothing in the AAR does this.** Verified by disassembling every class in
- * `sqlcipher-android-4.10.0.aar`: there is no `System.loadLibrary` call anywhere in it, so
- * `libsqlcipher.so` ships in `jni/` and is never loaded unless the app loads it. Room opens the
- * database lazily on a background thread, so a missing load surfaces as an `UnsatisfiedLinkError`
- * on the first query rather than at startup — which is why this is a `by lazy` referenced from
- * both entry points ([DatabaseMigration] and `DataGraph`'s factory) instead of a call one of them
- * remembers to make.
+ * Loads SQLCipher's native library, once. Nothing in the AAR does it, so `libsqlcipher.so` ships in
+ * `jni/` and is never loaded unless the app loads it. Room opens the database lazily on a background
+ * thread, so a missing load would otherwise surface as an `UnsatisfiedLinkError` on the first query.
  */
 internal val sqlCipherLoaded: Boolean by lazy {
     runCatching { System.loadLibrary("sqlcipher") }
@@ -29,92 +23,51 @@ internal val sqlCipherLoaded: Boolean by lazy {
 /**
  * One-time conversion of a pre-encryption `kypost_mail.db` into an encrypted one.
  *
- * Existing installs have a plaintext database on disk. Deleting it and re-syncing would be simpler
- * and is wrong: `pending_contact_changes` holds contact edits the user made offline that have not
- * reached the relay yet, and those exist nowhere else. So the file is converted rather than
- * discarded, with SQLCipher's own `sqlcipher_export`.
+ * The file is converted rather than discarded because `pending_contact_changes` holds contact edits
+ * the user made offline that exist nowhere else.
  *
- * The sequence is crash-safe in the only direction that matters. Everything is written to a temp
- * file; the original is replaced only once the export has completed and the temp file has been
- * reopened and verified with the new key. A process death at any point leaves either the original
- * plaintext database (retried next launch) or the finished encrypted one — never a half-written
- * file that Room would open and treat as corrupt.
+ * Crash safety rests on one property: the only step that changes which file *is* the database is a
+ * single `rename(2)`, which the kernel applies atomically and which replaces the target. There is no
+ * instant at which neither file is a usable database. [recoverInterrupted] additionally salvages the
+ * temp file left by an earlier build that deleted the original before renaming.
  */
 internal object DatabaseMigration {
 
     /**
-     * Converts [databaseName] in place if it is still plaintext. Safe to call on every launch, and
-     * cheap when there is nothing to do — [isPlaintext] reads sixteen bytes.
+     * Converts [databaseName] in place if it is still plaintext. Safe to call on every launch.
      *
-     * @return true if the database is now encrypted, or there was nothing to convert.
+     * @return true if the database is now encrypted, or there was nothing to convert. **Callers must
+     *   check this**: on false the file on disk is still plaintext, and handing it to SQLCipher
+     *   produces an unopenable database rather than a reported failure.
      */
     fun encryptIfNeeded(context: Context, databaseName: String, passphrase: String): Boolean {
         val appContext = context.applicationContext
         val plain = appContext.getDatabasePath(databaseName)
+        val temp = File(plain.parentFile, "$databaseName.encrypting")
+
+        if (recoverInterrupted(plain, temp, passphrase)) return true
         if (!plain.exists()) return true
         if (!isPlaintext(plain)) return true
 
         android.util.Log.i(TAG, "Converting $databaseName to an encrypted database")
-        val temp = File(plain.parentFile, "$databaseName.encrypting")
         cleanUp(temp)
-
         if (!sqlCipherLoaded) return false
 
         return runCatching {
-            // Opened with NO key: this is still a plaintext file, and SQLCipher reads those when no
-            // key is set. The ATTACHed database below is the one that gets the key.
-            // CREATE_IF_NECESSARY is not about the source, which exists — SQLite will only create
-            // the ATTACHed file if the connection doing the attaching was opened with permission
-            // to create. Without it the ATTACH fails with errno 2 and the export never runs.
-            val source = SQLiteDatabase.openDatabase(
-                plain.absolutePath,
-                null,
-                SQLiteDatabase.OPEN_READWRITE or SQLiteDatabase.CREATE_IF_NECESSARY,
-            )
-            val userVersion: Int
-            try {
-                userVersion = source.version
-                // rawExecSQL, because ATTACH and the sqlcipher_export() function are not statements
-                // the binder-based API models. The key is BOUND, never interpolated. It is also why
-                // DatabaseKey stores base64: the bytes SQLite sees for this text parameter are then
-                // identical to the ones SupportOpenHelperFactory is handed, so both derive the same
-                // key. Verified end to end by DatabaseEncryptionTest.
-                source.rawExecSQL(
-                    "ATTACH DATABASE ? AS encrypted KEY ?",
-                    temp.absolutePath,
-                    passphrase,
-                )
-                source.rawExecSQL("SELECT sqlcipher_export('encrypted')")
-                // sqlcipher_export copies schema and rows but NOT user_version, and Room reads
-                // user_version to decide whether to run migrations. Without this the fresh file
-                // reports version 0, and Room either re-runs every migration against a populated
-                // schema or refuses to open it.
-                source.rawExecSQL("PRAGMA encrypted.user_version = $userVersion")
-                source.rawExecSQL("DETACH DATABASE encrypted")
-            } finally {
-                source.close()
-            }
+            val userVersion = exportToTemp(plain, temp, passphrase)
 
-            // Verify BEFORE replacing anything: an export that produced an unopenable file must not
-            // be allowed to overwrite the only readable copy of the user's pending contact edits.
-            val verify = SQLiteDatabase.openDatabase(
-                temp.absolutePath,
-                passphrase.toByteArray(Charsets.UTF_8),
-                null,
-                SQLiteDatabase.OPEN_READONLY,
-                null,
-            )
-            try {
-                check(verify.version == userVersion) { "converted database reports version ${verify.version}" }
-            } finally {
-                verify.close()
-            }
+            // Verify BEFORE anything is replaced: an export that produced an unopenable file must
+            // not be allowed to overwrite the only readable copy of the user's pending edits.
+            check(versionUnder(temp, passphrase) == userVersion) { "converted database failed verification" }
 
-            // The journal files belong to the plaintext database and are meaningless next to the
-            // new one; leaving them also leaves plaintext WAL pages on disk.
-            check(plain.delete()) { "could not remove the plaintext database" }
-            File(plain.parentFile, "$databaseName-wal").delete()
-            File(plain.parentFile, "$databaseName-shm").delete()
+            // The plaintext journals belong to the file about to be replaced. `source.close()`
+            // above checkpoints and removes them in the normal case; this covers the case where it
+            // did not, and it runs before the rename so the encrypted file is never momentarily
+            // paired with a foreign WAL. An interruption here still leaves the checkpointed
+            // plaintext database in place, which the next launch converts again.
+            deleteJournals(plain)
+
+            // The one step that changes which file is the database, and it is atomic.
             check(temp.renameTo(plain)) { "could not move the converted database into place" }
             android.util.Log.i(TAG, "Converted $databaseName to an encrypted database")
             true
@@ -126,29 +79,119 @@ internal object DatabaseMigration {
     }
 
     /**
+     * Adopts a converted database left stranded by an interrupted run.
+     *
+     * Builds up to and including 0.3.2 deleted the plaintext file before renaming the converted one
+     * into place. A process death in that window left no database and an orphaned `.encrypting`
+     * file holding the entire mailbox — which the old `if (!plain.exists()) return true` read as
+     * "nothing to convert", so Room created an empty database over the top and the orphan was never
+     * looked at again. Devices in that state are still out there; this is how they get their mail
+     * back.
+     *
+     * @return true when [temp] is now the database.
+     */
+    private fun recoverInterrupted(plain: File, temp: File, passphrase: String): Boolean {
+        if (plain.exists() || !temp.exists()) return false
+        if (!sqlCipherLoaded) return false
+
+        // Only adopt a file this device can actually read. A temp written under a passphrase that
+        // has since been destroyed is unrecoverable, and renaming it into place would replace a
+        // recoverable empty state with an unopenable one.
+        if (versionUnder(temp, passphrase) == null) {
+            android.util.Log.e(TAG, "Orphaned ${temp.name} does not open under the current key; discarding it")
+            cleanUp(temp)
+            return false
+        }
+        if (!temp.renameTo(plain)) {
+            android.util.Log.e(TAG, "Could not adopt orphaned ${temp.name}")
+            return false
+        }
+        android.util.Log.i(TAG, "Recovered ${plain.name} from an interrupted conversion")
+        return true
+    }
+
+    /** Copies [plain] into a fresh encrypted [temp], returning the `user_version` it carried. */
+    private fun exportToTemp(plain: File, temp: File, passphrase: String): Int {
+        // Opened with NO key: this is still a plaintext file. CREATE_IF_NECESSARY is not about the
+        // source, which exists — SQLite only creates the ATTACHed file if the attaching connection
+        // was opened with permission to create.
+        val source = SQLiteDatabase.openDatabase(
+            plain.absolutePath,
+            null,
+            SQLiteDatabase.OPEN_READWRITE or SQLiteDatabase.CREATE_IF_NECESSARY,
+        )
+        try {
+            val userVersion = source.version
+            // rawExecSQL, because ATTACH and sqlcipher_export() are not statements the binder-based
+            // API models. The key is BOUND, never interpolated — and DatabaseKey stores base64 so
+            // the bytes SQLite sees for this text parameter are identical to the ones
+            // SupportOpenHelperFactory is handed, making both derive the same key.
+            source.rawExecSQL("ATTACH DATABASE ? AS encrypted KEY ?", temp.absolutePath, passphrase)
+            source.rawExecSQL("SELECT sqlcipher_export('encrypted')")
+            // sqlcipher_export copies schema and rows but NOT user_version, which Room reads to
+            // decide whether to run migrations.
+            source.rawExecSQL("PRAGMA encrypted.user_version = $userVersion")
+            source.rawExecSQL("DETACH DATABASE encrypted")
+            return userVersion
+        } finally {
+            source.close()
+        }
+    }
+
+    /** The `user_version` of [file] read under [passphrase], or null if it will not open. */
+    private fun versionUnder(file: File, passphrase: String): Int? = runCatching {
+        val db = SQLiteDatabase.openDatabase(
+            file.absolutePath,
+            passphrase.toByteArray(Charsets.UTF_8),
+            null,
+            SQLiteDatabase.OPEN_READONLY,
+            null,
+        )
+        try {
+            db.version
+        } finally {
+            db.close()
+        }
+    }.getOrNull()
+
+    /**
      * Whether [file] is an unencrypted SQLite database.
      *
-     * SQLite writes a 16-byte magic at offset 0. SQLCipher encrypts the whole file including that
-     * header, so its absence identifies an already-converted database. Checking the header is the
-     * documented way round, and it is cheaper and more reliable than trying to open the file both
-     * ways.
+     * SQLCipher encrypts the whole file including SQLite's 16-byte header, so the magic's absence
+     * identifies an already-converted database.
      *
-     * **The magic ends with a NUL, not a space.** Spelling it "SQLite format 3 " with a trailing
-     * space made this return false for every genuine plaintext database — so `encryptIfNeeded`
-     * reported "already encrypted", no existing install would ever have been converted, and Room
-     * would then have handed a plaintext file to SQLCipher and failed to open it. Caught by
-     * `DatabaseEncryptionTest`, which asserts the plaintext control case and not just the happy
-     * path.
+     * Throws rather than guessing when the header cannot be read at all. Answering "encrypted" there
+     * — which `runCatching { ... }.getOrDefault(false)` did, as did a short read whose count was
+     * discarded — hands a plaintext file to SQLCipher and produces a database that never opens
+     * again.
      */
-    private fun isPlaintext(file: File): Boolean = runCatching {
+    private fun isPlaintext(file: File): Boolean {
         val header = ByteArray(SQLITE_MAGIC.size)
-        file.inputStream().use { it.read(header) }
-        header.contentEquals(SQLITE_MAGIC)
-    }.getOrDefault(false)
+        // Looped, not a single read(): `InputStream.read` may return fewer bytes than asked for,
+        // and the discarded count left the tail zeroed — so a plaintext database read as encrypted.
+        // `readNBytes` would say this in one line but is API 33; this app's minSdk is 31.
+        val read = file.inputStream().use { stream ->
+            var filled = 0
+            while (filled < header.size) {
+                val count = stream.read(header, filled, header.size - filled)
+                if (count < 0) break
+                filled += count
+            }
+            filled
+        }
+        // A file too short to hold the header is not a database this code should be reasoning
+        // about; treat it as not-plaintext and let the open path report it.
+        if (read < header.size) return false
+        return header.contentEquals(SQLITE_MAGIC)
+    }
+
+    private fun deleteJournals(database: File) {
+        File(database.parentFile, "${database.name}-wal").delete()
+        File(database.parentFile, "${database.name}-shm").delete()
+    }
 
     private fun cleanUp(temp: File) {
         temp.delete()
-        File(temp.parentFile, "${temp.name}-wal").delete()
-        File(temp.parentFile, "${temp.name}-shm").delete()
+        deleteJournals(temp)
     }
 }
