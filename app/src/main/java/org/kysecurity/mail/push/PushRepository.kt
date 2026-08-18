@@ -91,7 +91,7 @@ class PushRepository(
 
     /**
      * Pairing data for a call authorised by a PIN the caller has just verified on a foreground
-     * screen, using keys from [org.kysecurity.mail.security.AppLockManager.credentialKeysForDecision].
+     * screen, using keys from [org.kysecurity.mail.security.AppLockManager.verifyPinForDecision].
      *
      * Exists for [MfaApprovalActivity], where the app is legitimately still locked at the moment the
      * decision is submitted — see that method's KDoc for why routing it through
@@ -104,6 +104,9 @@ class PushRepository(
      *  from, or null if none has been captured yet. Read fresh on every call — never cached by the
      *  caller — since it can change on re-pairing. */
     fun currentTlsPin(): TlsPin? = securePairingStore.currentTlsPin()
+
+    /** See [SecurePairingStore.tlsPinState] — distinguishes "never pinned" from "pin lost". */
+    fun tlsPinState(): TlsPinState = securePairingStore.tlsPinState()
 
     /** Persist the TLS pin captured on a just-succeeded pairing call. Only
      *  [PushSyncCoordinator.attemptPairing] calls this, not every routine registration resync. */
@@ -161,14 +164,6 @@ class PushRepository(
     /**
      * Saves pairing data, wrapping `deviceSecret` behind the PIN-derived credential key when the
      * credential gate is on.
-     *
-     * On [PairingCredentialState.Unavailable] the stored secret is left exactly as it was. It used
-     * to be *deleted* here, on the reasoning that [SecurePairingStore.needsCredentialRewrap] would
-     * then be true and the next PIN unlock would restore it. Nothing could: a rewrap has no source
-     * to rewrap from once the value is gone, and the caller reached this branch precisely because
-     * the server had just replaced the secret. The device ended up with no credential, a UI still
-     * reading "Paired", and only a re-pair to get out. [currentCredentialState] is what stops the
-     * caller getting here at all; this branch is the backstop, and it must not destroy anything.
      */
     suspend fun savePairing(
         pairing: PairingData,
@@ -185,10 +180,7 @@ class PushRepository(
                             "the caller should have taken currentCredentialState() before registering",
                     )
                 }
-                securePairingStore.savePairing(
-                    pairing.copy(deviceSecret = null),
-                    preserveStoredSecret = true,
-                )
+                securePairingStore.savePairing(pairing, SecretWrite.Preserve)
             }
             is PairingCredentialState.NotGated ->
                 securePairingStore.savePairing(pairing)

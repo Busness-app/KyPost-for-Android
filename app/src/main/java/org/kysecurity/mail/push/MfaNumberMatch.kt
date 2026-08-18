@@ -15,11 +15,6 @@ package org.kysecurity.mail.push
  * cannot offer an approval for at all. [optionsFor] returns null there, and the caller must leave
  * only Deny available rather than falling back to a button the server will refuse.
  *
- * Digit width is whatever the server used, not a hardcoded 2. The width was pinned in three places
- * across two repositories with no negotiation, so widening the server's value space — the obvious
- * next hardening, since two digits is only 100 values — would have silently disabled approval on
- * every deployed client.
- *
  * Pure and Context-free so the selection logic is unit-testable on the JVM.
  */
 internal object MfaNumberMatch {

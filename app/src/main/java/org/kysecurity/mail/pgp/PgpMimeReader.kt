@@ -30,21 +30,6 @@ internal data class DecryptedBody(
  *
  * Returns null rather than throwing on anything unparseable. The caller renders an exit-table row;
  * putting unparsed bytes into a WebView is not a degradation this accepts.
- *
- * `angus.mail`'s parser is lenient: bytes with no recognizable MIME headers (e.g. random binary) are
- * not rejected, they're accepted as a default `text/plain` message with an empty-string body — RFC
- * 2045's default content type, not something parsed from the input. That default is indistinguishable
- * from a real, empty `text/plain` body by content alone, so the blank check at the top level only fires
- * when [MimeMessage.getHeader] shows no `Content-Type` header was actually present: `hadContentTypeHeader
- * == false` means the empty string came from the RFC default, not from a parsed header, and only then is
- * blank treated as absent. When a `Content-Type` header *was* parsed, an empty body is real — a
- * "no body, attachment only" message is a legitimate compose pattern — so it is kept as `""`, not
- * collapsed to `null`. Inside [walk], every part reached was found via genuine multipart boundary
- * parsing, so a blank part there is always real content and is never discarded outright — but it does
- * not get to keep a slot a later sibling could fill with something non-blank. The first non-blank
- * `text/html` (or `text/plain`) part wins; a blank part is only kept if nothing better ever turns up,
- * so an all-blank multipart still ends as `""` rather than `null`, and a blank-then-real pair never
- * silently drops the real content behind an already-filled slot.
  */
 internal object PgpMimeReader {
 

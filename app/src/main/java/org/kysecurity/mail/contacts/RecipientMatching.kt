@@ -18,16 +18,7 @@ data class RecipientCandidate(
 /** Picks the contact's primary (first) email — same convention [ContactEditActivity] uses for its
  *  single-email field (see `loadExisting`). Returns null for contacts with no email at all —
  *  nothing usable to autocomplete to — and for one whose address carries a recipient separator.
- *
- *  The separator check is here rather than only at the input field because this is the single point
- *  both bypassing entry points share: picking from autocomplete and picking from [AddressBookSheet]
- *  each build a candidate and hand it straight to `RecipientInputView.addRecipient`, which never ran
- *  the format check that typed input gets. Chips are joined with "," on the wire, and the relay
- *  rewrites ";" to "," before parsing the address list, so a separator inside one contact's address
- *  silently turns a single picked chip into two SMTP recipients — and the chip renders the contact's
- *  display name, so the address is never shown again. `ContactsContract` has no per-account write
- *  ACL (see [toEntity]'s note on the same primitive), so any app holding `WRITE_CONTACTS` can set
- *  the value. */
+ */
 fun ContactEntity.toRecipientCandidateOrNull(): RecipientCandidate? {
     val dto = toDto()
     val email = dto.emails.firstOrNull()?.value?.takeIf { it.isNotBlank() } ?: return null

@@ -15,10 +15,14 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import org.kysecurity.mail.R
+import org.kysecurity.mail.security.applyOverlayProtection
 import org.kysecurity.mail.security.applySecureFlag
+import org.kysecurity.mail.security.filterObscuredTouchesRecursively
 import org.kysecurity.mail.security.AppLockStore
 import org.kysecurity.mail.security.AuthGateKey
 import org.kysecurity.mail.security.CredentialEnvelope
+import org.kysecurity.mail.security.consumePin
+import org.kysecurity.mail.security.usePin
 import org.kysecurity.mail.security.SecurityRuntime
 import org.kysecurity.mail.security.SecurityWipe
 import org.kysecurity.mail.security.resolvePinAttempt
@@ -30,12 +34,6 @@ import kotlinx.coroutines.withContext
 
 /**
  * The only place an MFA challenge can be approved or denied.
- *
- * Not a [org.kysecurity.mail.security.LockedActivity]: it has to be reachable while the app is locked,
- * because that is exactly when a sign-in prompt tends to arrive. Instead it authenticates in place
- * — device biometric or device credential — before either button does anything. Approving a
- * sign-in is the single highest-value action in this app, and it used to be available as a
- * notification action that fired straight from the lock screen with no authentication whatsoever.
  *
  * The [MfaChallengeTracker] check is enforced here too, not just in
  * [org.kysecurity.mail.MainActivity]: a challenge id that never arrived via a real push must not be
@@ -91,6 +89,7 @@ class MfaApprovalActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.applySecureFlag()
+        window.applyOverlayProtection()
 
         // This screen is deliberately outside LockedActivity — see the class KDoc — so it does not
         // get that class's terminal block on an abandoned wipe, and it has to carry its own.
@@ -117,6 +116,8 @@ class MfaApprovalActivity : AppCompatActivity() {
         matchChoices = findViewById(R.id.mfaMatchChoices)
         matchUnavailable = findViewById(R.id.mfaMatchUnavailable)
         denyButton.setOnClickListener { resolve(approve = false) }
+        // The whole inflated tree, not just the decorView the window flag covers.
+        findViewById<View>(android.R.id.content).filterObscuredTouchesRecursively()
 
         savedInstanceState?.getStringArray(STATE_MATCH_OPTIONS)?.let { matchOptions = it.toList() }
 
@@ -228,6 +229,10 @@ class MfaApprovalActivity : AppCompatActivity() {
                 text = value
                 textSize = 20f
                 isEnabled = false
+                // Built at runtime, so the window-level flag set in onCreate never reached it. An
+                // overlay covering the wrong tile turns a three-way match into an attacker's
+                // one-in-one. See [applyOverlayProtection].
+                filterTouchesWhenObscured = true
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                     .apply { marginEnd = (8 * resources.displayMetrics.density).toInt() }
                 setOnClickListener { onMatchChosen(value) }
@@ -273,17 +278,25 @@ class MfaApprovalActivity : AppCompatActivity() {
     }
 
     /**
+     * Deny is available; approve is not, and the screen says why.
+     *
+     * The one state where this app will act on an unauthenticated tap, because the action can only
+     * subtract access. [matchDigits] is cleared alongside so [onMatchChosen] cannot match even if a
+     * tile survives — the enabled flag is a UI affordance, not the gate.
+     */
+    private fun denyOnly() {
+        matchDigits = ""
+        matchChoices.removeAllViews()
+        matchGroup.visibility = View.GONE
+        matchUnavailable.visibility = View.VISIBLE
+        matchUnavailable.text = getString(R.string.mfa_approve_needs_device_lock)
+        org.kysecurity.mail.applyWarningCalloutTheme(this, matchUnavailable)
+        denyButton.isEnabled = true
+    }
+
+    /**
      * Gates both buttons behind an authentication that **produces the key the decision needs**,
      * falling back through weaker options only as far as the device forces.
-     *
-     * The order is: the sealed credential keys opened by a fingerprint
-     * ([authenticateWithSealedKeys]), then this app's own PIN, then a device credential, then — on a
-     * device with no authenticator of any kind — nothing. Answering a challenge needs the
-     * PIN-derived key: [MfaResponder] authenticates with `deviceSecret`, which
-     * [org.kysecurity.mail.push.PushRepository.pairingForAuthenticatedCall] can only unwrap from a
-     * credential key, and a device credential is not that key. Authenticating and then discovering
-     * the response cannot be sent is a decision taken and silently dropped, on the highest-value
-     * action in this app.
      */
     private fun requireAuthentication() {
         authInFlight = true
@@ -306,12 +319,6 @@ class MfaApprovalActivity : AppCompatActivity() {
 
     /**
      * The good path: the fingerprint opens the app's own credential keys.
-     *
-     * This replaces a callback that set `authenticated = true` and nothing else. Nothing
-     * cryptographic depended on the biometric there, so an instrumented process could enable approve
-     * and deny — the highest-value action in this app — by hooking one method. Here the keys come
-     * out of a Keystore blob the OS will not decrypt without the user, and they are the same keys
-     * [MfaResponder] needs to answer a gated challenge, so a forged success produces nothing usable.
      */
     private fun authenticateWithSealedKeys(unlock: org.kysecurity.mail.security.BiometricUnlock) {
         val promptInfo = BiometricPrompt.PromptInfo.Builder()
@@ -365,15 +372,6 @@ class MfaApprovalActivity : AppCompatActivity() {
      * check, it is specific to this app, and when the credential gate is on it is the only thing
      * that makes the challenge answerable at all.
      *
-     * The device-credential fallback below is reached on *any* `canAuthenticate` status other than
-     * the three that definitely mean "no authenticator exists". It used to be reached on anything
-     * other than `BIOMETRIC_SUCCESS`, on the argument that
-     * `canAuthenticate(BIOMETRIC_STRONG or DEVICE_CREDENTIAL)` succeeds whenever a device credential
-     * is enrolled — which is not what the API guarantees: `BIOMETRIC_ERROR_HW_UNAVAILABLE` (sensor
-     * temporarily down) and `BIOMETRIC_STATUS_UNKNOWN` (documented as indeterminate, with the advice
-     * to call `authenticate()` anyway) both occur on devices that *do* have a screen lock, and with
-     * this app's PIN unset both buttons went live with no authentication whatsoever.
-     *
      * The prompt has no app secret to produce, so it is bound to [AuthGateKey] instead: a Keystore
      * key the OS releases only for a live authentication. It protects no data — there is none to
      * protect on this path — but it is what makes the success callback evidence rather than a
@@ -390,9 +388,10 @@ class MfaApprovalActivity : AppCompatActivity() {
         if (mfaHasNoAuthenticator(BiometricManager.from(this).canAuthenticate(authenticators))) {
             // Genuinely nothing to authenticate against: no sensor, no enrolled device credential,
             // and no app-lock PIN configured either.
+            //
             authInFlight = false
             authenticated = true
-            setButtonsEnabled(true)
+            denyOnly()
             return
         }
 
@@ -497,11 +496,13 @@ class MfaApprovalActivity : AppCompatActivity() {
             .setPositiveButton(android.R.string.ok) { _, _ ->
                 lifecycleScope.launch {
                     val manager = SecurityRuntime.graph(this@MfaApprovalActivity).appLockManager
-                    val pin = pinField.text.toString()
-                    val attempt = if (gateNeedsPin) {
-                        manager.deriveAndCacheCredentialKeys(pin)
-                    } else {
-                        manager.verifyPinThrottled(pin)
+                    // consumePin + usePin: the PIN is a wipeable CharArray and is zeroed the
+                    // moment the check returns, never an unzeroable String. See [consumePin].
+                    val (attempt, token) = pinField.consumePin().usePin { pin ->
+                        // verifyPinForDecision runs the same throttled check and hands the keys
+                        // back only on Success, so this screen cannot hold a credential key it did
+                        // not earn. It does NOT unlock the app — see AppLockManager.DecisionToken.
+                        manager.verifyPinForDecision(pin, deriveKeys = gateNeedsPin)
                     }
                     // resolvePinAttempt, not `is Success`: the wipe threshold applies here too, and
                     // reporting a completed destructive wipe as "authentication required" told the
@@ -509,13 +510,10 @@ class MfaApprovalActivity : AppCompatActivity() {
                     val ok = resolvePinAttempt(attempt)
                     authInFlight = false
                     pinDialog = null
-                    if (ok) {
-                        // Captured for the life of this authenticated decision. Reading the key back
-                        // later through cachedCredentialKeys() returns null, because a notification
-                        // tap does not unlock the app and that accessor gates on lock state — which
-                        // is why every gated approve and deny used to fail with "Device is not
-                        // registered yet" without a request ever leaving the device.
-                        if (gateNeedsPin) decisionKeys = manager.credentialKeysForDecision()
+                    if (ok && token != null) {
+                        // Captured for the life of this authenticated decision, and dropped in
+                        // onStop alongside `authenticated`.
+                        decisionKeys = manager.keysFor(token)
                         authenticated = true
                         setButtonsEnabled(true)
                     } else {
@@ -536,13 +534,6 @@ class MfaApprovalActivity : AppCompatActivity() {
 
     /**
      * Authentication is consent for one decision, and it does not survive leaving the screen.
-     *
-     * This used to be skipped whenever a resolve was in flight, on the reasoning that an in-flight
-     * request should not be de-authenticated mid-call. What it actually bought was `authenticated`
-     * staying true across a Home press for as long as an OkHttp call with no `callTimeout` can
-     * hang — and the in-flight resolve, on failure, then re-enabled every tile on a screen the user
-     * had walked away from. The request is unaffected by this; only the ability to submit another
-     * one is.
      */
     override fun onStop() {
         super.onStop()
@@ -560,12 +551,6 @@ class MfaApprovalActivity : AppCompatActivity() {
 
     /**
      * Re-authenticates on the way back, because [onStop] de-authenticates on the way out.
-     *
-     * Without this the screen was a dead end: `authenticated` was cleared by [onStop] and nothing
-     * ever set it again — [requireAuthentication] ran only from `onCreate` and [onNewIntent]. A
-     * user who took a phone call mid-decision came back to buttons that silently did nothing,
-     * because [onMatchChosen] and [resolve] both bail on `!authenticated`. On the screen this file
-     * calls the highest-value action in the app.
      *
      * Skipped while a resolve is in flight — that decision is already made and submitted; prompting
      * for a fingerprint on top of it would be asking consent for something already sent.
@@ -614,11 +599,6 @@ class MfaApprovalActivity : AppCompatActivity() {
 /**
  * Whether a [BiometricManager.canAuthenticate] status means there is genuinely **no authenticator
  * to use**, as opposed to one that could not be checked right now.
- *
- * [MfaApprovalActivity] used to treat everything except `BIOMETRIC_SUCCESS` as the former and, with
- * this app's own PIN unset, enable approve and deny with no authentication at all. The premise —
- * "`canAuthenticate(BIOMETRIC_STRONG or DEVICE_CREDENTIAL)` succeeds whenever a device credential is
- * enrolled, so anything else means no screen lock" — is not what the API guarantees:
  *
  * - `BIOMETRIC_ERROR_HW_UNAVAILABLE` is *temporary* (sensor busy or powered down).
  * - `BIOMETRIC_STATUS_UNKNOWN` is documented as indeterminate, with the explicit advice to call

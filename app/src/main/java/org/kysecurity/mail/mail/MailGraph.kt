@@ -3,8 +3,8 @@ package org.kysecurity.mail.mail
 import android.content.Context
 import org.kysecurity.mail.SingletonGraph
 import org.kysecurity.mail.data.DataRuntime
-import org.kysecurity.mail.push.PinnedCallFactoryProvider
 import org.kysecurity.mail.push.PushRuntime
+import org.kysecurity.mail.push.pinnedPairingCallFactory
 
 class MailGraph(context: Context) {
     private val appContext = context.applicationContext
@@ -13,9 +13,10 @@ class MailGraph(context: Context) {
     private val relaySource: MailSource = RelayMailSource(
         pairingProvider = pairingProvider,
         cursorProvider = mailCursorStore,
-        pinnedCallFactory = PinnedCallFactoryProvider(
-            tlsPinProvider = { PushRuntime.graph(appContext).repository.currentTlsPin() },
-        ),
+        // The one shared pinned-or-refuse factory, the same one the contacts graph uses. Building
+        // a private PinnedCallFactoryProvider here and null-coalescing it against an unpinned
+        // client is what let the mail endpoints downgrade silently.
+        callFactory = pinnedPairingCallFactory(appContext),
     )
 
     val repository = MailRepository(

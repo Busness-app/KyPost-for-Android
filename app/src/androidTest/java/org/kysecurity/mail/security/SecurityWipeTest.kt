@@ -39,7 +39,7 @@ class SecurityWipeTest {
     @Test
     fun wipeAndResetApp_clearsPinPairingAndLockState() = runBlocking {
         val appLockStore = AppLockStore(context)
-        appLockStore.setPin("482913")
+        appLockStore.setPin("482913".toCharArray())
         appLockStore.setLockEnabled(true)
 
         PushRuntime.graph(context).securePairingStore.savePairing(pairing)
@@ -54,7 +54,7 @@ class SecurityWipeTest {
         SecurityWipe.wipeAndResetApp(context)
 
         assertFalse(AppLockStore(context).isLockEnabled())
-        assertFalse(AppLockStore(context).verifyPin("482913"))
+        assertFalse(AppLockStore(context).verifyPin("482913".toCharArray()))
         assertNull(PushRuntime.graph(context).securePairingStore.pairing.value)
         assertFalse(dbFile.exists())
     }

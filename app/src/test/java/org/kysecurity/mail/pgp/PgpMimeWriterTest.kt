@@ -138,7 +138,7 @@ class PgpMimeWriterTest {
         val encrypted = PgpEncryptor.encrypt(
             plaintext = protectedContent.toByteArray(Charsets.UTF_8),
             recipientPublicKeys = listOf(TestPgpPrivateKey.ARMORED_PUBLIC),
-            armoredSigningKey = TestPgpPrivateKey.ARMORED_PRIVATE,
+            armoredSigningKey = TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray(),
         ) as EncryptResult.Ok
 
         val delivery = wrapAsPgpMime(
@@ -160,7 +160,7 @@ class PgpMimeWriterTest {
             delivery.indexOf(end) + end.length,
         )
         val decrypted = PgpDecryptor.decrypt(
-            armoredPrivateKey = TestPgpPrivateKey.ARMORED_PRIVATE,
+            armoredPrivateKey = TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray(),
             armoredMessage = armor,
             signerPublicKeys = listOf(TestPgpPrivateKey.ARMORED_PUBLIC),
         ) as DecryptResult.Ok

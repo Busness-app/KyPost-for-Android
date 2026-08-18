@@ -30,13 +30,6 @@ private val OAEP = OAEPParameterSpec(
 /**
  * Seals [CredentialKeys] so a later biometric authentication can produce them again.
  *
- * RSA rather than AES, for one reason: an AndroidKeyStore key with
- * `setUserAuthenticationRequired(true)` demands a live prompt for *every* operation it is used for,
- * and a symmetric key would therefore need one to seal as well as to open. Sealing happens as a
- * side effect of a PIN unlock, where a second prompt the user did not ask for is exactly the
- * friction this feature exists to remove. On an asymmetric key the restriction covers the private
- * key only, so the public half seals silently and the biometric buys the open.
- *
  * Deliberately free of any Android dependency, so the parameters above are unit-testable. The
  * Keystore half lives in [BiometricUnlockVault].
  */

@@ -19,11 +19,6 @@ class PushGraph(context: Context) {
 
     /**
      * The single [MfaChallengeTracker] for the process.
-     *
-     * Its mutations are serialised on a class-level lock regardless, so this is about ownership
-     * rather than correctness — but every call site used to build its own instance, which meant
-     * the object that guards the highest-value screen in the app had no owner at all and no
-     * obvious place to look for one.
      */
     val mfaChallengeTracker = MfaChallengeTracker(appContext)
 
@@ -31,11 +26,12 @@ class PushGraph(context: Context) {
     // than defaulting to the plain unpinned `pairingHttpClient()` — see the 2026-07-22
     // security-hardening spec's final-review fix round, finding C2. Wired directly to this
     // graph's own [repository] (not via [PushRuntime.graph], which would recursively construct
-    // this same [PushGraph] instance mid-construction) — falls back to unpinned automatically
-    // until a TLS pin exists (i.e. before the first successful pairing), then pins from the next
-    // request onward.
+    // this same [PushGraph] instance mid-construction) — falls back to unpinned only while no pin
+    // has EVER been captured (i.e. before the first successful pairing), then pins from the next
+    // request onward. A pin that existed and is now gone fails closed; see [TlsPinState].
     private val pinnedOrFallbackCallFactory: Call.Factory = PinnedOrFallbackCallFactory(
-        PinnedCallFactoryProvider(tlsPinProvider = { repository.currentTlsPin() }),
+        pinnedProvider = PinnedCallFactoryProvider(tlsPinProvider = { repository.currentTlsPin() }),
+        pinStateProvider = { repository.tlsPinState() },
     )
 
     val pullCoordinator = PullSyncCoordinator(
@@ -64,10 +60,11 @@ class PushGraph(context: Context) {
      */
     val deregisterClient = DeregisterClient(
         callFactory = PinnedOrFallbackCallFactory(
-            PinnedCallFactoryProvider(
+            pinnedProvider = PinnedCallFactoryProvider(
                 tlsPinProvider = { repository.currentTlsPin() },
                 callTimeoutMillis = DEREGISTER_CALL_TIMEOUT_MS,
             ),
+            pinStateProvider = { repository.tlsPinState() },
             fallback = org.kysecurity.mail.pairingHttpClient(callTimeoutMillis = DEREGISTER_CALL_TIMEOUT_MS),
         ),
     )

@@ -48,18 +48,6 @@ class KyPostApp : Application(), DefaultLifecycleObserver {
             // If the encrypted app-lock state vanished while the tripwire says a lock was
             // configured, the local database is destroyed rather than served up behind a lock that
             // now reports itself as disabled.
-            //
-            // The verdict is published to SecurityWipe.startupVerdict, which every LockedActivity
-            // awaits before it renders anything. This used to be a bare call in this coroutine
-            // under a comment claiming it "runs before anything reads cached data" — it does not;
-            // Application.onCreate returns immediately and the launcher Activity starts alongside
-            // it. On failure the verdict still has to be published, or every screen in the app
-            // waits forever on a gate that will never open; a graph that could not even be built
-            // is treated as "wiped" so the app lands on a first-run screen rather than a live one.
-            // The verdict carries the WipeResult, not a bare boolean: a wipe that failed steps must
-            // not be announced to the user as a completed erasure. A graph that could not even be
-            // built is reported as Incomplete for the same reason — the app still lands on a
-            // first-run screen, but it does not claim data was destroyed when nothing ran.
             val verdict = runCatching { SecurityWipe.enforceTripwire(this@KyPostApp) }
                 .onFailure { android.util.Log.e("KyPostApp", "Startup tripwire check failed", it) }
                 .getOrElse { WipeResult.Incomplete(listOf("startupTripwireCheck")) }
@@ -126,17 +114,6 @@ class KyPostApp : Application(), DefaultLifecycleObserver {
      * The grace window is the standard resolution (every banking app does this) and is
      * user-configurable, defaulting to 30s — long enough for a file picker round trip, short
      * enough that a pocketed phone re-locks.
-     *
-     * The lock is **scheduled**, not merely deferred to the next foreground. Recording the
-     * background timestamp and evaluating it in [applyLockGrace] alone meant `locked` stayed false
-     * for the entire time the app was away — minutes, hours, days — because nothing else ever calls
-     * `lockNow()`. Two controls that gate on it were void for exactly that window:
-     * [org.kysecurity.mail.push.PushNotificationDispatcher.show] redacts the sender and subject only
-     * while locked, so a message arriving on a phone that had been backgrounded since the morning
-     * put both on the lock screen in full; and [AppLockManager]'s cached credential keys, which
-     * `lockNow()` is the only thing that drops, kept the "require unlock to receive push/MFA" gate
-     * open the whole time. [applyLockGrace] is kept as the belt-and-braces path for a process that
-     * was killed and restored with the callback never having fired.
      */
     override fun onStop(owner: LifecycleOwner) {
         val grace = AppLockSettings(this).graceMillis()
@@ -185,11 +162,19 @@ class KyPostApp : Application(), DefaultLifecycleObserver {
     }
 
     /**
-     * Drops the opened PGP private key when the system asks for memory back.
+     * Drops the opened PGP private key under real memory pressure.
      *
-     * The plaintext key's lifetime is the exposure, and a trim signal means this process is a
-     * candidate for a background kill — after which the heap can outlive any of our teardown. The
-     * cost of being wrong is one extra BiometricPrompt.
+     * **[level] is load-bearing, and ignoring it undid the grace window.** `TRIM_MEMORY_UI_HIDDEN`
+     * fires every time this app's UI goes away — the attachment picker, the QR scanner, the webmail
+     * handoff, or the user glancing at a text message. Clearing on every trim signal therefore
+     * meant a BiometricPrompt on return from each of those, on exactly the round trips [onStop]'s
+     * grace window exists to make survivable, and it contradicted
+     * [org.kysecurity.mail.pgp.EnrollmentSession]'s own contract that the key is "bound to the window
+     * the user already configured at 'Lock after: …' rather than to a second concept of its own".
+     *
+     * `TRIM_MEMORY_RUNNING_LOW` and above are the levels that actually mean the process is a
+     * candidate for a kill, which is the case worth paying a prompt for. The ordinary
+     * background transition is [onStop]'s job, and it does it on the user's configured deadline.
      *
      * Deliberately NOT routed through `InMemoryPlaintext`. Its KDoc records that it is not called
      * from `AppLockManager.lockNow()` because the compose draft cache must survive an ordinary
@@ -198,6 +183,6 @@ class KyPostApp : Application(), DefaultLifecycleObserver {
      */
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        org.kysecurity.mail.pgp.EnrollmentSession.clear()
+        if (level >= TRIM_MEMORY_RUNNING_LOW) org.kysecurity.mail.pgp.EnrollmentSession.clear()
     }
 }

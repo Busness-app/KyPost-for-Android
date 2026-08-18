@@ -185,6 +185,11 @@ dependencies {
     implementation(libs.bouncycastle.bcpg)
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
+    // Encryption at rest for kypost_mail.db, which holds every cached message body, the contact
+    // book and PGP key material. It was a plain SQLite file: readable by anyone with the device
+    // and root, or with an unlocked bootloader, whatever the app lock said. See
+    // security/DatabaseKey.kt.
+    implementation(libs.sqlcipher.android)
     ksp(libs.androidx.room.compiler)
     implementation(libs.androidx.window)
     implementation(libs.androidx.startup.runtime)

@@ -88,7 +88,7 @@ class FoldLockBehaviourTest {
         activities = ActivityTracker()
         application.registerActivityLifecycleCallbacks(activities)
 
-        appLockStore.setPin(TEST_PIN)
+        appLockStore.setPin(TEST_PIN.toCharArray())
         // Before the one attempt below, so a lockout left armed by an earlier class cannot turn it
         // into a Rejected — which is the only shape in which this class could ever contribute to
         // the wipe counter at all.
@@ -100,7 +100,7 @@ class FoldLockBehaviourTest {
         assertEquals(
             "Setup failed: the app lock could not be brought to enabled-and-unlocked.",
             UnlockAttemptResult.Success,
-            appLockManager.attemptPin(TEST_PIN),
+            appLockManager.attemptPin(TEST_PIN.toCharArray()),
         )
         // A background grace window armed by an earlier test class would expire mid-test and lock
         // the app for reasons that have nothing to do with folding.

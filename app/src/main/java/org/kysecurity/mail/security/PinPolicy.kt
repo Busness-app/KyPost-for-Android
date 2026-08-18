@@ -3,13 +3,10 @@ package org.kysecurity.mail.security
 /**
  * What counts as an acceptable app-lock PIN.
  *
- * The lock wipes after [LockoutPolicy.WIPE_THRESHOLD] wrong attempts, so an attacker gets ten
- * guesses — which makes the handful of PINs that everybody picks a real risk rather than a
- * theoretical one. [WEAK_PINS] are the sequences and repeats that dominate every published
- * leaked-PIN dataset; all ten free guesses would otherwise land inside this list.
- *
- * Length is a range, not the hardcoded 6 it used to be: a longer PIN costs the user nothing and
- * is the only lever they have against [CredentialCipher]'s keyspace.
+ * The lock throttles and (optionally) wipes after a run of wrong attempts, so an attacker gets a
+ * bounded number of guesses — which makes the handful of PINs that everybody picks a real risk
+ * rather than a theoretical one. [WEAK_PINS] are the sequences and repeats that dominate every
+ * published leaked-PIN dataset; a short guess budget would otherwise land inside this list.
  *
  * The minimum is 8, not 6, because iteration count cannot defend a small keyspace. Both the PIN
  * verifier and the wrapping key are peppered with a non-exportable Keystore HMAC, which forces any
@@ -48,19 +45,22 @@ object PinPolicy {
         object TooCommon : Result()
     }
 
-    fun validate(pin: String): Result = when {
-        pin.length < MIN_LENGTH -> Result.TooShort
-        pin.length > MAX_LENGTH -> Result.TooLong
+    fun validate(pin: CharArray): Result = when {
+        pin.size < MIN_LENGTH -> Result.TooShort
+        pin.size > MAX_LENGTH -> Result.TooLong
         !pin.all { it.isDigit() } -> Result.NotNumeric
-        pin in WEAK_PINS -> Result.TooCommon
+        // concatToString() here is a short-lived copy of a PIN that has already been rejected as
+        // weak or is about to be accepted — the set lookup needs a String and there is no
+        // CharArray-keyed equivalent worth building for 26 entries.
+        pin.concatToString() in WEAK_PINS -> Result.TooCommon
         isRun(pin) -> Result.TooCommon
         else -> Result.Valid
     }
 
     /** Catches the longer ascending/descending runs the fixed [WEAK_PINS] list can't enumerate
      *  once PINs may be up to [MAX_LENGTH] digits (e.g. "23456789"). */
-    private fun isRun(pin: String): Boolean {
-        val deltas = pin.zipWithNext { a, b -> b - a }
+    private fun isRun(pin: CharArray): Boolean {
+        val deltas = pin.toList().zipWithNext { a, b -> b - a }
         return deltas.all { it == 1 } || deltas.all { it == -1 } || deltas.all { it == 0 }
     }
 }

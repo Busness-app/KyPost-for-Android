@@ -52,12 +52,6 @@ internal class EnrollmentClients(
     // Call.Factory (not the concrete OkHttpClient) so tests can inject a fake without a real network
     // call or a MockWebServer dependency. Mirrors MfaResponseClient.
     //
-    // **Deliberately not defaulted.** It used to default to `pairingHttpClient()`, which pins only
-    // when both a SPKI and a host are passed — so omitting the argument silently produced an
-    // *unpinned* client for the one request that carries the device bearer credential, and
-    // EnrollmentStateWorker omitted it. Every other credentialed client in the app is handed
-    // `pinnedPairingCallFactory`. Making the parameter required means a future call site cannot opt
-    // out of pinning by forgetting: it has to say so, and the compiler asks.
     private val callFactory: Call.Factory,
     private val json: Json = Json { ignoreUnknownKeys = true },
 ) {

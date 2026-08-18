@@ -21,15 +21,15 @@ class AppLockStoreTest {
     @Test
     fun setPin_thenVerifyPin_succeedsWithCorrectPin() {
         val store = AppLockStore(context)
-        store.setPin("123456")
-        assertTrue(store.verifyPin("123456"))
+        store.setPin("123456".toCharArray())
+        assertTrue(store.verifyPin("123456".toCharArray()))
     }
 
     @Test
     fun verifyPin_fails_withWrongPin() {
         val store = AppLockStore(context)
-        store.setPin("123456")
-        assertFalse(store.verifyPin("000000"))
+        store.setPin("123456".toCharArray())
+        assertFalse(store.verifyPin("000000".toCharArray()))
     }
 
     @Test
@@ -52,7 +52,7 @@ class AppLockStoreTest {
     @Test
     fun reset_clearsPinAndLockState() {
         val store = AppLockStore(context)
-        store.setPin("123456")
+        store.setPin("123456".toCharArray())
         store.setLockEnabled(true)
         store.incrementFailedAttempts()
 
@@ -60,7 +60,7 @@ class AppLockStoreTest {
 
         val fresh = AppLockStore(context)
         assertFalse(fresh.isLockEnabled())
-        assertFalse(fresh.verifyPin("123456"))
+        assertFalse(fresh.verifyPin("123456".toCharArray()))
         assertEquals(1, fresh.incrementFailedAttempts())
     }
 
@@ -74,7 +74,7 @@ class AppLockStoreTest {
     @Test
     fun tripwire_recordsThatALockExisted_andClearsWhenTheLockIsTurnedOff() {
         val store = AppLockStore(context)
-        store.setPin("482913")
+        store.setPin("482913".toCharArray())
         store.setLockEnabled(true)
         assertTrue(AppLockStore(context).wasLockEnabled())
 
@@ -85,7 +85,7 @@ class AppLockStoreTest {
     @Test
     fun tripwire_trips_whenTheEncryptedStateVanishesWhileALockWasConfigured() {
         val store = AppLockStore(context)
-        store.setPin("482913")
+        store.setPin("482913".toCharArray())
         store.setLockEnabled(true)
 
         // Simulates an attacker deleting the keyset (or OS-level key invalidation) to turn the
@@ -101,7 +101,7 @@ class AppLockStoreTest {
     @Test
     fun corruptedKeyset_doesNotCrash_andTripsTheTripwire() {
         val store = AppLockStore(context)
-        store.setPin("482913")
+        store.setPin("482913".toCharArray())
         store.setLockEnabled(true)
 
         val rawPrefs = context.getSharedPreferences("app_lock_secure", android.content.Context.MODE_PRIVATE)
@@ -125,8 +125,8 @@ class AppLockStoreTest {
         assertTrue("a corrupted keyset must trip the tripwire", recovered.tripwireBroken())
 
         // The reset must leave a genuinely working store behind, not just a non-crashing shell.
-        recovered.setPin("903471")
-        assertTrue(AppLockStore(context).verifyPin("903471"))
+        recovered.setPin("903471".toCharArray())
+        assertTrue(AppLockStore(context).verifyPin("903471".toCharArray()))
         assertFalse("setting a new PIN clears the tripwire", AppLockStore(context).tripwireBroken())
     }
 }

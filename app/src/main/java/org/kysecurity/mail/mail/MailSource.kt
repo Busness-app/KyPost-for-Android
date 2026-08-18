@@ -162,7 +162,12 @@ data class MailMessageBody(
 data class AttachmentInfo(val index: Int, val name: String, val mimeType: String, val size: Int)
 
 /** A downloaded attachment's bytes plus the metadata needed to save it. */
-data class DownloadedAttachment(val name: String, val mimeType: String, val bytes: ByteArray)
+/**
+ * **Not a `data class`.** The generated `equals`/`hashCode` would compare [bytes] by identity while
+ * looking structural, so a `Set<DownloadedAttachment>` or an `==` would silently never match — and
+ * these are the values a de-duplicating forward cache is most likely to be built over.
+ */
+class DownloadedAttachment(val name: String, val mimeType: String, val bytes: ByteArray)
 
 /**
  * Blocking (non-suspend) by design: callers already run on a background executor thread,

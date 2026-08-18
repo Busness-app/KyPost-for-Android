@@ -50,8 +50,9 @@ internal object PgpEncryptor {
         /** Armored recipient public keys. Empty is refused rather than producing a message nobody
          *  can open. */
         recipientPublicKeys: List<String>,
-        /** Armored private key to sign with, or null to encrypt without signing. */
-        armoredSigningKey: String?,
+        /** Armored private key to sign with, or null to encrypt without signing. A [CharArray]
+         *  for the same reason [PgpDecryptor.decrypt]'s is. */
+        armoredSigningKey: CharArray?,
     ): EncryptResult = runCatching {
         if (plaintext.size > MAX_DECRYPTED_PLAINTEXT_BYTES) {
             return EncryptResult.Failed("this message is too large to encrypt")
@@ -128,11 +129,10 @@ internal object PgpEncryptor {
      * Carries the whole ring, not just the master key: on the ed25519/cv25519 pairs this product
      * generates only the subkey encrypts, so a master-only export would be unusable as a recipient.
      */
-    fun ownPublicKey(armoredPrivateKey: String): String? = runCatching {
-        val ring = PGPSecretKeyRingCollection(
-            PGPUtil.getDecoderStream(armoredPrivateKey.byteInputStream(Charsets.UTF_8)),
-            BcKeyFingerprintCalculator(),
-        ).keyRings.asSequence().firstOrNull() ?: return null
+    fun ownPublicKey(armoredPrivateKey: CharArray): String? = runCatching {
+        val ring = armoredPrivateKey.useArmoredStream { keyStream ->
+            PGPSecretKeyRingCollection(PGPUtil.getDecoderStream(keyStream), BcKeyFingerprintCalculator())
+        }.keyRings.asSequence().firstOrNull() ?: return null
 
         val out = ByteArrayOutputStream()
         ArmoredOutputStream(out).use { armoredOut ->
@@ -164,9 +164,26 @@ internal object PgpEncryptor {
             BcKeyFingerprintCalculator(),
         ).keyRings.asSequence()
             .flatMap { ring -> ring.publicKeys.asSequence() }
-            .filter { it.isEncryptionKey && !it.hasRevocation() }
+            .filter { it.isEncryptionKey && !it.hasRevocation() && !it.hasExpired() }
             .lastOrNull()
     }.getOrNull()
+
+    /**
+     * Whether this key's own stated validity period has run out.
+     *
+     * Checked alongside revocation because [PGPPublicKey.isEncryptionKey] ignores both. Without it,
+     * a recipient whose key expired last year still got a message encrypted to it and the sender
+     * was told it went out — the failure the "a recipient key is unusable" hard stop in [encrypt]
+     * exists to surface, arriving as silence instead.
+     *
+     * `validSeconds == 0` means "no expiry" in OpenPGP, which is the common case and is not an
+     * expiry of zero seconds.
+     */
+    private fun PGPPublicKey.hasExpired(nowMillis: Long = System.currentTimeMillis()): Boolean {
+        val validSeconds = validSeconds
+        if (validSeconds <= 0L) return false
+        return nowMillis > creationTime.time + validSeconds * 1000L
+    }
 
     /**
      * A one-pass signature generator initialised from the enrolled private key.
@@ -174,11 +191,10 @@ internal object PgpEncryptor {
      * The empty passphrase matches [PgpDecryptor]: the armored key came out of the device envelope
      * already unwrapped, so a key that still needs one is not a key this device can use.
      */
-    private fun signatureGeneratorFor(armoredPrivateKey: String): PGPSignatureGenerator? = runCatching {
-        val secretKey = PGPSecretKeyRingCollection(
-            PGPUtil.getDecoderStream(armoredPrivateKey.byteInputStream(Charsets.UTF_8)),
-            BcKeyFingerprintCalculator(),
-        ).keyRings.asSequence()
+    private fun signatureGeneratorFor(armoredPrivateKey: CharArray): PGPSignatureGenerator? = runCatching {
+        val secretKey = armoredPrivateKey.useArmoredStream { keyStream ->
+            PGPSecretKeyRingCollection(PGPUtil.getDecoderStream(keyStream), BcKeyFingerprintCalculator())
+        }.keyRings.asSequence()
             .flatMap { ring -> ring.secretKeys.asSequence() }
             .firstOrNull { it.isSigningKey }
             ?: return null

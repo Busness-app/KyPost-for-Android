@@ -46,9 +46,11 @@ object AuthGateKey {
         val existing = runCatching { encryptCipher(ensureKey()) }
         existing.getOrNull()?.let { return it }
 
-        // A newly enrolled biometric or a changed screen lock kills the key. Nothing is sealed under
-        // it, so a fresh one loses nothing and is just as unusable without the user.
-        Log.i(TAG, "Gate key unusable; minting a replacement", existing.exceptionOrNull())
+        // The key exists in some form but will not operate. Nothing is sealed under it, so a
+        // replacement loses nothing and is just as unusable without the user. Logged at error
+        // level, not info: on a key configured the way [generate] configures it this should not
+        // happen, and a silent re-mint is how a real problem stays invisible.
+        Log.e(TAG, "Gate key unusable; minting a replacement", existing.exceptionOrNull())
         return runCatching {
             keyStore().deleteEntry(ALIAS)
             encryptCipher(generate())
@@ -79,6 +81,16 @@ object AuthGateKey {
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
             .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
             .setUserAuthenticationRequired(true)
+            // Explicitly NOT invalidated by biometric enrollment, which is the platform default.
+            //
+            // That default is right for [BiometricUnlockVault], which excludes device credential:
+            // there, a newly enrolled finger really would be a new way past this app's own PIN.
+            // Here the gate already accepts AUTH_DEVICE_CREDENTIAL — and enrolling a biometric
+            // requires that same credential — so anyone who could enroll a finger could already
+            // satisfy this key. Leaving the default on therefore buys no security and costs the
+            // user their MFA approval path for a benign action (adding a second fingerprint),
+            // which [cipher] can only answer by silently minting a replacement.
+            .setInvalidatedByBiometricEnrollment(false)
             // 0 = per-use auth: the key is unusable except through the CryptoObject a prompt
             // returns, which is exactly the property the gate rests on.
             .setUserAuthenticationParameters(

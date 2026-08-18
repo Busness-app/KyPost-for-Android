@@ -55,14 +55,6 @@ data class ContactEntity(
     /**
      * The *identity* alarm, kept separate from [pgpKeyNeedsReverification] because they answer
      * different questions and are cleared by different evidence.
-     *
-     * [pgpKeyNeedsReverification] means "this key changed" and a QR fingerprint comparison answers
-     * it. This one means "the addresses this key is displayed beside changed", which a fingerprint
-     * comparison says nothing about — the ceremony builds its DTO from the current, possibly already
-     * tampered, Room row. With one shared column the ceremony cleared both, so a WRITE_CONTACTS app
-     * could rewrite a contact's phone number, the app would raise an alarm reading "Key changed",
-     * and the user's obvious remediation — meet them, scan the QR, compare the fingerprint — silently
-     * cleared an alarm about an address injection nobody had examined.
      */
     @ColumnInfo(defaultValue = "0") val identityNeedsReview: Boolean = false,
 )

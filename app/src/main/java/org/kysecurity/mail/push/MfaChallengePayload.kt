@@ -3,14 +3,6 @@ package org.kysecurity.mail.push
 /**
  * An MFA challenge as pushed by the server.
  *
- * Everything past [challengeId] is *context for the human*, and it is the point of this screen.
- * The payload used to be the id alone, so [MfaApprovalActivity] — which its own KDoc calls "the
- * single highest-value action in this app" — asked the user to approve a sign-in with no origin,
- * no time, and no way to tell their own login from an attacker's. Every anti-fatigue control
- * around it (the five-minute window, per-challenge re-auth, the removal of notification actions,
- * the alert cooldown) guarded a decision the user had no information to make, which is precisely
- * the gap MFA-fatigue attacks walk through.
- *
  * All context fields are optional so a server that has not been updated yet still works; the UI
  * degrades to naming what it does not know rather than pretending there was nothing to show.
  * [matchDigits] additionally drives number matching — see [MfaApprovalActivity].
@@ -55,11 +47,6 @@ object MfaChallengePayloadParser {
 
     /**
      * Accepted width of a number-match value, as a range rather than a constant.
-     *
-     * The server currently mints two digits. Pinning that here (and in [MfaNumberMatch], and again
-     * in the server) meant a server widening its value space would make every deployed client
-     * discard the field and lose number matching silently. The range is deliberately generous; the
-     * server decides, this only refuses values that are not a plausible tile label.
      */
     const val MATCH_DIGITS_MIN_LENGTH = 1
     const val MATCH_DIGITS_MAX_LENGTH = 6

@@ -317,13 +317,6 @@ class DeviceContactRepository(
 
     /**
      * Undoes a device-side delete of a row we refuse to tombstone.
-     *
-     * Clearing DIRTY alone — which is what the self-contact guard used to do — leaves `DELETED = 1`
-     * and `CONTACT_ID = NULL` in place forever: `ContactsProvider2.markRawContactAsDeleted` sets all
-     * three, and `deleteContactIfSingleton` removes the parent aggregate, so the card stays gone
-     * from the phone's address book, this loop re-runs on it every cycle, and
-     * `pushRoomChangesToDevice` never recreates it because the link row still exists. Clearing
-     * DELETED and re-enabling aggregation is what actually restores the row.
      */
     private suspend fun restoreDeletedRawContact(rawContactId: Long) = withContext(Dispatchers.IO) {
         val uri = ContactsContract.RawContacts.CONTENT_URI.buildUpon()

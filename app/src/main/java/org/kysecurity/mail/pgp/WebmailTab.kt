@@ -80,13 +80,6 @@ private fun webIntent(url: String): Intent =
  * preference real instead of a guess. The system resolves it at launch time and throws
  * `ActivityNotFoundException` when every candidate is a browser, so a miss costs one caught
  * exception and falls through to the browser.
- *
- * It replaces a `queryIntentActivities` probe that could not have worked. The manifest `<queries>`
- * entry declared `https` with no authority, so the synthesised visibility-match intent had a null
- * host, and `IntentFilter.matchDataAuthority` returns no match against a filter that declares one —
- * which a WebAPK always does. The PWA was invisible through that grant, this mode never fired on
- * any device, and no amount of testing the pure decision function would have shown it. Asking the
- * system at launch time sidesteps package visibility entirely and needs no `<queries>` grant.
  */
 private fun launchNonBrowser(activity: Activity, url: String): Boolean =
     runCatching {

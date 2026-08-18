@@ -74,10 +74,6 @@ fun pairingHttpClient(
  * the first TOFU pin exists) answering with a multi-hundred-megabyte body is an OOM kill, repeated
  * every 90 seconds by the inbox refresh cadence.
  *
- * Enforced as an interceptor so no future client has to remember. The limit sits above
- * `MAX_ATTACHMENT_DOWNLOAD_BYTES` (25 MB) so a legitimate max-size attachment still succeeds; the
- * attachment path's own tighter bound stops reading long before this trips.
- *
  * Throws rather than truncating: a truncated JSON body fails to parse anyway, and callers map an
  * IOException to `UpstreamFailure` — a named failure beats a mystery parse error.
  */

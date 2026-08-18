@@ -17,7 +17,7 @@ class VaultOpenerContractTest {
 
     private class FakeOpener(private val outcome: OpenOutcome, private val key: String? = null) : VaultOpener {
         override suspend fun open(): OpenOutcome {
-            if (key != null) EnrollmentSession.put(key)
+            if (key != null) EnrollmentSession.put(key.toCharArray())
             return outcome
         }
     }
@@ -29,7 +29,7 @@ class VaultOpenerContractTest {
         val outcome = runBlocking { opener.open() }
 
         assertEquals(OpenOutcome.Opened, outcome)
-        assertEquals("-----BEGIN PGP PRIVATE KEY BLOCK-----", EnrollmentSession.peek())
+        assertEquals("-----BEGIN PGP PRIVATE KEY BLOCK-----", EnrollmentSession.peekForTest())
     }
 
     @Test
@@ -39,6 +39,6 @@ class VaultOpenerContractTest {
         val outcome = runBlocking { opener.open() }
 
         assertEquals(OpenOutcome.Cancelled, outcome)
-        assertNull(EnrollmentSession.peek())
+        assertNull(EnrollmentSession.peekForTest())
     }
 }

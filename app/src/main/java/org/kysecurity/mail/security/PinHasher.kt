@@ -9,8 +9,16 @@ private const val PBKDF2_ITERATIONS = 150_000
 private const val KEY_LENGTH_BITS = 256
 private const val SALT_LENGTH_BYTES = 16
 
-/** [hash] is never the raw PIN — only this derived, salted value is ever persisted. */
-data class PinHash(val salt: ByteArray, val hash: ByteArray)
+/**
+ * [hash] is never the raw PIN — only this derived, salted value is ever persisted.
+ *
+ * **Not a `data class`.** Kotlin would generate identity `equals`/`hashCode` for the two
+ * [ByteArray] fields while advertising structural equality, and this is a stored PIN verifier: an
+ * `==` that silently means "same object" is the worst possible shape for it. Comparison goes
+ * through [PinHasher.matches], which uses [java.security.MessageDigest.isEqual] and is constant
+ * time; nothing else may compare these.
+ */
+class PinHash(val salt: ByteArray, val hash: ByteArray)
 
 /**
  * PBKDF2-based PIN hashing for the app-lock PIN (see "Require Unlock to Open" in the
@@ -44,7 +52,7 @@ object PinHasher {
      * device. See [PepperUnavailableException].
      */
     fun hash(
-        pin: String,
+        pin: CharArray,
         salt: ByteArray = randomSalt(),
         pepper: CredentialPepper = KeystorePinPepper,
     ): PinHash {
@@ -54,11 +62,11 @@ object PinHasher {
 
     /** Read-only derivation: peppers, never creates. Throws [PepperUnavailableException] when the
      *  Keystore key behind [pepper] is gone. */
-    private fun derive(pin: String, salt: ByteArray, pepper: CredentialPepper): ByteArray =
+    private fun derive(pin: CharArray, salt: ByteArray, pepper: CredentialPepper): ByteArray =
         pepper.mix(pbkdf2(pin, salt))
 
     /** v1 verifier, retained only so a pre-pepper hash can be checked once and upgraded. */
-    fun hashLegacy(pin: String, salt: ByteArray): PinHash = PinHash(salt, pbkdf2(pin, salt))
+    fun hashLegacy(pin: CharArray, salt: ByteArray): PinHash = PinHash(salt, pbkdf2(pin, salt))
 
     /**
      * Verifies [pin] against a stored verifier. Never creates a pepper key — see [hash].
@@ -68,19 +76,25 @@ object PinHasher {
      * [LockoutPolicy.WIPE_THRESHOLD].
      */
     fun matches(
-        pin: String,
+        pin: CharArray,
         salt: ByteArray,
         expectedHash: ByteArray,
         pepper: CredentialPepper = KeystorePinPepper,
     ): Boolean = MessageDigest.isEqual(derive(pin, salt, pepper), expectedHash)
 
-    fun matchesLegacy(pin: String, salt: ByteArray, expectedHash: ByteArray): Boolean =
+    fun matchesLegacy(pin: CharArray, salt: ByteArray, expectedHash: ByteArray): Boolean =
         MessageDigest.isEqual(hashLegacy(pin, salt).hash, expectedHash)
 
     fun randomSalt(): ByteArray = ByteArray(SALT_LENGTH_BYTES).also { SecureRandom().nextBytes(it) }
 
-    private fun pbkdf2(pin: String, salt: ByteArray): ByteArray {
-        val spec = PBEKeySpec(pin.toCharArray(), salt, PBKDF2_ITERATIONS, KEY_LENGTH_BITS)
-        return SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
+    /** [PBEKeySpec] copies the array it is given and exposes [PBEKeySpec.clearPassword] to zero
+     *  that copy; the PIN reaches here as a [CharArray] precisely so both ends can be wiped. */
+    private fun pbkdf2(pin: CharArray, salt: ByteArray): ByteArray {
+        val spec = PBEKeySpec(pin, salt, PBKDF2_ITERATIONS, KEY_LENGTH_BITS)
+        try {
+            return SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
+        } finally {
+            spec.clearPassword()
+        }
     }
 }

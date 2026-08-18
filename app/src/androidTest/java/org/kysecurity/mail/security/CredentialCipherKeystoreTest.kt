@@ -42,7 +42,7 @@ class CredentialCipherKeystoreTest {
     @Test
     fun pepperedKeyDiffersFromTheBarePbkdf2Output() {
         val salt = CredentialCipher.randomSalt()
-        val keys = CredentialCipher.deriveKeys("482913", salt)
+        val keys = CredentialCipher.deriveKeys("482913".toCharArray(), salt)
 
         assertFalse(keys.current.encoded.contentEquals(keys.legacy.encoded))
     }
@@ -50,7 +50,7 @@ class CredentialCipherKeystoreTest {
     @Test
     fun roundTripsThroughTheRealKeystorePepper() {
         val salt = CredentialCipher.randomSalt()
-        val keys = CredentialCipher.deriveKeys("482913", salt)
+        val keys = CredentialCipher.deriveKeys("482913".toCharArray(), salt)
         val wrapped = CredentialCipher.wrap("top-secret-device-secret", keys.current)
 
         assertEquals("top-secret-device-secret", CredentialCipher.unwrap(wrapped, keys.current))
@@ -61,7 +61,7 @@ class CredentialCipherKeystoreTest {
         // This is the offline-brute-force property: knowing the PIN and the salt is not enough
         // without the on-device pepper.
         val salt = CredentialCipher.randomSalt()
-        val keys = CredentialCipher.deriveKeys("482913", salt)
+        val keys = CredentialCipher.deriveKeys("482913".toCharArray(), salt)
         val wrapped = CredentialCipher.wrap("top-secret-device-secret", keys.current)
 
         assertNull(CredentialCipher.unwrap(wrapped, keys.legacy))

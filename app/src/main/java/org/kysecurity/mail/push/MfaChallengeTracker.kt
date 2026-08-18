@@ -13,11 +13,6 @@ private const val KEY_LAST_ALERT_AT = "!last_alert_at"
 
 /**
  * Hard ceiling on tracked challenges.
- *
- * A relay that mints challenges faster than the user can answer them is the MFA-fatigue attack this
- * feature exists to resist, and the tracker used to grow one `commit()`-backed key per delivery with
- * no bound at all. Nobody legitimately has more than a couple of sign-ins in flight; past this,
- * the oldest entry is evicted.
  */
 internal const val MAX_TRACKED_CHALLENGES = 8
 
@@ -58,10 +53,6 @@ class MfaChallengeTracker(context: Context) {
 
     /**
      * Records [challengeId] and rewrites the file to the live, bounded set in ONE `commit()`.
-     *
-     * This used to be a `putLong` followed by a separate prune that materialised `prefs.all` and
-     * issued a second `commit()` — two synchronous disk writes and a full map copy per delivery, on
-     * the push-delivery thread, which a burst turned quadratic.
      */
     fun markDelivered(challengeId: String, nowEpochMs: Long = System.currentTimeMillis()) {
         // Re-validated here, not just at the parser: this id becomes a key in an XML file written
@@ -137,10 +128,6 @@ class MfaChallengeTracker(context: Context) {
      * Undoes [shouldSuppressAlert]'s advance when the notification it was for never reached the
      * shade — POST_NOTIFICATIONS revoked between the check and the post, or a `SecurityException`
      * on the way out.
-     *
-     * Without this, a delivery that showed the user nothing still silenced the next five minutes of
-     * genuine sign-in prompts. [markDelivered] already refuses to record a challenge that was not
-     * actually posted, for the same reason; the cooldown had been left out of that reasoning.
      */
     fun restoreAlertCooldown(previousAlertAtEpochMs: Long) {
         synchronized(lock) {

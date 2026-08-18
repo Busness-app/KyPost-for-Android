@@ -23,13 +23,6 @@ enum class DeliveryMode(val wire: String) {
 /**
  * How the server reaches this device — the transport it confirmed on the last successful
  * registration.
- *
- * Modelled the same way [DeliveryMode] already was, rather than left as the bare `"unifiedpush"` /
- * `"fcm"` / `"apns"` string literals it used to be. Those appeared in six places across five files,
- * including three separate `transport == "unifiedpush"` comparisons that each decided whether to
- * resend WebPush key material — so a typo in any one of them silently degraded a UnifiedPush device
- * to FCM on its next resync, with no compile error and nothing user-visible until push stopped
- * arriving.
  */
 enum class PushTransport(val wire: String) {
     FCM("fcm"),

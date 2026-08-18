@@ -7,7 +7,7 @@ internal class FakeVaultOpener(
     var opened = 0
     override suspend fun open(): OpenOutcome {
         opened++
-        if (outcome is OpenOutcome.Opened) keyToHold?.let { EnrollmentSession.put(it) }
+        if (outcome is OpenOutcome.Opened) keyToHold?.let { EnrollmentSession.put(it.toCharArray()) }
         return outcome
     }
 }

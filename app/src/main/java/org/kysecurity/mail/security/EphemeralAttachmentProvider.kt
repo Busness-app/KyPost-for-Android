@@ -134,12 +134,6 @@ object EphemeralAttachmentBytes : org.kysecurity.mail.ProcessScopedState {
     /**
      * Parks [bytes] for a single ephemeral read, or returns null when doing so would push the
      * held-plaintext total past [MAX_PENDING_BYTES].
-     *
-     * Refuses rather than evicting: the entries already here belong to attachments the user has
-     * asked for and a viewer may be about to open, and silently dropping one would hand that viewer
-     * an "already consumed" error for something the user did nothing wrong with. A refusal is a
-     * message the caller can show. Expired entries are swept first, so the common case of "the
-     * previous attachments were simply never opened" resolves itself.
      */
     fun register(bytes: ByteArray, mimeType: String): Uri? {
         // Nothing may be parked under an unknown authority. [configure] runs from the provider's
@@ -173,9 +167,6 @@ object EphemeralAttachmentBytes : org.kysecurity.mail.ProcessScopedState {
             // The removal's own return value decides ownership of the bytes, rather than zeroing
             // the array this iteration happened to see. `take()` can win the race between the
             // filter above and this line — a user tapping an attachment moments before its TTL —
-            // and the old code then zeroed a buffer the provider's writer thread was already
-            // streaming to a viewer app. The viewer received a file that trailed off into zeros,
-            // with no error anywhere.
             val removed = pending.remove(entry.key) ?: return@forEach
             // Overwrite rather than waiting for GC: until the collector runs (and possibly after,
             // if the buffer was promoted) this plaintext is readable in a heap dump.

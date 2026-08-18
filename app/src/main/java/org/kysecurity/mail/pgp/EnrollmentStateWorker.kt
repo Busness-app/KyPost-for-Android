@@ -76,11 +76,6 @@ internal class EnrollmentStateWorker(
         // Read at run time, never carried in inputData: WorkManager writes input to its own
         // database in plaintext, and this is the credential every authenticated call uses.
         //
-        // Through pairingForAuthenticatedCall, so the credential keys are supplied when they are
-        // cached. This used to call pairingSnapshot(null), which cannot unwrap a gated secret under
-        // ANY circumstances — so with the credential gate on, the branch below was taken on every
-        // run forever, and the comment claiming "a later run, after an unlock, can deliver it" was
-        // false: unlock state does not change what pairingSnapshot(null) returns.
         val pairing = PushRuntime.graph(applicationContext).repository.pairingForAuthenticatedCall()
             // Unpaired: there is no device row left to correct. SecurityWipe's path lands here.
             ?: return Result.success()

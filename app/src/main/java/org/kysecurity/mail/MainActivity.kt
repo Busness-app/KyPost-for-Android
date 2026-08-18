@@ -60,10 +60,6 @@ class MainActivity : LockedActivity() {
             // No MFA routing here. This used to parse `type=mfa_challenge` out of its own extras
             // and forward to the approval screen, gated on MfaChallengeTracker. Nothing in this app
             // ever built such an intent — the MFA notification's PendingIntent targets
-            // MfaApprovalActivity directly, and UnifiedPush is excluded from MFA server-side — so
-            // the only caller that could reach it was a co-installed app abusing this exported
-            // launcher. That is an attack surface maintained for no user-facing path; the tracker
-            // check on MfaApprovalActivity itself is what actually defends the screen.
             val configured = PushRuntime.graph(this@MainActivity).repository.state.first().pairing != null
 
             val targetIntent = if (configured) {

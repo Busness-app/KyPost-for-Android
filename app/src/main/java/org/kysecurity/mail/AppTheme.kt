@@ -115,8 +115,6 @@ fun applyThemeToActivity(activity: Activity) {
     // Every screen calls enableEdgeToEdge before setContentView, so the system bars are transparent
     // on every API level: what shows behind the status bar is the window background, and behind the
     // navigation bar the content background. Window.statusBarColor/navigationBarColor used to paint
-    // those and are gone — deprecated in API 35 and no-ops under the edge-to-edge that targetSdk 36
-    // enforces, so they only ever styled API 31-34 and left the two paths to drift.
     activity.window.decorView.setBackgroundColor(bgColor)
     WindowInsetsControllerCompat(activity.window, activity.window.decorView).run {
         isAppearanceLightStatusBars = readableOn(bgColor) == Color.BLACK

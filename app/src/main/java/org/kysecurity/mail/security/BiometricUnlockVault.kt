@@ -24,13 +24,6 @@ class BiometricUnlock(val cipher: Cipher, val sealed: ByteArray)
 /**
  * Makes a fingerprint produce the app's real key material instead of setting a boolean.
  *
- * A PIN unlock seals [CredentialKeys] under a Keystore RSA key that requires a strong biometric for
- * every private-key operation; the unlock screen then authenticates with a `CryptoObject` over that
- * key and opens the blob. The difference is not cosmetic: before this, `onAuthenticationSucceeded`
- * flipped a flag, so an instrumented process could unlock the app by hooking one callback without
- * ever producing a secret, and a biometric-only session ran with the credential gate permanently
- * shut.
- *
  * **Biometric only, and invalidated by enrollment.** Including `AUTH_DEVICE_CREDENTIAL` — as
  * [org.kysecurity.mail.pgp.EnrollmentVault] does — would make the device lock-screen PIN a way past
  * this app's own PIN, which it is not today. The cost is that adding a fingerprint destroys the key:
