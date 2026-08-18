@@ -253,6 +253,15 @@ dependencies {
         // connector reflects on — surfaces as NoClassDefFoundError in the push path at runtime, on
         // a subset of devices, after a routine bump. Here, the same change is a resolution failure
         // at build time.
+        //
+        // The global form was also, silently, excluding tink from AGP's own
+        // `unified-test-platform-gradle-work-action` configuration — UTP, the instrumented-test
+        // runner, which pulls plain tink 1.18.0. Narrowing this therefore added seven artifacts
+        // (tink 1.18.0 plus protobuf/errorprone poms) to the resolved graph, and dependency
+        // verification correctly failed the emulator jobs until they were recorded in
+        // gradle/verification-metadata.xml. They are test-tooling dependencies of Google's own
+        // runner and are not on any classpath the APK ships; recording them is the right answer
+        // rather than keeping a blanket exclusion that hid them.
         exclude(group = "com.google.crypto.tink", module = "tink")
     }
     implementation(libs.play.services.code.scanner)
