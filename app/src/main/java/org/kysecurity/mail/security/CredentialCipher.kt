@@ -68,15 +68,61 @@ object KeystorePinPepper : CredentialPepper {
 }
 
 /**
+ * Authenticates [AppLockStore]'s tripwire marker, and — by merely existing — *is* the durable half
+ * of it.
+ *
+ * A third alias, because it answers a different question from the other two. The tripwire's job is
+ * to tell "a lock was configured and its state has vanished" apart from "no lock was ever
+ * configured", and it used to do that with an unencrypted, unauthenticated preferences file. That
+ * file is writable by anything that can write the app's sandbox, which made it defeatable in one
+ * direction (delete both preference files and the lock is simply gone) and weaponisable in the
+ * other (write `lock_was_enabled=true` onto a device that never had a lock, and the next launch
+ * destroys the user's mail).
+ *
+ * A Keystore alias fixes both halves at once: it cannot be forged, it cannot be deleted by writing
+ * to the app's files, and its presence survives exactly the deletion the tripwire is watching for.
+ */
+object KeystoreTripwireKey : CredentialPepper {
+    const val ALIAS = "kypost_lock_tripwire"
+    override fun mix(derived: ByteArray): ByteArray = keystoreHmac(ALIAS, derived)
+    fun ensureExists() { createPepperKeyIfAbsent(ALIAS) }
+
+    /** @throws PepperUnavailableException when the Keystore itself could not be consulted. */
+    fun exists(): Boolean = keystoreKeyExists(ALIAS)
+    fun destroy(): Boolean = deleteKeystoreKey(ALIAS)
+}
+
+/**
  * The pepper key for [alias] is gone or unusable, so a PIN cannot be evaluated at all.
  */
 class PepperUnavailableException(alias: String, cause: Throwable? = null) :
     IllegalStateException("Keystore pepper '$alias' is unavailable", cause)
 
-private fun keystoreHmac(alias: String, derived: ByteArray): ByteArray {
+internal fun keystoreHmac(alias: String, derived: ByteArray): ByteArray {
     val mac = Mac.getInstance("HmacSHA256")
     mac.init(pepperKey(alias))
     return mac.doFinal(derived)
+}
+
+/**
+ * The pepper key for [alias], or null when the Keystore answered and simply holds no such key.
+ *
+ * **"Absent" and "could not ask" are different answers and this is where they part.** Any failure
+ * to consult the Keystore — a `keystore2` restart, a vendor HAL hiccup, binder death under memory
+ * pressure — throws [PepperUnavailableException]. Only a clean "no entry" returns null.
+ *
+ * Collapsing the two is not a style question. [createPepperKeyIfAbsent] mints a replacement at the
+ * same alias, which *overwrites* the existing key: one transient Keystore failure during an
+ * ordinary unlock therefore destroyed the pepper that the stored `deviceSecret` was wrapped under,
+ * permanently, behind a UI still reading "Paired". That is the same "destroy a credential in
+ * response to a transient failure" defect [openEncryptedPrefs] exists to prevent, reached through a
+ * different door.
+ */
+private fun pepperKeyOrNull(alias: String): SecretKey? {
+    val entry = runCatching {
+        KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }.getEntry(alias, null)
+    }.getOrElse { throw PepperUnavailableException(alias, it) }
+    return (entry as? KeyStore.SecretKeyEntry)?.secretKey
 }
 
 /**
@@ -88,17 +134,17 @@ private fun keystoreHmac(alias: String, derived: ByteArray): ByteArray {
  * verifier can no longer be evaluated, and the only safe answer is to say so rather than to mint a
  * new key and start returning "wrong PIN" forever.
  */
-private fun pepperKey(alias: String): SecretKey {
-    val entry = runCatching {
-        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-        keyStore.getEntry(alias, null) as? KeyStore.SecretKeyEntry
-    }.getOrElse { throw PepperUnavailableException(alias, it) }
-    return entry?.secretKey ?: throw PepperUnavailableException(alias)
-}
+private fun pepperKey(alias: String): SecretKey =
+    pepperKeyOrNull(alias) ?: throw PepperUnavailableException(alias)
 
-/** Creates the pepper key if it does not exist yet, and returns it. Idempotent. */
+/**
+ * Creates the pepper key if it does not exist yet, and returns it. Idempotent.
+ *
+ * Throws [PepperUnavailableException] rather than generating when the Keystore could not be read at
+ * all — generating there would overwrite a key that is still perfectly good.
+ */
 private fun createPepperKeyIfAbsent(alias: String): SecretKey {
-    runCatching { return pepperKey(alias) }
+    pepperKeyOrNull(alias)?.let { return it }
 
     // Deliberately not setUserAuthenticationRequired: the app-lock PIN is this app's own
     // secret, not a device credential the Keystore can gate on, and this key is also needed
@@ -107,6 +153,17 @@ private fun createPepperKeyIfAbsent(alias: String): SecretKey {
     generator.init(KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN).build())
     return generator.generateKey()
 }
+
+/** Removes [alias], returning whether it is actually gone. For [SecurityWipe]'s teardown steps. */
+internal fun deleteKeystoreKey(alias: String): Boolean = runCatching {
+    val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+    keyStore.deleteEntry(alias)
+    !keyStore.containsAlias(alias)
+}.getOrDefault(false)
+
+/** Whether [alias] currently holds a key. Throws [PepperUnavailableException] if the Keystore
+ *  itself could not be consulted, so "gone" is never confused with "unreachable". */
+internal fun keystoreKeyExists(alias: String): Boolean = pepperKeyOrNull(alias) != null
 
 /**
  * PIN-derived AES-GCM wrapping for the pairing `deviceSecret`.
