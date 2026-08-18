@@ -68,20 +68,44 @@ internal fun openEncryptedPrefs(
  * - a [GeneralSecurityException] anywhere in the cause chain: the master key can no longer decrypt
  *   the keyset (OS-level key invalidation, a restored backup);
  * - Tink's `InvalidProtocolBufferException`: the keyset bytes are not a valid protobuf at all, i.e.
- *   truncated or overwritten. Matched by simple name because the type lives in Tink's *shaded*
- *   protobuf package, which is an implementation detail this file must not import — and it is
- *   itself an `IOException`, which is exactly why "IOException means transient" was too coarse.
- *   `AppLockStoreTest.corruptedKeyset_doesNotCrash_andTripsTheTripwire` is the case: a store the
- *   app can never read again must reset, or the app cannot start.
+ *   truncated or overwritten. It is itself an `IOException`, which is exactly why "IOException
+ *   means transient" was too coarse. A store the app can never read again must reset, or the app
+ *   cannot start at all.
  *
  * Everything else — a full disk, storage not yet mounted — rethrows, because destroying a
  * credential the user cannot get back is not an acceptable response to a transient failure.
  */
-private fun isUnrecoverableKeyset(failure: Throwable): Boolean =
-    generateSequence(failure) { it.cause }.any { cause ->
-        cause is GeneralSecurityException ||
-            cause.javaClass.simpleName == "InvalidProtocolBufferException"
+internal fun isUnrecoverableKeyset(failure: Throwable): Boolean =
+    // Bounded: a cause chain does not legitimately nest this deep, and a cyclic one would hang
+    // app startup, since this decides whether LockedActivity can build the security graph at all.
+    generateSequence(failure) { it.cause }.take(MAX_CAUSE_DEPTH).any { cause ->
+        cause is GeneralSecurityException || cause.isProtobufParseFailure()
     }
+
+private const val MAX_CAUSE_DEPTH = 16
+
+/**
+ * Whether this throwable is a protobuf parse failure, **including the subclasses**.
+ *
+ * `InvalidProtocolBufferException` has nested subclasses — `InvalidWireTypeException`,
+ * `TruncatedMessageException`, `SizeLimitExceededException` — and a nested class's `simpleName` is
+ * its own, not its parent's. So matching `javaClass.simpleName` directly recognised only the base
+ * type, and every subclass fell through to "transient, rethrow".
+ *
+ * That was not cosmetic. Corrupting a keyset in a way that trips `InvalidWireTypeException` (which
+ * is what happens on API 31, where the stored keyset's bytes differ from API 34's) left the store
+ * permanently unreadable and never reset — so `AppLockStore.isLockEnabled()` threw, out of
+ * `SecurityGraph`'s constructor, out of `LockedActivity.onCreate`, and the app could not start.
+ * `AppLockStoreTest.corruptedKeyset_doesNotCrash_andTripsTheTripwire` asserts the recovery; it
+ * passed on API 34 and failed on 31 for this reason, taking seventeen other suites down with it
+ * because the corrupted store persisted across the whole instrumentation run.
+ *
+ * Walking the hierarchy rather than importing the type, because it lives in Tink's *shaded*
+ * protobuf package — an implementation detail this file must not depend on by name.
+ */
+private fun Throwable.isProtobufParseFailure(): Boolean =
+    generateSequence(javaClass as Class<*>?) { it.superclass }
+        .any { it.simpleName == "InvalidProtocolBufferException" }
 
 private fun resetUnreadableStore(
     appContext: Context,
