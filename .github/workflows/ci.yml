@@ -126,12 +126,13 @@ jobs:
           find app/build/reports -name 'lint-results*' -print -exec cat {} + || true
 
   instrumented:
-    # NAME IS LOAD-BEARING. main's ruleset requires a status check with the exact context
-    # "ci-instrumented". Adding the matrix without pinning this to a static string renamed every
-    # leg to "ci-instrumented (api NN)", so the required context stopped reporting at all and every
-    # PR sat BLOCKED forever waiting for a check that no longer exists. A static name makes all
-    # legs report under it, and the rule then requires all of them.
-    name: ci-instrumented
+    # A MATRIX JOB CANNOT PROVIDE THE REQUIRED CONTEXT. main's ruleset requires a check named
+    # exactly "ci-instrumented", and GitHub appends the matrix values to the check name whatever
+    # `name:` says — pinning it to a static string still reported "ci-instrumented (31)" and
+    # "ci-instrumented (34)", so the required context never arrived and the PR sat BLOCKED on a
+    # check that does not exist. These legs are named for what they are; instrumented-gate below
+    # supplies the context.
+    name: ci-emulator
     runs-on: ubuntu-latest
     # Slower and flakier than unit-only, and still worth it: the wipe, teardown, Keystore
     # and enrollment-state guarantees are asserted ONLY here. A CI that ran unit tests alone
@@ -238,3 +239,18 @@ jobs:
             echo "=== $f ==="
             cat "$f"
           done || true
+
+  # The context main's ruleset requires, supplied by a job with NO matrix so its check name is
+  # exactly "ci-instrumented". `needs.<job>.result` on a matrix job is the aggregate: "success"
+  # only when every leg succeeded. `if: always()` so this still runs — and fails — when a leg did
+  # not, rather than being skipped and leaving the required check pending forever.
+  instrumented-gate:
+    name: ci-instrumented
+    runs-on: ubuntu-latest
+    needs: instrumented
+    if: always()
+    steps:
+      - name: require every emulator leg
+        run: |
+          echo "ci-emulator matrix result: ${{ needs.instrumented.result }}"
+          test "${{ needs.instrumented.result }}" = "success"
