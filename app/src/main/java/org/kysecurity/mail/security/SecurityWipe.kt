@@ -257,18 +257,25 @@ object SecurityWipe {
         step("pullWorker") { org.kysecurity.mail.push.PullScheduler.cancelPeriodic(appContext) }
         step("deviceContactWorker") { org.kysecurity.mail.contacts.device.DeviceContactSyncScheduler.cancelPeriodic(appContext) }
 
+        // BEFORE the sharedPrefs sweep, not after. `PushRepository.clearPairing()` goes through
+        // `SecurePairingStore`, which *writes* — so running it after the sweep had it recreate
+        // `push_pairing_secure.xml` and a fresh Tink keyset moments after the sweep deleted them,
+        // leaving files behind a step whose contract is that they are gone. That is the same
+        // "removed underneath it and then recreated" ordering the `enrollmentTeardown` step above
+        // is explicitly placed early to avoid; this one had it and the comment did not notice.
+        //
+        // The deregister below authenticates with `pairingForDeregister`, captured before any of
+        // this ran, so clearing here does not disarm it. Clearing the in-memory pairing StateFlow
+        // is the other half: anything still holding the graph sees "not paired" rather than a
+        // stale pairing read before the file was deleted.
+        step("clearPairingState") { PushRuntime.graph(appContext).repository.clearPairing() }
+
         // After the connector teardown above, which needs `unifiedpush.connector` to still hold the
         // distributor selection that `UnifiedPush.unregister` reads.
         step("sharedPrefs") { deleteAllSharedPrefs(appContext) }
         step("webViewState") { clearWebViewState(appContext) }
         step("deviceContactRows") { deleteSyncedDeviceContactRows(appContext) }
         step("deviceContactAccount") { DeviceContactAccountManager(appContext).removeAccountBlocking() }
-
-        // Clears the in-memory pairing StateFlow so anything still holding the graph sees "not
-        // paired" rather than a stale pairing read before the file was deleted. The deregister
-        // below authenticates with `pairingForDeregister`, captured before any of this ran, so
-        // clearing here does not disarm it.
-        step("clearPairingState") { PushRuntime.graph(appContext).repository.clearPairing() }
 
         step("appLock") {
             // Reports rather than merely resets: the tripwire's durable half is a Keystore alias,

@@ -68,8 +68,7 @@ private data class RecipientCheckResponseDto(val results: List<RecipientKeyStatu
  */
 class RecipientKeyClient(
     private val json: Json = Json { ignoreUnknownKeys = true },
-    // Call.Factory (not the concrete OkHttpClient) so tests can inject a fake without a real
-    // network call or a MockWebServer dependency; OkHttpClient itself satisfies this interface.
+    // Injected Call.Factory; see PairingAuthHeaders.kt for why every credentialed client takes one.
     private val callFactory: Call.Factory,
 ) {
     suspend fun check(

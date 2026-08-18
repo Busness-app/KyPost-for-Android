@@ -49,7 +49,11 @@ internal fun hkdfSha256(ikm: ByteArray, salt: ByteArray, info: ByteArray, length
     return out
 }
 
-internal data class DeviceEnvelopeFields(val epk: ByteArray, val iv: ByteArray, val ct: ByteArray)
+/** **Not a `data class`**: Kotlin would generate identity `equals`/`hashCode` over three
+ *  [ByteArray] fields while advertising structural equality — the same trap
+ *  [org.kysecurity.mail.security.WrappedSecret] and [org.kysecurity.mail.security.PinHash] refuse
+ *  in their own KDoc. Nothing compares these; enforced by `SourceRulesTest`. */
+internal class DeviceEnvelopeFields(val epk: ByteArray, val iv: ByteArray, val ct: ByteArray)
 
 /**
  * Parses the envelope, returning null for anything malformed, unsupported, or wrong-sized. The

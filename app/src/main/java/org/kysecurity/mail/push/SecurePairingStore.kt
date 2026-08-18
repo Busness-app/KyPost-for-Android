@@ -68,8 +68,17 @@ sealed interface SecretWrite {
     /** There is no secret; remove any stored one. */
     object Clear : SecretWrite
 
-    /** Store it wrapped behind the PIN-derived credential key. */
-    data class Wrapped(val secret: String, val keys: CredentialKeys, val salt: ByteArray) : SecretWrite
+    /** Store it wrapped behind the PIN-derived credential key.
+     *
+     *  **Not a `data class`.** The generated `toString()` prints `secret=` followed by the pairing
+     *  device secret in the clear, so one interpolation into a log line or an exception message
+     *  puts this device's bearer credential in logcat. The generated `equals`/`hashCode` would also
+     *  be identity-over-[ByteArray] on `salt`, which is the trap [org.kysecurity.mail.security.WrappedSecret]
+     *  and [org.kysecurity.mail.security.PinHash] already refuse for the same reason. Nothing
+     *  compares or prints these. */
+    class Wrapped(val secret: String, val keys: CredentialKeys, val salt: ByteArray) : SecretWrite {
+        override fun toString(): String = "SecretWrite.Wrapped(secret=<redacted>)"
+    }
 
     /** Store it as-is; the credential gate is off. */
     data class Plaintext(val secret: String) : SecretWrite
@@ -195,19 +204,29 @@ class SecurePairingStore(context: Context) {
      *  the host whose handshake produced it — never overwritten on later requests, only on a fresh
      *  pairing (initial or after [clearPairing] + re-pair). */
     suspend fun saveTlsPin(pin: TlsPin) {
-        // Published BEFORE the tripwire marker, and before the suspend returns. Setting it
-        // afterwards left a window in which `currentTlsPin()` was still null while
-        // `tlsPinState()` already read the marker as captured — which is `TlsPinState.Lost`, so
-        // every request in that window failed closed immediately after a successful pairing.
-        cachedTlsPin = pin
+        // ORDER: marker, then pin, then cache. All three orderings fail at *something*; only
+        // this one fails closed.
+        //
+        // Publishing the cache first — which is what this did, to close a window where
+        // `currentTlsPin()` was null while the marker already read as captured — opens the mirror
+        // window: the cache says Pinned while nothing is on disk. A process death in it (an OOM
+        // kill, a force-stop, an OEM battery killer, all most likely on the memory-heavy pairing
+        // screen) leaves no pin AND no marker, so the next launch reads `NeverPaired` and serves
+        // every credential-bearing request over bare system-CA trust, permanently and silently.
+        // That is the downgrade `TlsPinState.Lost` exists to refuse.
+        //
+        // With the marker first, the same interruption yields `Lost`: requests refuse, the user
+        // re-pairs, and the failure is visible and recoverable.
         withContext(Dispatchers.IO + NonCancellable) {
+            // The plain marker, so losing the encrypted file cannot look like "never pinned".
+            tlsPinTripwire.edit().putBoolean(KEY_TLS_PIN_EVER_CAPTURED, true).commit()
             prefs.edit()
                 .putString(KEY_TLS_PIN, pin.spkiSha256)
                 .putString(KEY_TLS_PIN_HOST, pin.host)
                 .commit()
-            // The plain marker, so losing the encrypted file cannot look like "never pinned".
-            tlsPinTripwire.edit().putBoolean(KEY_TLS_PIN_EVER_CAPTURED, true).commit()
         }
+        // Last, and before the suspend returns: a cached pin must never outlive its own durability.
+        cachedTlsPin = pin
     }
 
     /** The currently enforced TLS pin, or null if this device has never captured one — including

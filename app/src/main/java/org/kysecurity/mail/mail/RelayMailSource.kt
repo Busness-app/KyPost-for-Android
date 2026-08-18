@@ -27,9 +27,17 @@ private const val HEADER_RETRY_AFTER = "Retry-After"
  *  contract. */
 private const val CLIENT_SIDE_NEEDED_MARKER = "clientSideNeeded"
 
-/** Named rather than a 5-tuple because [downloadAttachment] destructures it positionally and a
- *  Triple-of-Pairs made the call site unreadable once Retry-After joined it. */
-private data class DownloadResponse(
+/**
+ * Named rather than a 5-tuple: a Triple-of-Pairs made [downloadAttachment]'s call site unreadable
+ * once Retry-After joined it.
+ *
+ * Read by property, never destructured, and deliberately **not** a `data class` — the generated
+ * `equals`/`hashCode` would be identity-over-[ByteArray] behind a promise of structural equality,
+ * which is the trap [org.kysecurity.mail.security.WrappedSecret] and
+ * [org.kysecurity.mail.security.PinHash] each refuse in their own KDoc. Enforced by
+ * `SourceRulesTest`; positional reads were what tied the two together.
+ */
+private class DownloadResponse(
     val code: Int,
     val bytes: ByteArray,
     val name: String,
@@ -54,8 +62,8 @@ class RelayMailSource(
     private val cursorProvider: MailCursorProvider,
     private val json: Json = Json { ignoreUnknownKeys = true },
     /**
-     * Call.Factory (not the concrete OkHttpClient) so tests can inject a fake without a real
-     * network call or a MockWebServer dependency; OkHttpClient itself satisfies this interface.
+     * Injected `Call.Factory`; see `PairingAuthHeaders.kt` for why every credentialed client
+     * takes one.
      *
      * **In production this is a [org.kysecurity.mail.push.PinnedOrFallbackCallFactory]**, which
      * re-reads the TLS pin per request and refuses outright once a pin that existed has gone. It
@@ -312,11 +320,20 @@ class RelayMailSource(
         if (downloadException is javax.net.ssl.SSLPeerUnverifiedException) {
             return MailOutcome.CertificateMismatch(downloadException.message ?: "Certificate pin mismatch")
         }
-        val (code, bytes, name, contentType, retryAfter) = result.getOrNull()
+        val download = result.getOrNull()
             ?: return MailOutcome.UpstreamFailure(downloadException?.message ?: "Network error")
+        val code = download.code
+        val bytes = download.bytes
+        val retryAfter = download.retryAfter
         if (code == 429) return rateLimited(bytes.toString(Charsets.UTF_8), retryAfter)
         if (code != 200) return mapErrorCode(code, bytes.toString(Charsets.UTF_8))
-        return MailOutcome.Success(DownloadedAttachment(name = name.ifBlank { "attachment" }, mimeType = contentType.substringBefore(';').trim(), bytes = bytes))
+        return MailOutcome.Success(
+            DownloadedAttachment(
+                name = download.name.ifBlank { "attachment" },
+                mimeType = download.contentType.substringBefore(';').trim(),
+                bytes = bytes,
+            ),
+        )
     }
 
     private fun <T> rateLimited(rawBody: String, retryAfter: String?): MailOutcome<T> =

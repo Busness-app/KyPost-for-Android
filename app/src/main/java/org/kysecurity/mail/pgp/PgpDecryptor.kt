@@ -17,7 +17,10 @@ import org.bouncycastle.openpgp.operator.bc.BcPublicKeyDataDecryptorFactory
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 
-internal const val MAX_DECRYPTED_PLAINTEXT_BYTES = 32 * 1024 * 1024
+/** See [org.kysecurity.mail.MemoryBudget], which holds this alongside the app's other two heap
+ *  ceilings — the three interact and were previously set in three files that could not see each
+ *  other. */
+internal const val MAX_DECRYPTED_PLAINTEXT_BYTES = org.kysecurity.mail.MemoryBudget.PGP_PLAINTEXT_BYTES
 
 /** How many nested OpenPGP compressed-data packets [PgpDecryptor.readLiteral] will unwrap. Real
  *  messages use one; anything past a handful is a decompression bomb, not a mail. */

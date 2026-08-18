@@ -223,7 +223,15 @@ class UnlockActivity : AppCompatActivity() {
                         pinField.requestFocus()
                         return
                     }
-                    appLockManager.unlockWithBiometric(keys)
+                    // Rejected means a lockout from earlier wrong PINs is still running; the
+                    // fingerprint does not skip it. Rendered exactly like the PIN path's rejection
+                    // so the two cannot say different things about the same ladder.
+                    if (appLockManager.unlockWithBiometric(keys) !is UnlockAttemptResult.Success) {
+                        errorText.visibility = View.VISIBLE
+                        errorText.text = getString(R.string.unlock_wrong_pin)
+                        applyRemainingLockout()
+                        return
+                    }
                     lifecycleScope.launch { completeUnlock() }
                 }
                 // onAuthenticationError (includes the user tapping "Use PIN") and

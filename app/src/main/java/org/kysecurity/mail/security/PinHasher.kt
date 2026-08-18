@@ -73,7 +73,7 @@ object PinHasher {
      *
      * Throws [PepperUnavailableException] rather than returning false when the pepper is gone: a
      * `false` here is indistinguishable from a wrong PIN, and wrong PINs are counted toward
-     * [LockoutPolicy.WIPE_THRESHOLD].
+     * [AppLockState.wipeAfterAttempts].
      */
     fun matches(
         pin: CharArray,

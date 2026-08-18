@@ -40,7 +40,7 @@ class SecurityWipeTest {
     fun wipeAndResetApp_clearsPinPairingAndLockState() = runBlocking {
         val appLockStore = AppLockStore(context)
         appLockStore.setPin("482913".toCharArray())
-        appLockStore.setLockEnabled(true)
+        appLockStore.enableLock()
 
         PushRuntime.graph(context).securePairingStore.savePairing(pairing)
 

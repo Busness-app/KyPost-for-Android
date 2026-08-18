@@ -93,7 +93,7 @@ class FoldLockBehaviourTest {
         // into a Rejected — which is the only shape in which this class could ever contribute to
         // the wipe counter at all.
         appLockStore.resetFailedAttempts()
-        appLockStore.setLockEnabled(true)
+        appLockStore.enableLock()
         // Enabled but NOT engaged. attemptPin is the only supported way to clear the locked flag
         // without a biometric CryptoObject, and it is what makes the resize test a real assertion
         // rather than a tautology — the lock is armed, and the recreate must still not trip it.

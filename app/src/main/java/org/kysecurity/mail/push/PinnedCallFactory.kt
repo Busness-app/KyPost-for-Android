@@ -1,6 +1,7 @@
 package org.kysecurity.mail.push
 
 import android.content.Context
+import org.kysecurity.mail.PinPosture
 import org.kysecurity.mail.SingletonGraph
 import org.kysecurity.mail.pairingHttpClient
 import okhttp3.Call
@@ -32,13 +33,18 @@ class PinnedCallFactoryProvider(
     override fun invoke(): Call.Factory? {
         val pin = tlsPinProvider() ?: return null
         cached?.takeIf { it.first == pin }?.let { return it.second }
-        val client = pairingHttpClient(
-            pinnedSpkiSha256 = pin.spkiSha256,
-            host = pin.host,
-            callTimeoutMillis = callTimeoutMillis,
-        )
-        cached = pin to client
-        return client
+        // Synchronized, so a concurrent re-pair produces one client rather than one per caller.
+        // Re-checked inside: another thread may have built it while this one waited.
+        return synchronized(this) {
+            cached?.takeIf { it.first == pin }?.second ?: run {
+                val client = pairingHttpClient(
+                    posture = PinPosture.Pinned(host = pin.host, spkiSha256 = pin.spkiSha256),
+                    callTimeoutMillis = callTimeoutMillis,
+                )
+                cached = pin to client
+                client
+            }
+        }
     }
 }
 
@@ -59,7 +65,7 @@ class PinnedCallFactoryProvider(
 class PinnedOrFallbackCallFactory(
     private val pinnedProvider: () -> Call.Factory?,
     private val pinStateProvider: () -> TlsPinState,
-    private val fallback: Call.Factory = pairingHttpClient(),
+    private val fallback: Call.Factory = pairingHttpClient(PinPosture.TofuWindow),
 ) : Call.Factory {
     override fun newCall(request: Request): Call {
         pinnedProvider()?.let { return it.newCall(request) }

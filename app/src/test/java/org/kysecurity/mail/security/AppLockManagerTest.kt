@@ -13,6 +13,7 @@ import org.junit.Before
 import org.junit.Test
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
+import kotlin.test.assertFailsWith
 
 /** In-memory [AppLockState] test double — lets [AppLockManager] be unit-tested without a real
  *  Context/Keystore, matching how [AppLockStore] backs the real interface. */
@@ -32,7 +33,7 @@ private class FakeAppLockState(
     private var lockoutDuration = 0L
 
     override fun isLockEnabled() = lockEnabled
-    override fun setLockEnabled(enabled: Boolean) { lockEnabled = enabled }
+    override fun enableLock() { lockEnabled = true }
     override fun isBiometricEnabled() = biometricEnabled
     override fun setBiometricEnabled(enabled: Boolean) { biometricEnabled = enabled }
     override fun isCredentialPinGateEnabled() = credentialGateEnabled
@@ -413,6 +414,62 @@ class AppLockManagerTest {
         gatedManager.unlockWithBiometric(keys)
 
         assertArrayEquals(keys.current.encoded, gatedManager.cachedCredentialKeys()?.current?.encoded)
+    }
+
+    /**
+     * The lockout ladder is not something a fingerprint steps over.
+     *
+     * `unlockWithBiometric` checked nothing at all: it unlocked and called `resetFailedAttempts()`,
+     * so a biometric presented mid-ladder cleared both the accumulated delay and the progress
+     * toward the wipe threshold — an escape hatch from the throttle, handed to exactly the attacker
+     * `setInvalidatedByBiometricEnrollment(true)` is aimed at, by omission rather than by decision.
+     */
+    @Test
+    fun unlockWithBiometric_isRefused_whileALockoutIsRunning() = runBlocking {
+        // Three wrong PINs is the first attempt that arms a delay.
+        repeat(3) { manager.attemptPin("000001".toCharArray()) }
+        assertTrue("expected a lockout to be running", manager.remainingLockoutMillis() > 0)
+        val attemptsBefore = state.failedAttempts
+
+        val keys = CredentialCipher.deriveKeys("482913".toCharArray(), CredentialCipher.randomSalt(), TestPepper)
+        val result = manager.unlockWithBiometric(keys)
+
+        assertTrue("expected Rejected, got $result", result is UnlockAttemptResult.Rejected)
+        assertTrue("must stay locked", manager.locked.value)
+        assertEquals("must not clear progress toward the wipe threshold", attemptsBefore, state.failedAttempts)
+    }
+
+    /** ...and is allowed again once it has run out. */
+    @Test
+    fun unlockWithBiometric_succeeds_onceTheLockoutHasExpired() = runBlocking {
+        repeat(3) { manager.attemptPin("000001".toCharArray()) }
+        clock += LockoutPolicy.delayMillisFor(3) + 1
+
+        val keys = CredentialCipher.deriveKeys("482913".toCharArray(), CredentialCipher.randomSalt(), TestPepper)
+
+        assertEquals(UnlockAttemptResult.Success, manager.unlockWithBiometric(keys))
+        assertFalse(manager.locked.value)
+    }
+
+    /**
+     * A [AppLockManager.DecisionToken] is only honoured by the manager that issued it.
+     *
+     * The constructor used to be `internal`, which is module-visible — and this app is one module,
+     * so every file could mint one while the KDoc claimed the type system prevented exactly that.
+     * There is no way to write the forgery test any more, which is the point; this asserts the
+     * remaining hole (a token from a *different* manager) is closed too.
+     */
+    @Test
+    fun keysFor_rejectsATokenFromAnotherManager() = runBlocking {
+        val gated = FakeAppLockState(credentialSalt = CredentialCipher.randomSalt())
+            .apply { setCredentialPinGateEnabled(true) }
+        val issuer = newManager(gated)
+        val (result, token) = issuer.verifyPinForDecision("482913".toCharArray(), deriveKeys = true)
+        assertEquals(UnlockAttemptResult.Success, result)
+        assertNotNull(token)
+
+        assertFailsWith<IllegalArgumentException> { newManager(gated).keysFor(token!!) }
+        Unit
     }
 
     /** Symmetric with the PIN path: with the gate off nothing needs the key, so nothing holds it. */

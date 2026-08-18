@@ -16,8 +16,12 @@
 # There used to be a blanket `-keepclasseswithmembers class org.kysecurity.mail.** { public static
 # ** Companion; }` above it. That matches every class in this app with a companion object — which,
 # in idiomatic Kotlin, is most of them — so it kept their names and undid a large part of the
-# obfuscation this file exists to get. Verify with `./gradlew :app:assembleRelease` and a look at
-# `app/build/outputs/mapping/release/mapping.txt`: `org.kysecurity.mail.*` names should be rare.
+# obfuscation this file exists to get.
+#
+# That regression is now caught by CI rather than by a reader remembering to look: the
+# `R8 actually obfuscated the app` step in .github/workflows/ci.yml fails the release-build job if
+# more than 30% of app classes keep their original name in
+# `app/build/outputs/mapping/release/mapping.txt`. It was 22% when that step landed.
 -if @kotlinx.serialization.Serializable class org.kysecurity.mail.**
 -keepclassmembers class <1> {
     static <1>$Companion Companion;
