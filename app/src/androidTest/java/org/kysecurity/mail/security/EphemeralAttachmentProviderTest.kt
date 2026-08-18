@@ -30,7 +30,7 @@ class EphemeralAttachmentProviderTest {
     @Test
     fun clearingProcessScopedState_dropsAndZeroesHeldPlaintext() {
         val secret = "decrypted attachment plaintext".toByteArray()
-        val uri = requireNotNull(EphemeralAttachmentBytes.register(secret, "text/plain"))
+        val uri = requireNotNull(EphemeralAttachmentBytes.register(secret, "text/plain", "secret.txt"))
 
         org.kysecurity.mail.InMemoryPlaintext.clearAll()
 
@@ -47,7 +47,7 @@ class EphemeralAttachmentProviderTest {
     fun openFile_refusesWriteModesWithoutConsumingTheToken() {
         val bytes = "hello attachment".toByteArray()
         val expected = bytes.copyOf()
-        val uri = requireNotNull(EphemeralAttachmentBytes.register(bytes, "text/plain"))
+        val uri = requireNotNull(EphemeralAttachmentBytes.register(bytes, "text/plain", "note.txt"))
 
         try {
             context.contentResolver.openFileDescriptor(uri, "w")
@@ -69,7 +69,7 @@ class EphemeralAttachmentProviderTest {
         // must not linger in the heap. Comparing against the original reference was therefore a
         // race: whether it passed depended on whether the writer thread's zeroing had run yet.
         val expected = bytes.copyOf()
-        val uri = requireNotNull(EphemeralAttachmentBytes.register(bytes, "text/plain"))
+        val uri = requireNotNull(EphemeralAttachmentBytes.register(bytes, "text/plain", "note.txt"))
 
         assertEquals("text/plain", context.contentResolver.getType(uri))
 
@@ -87,9 +87,9 @@ class EphemeralAttachmentProviderTest {
     fun register_refusesOnceTheHeldPlaintextCeilingIsReached() {
         // Two 40 MB registrations exceed the 64 MB ceiling; the first must be kept and the second
         // refused, rather than the first being silently evicted out from under a pending viewer.
-        val first = requireNotNull(EphemeralAttachmentBytes.register(ByteArray(40 * 1024 * 1024), "application/pdf"))
+        val first = requireNotNull(EphemeralAttachmentBytes.register(ByteArray(40 * 1024 * 1024), "application/pdf", "big.pdf"))
 
-        val second = EphemeralAttachmentBytes.register(ByteArray(40 * 1024 * 1024), "application/pdf")
+        val second = EphemeralAttachmentBytes.register(ByteArray(40 * 1024 * 1024), "application/pdf", "big.pdf")
         assertNull(second)
 
         // The one that was accepted is still readable — a refusal must not disturb it.

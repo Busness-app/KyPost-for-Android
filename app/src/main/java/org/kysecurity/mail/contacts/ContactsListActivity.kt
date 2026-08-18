@@ -56,12 +56,7 @@ class ContactsListActivity : LockedActivity() {
     )
 
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        // The app lock redirects and finishes in super.onCreate; nothing below may run,
-        // least of all the network and database work further down this method.
-        if (redirectedToUnlock) return
-        pendingScrollPosition = savedInstanceState?.getInt(STATE_SCROLL, 0) ?: 0
+    override fun onCreateUnlocked(savedInstanceState: Bundle?) {        pendingScrollPosition = savedInstanceState?.getInt(STATE_SCROLL, 0) ?: 0
         try {
             pickMode = intent.getBooleanExtra(EXTRA_PICK_MODE, false)
             setContentView(R.layout.activity_contacts_list)
@@ -126,10 +121,7 @@ class ContactsListActivity : LockedActivity() {
         }
     }
 
-    override fun onStart() {
-        super.onStart()
-        if (redirectedToUnlock) return
-        // Observer only lives while the Contacts UI is visible — registering it globally caused
+    override fun onStartUnlocked() {        // Observer only lives while the Contacts UI is visible — registering it globally caused
         // sync feedback loops. syncNowAsync() no-ops internally when device sync is disabled.
         val graph = DeviceContactsRuntime.graph(this)
         if (graph.settings.isEnabled()) {

@@ -140,12 +140,7 @@ class EmailDetailActivity : LockedActivity() {
     @androidx.annotation.VisibleForTesting
     internal fun markReadSubmitCountForTest(): Int = markReadSubmitCount
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        // The app lock redirects and finishes in super.onCreate; nothing below may run,
-        // least of all the network and database work further down this method.
-        if (redirectedToUnlock) return
-        savedInstanceState?.let { state ->
+    override fun onCreateUnlocked(savedInstanceState: Bundle?) {        savedInstanceState?.let { state ->
             markReadSubmitted = state.getBoolean(STATE_MARK_READ_SUBMITTED, false)
             markReadSubmitCount = state.getInt(STATE_MARK_READ_COUNT, 0)
         }
@@ -1004,7 +999,8 @@ class EmailDetailActivity : LockedActivity() {
         val mimeType = safeMimeType(downloaded.mimeType)
         // Null when the held-plaintext ceiling is reached — say so rather than launching a chooser
         // for a URI that will fail to open. See EphemeralAttachmentBytes.register.
-        val uri = org.kysecurity.mail.security.EphemeralAttachmentBytes.register(downloaded.bytes, mimeType)
+        val uri = org.kysecurity.mail.security.EphemeralAttachmentBytes
+            .register(downloaded.bytes, mimeType, downloaded.name)
             ?: run {
                 Toast.makeText(this, R.string.attachment_too_many_open, Toast.LENGTH_LONG).show()
                 return

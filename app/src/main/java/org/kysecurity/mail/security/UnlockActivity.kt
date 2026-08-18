@@ -237,7 +237,8 @@ class UnlockActivity : AppCompatActivity() {
     private fun restartToFirstRun() {
         // SecurityWipe already ran (inside AppLockManager.attemptPin's onWipe callback) by the
         // time UnlockAttemptResult.Wiped is returned — this just rebuilds the graphs and
-        // relaunches so the app picks up the now-cleared state.
-        AppRestart.relaunch(this)
+        // relaunches so the app picks up the now-cleared state. Launched rather than called: the
+        // rebuild blocks, and this is reached from a click listener.
+        lifecycleScope.launch { AppRestart.relaunch(this@UnlockActivity) }
     }
 }

@@ -84,12 +84,7 @@ class InboxActivity : LockedActivity() {
         }
     }
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        // The app lock redirects and finishes in super.onCreate; nothing below may run,
-        // least of all the network and database work further down this method.
-        if (redirectedToUnlock) return
-        savedInstanceState?.let { state ->
+    override fun onCreateUnlocked(savedInstanceState: Bundle?) {        savedInstanceState?.let { state ->
             currentFolder = state.getString(STATE_FOLDER, currentFolder)
             selectedTab = state.getString(STATE_TAB, selectedTab)
             pendingScrollPosition = state.getInt(STATE_SCROLL, 0)
@@ -149,10 +144,7 @@ class InboxActivity : LockedActivity() {
         }
     }
 
-    override fun onStart() {
-        super.onStart()
-        if (redirectedToUnlock) return
-        refreshInbox()
+    override fun onStartUnlocked() {        refreshInbox()
         scheduleNextRefresh()
     }
 

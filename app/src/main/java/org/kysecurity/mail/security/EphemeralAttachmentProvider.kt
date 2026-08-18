@@ -5,6 +5,7 @@ import android.content.ContentValues
 import android.content.pm.ProviderInfo
 import android.database.Cursor
 import android.net.Uri
+import android.provider.OpenableColumns
 import android.os.ParcelFileDescriptor
 import java.io.IOException
 import java.util.Arrays
@@ -61,6 +62,8 @@ private const val MAX_PENDING_BYTES = 64L * 1024 * 1024
 internal data class PendingAttachment(
     val bytes: ByteArray,
     val mimeType: String,
+    /** What a viewer app shows the user. See [EphemeralAttachmentProvider.query]. */
+    val displayName: String,
     val registeredAtMillis: Long = System.currentTimeMillis(),
 )
 
@@ -135,7 +138,7 @@ object EphemeralAttachmentBytes : org.kysecurity.mail.ProcessScopedState {
      * Parks [bytes] for a single ephemeral read, or returns null when doing so would push the
      * held-plaintext total past [MAX_PENDING_BYTES].
      */
-    fun register(bytes: ByteArray, mimeType: String): Uri? {
+    fun register(bytes: ByteArray, mimeType: String, displayName: String): Uri? {
         // Nothing may be parked under an unknown authority. [configure] runs from the provider's
         // attachInfo, and an empty authority produced `content:///token` — a malformed URI handed
         // to the chooser, resolving to nothing, with the plaintext left in the map until the
@@ -150,7 +153,7 @@ object EphemeralAttachmentBytes : org.kysecurity.mail.ProcessScopedState {
         synchronized(this) {
             val held = pending.values.sumOf { it.bytes.size.toLong() }
             if (held + bytes.size > MAX_PENDING_BYTES) return null
-            pending[token] = PendingAttachment(bytes, mimeType)
+            pending[token] = PendingAttachment(bytes, mimeType, displayName)
         }
         return Uri.parse("content://$authority/$token")
     }
@@ -158,6 +161,10 @@ object EphemeralAttachmentBytes : org.kysecurity.mail.ProcessScopedState {
     internal fun take(token: String): PendingAttachment? = pending.remove(token)
 
     internal fun peekMimeType(token: String): String? = pending[token]?.mimeType
+
+    /** Name and size for [EphemeralAttachmentProvider.query], without consuming the token. */
+    internal fun peekMetadata(token: String): Pair<String, Long>? =
+        pending[token]?.let { it.displayName to it.bytes.size.toLong() }
 
     /** Visible for tests, which need a deterministic sweep rather than waiting on the timer. */
     internal fun purgeExpired(nowMillis: Long = System.currentTimeMillis()) {
@@ -239,8 +246,39 @@ class EphemeralAttachmentProvider : ContentProvider() {
 
     private fun tokenFrom(uri: Uri): String = uri.lastPathSegment.orEmpty()
 
-    // Not a real data table — attachments are single-use byte streams, not queryable rows.
-    override fun query(uri: Uri, projection: Array<out String>?, selection: String?, selectionArgs: Array<out String>?, sortOrder: String?): Cursor? = null
+    /**
+     * `OpenableColumns` only — enough for a viewer to name and size the attachment.
+     *
+     * Returning null here was not a neutral "there is no table". Well-behaved viewers query
+     * `DISPLAY_NAME` and `SIZE` before opening a `content://` URI; several treat a null cursor as
+     * "this URI does not exist" and refuse outright, and the ones that do not showed the user their
+     * decrypted attachment under a bare UUID with no extension. This is the one path whose entire
+     * purpose is that attachments open without ever touching disk, so it has to actually open.
+     *
+     * Deliberately does NOT consume the token — that is [openFile]'s job, and a metadata query is
+     * not a read.
+     */
+    override fun query(
+        uri: Uri,
+        projection: Array<out String>?,
+        selection: String?,
+        selectionArgs: Array<out String>?,
+        sortOrder: String?,
+    ): Cursor? {
+        val (name, size) = EphemeralAttachmentBytes.peekMetadata(tokenFrom(uri)) ?: return null
+        val columns = projection ?: arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE)
+        val cursor = android.database.MatrixCursor(columns, 1)
+        val row = arrayOfNulls<Any>(columns.size)
+        columns.forEachIndexed { index, column ->
+            row[index] = when (column) {
+                OpenableColumns.DISPLAY_NAME -> name
+                OpenableColumns.SIZE -> size
+                else -> null
+            }
+        }
+        cursor.addRow(row)
+        return cursor
+    }
     override fun insert(uri: Uri, values: ContentValues?): Uri? = null
     override fun update(uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<out String>?): Int = 0
     override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?): Int = 0

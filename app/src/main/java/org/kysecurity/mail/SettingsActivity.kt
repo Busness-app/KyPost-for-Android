@@ -13,10 +13,7 @@ import org.kysecurity.mail.security.SecuritySettingsActivity
 class SettingsActivity : LockedActivity() {
     private lateinit var bottomNav: NavigationBarView
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        if (redirectedToUnlock) return
-        setContentView(R.layout.activity_settings)
+    override fun onCreateUnlocked(savedInstanceState: Bundle?) {        setContentView(R.layout.activity_settings)
         applyTopInsetWithHeader(this, findViewById(R.id.settingsContent))
         bottomNav = findViewById(R.id.bottomNavigation)
         applyPrimaryNavigationInsets(this, bottomNav)

@@ -77,6 +77,18 @@ class KyPostApp : Application(), DefaultLifecycleObserver {
         // background grace window may have expired with nothing having done so. applyLockGrace()
         // above happens to cover this today; relying on that made the correctness of these three
         // syncs depend on the order of two lines in this method.
+        // The wipe verdict outranks the lock. `SecurityWipe.blockedByAbandonedWipe` exists for
+        // "the non-Activity entry points that cannot go through LockedActivity's terminal block",
+        // and this is one of them: with the lock off (the default) an abandoned wipe still left
+        // every foreground kicking three credential-bearing syncs, which repopulated the OS
+        // contacts provider and the mail cache the wipe was supposed to have destroyed — while
+        // every screen sat on "manual recovery required".
+        if (SecurityWipe.blockedByAbandonedWipe(this)) return
+        // Likewise before the verdict is in at all: enforceTripwire may be mid-wipe on the IO
+        // scope right now, and a sync racing it writes rows behind the deletion. onStart fires
+        // again on the next foreground, by which time the verdict has landed.
+        if (!SecurityWipe.startupVerdict.isCompleted) return
+
         if (SecurityRuntime.graph(this).appLockManager.isLockedNow()) return
 
         runCatching { PushRuntime.graph(this).pullCoordinator.pullNowAsync() }
