@@ -52,29 +52,14 @@ class HostileLocationSettings(context: Context) {
         appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     /**
-     * Memoised per instance, because this is on hot paths that the old plain-boolean read was free
-     * on: [org.kysecurity.mail.mail.MailCursorStore] consults it per cursor operation, and
-     * [org.kysecurity.mail.data.DataGraph] at construction. A Keystore round trip each time would
-     * be a real regression, and the same precedent is already set by
-     * [org.kysecurity.mail.push.SecurePairingStore]'s cached TLS pin.
-     *
-     * Safe because the threat is a file edited *between* processes, not during one: every
-     * legitimate write goes through [setEnabled], which clears this, and every write is followed by
-     * [AppRestart.relaunch] rebuilding the graphs that hold these instances. [UNREADABLE] is
-     * deliberately NOT memoised — it is a transient device condition, and caching it would keep the
-     * app blocked past the keystore2 restart that caused it.
-     */
-    @Volatile
-    private var memo: HostileLocationState? = null
-
-    /**
      * The posture, or that it cannot be determined.
      *
      * Mirrors [AppLockStore.tripwireState] step for step; keep the two in sync by hand, because the
      * *directions they fail in are deliberately opposite* and a shared implementation would invite
      * someone to unify that away.
      */
-    fun state(): HostileLocationState = memo ?: readState().also { if (it != HostileLocationState.UNREADABLE) memo = it }
+    fun state(): HostileLocationState =
+        cached ?: readState().also { if (it != HostileLocationState.UNREADABLE) cached = it }
 
     private fun readState(): HostileLocationState {
         val claimed = prefs.getBoolean(KEY_ENABLED, false)
@@ -139,7 +124,7 @@ class HostileLocationSettings(context: Context) {
      * install is in.
      */
     fun setEnabled(enabled: Boolean) {
-        memo = null
+        cached = null
         if (enabled) {
             KeystoreHlpKey.ensureExists()
             writeMarker(true)
@@ -151,6 +136,34 @@ class HostileLocationSettings(context: Context) {
 
     /** One byte, so the MAC covers the value and not merely the fact that a marker exists. */
     private fun payload(enabled: Boolean): ByteArray = byteArrayOf(if (enabled) 1 else 0)
+
+    private companion object {
+        /**
+         * The resolved posture, cached **for the process**, not per instance.
+         *
+         * Cached at all because this is on hot paths that the old plain-boolean read was free on:
+         * [org.kysecurity.mail.mail.MailCursorStore] consults it per cursor operation and
+         * [org.kysecurity.mail.data.DataGraph] at construction, so a Keystore round trip each time
+         * would be a real regression. Same precedent as
+         * [org.kysecurity.mail.push.SecurePairingStore]'s cached TLS pin.
+         *
+         * **In the companion, because the state it caches is a single file shared by every
+         * instance.** As a per-instance field this was a trap: `SecurityGraph`,
+         * `DeviceContactsGraph`, `KeywordSettings`, `MailCursorStore` and `DeviceContactRepository`
+         * each hold their own long-lived `HostileLocationSettings`, so `setEnabled` on a fresh
+         * instance cleared exactly one memo and left the other five serving a stale answer. In
+         * production that stayed invisible — every toggle is followed by [AppRestart.relaunch],
+         * which rebuilds those graphs — and it surfaced as an instrumented test finding an
+         * in-memory database where it had just asked for a disk-backed one. A cache of process-wide
+         * state belongs in one place, invalidated once.
+         *
+         * [HostileLocationState.UNREADABLE] is deliberately NOT cached: it is a transient device
+         * condition, and holding it would keep the app blocked past the keystore2 restart that
+         * caused it.
+         */
+        @Volatile
+        private var cached: HostileLocationState? = null
+    }
 
     private fun writeMarker(enabled: Boolean) {
         val mac = KeystoreHlpKey.mix(payload(enabled))

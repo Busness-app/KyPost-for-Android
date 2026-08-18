@@ -56,6 +56,14 @@ class DataGraphHostileLocationTest {
     @Test
     fun enablingAfterExistingOnDiskDatabase_deletesThePreToggleFile() = runBlocking {
         HostileLocationSettings(context).setEnabled(false)
+        // Drop any graph built earlier in this instrumentation run. DataRuntime is a
+        // process-lifetime singleton and DataGraph picks in-memory vs. disk-backed ONCE, at
+        // construction — so a graph built by an earlier class while protection was on stays
+        // in-memory no matter what the flag says now, and the precondition below fails with
+        // "on-disk DB must exist" for a reason that has nothing to do with what this test asserts.
+        // Latent since this test was written; it surfaced when a sibling suite started exercising
+        // the enabled posture more.
+        DataRuntime.invalidate()
         // DataRuntime is a process-lifetime singleton (see SingletonGraph) — using it here (not
         // a standalone `DataGraph(context)`, unlike the two tests above) matters: it's the same
         // instance production code (and SecurityWipe.closeAndDeleteDatabase below) reaches via

@@ -3,6 +3,7 @@ package org.kysecurity.mail.security
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.kysecurity.mail.data.DataRuntime
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -37,6 +38,14 @@ class HostileLocationSettingsTest {
     @After
     fun resetState() {
         HostileLocationSettings(context).setEnabled(false)
+        // The tamper tests below leave the posture reading ENABLED for the length of a method, and
+        // DataRuntime is a process-lifetime singleton that caches whichever shape of DataGraph was
+        // built first — in-memory under protection, disk-backed without it. A neighbouring class
+        // that asks for an on-disk database would otherwise inherit an in-memory one and fail on a
+        // precondition it never set. Dropping the holder is what AppRestart.relaunch does in
+        // production after every real toggle; this class has to do it by hand because it fakes
+        // postures the production toggle never produces.
+        DataRuntime.invalidate()
     }
 
     @Test
