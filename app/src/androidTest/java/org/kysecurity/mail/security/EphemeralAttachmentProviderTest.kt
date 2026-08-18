@@ -21,7 +21,8 @@ class EphemeralAttachmentProviderTest {
     /**
      * The wipe path, which this holder was invisible to.
      *
-     * [EphemeralAttachmentBytes] parks up to 64 MB of decrypted attachment plaintext in a
+     * [EphemeralAttachmentBytes] parks up to [org.kysecurity.mail.MemoryBudget.PENDING_ATTACHMENT_BYTES]
+     * of decrypted attachment plaintext in a
      * process-scoped object, and `AppRestart.relaunch` no longer kills the process — so a security
      * wipe used to run to completion, relaunch into the same JVM and leave every registered
      * attachment readable in the attacker's session. It was never added to `InMemoryPlaintext`,
@@ -85,11 +86,18 @@ class EphemeralAttachmentProviderTest {
      */
     @Test
     fun register_refusesOnceTheHeldPlaintextCeilingIsReached() {
-        // Two 40 MB registrations exceed the 64 MB ceiling; the first must be kept and the second
-        // refused, rather than the first being silently evicted out from under a pending viewer.
-        val first = requireNotNull(EphemeralAttachmentBytes.register(ByteArray(40 * 1024 * 1024), "application/pdf", "big.pdf"))
+        // Sized FROM the ceiling, not against a literal. This read "two 40 MB registrations exceed
+        // the 64 MB ceiling" and broke the moment the ceiling moved to 32 MB — the first
+        // registration was refused and `requireNotNull` threw, reporting the ceiling working as a
+        // test failure. The property is "two that individually fit but together do not"; two-thirds
+        // each expresses that at any ceiling.
+        val each = (org.kysecurity.mail.MemoryBudget.PENDING_ATTACHMENT_BYTES * 2 / 3).toInt()
 
-        val second = EphemeralAttachmentBytes.register(ByteArray(40 * 1024 * 1024), "application/pdf", "big.pdf")
+        // The first must be kept and the second refused, rather than the first being silently
+        // evicted out from under a pending viewer.
+        val first = requireNotNull(EphemeralAttachmentBytes.register(ByteArray(each), "application/pdf", "big.pdf"))
+
+        val second = EphemeralAttachmentBytes.register(ByteArray(each), "application/pdf", "big.pdf")
         assertNull(second)
 
         // The one that was accepted is still readable — a refusal must not disturb it.
