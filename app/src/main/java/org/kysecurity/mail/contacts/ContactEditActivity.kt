@@ -74,12 +74,7 @@ class ContactEditActivity : LockedActivity() {
      *  which is correct: there's nothing prior to preserve. */
     private var loadedDto: ContactDto = ContactDto()
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        // The app lock redirects and finishes in super.onCreate; nothing below may run,
-        // least of all the network and database work further down this method.
-        if (redirectedToUnlock) return
-        setContentView(R.layout.activity_contact_edit)
+    override fun onCreateUnlocked(savedInstanceState: Bundle?) {        setContentView(R.layout.activity_contact_edit)
         applyThemeToActivity(this)
         val formRoot = findViewById<View>(R.id.contactEditRoot)
         // Keeps this form out of the saved-state Bundle. Every EditText below freezes its own text,

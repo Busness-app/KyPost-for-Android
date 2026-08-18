@@ -11,6 +11,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.IOException
 
@@ -73,6 +74,14 @@ private const val KEY_HOSTILE_LOCATION_WAS_ENABLED = "hostile_location_was_enabl
  * on every launch forever.
  */
 private const val MAX_WIPE_RESUMES = 3
+
+/**
+ * Ceiling on the Play Services token/installation teardown.
+ *
+ * Short for the same reason the deregister's is: this runs while an attacker may be holding the
+ * device, and a hostile network must not be able to hold the wipe open.
+ */
+private const val FCM_TEARDOWN_TIMEOUT_MS = 3_000L
 
 /**
  * Whether a wipe destroyed everything it set out to. [Incomplete] carries the step names so the
@@ -204,13 +213,6 @@ object SecurityWipe {
                 if (file.exists()) throw IOException("Failed to delete unifiedpush.connector preferences")
             }
         }
-        step("fcmToken") {
-            // Awaited: both return Tasks, and a fire-and-forget step succeeds unconditionally.
-            com.google.firebase.messaging.FirebaseMessaging.getInstance().deleteToken().await()
-            // The token is not the installation. Leaving the Fid behind keeps this device linkable
-            // across the wipe and a later re-pair.
-            com.google.firebase.installations.FirebaseInstallations.getInstance().delete().await()
-        }
         step("downloadedAttachments") {
             // Outside the sandbox, so no sandbox deletion reaches them — but this routine tells the
             // user their local data has been erased, and it has to be true of these too.
@@ -262,6 +264,51 @@ object SecurityWipe {
         step("deviceContactRows") { deleteSyncedDeviceContactRows(appContext) }
         step("deviceContactAccount") { DeviceContactAccountManager(appContext).removeAccountBlocking() }
 
+        // Clears the in-memory pairing StateFlow so anything still holding the graph sees "not
+        // paired" rather than a stale pairing read before the file was deleted. The deregister
+        // below authenticates with `pairingForDeregister`, captured before any of this ran, so
+        // clearing here does not disarm it.
+        step("clearPairingState") { PushRuntime.graph(appContext).repository.clearPairing() }
+
+        step("appLock") {
+            // Reports rather than merely resets: the tripwire's durable half is a Keystore alias,
+            // and an alias outliving a wipe is exactly what the incomplete result exists to name.
+            val leftBehind = AppLockStore(appContext).resetReportingLeftovers()
+            check(leftBehind.isEmpty()) { "app lock teardown left $leftBehind" }
+        }
+
+        // Re-assert the protection posture the deletions above erased. Runs after the sharedPrefs
+        // step on purpose — writing it earlier would just be deleted again. A step, not a bare
+        // call, so a failure to restore it is reported rather than leaving the user believing
+        // protection survived. Nothing is re-enabled that was not already on.
+        if (hostileLocationWasEnabled) {
+            step("restoreHostileLocationProtection") { HostileLocationSettings(appContext).setEnabled(true) }
+        }
+
+        // ─── Everything below this line touches the network. Nothing below it destroys local
+        // data, so an attacker who force-stops the app here has already lost. ───
+
+        // The FCM teardown is NETWORK, and it belongs here rather than up among the local steps.
+        // Above, it sat before the sharedPrefs sweep, the OS contacts purge and the app-lock reset —
+        // so an attacker holding the device only had to put it on a network that black-holes packets
+        // (rather than refusing them), wait for Play Services to hang, and force-stop the app from
+        // Settings. Everything below the hang survived. That is precisely the ordering the banner
+        // above forbids, and this step was the exception to it.
+        //
+        // withTimeoutOrNull DOES bound these, unlike the deregister: `Task.await()` suspends on a
+        // callback rather than blocking a thread in a socket read, so cancelling the continuation
+        // actually stops the wait. It runs inside NonCancellable, whose children are still
+        // cancellable by their own timeout.
+        step("fcmToken") {
+            val settled = withTimeoutOrNull(FCM_TEARDOWN_TIMEOUT_MS) {
+                com.google.firebase.messaging.FirebaseMessaging.getInstance().deleteToken().await()
+                // The token is not the installation. Leaving the Fid behind keeps this device
+                // linkable across the wipe and a later re-pair.
+                com.google.firebase.installations.FirebaseInstallations.getInstance().delete().await()
+            }
+            if (settled == null) throw IOException("FCM teardown did not finish within ${FCM_TEARDOWN_TIMEOUT_MS}ms")
+        }
+
         // Network LAST, bounded by the client's own `callTimeout` — coroutine cancellation cannot
         // interrupt a thread blocked in a socket read, so `withTimeoutOrNull` here would only skip
         // whatever came after it.
@@ -279,21 +326,6 @@ object SecurityWipe {
                 "Local wipe finished but server deregistration failed (${deregistered.message}); " +
                     "the relay may keep pushing to this device until it is removed server-side",
             )
-        }
-
-        // Belt and braces: clears the in-memory pairing StateFlow so anything still holding the
-        // graph sees "not paired" rather than a stale pairing read before the file was deleted.
-        // unpairDevice above already does this, but not if it threw. This one IS a local step.
-        step("clearPairingState") { PushRuntime.graph(appContext).repository.clearPairing() }
-
-        step("appLock") { AppLockStore(appContext).reset() }
-
-        // Re-assert the protection posture the deletions above erased. Runs after the sharedPrefs
-        // step on purpose — writing it earlier would just be deleted again. A step, not a bare
-        // call, so a failure to restore it is reported rather than leaving the user believing
-        // protection survived. Nothing is re-enabled that was not already on.
-        if (hostileLocationWasEnabled) {
-            step("restoreHostileLocationProtection") { HostileLocationSettings(appContext).setEnabled(true) }
         }
 
         if (failed.isEmpty()) {

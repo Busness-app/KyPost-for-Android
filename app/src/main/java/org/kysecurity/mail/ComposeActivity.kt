@@ -137,12 +137,7 @@ class ComposeActivity : LockedActivity() {
         ActivityResultContracts.OpenMultipleDocuments(),
     ) { uris -> if (!uris.isNullOrEmpty()) addAttachments(uris) }
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        // The app lock redirects and finishes in super.onCreate; nothing below may run,
-        // least of all the network and database work further down this method.
-        if (redirectedToUnlock) return
-        setContentView(R.layout.activity_compose)
+    override fun onCreateUnlocked(savedInstanceState: Bundle?) {        setContentView(R.layout.activity_compose)
         applyThemeToActivity(this)
 
         // Resolved by id, not by cast: layout-w600dp/activity_compose.xml uses a different root

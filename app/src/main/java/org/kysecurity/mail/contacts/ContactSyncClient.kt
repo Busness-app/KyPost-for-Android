@@ -2,7 +2,6 @@ package org.kysecurity.mail.contacts
 
 import org.kysecurity.mail.executeSync
 import org.kysecurity.mail.pairingAuthHeaders
-import org.kysecurity.mail.pairingHttpClient
 import org.kysecurity.mail.push.pairingEndpoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -50,7 +49,7 @@ class ContactSyncClient(
     // Call.Factory (not the concrete OkHttpClient) so tests can inject a fake without a real
     // network call or a MockWebServer dependency; OkHttpClient itself satisfies this interface.
     // Mirrors RelayMailSource's callFactory pattern.
-    private val callFactory: Call.Factory = pairingHttpClient(),
+    private val callFactory: Call.Factory,
 ) {
     suspend fun pull(serverUrl: String, deviceId: String, deviceSecret: String, since: Long): ContactSyncResult {
         val base = syncUrl(serverUrl) ?: return ContactSyncResult.BadRequest("Server URL is not valid")

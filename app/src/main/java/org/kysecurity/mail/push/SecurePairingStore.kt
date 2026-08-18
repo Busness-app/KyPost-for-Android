@@ -195,6 +195,11 @@ class SecurePairingStore(context: Context) {
      *  the host whose handshake produced it — never overwritten on later requests, only on a fresh
      *  pairing (initial or after [clearPairing] + re-pair). */
     suspend fun saveTlsPin(pin: TlsPin) {
+        // Published BEFORE the tripwire marker, and before the suspend returns. Setting it
+        // afterwards left a window in which `currentTlsPin()` was still null while
+        // `tlsPinState()` already read the marker as captured — which is `TlsPinState.Lost`, so
+        // every request in that window failed closed immediately after a successful pairing.
+        cachedTlsPin = pin
         withContext(Dispatchers.IO + NonCancellable) {
             prefs.edit()
                 .putString(KEY_TLS_PIN, pin.spkiSha256)
@@ -203,7 +208,6 @@ class SecurePairingStore(context: Context) {
             // The plain marker, so losing the encrypted file cannot look like "never pinned".
             tlsPinTripwire.edit().putBoolean(KEY_TLS_PIN_EVER_CAPTURED, true).commit()
         }
-        cachedTlsPin = pin
     }
 
     /** The currently enforced TLS pin, or null if this device has never captured one — including

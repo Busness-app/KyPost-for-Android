@@ -108,6 +108,16 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `contact_sync_state` (" +
+                        "`subscriberId` TEXT NOT NULL, `cursor` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`subscriberId`))",
+                )
+            }
+        }
+
         /**
          * Splits the identity alarm out of `pgpKeyNeedsReverification`. Additive and defaulted, so
          * existing rows keep their key alarm and start with no identity alarm — the safe direction:
@@ -119,16 +129,6 @@ abstract class AppDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
                     "ALTER TABLE `contacts` ADD COLUMN `identityNeedsReview` INTEGER NOT NULL DEFAULT 0",
-                )
-            }
-        }
-
-        val MIGRATION_8_9 = object : Migration(8, 9) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL(
-                    "CREATE TABLE IF NOT EXISTS `contact_sync_state` (" +
-                        "`subscriberId` TEXT NOT NULL, `cursor` INTEGER NOT NULL, " +
-                        "PRIMARY KEY(`subscriberId`))",
                 )
             }
         }

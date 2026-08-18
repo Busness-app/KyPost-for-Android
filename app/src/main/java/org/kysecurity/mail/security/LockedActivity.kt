@@ -24,19 +24,39 @@ abstract class LockedActivity : AppCompatActivity() {
     protected fun isLocked(): Boolean = SecurityRuntime.graph(this).appLockManager.isLockedNow()
 
     /**
-     * True once this Activity has been redirected to the unlock screen. Subclasses whose `onCreate`
-     * does real work — network calls, database reads, executor dispatch — must check this
-     * immediately after `super.onCreate(...)` and return.
+     * True once this Activity has been redirected to the unlock screen, or is standing down for a
+     * startup wipe verdict.
+     *
+     * Still readable by subclasses, because `onResume`, `onCreateOptionsMenu` and the async
+     * callbacks they start legitimately need it. What it is no longer used for is gating
+     * `onCreate` — see [onCreateUnlocked].
      */
     protected var redirectedToUnlock: Boolean = false
         private set
 
-    override fun onCreate(savedInstanceState: Bundle?) {
+    /**
+     * [onCreate], minus every state in which this screen must not run.
+     *
+     * **This replaces a convention with a signature.** The gate used to be three lines every
+     * subclass had to remember to copy — `super.onCreate(...)`, a comment, `if (redirectedToUnlock)
+     * return` — repeated verbatim in thirteen Activities. All thirteen got it right; the
+     * fourteenth was one merge away from rendering the inbox behind the unlock screen, and no
+     * compiler or test could have said so. Overriding this instead makes "do not run while locked"
+     * a thing the type system enforces rather than a thing a comment asks for.
+     *
+     * Called only when: the startup wipe verdict is in and not terminal, and the app is unlocked.
+     */
+    protected abstract fun onCreateUnlocked(savedInstanceState: Bundle?)
+
+    /** [onStart], under the same guarantee as [onCreateUnlocked]. The app can lock while this
+     *  screen sits in the back stack, and `onCreate` does not run again on the way back. */
+    protected open fun onStartUnlocked() = Unit
+
+    final override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Here rather than in each subclass: this runs from the subclass's `super.onCreate(...)`,
-        // which is the last point before its `setContentView` — where enableEdgeToEdge has to be
-        // called for the display-cutout mode it sets to reach the window. UnlockActivity and
-        // MfaApprovalActivity are not subclasses and call it themselves.
+        // Before any subclass content view exists: enableEdgeToEdge has to be called before
+        // setContentView for the display-cutout mode it sets to reach the window. UnlockActivity
+        // and MfaApprovalActivity are not subclasses and call it themselves.
         enableEdgeToEdge()
         if (secureWindow) {
             window.applySecureFlag()
@@ -46,6 +66,8 @@ abstract class LockedActivity : AppCompatActivity() {
         }
         if (!passesStartupTripwire()) return
         redirectToUnlockIfLocked()
+        if (redirectedToUnlock || isFinishing) return
+        onCreateUnlocked(savedInstanceState)
     }
 
     /**
@@ -104,7 +126,9 @@ abstract class LockedActivity : AppCompatActivity() {
                 message,
                 android.widget.Toast.LENGTH_LONG,
             ).show()
-            AppRestart.relaunch(this)
+            // Suspending: the graph teardown it runs quiesces a thread pool, which must not happen
+            // on the main thread. See [AppRestart.relaunch].
+            lifecycleScope.launch { AppRestart.relaunch(this@LockedActivity) }
             return false
         }
 
@@ -153,14 +177,16 @@ abstract class LockedActivity : AppCompatActivity() {
         }
     }
 
-    /** The resume-time half of the gate: the app can lock while this screen sits in the back
-     *  stack, and `onCreate` does not run again on the way back. */
-    override fun onStart() {
+    /** The resume-time half of the gate. Final for the same reason [onCreate] is; subclasses
+     *  override [onStartUnlocked]. */
+    final override fun onStart() {
         super.onStart()
         // Nothing to gate while we are standing down for the tripwire — this instance is about to
         // be recreated or the task is about to be relaunched.
         if (redirectedToUnlock) return
         redirectToUnlockIfLocked()
+        if (redirectedToUnlock || isFinishing) return
+        onStartUnlocked()
     }
 
     private fun redirectToUnlockIfLocked() {

@@ -46,12 +46,7 @@ class ContactDetailActivity : LockedActivity() {
     private var uid: String = ""
     private var pendingScrollY: Int = 0
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        // The app lock redirects and finishes in super.onCreate; nothing below may run,
-        // least of all the network and database work further down this method.
-        if (redirectedToUnlock) return
-        pendingScrollY = savedInstanceState?.getInt(STATE_SCROLL_Y, 0) ?: 0
+    override fun onCreateUnlocked(savedInstanceState: Bundle?) {        pendingScrollY = savedInstanceState?.getInt(STATE_SCROLL_Y, 0) ?: 0
         setContentView(R.layout.activity_contact_detail)
         applyThemeToActivity(this)
         applyTopInsetWithHeader(this, findViewById(R.id.contactDetailRoot))

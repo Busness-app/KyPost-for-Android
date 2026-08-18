@@ -186,4 +186,74 @@ class DatabaseEncryptionTest {
         assertTrue(DatabaseMigration.encryptIfNeeded(context, dbName, passphrase))
         assertFalse(dbFile().exists())
     }
+
+    /**
+     * The crash window, asserted rather than claimed.
+     *
+     * The conversion used to `delete()` the plaintext file and then `renameTo()` the converted one.
+     * A process death between those two lines left no database and an orphaned `.encrypting` file
+     * holding the whole mailbox — which the old `if (!plain.exists()) return true` read as "nothing
+     * to convert", so Room created an empty database over the top and the user's mail was gone. The
+     * KDoc above the delete asserted this could not happen.
+     *
+     * Simulated exactly: run a real conversion, then put the file system into the state that window
+     * produced, and require the next call to recover.
+     */
+    @Test
+    fun aConversionInterruptedBeforeTheRenameIsRecovered() {
+        openPlaintext().useDb { db ->
+            db.emailDao().upsertAll(listOf(sampleEmail("e1", "unsent contact edit")))
+        }
+        val versionBefore = openPlaintext().useDb { it.openHelper.readableDatabase.version }
+        assertTrue(DatabaseMigration.encryptIfNeeded(context, dbName, passphrase))
+
+        // Reproduce the interrupted state: the converted file is on disk under its temp name and
+        // the database itself does not exist.
+        val temp = File(dbFile().parentFile, "$dbName.encrypting")
+        assertTrue("staging the interrupted state", dbFile().renameTo(temp))
+        assertFalse(dbFile().exists())
+
+        assertTrue("recovery must report success", DatabaseMigration.encryptIfNeeded(context, dbName, passphrase))
+
+        assertTrue("the database must be back", dbFile().exists())
+        assertFalse("and still encrypted", startsWithSqliteHeader(dbFile()))
+        assertFalse("with no orphan left behind", temp.exists())
+        openEncrypted().useDb { db ->
+            assertEquals(versionBefore, db.openHelper.readableDatabase.version)
+            assertEquals("unsent contact edit", db.emailDao().getById("e1")?.body)
+        }
+    }
+
+    /**
+     * An orphan this device cannot read must be discarded, not renamed into place: replacing a
+     * recoverable empty state with an unopenable database is strictly worse.
+     */
+    @Test
+    fun anOrphanUnderADifferentKeyIsDiscardedRatherThanAdopted() {
+        openPlaintext().useDb { db -> db.emailDao().upsertAll(listOf(sampleEmail("e1", "body"))) }
+        val otherKey = "b3RoZXIta2V5LWZvci10aGUtb3JwaGFuLXJlY292ZXJ5LXRlc3Q="
+        assertTrue(DatabaseMigration.encryptIfNeeded(context, dbName, otherKey))
+        val temp = File(dbFile().parentFile, "$dbName.encrypting")
+        assertTrue(dbFile().renameTo(temp))
+
+        assertTrue(DatabaseMigration.encryptIfNeeded(context, dbName, passphrase))
+
+        assertFalse("the unreadable orphan must be gone", temp.exists())
+        assertFalse("and must not have been adopted", dbFile().exists())
+    }
+
+    /**
+     * The header check reads sixteen bytes and used to discard `read()`'s count, so a short read
+     * zeroed the tail and reported a plaintext database as already encrypted — which hands a
+     * plaintext file to SQLCipher.
+     */
+    @Test
+    fun aFileTooShortToHoldTheHeaderIsNotTreatedAsPlaintext() {
+        dbFile().parentFile!!.mkdirs()
+        dbFile().writeBytes("SQLite".toByteArray(Charsets.US_ASCII))
+
+        // Not plaintext by the header test, so nothing is converted and nothing is destroyed.
+        assertTrue(DatabaseMigration.encryptIfNeeded(context, dbName, passphrase))
+        assertEquals(6, dbFile().length())
+    }
 }

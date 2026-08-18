@@ -2,7 +2,6 @@ package org.kysecurity.mail.push
 
 import org.kysecurity.mail.executeSync
 import org.kysecurity.mail.pairingAuthHeaders
-import org.kysecurity.mail.pairingHttpClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
@@ -40,7 +39,7 @@ class DeregisterClient(
     private val json: Json = Json { ignoreUnknownKeys = true },
     // Call.Factory (not the concrete OkHttpClient) so tests can inject a fake without a real
     // network call or a MockWebServer dependency; OkHttpClient itself satisfies this interface.
-    private val callFactory: Call.Factory = pairingHttpClient(),
+    private val callFactory: Call.Factory,
 ) {
     suspend fun deregister(pairing: PairingData): DeregisterResult {
         val deviceId = pairing.deviceId

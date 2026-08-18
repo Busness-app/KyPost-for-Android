@@ -19,7 +19,9 @@ import kotlinx.coroutines.launch
 class PullSyncCoordinator(
     private val appContext: Context,
     private val repository: PushRepository,
-    private val pullClient: PullNotificationClient = PullNotificationClient(),
+    // No default. A no-arg PullNotificationClient() built the plain unpinned client, which is the
+    // same "the security control's default is off" shape the eight clients below it had.
+    private val pullClient: PullNotificationClient,
     // Injectable so unit tests can observe rendering without an Android NotificationManager.
     private val notifier: (Context, PushPayload) -> Unit = { ctx, payload ->
         PushNotificationDispatcher.show(ctx, payload)

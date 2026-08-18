@@ -20,18 +20,10 @@ class MainActivity : LockedActivity() {
 
     private var routed = false
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        // The app lock redirects and finishes in super.onCreate; nothing below may run,
-        // least of all the network and database work further down this method.
-        if (redirectedToUnlock) return
-        routed = savedInstanceState?.getBoolean(STATE_ROUTED, false) ?: false
+    override fun onCreateUnlocked(savedInstanceState: Bundle?) {        routed = savedInstanceState?.getBoolean(STATE_ROUTED, false) ?: false
     }
 
-    override fun onStart() {
-        super.onStart()
-        if (redirectedToUnlock) return
-        // LockedActivity.onStart finishes us and shows UnlockActivity when the app is locked.
+    override fun onStartUnlocked() {        // LockedActivity.onStart finishes us and shows UnlockActivity when the app is locked.
         if (isFinishing || routed) return
         routed = true
         handleIntent(intent)
@@ -57,25 +49,46 @@ class MainActivity : LockedActivity() {
 
     private fun handleIntent(intent: Intent) {
         lifecycleScope.launch {
-            // No MFA routing here. This used to parse `type=mfa_challenge` out of its own extras
-            // and forward to the approval screen, gated on MfaChallengeTracker. Nothing in this app
-            // ever built such an intent — the MFA notification's PendingIntent targets
+            // No MFA routing here. This used to parse `type=mfa_challenge` out of its own extras and
+            // forward to the approval screen; nothing in this app ever built such an intent, because
+            // the MFA notification's PendingIntent targets MfaApprovalActivity directly.
             val configured = PushRuntime.graph(this@MainActivity).repository.state.first().pairing != null
 
             val targetIntent = if (configured) {
                 Intent(this@MainActivity, InboxActivity::class.java).apply {
-                    val msgId = intent.getStringExtra(PushNotificationDispatcher.EXTRA_MESSAGE_ID)
-                    if (msgId != null) {
-                        putExtra(PushNotificationDispatcher.EXTRA_MESSAGE_ID, msgId)
-                        putExtra(PushNotificationDispatcher.EXTRA_SENDER, intent.getStringExtra(PushNotificationDispatcher.EXTRA_SENDER))
-                        putExtra(PushNotificationDispatcher.EXTRA_SUBJECT, intent.getStringExtra(PushNotificationDispatcher.EXTRA_SUBJECT))
-                    }
+                    notificationExtras(intent)?.let { putExtras(it) }
                 }
             } else {
                 Intent(this@MainActivity, org.kysecurity.mail.push.PushPairingActivity::class.java)
             }
             startActivity(targetIntent)
             finish()
+        }
+    }
+
+    /**
+     * The "open this message" extras, but only from an Intent this app actually built.
+     *
+     * This Activity is exported — the LAUNCHER filter requires it — so every extra on [intent] is
+     * attacker-reachable by any co-installed app with no permissions at all. Forwarding them
+     * unchecked let such an app drive the inbox to a message id of its choosing and put arbitrary
+     * strings on screen in the position where a real sender and subject go. The token is the same
+     * shape of fix as splitting `PushPairingLinkActivity` out of `PushPairingActivity`.
+     */
+    private fun notificationExtras(intent: Intent): Bundle? {
+        val msgId = intent.getStringExtra(PushNotificationDispatcher.EXTRA_MESSAGE_ID) ?: return null
+        if (!org.kysecurity.mail.push.NotificationIntentToken.matches(
+                this,
+                intent.getStringExtra(PushNotificationDispatcher.EXTRA_INTENT_TOKEN),
+            )
+        ) {
+            android.util.Log.w("MainActivity", "Ignoring notification extras from an unauthenticated intent")
+            return null
+        }
+        return Bundle().apply {
+            putString(PushNotificationDispatcher.EXTRA_MESSAGE_ID, msgId)
+            putString(PushNotificationDispatcher.EXTRA_SENDER, intent.getStringExtra(PushNotificationDispatcher.EXTRA_SENDER))
+            putString(PushNotificationDispatcher.EXTRA_SUBJECT, intent.getStringExtra(PushNotificationDispatcher.EXTRA_SUBJECT))
         }
     }
 

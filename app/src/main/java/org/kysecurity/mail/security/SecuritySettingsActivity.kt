@@ -120,12 +120,7 @@ class SecuritySettingsActivity : LockedActivity() {
         val wipeAfterAttempts: Int?,
     )
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        // The app lock redirects and finishes in super.onCreate; nothing below may run,
-        // least of all the network and database work further down this method.
-        if (redirectedToUnlock) return
-        appLockStore = SecurityRuntime.graph(this).appLockStore
+    override fun onCreateUnlocked(savedInstanceState: Bundle?) {        appLockStore = SecurityRuntime.graph(this).appLockStore
         setTitle(R.string.security_settings_title)
 
         lifecycleScope.launch {
@@ -617,7 +612,7 @@ class SecuritySettingsActivity : LockedActivity() {
             runSecurityChangeThenReset(
                 workContext = SecurityWork,
                 reset = {
-                    withContext(Dispatchers.Main) { AppRestart.relaunch(this@SecuritySettingsActivity) }
+                    AppRestart.relaunch(this@SecuritySettingsActivity)
                 },
                 change = {
                 if (enable) disableAndPurgeDeviceContactSync()
@@ -1036,7 +1031,7 @@ class SecuritySettingsActivity : LockedActivity() {
                 workContext = SecurityWork,
                 change = { SecurityWipe.closeAndDeleteDatabase(this@SecuritySettingsActivity) },
                 reset = {
-                    withContext(Dispatchers.Main) { AppRestart.relaunch(this@SecuritySettingsActivity) }
+                    AppRestart.relaunch(this@SecuritySettingsActivity)
                 },
             )
             return

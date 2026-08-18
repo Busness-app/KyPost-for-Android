@@ -7,10 +7,41 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+/**
+ * Signing material, environment first.
+ *
+ * `keystore.properties` held the production store and key passwords in cleartext in the source
+ * tree. `.gitignore` is not a control for that: it stops one specific accident and does nothing
+ * about a tarball, an rsync, a backup daemon, a Docker `COPY .`, a build container, or anything
+ * else running as the developer's user. The environment is read first so the file can be reduced
+ * to non-secret fields (or deleted entirely) without changing how the build is invoked.
+ *
+ * See keystore.properties.example.
+ */
 val keystorePropertiesFile = rootProject.file("keystore.properties")
 val keystoreProperties = Properties().apply {
     if (keystorePropertiesFile.exists()) {
         keystorePropertiesFile.inputStream().use { load(it) }
+    }
+}
+
+/**
+ * `providers.environmentVariable`, not `System.getenv`. The latter reads the *daemon's* environment,
+ * which is fixed when the daemon starts and is not declared as a configuration-cache input — so a
+ * warm daemon silently produces an unsigned release from a shell that exported the variables.
+ */
+fun signingValue(env: String, property: String): String? =
+    providers.environmentVariable(env).orNull ?: keystoreProperties[property] as String?
+
+val signingMaterial: Map<String, String>? = run {
+    val store = signingValue("KYPOST_KEYSTORE", "storeFile")
+    val storePassword = signingValue("KYPOST_STORE_PASSWORD", "storePassword")
+    val alias = signingValue("KYPOST_KEY_ALIAS", "keyAlias")
+    val keyPassword = signingValue("KYPOST_KEY_PASSWORD", "keyPassword")
+    if (store != null && storePassword != null && alias != null && keyPassword != null) {
+        mapOf("storeFile" to store, "storePassword" to storePassword, "keyAlias" to alias, "keyPassword" to keyPassword)
+    } else {
+        null
     }
 }
 
@@ -37,14 +68,57 @@ android {
     }
 
     signingConfigs {
-        if (keystorePropertiesFile.exists()) {
+        signingMaterial?.let { material ->
             create("release") {
-                storeFile = file(keystoreProperties["storeFile"] as String)
-                storePassword = keystoreProperties["storePassword"] as String
-                keyAlias = keystoreProperties["keyAlias"] as String
-                keyPassword = keystoreProperties["keyPassword"] as String
+                storeFile = file(material.getValue("storeFile"))
+                storePassword = material.getValue("storePassword")
+                keyAlias = material.getValue("keyAlias")
+                keyPassword = material.getValue("keyPassword")
             }
         }
+    }
+
+    /**
+     * Lint findings that matter here fail the build.
+     *
+     * CI ran `./gradlew ... lint` and then went green over whatever the report said, which makes the
+     * task a report generator rather than a check.
+     *
+     * `warningsAsErrors = true` was the obvious lever and is the wrong one: it produces a
+     * 383-entry baseline file, none of it security-relevant (152 `UseKtx`, 35 `Typos`, 31
+     * `UnusedResources`), and a suppression file that large is indistinguishable from not running
+     * the check. Escalating the specific checks this app's threat model depends on gives the same
+     * gate with real signal and no baseline.
+     */
+    lint {
+        abortOnError = true
+        fatal += listOf(
+            // Attack surface reachable by other apps on the device.
+            "ExportedActivity",
+            "ExportedService",
+            "ExportedReceiver",
+            "ExportedContentProvider",
+            "GrantAllUris",
+            "UnsafeIntentLaunch",
+            // The mail renderer's posture. See EmailDetailActivity's WebView settings.
+            "SetJavaScriptEnabled",
+            // Transport.
+            "TrustAllX509TrustManager",
+            "InsecureBaseConfiguration",
+            "CustomX509TrustManager",
+            "BadHostnameVerifier",
+            // At rest.
+            "AllowBackup",
+            "WorldReadableFiles",
+            "WorldWriteableFiles",
+            "HardcodedDebugMode",
+        )
+        disable += listOf(
+            // `commit()` over `apply()` is deliberate and load-bearing throughout the security
+            // package: an async flush that has not landed when the process dies is an unlimited-
+            // guess bypass for the failed-attempt counter. See AppLockStore's KDoc.
+            "ApplySharedPref",
+        )
     }
 
     buildTypes {
@@ -65,12 +139,13 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
-            if (keystorePropertiesFile.exists()) {
+            if (signingMaterial != null) {
                 signingConfig = signingConfigs.getByName("release")
             }
-            // The missing-keystore check is NOT here — see the androidComponents block below.
+            // The missing-signing-material check is NOT here — see the task guard below.
         }
     }
+
     buildFeatures {
         buildConfig = true
     }
@@ -79,9 +154,18 @@ android {
             // `android.util.Log` throws "not mocked" by default, which forces production code that
             // JVM tests exercise to choose between logging and being testable. AppLockManager hit
             // exactly that: it is deliberately Context-free so it can be unit-tested against a fake
-            // AppLockState, and it now has to report two security-relevant events (an unevaluable
-            // PIN verifier, and a credential-key derivation that failed on an otherwise correct
-            // unlock). Silently dropping those is not an acceptable price for a stub's behaviour.
+            // AppLockState, and it has to report two security-relevant events (an unevaluable PIN
+            // verifier, and a credential-key derivation that failed on an otherwise correct unlock).
+            //
+            // THE COST, STATED PLAINLY: every other android.* call in JVM-tested production code
+            // also returns a default instead of working. `android.util.Base64` returns null;
+            // `org.json` returns nothing. That is not hypothetical — DeviceEnvelope's KDoc records a
+            // suite that passed against a `= null` body because of it.
+            //
+            // The rule that follows: production code reachable from src/test must not call android.*
+            // for anything but logging. Use java.util.Base64 and kotlinx.serialization, as
+            // DeviceEnvelope and Sec1Point do. Code that genuinely needs the framework belongs in
+            // src/androidTest, which is where AppLockStoreTest and the Keystore suites already live.
             isReturnDefaultValues = true
         }
     }
@@ -128,12 +212,13 @@ tasks.matching { it.name == "packageRelease" || it.name == "signReleaseBundle" }
     // reference to the build script itself, which the configuration cache cannot serialize —
     // every release build then failed a second time with "cannot serialize Gradle script object
     // references" and discarded its cache entry.
-    val signingMaterialPresent = keystorePropertiesFile.exists()
+    val signingMaterialPresent = signingMaterial != null
     doFirst {
         if (!signingMaterialPresent) {
             throw GradleException(
-                "keystore.properties is missing: a release variant cannot be signed. " +
-                    "Add it, or build only the debug variant.",
+                "No signing material: a release variant cannot be signed. Set KYPOST_KEYSTORE, " +
+                    "KYPOST_STORE_PASSWORD, KYPOST_KEY_ALIAS and KYPOST_KEY_PASSWORD (see " +
+                    "keystore.properties.example), or build only the debug variant.",
             )
         }
     }
@@ -210,3 +295,4 @@ dependencies {
 ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
 }
+

@@ -91,12 +91,7 @@ class PushPairingActivity : LockedActivity() {
         permissionLauncher = contactPermissionLauncher,
     )
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        // The app lock redirects and finishes in super.onCreate; nothing below may run,
-        // least of all the network and database work further down this method.
-        if (redirectedToUnlock) return
-        setContentView(R.layout.activity_push_pairing)
+    override fun onCreateUnlocked(savedInstanceState: Bundle?) {        setContentView(R.layout.activity_push_pairing)
         setTitle(R.string.push_pairing_title)
 
         PushNotificationDispatcher.ensureChannel(this)

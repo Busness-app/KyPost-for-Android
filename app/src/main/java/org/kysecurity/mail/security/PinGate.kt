@@ -55,7 +55,7 @@ suspend fun Activity.resolvePinAttempt(result: UnlockAttemptResult): Boolean = w
  * Relaunching on the *incomplete* path too is deliberate: [SecurityWipe] leaves its in-progress
  * marker set, and [org.kysecurity.mail.KyPostApp] re-runs the whole wipe on the next start.
  */
-private fun Activity.announceWipeAndRelaunch(messageRes: Int, failedSteps: List<String>?) {
+private suspend fun Activity.announceWipeAndRelaunch(messageRes: Int, failedSteps: List<String>?) {
     if (failedSteps != null) {
         android.util.Log.e("PinGate", "Wipe incomplete: $failedSteps")
     }

@@ -19,6 +19,10 @@ import java.io.InputStream
 
 internal const val MAX_DECRYPTED_PLAINTEXT_BYTES = 32 * 1024 * 1024
 
+/** How many nested OpenPGP compressed-data packets [PgpDecryptor.readLiteral] will unwrap. Real
+ *  messages use one; anything past a handful is a decompression bomb, not a mail. */
+internal const val MAX_COMPRESSION_DEPTH = 4
+
 /** What the cryptography alone can say about a signature: nothing about *who* the sender is. */
 internal data class RawSignature(
     val present: Boolean,
@@ -98,7 +102,7 @@ internal object PgpDecryptor {
         }
 
         val literal = readLiteral(clear, signerPublicKeys)
-            ?: return DecryptResult.Failed("decrypted message is too large")
+            ?: return DecryptResult.Failed("this message is too large or too deeply nested to open")
         val (plaintext, signature) = literal
 
         // Integrity protection is not optional. An unprotected message is malleable, and
@@ -172,10 +176,17 @@ internal object PgpDecryptor {
         var factory = org.bouncycastle.openpgp.jcajce.JcaPGPObjectFactory(clear)
         var onePass: org.bouncycastle.openpgp.PGPOnePassSignature? = null
         var obj = factory.nextObject()
+        var depth = 0
 
         while (obj != null) {
             when (obj) {
                 is PGPCompressedData -> {
+                    // Bounded. `readAllWithLimit` caps the *literal* data; nothing capped how many
+                    // compressed layers were unwrapped on the way to it, and each one allocates a
+                    // fresh object factory over a fresh inflater. A sender who nests thousands of
+                    // compressed packets exhausts the heap before a single literal byte is read —
+                    // and the message stays in the mailbox, so it re-fires on every open.
+                    if (++depth > MAX_COMPRESSION_DEPTH) return null
                     factory = org.bouncycastle.openpgp.jcajce.JcaPGPObjectFactory(obj.dataStream)
                 }
                 is PGPOnePassSignatureList -> {

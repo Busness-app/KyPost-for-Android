@@ -97,6 +97,27 @@ reported local data as cleared. `security/DownloadedAttachmentLedger.kt` exists 
 those MediaStore rows so the wipe can remove them. **Files a user has since moved,
 copied, or opened into another app are beyond the app's reach entirely.**
 
+### Cached mail at rest
+
+`kypost_mail.db` holds every cached message body, the whole contact book and contacts' PGP
+keys. It is encrypted with SQLCipher (`security/DatabaseKey.kt`, `data/DataRuntime.kt`).
+
+The passphrase is 32 random bytes held in a Keystore-backed `EncryptedSharedPreferences`
+file. It is **not** derived from the app-lock PIN: the database has to open in processes
+where no PIN has been entered — an FCM delivery, a background sync — so a PIN-derived key
+would either break those or force the PIN to be cached somewhere worse.
+
+**What this protects against:** reading the file offline. Root, an unlocked bootloader, a
+forensic image, a stolen backup.
+
+**What it does not protect against:** a live, rooted, running device. Code executing as
+this app's UID can ask the Keystore to use the key, exactly as the app does. Hostile
+Location Protection is the answer to that threat model, and it is stronger — under it
+there is no file at all.
+
+Existing installs are converted in place on first launch after upgrading. The conversion
+never deletes the original before the replacement is verified and moved into position.
+
 ### Certificate pinning
 
 KyPost is self-hosted with a per-user server URL, so there is no certificate to hardcode.
@@ -144,6 +165,20 @@ is minted by the server at registration and returned exactly once.
   screen. A device with no lock screen cannot enrol at all.
 - A security wipe destroys the envelope. If it cannot, the wipe reports itself incomplete
   and the app fails closed — see **App lock** above.
+
+### Third-party components in security-relevant paths
+
+Stated rather than left to be discovered:
+
+- **Pairing QR scanning uses Google Play Services** (`play-services-code-scanner`). The
+  scanner UI and the module that backs it are Google's, downloaded on demand, and the
+  pairing QR passes through them. This is inconsistent with the rest of the app's posture
+  — the manifest carries no `<queries>` block specifically so the app cannot see what else
+  is installed, and the client refuses to trust the relay with its own public key. If you
+  do not want Play Services in that path, pair by entering the URL rather than scanning.
+- **Push delivery** is either FCM (Google) or UnifiedPush (a distributor you choose), or
+  App Pull, which polls your own server and involves neither. Notification content is
+  end-to-end opaque to the push transport; what the transport learns is timing.
 
 ### What is out of scope
 

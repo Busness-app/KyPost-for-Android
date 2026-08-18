@@ -22,6 +22,7 @@ private const val ENVELOPE_INFO = "kypost-device-envelope/v2"
 private const val ENVELOPE_VERSION = "2"
 private const val ENVELOPE_ALG = "ECDH-P256+HKDF-SHA256+A256GCM"
 private const val GCM_TAG_BITS = 128
+private const val TAG = "DeviceEnvelope"
 
 /** HKDF-SHA256 (RFC 5869), extract-then-expand. Built from [Mac] rather than pulled in as a
  *  dependency: this app adds none for crypto. */
@@ -124,7 +125,15 @@ internal fun openDeviceEnvelope(
         cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(GCM_TAG_BITS, fields.iv))
         cipher.updateAAD(aad)
         cipher.doFinal(fields.ct)
-    } catch (e: Exception) {
+    } catch (e: javax.crypto.AEADBadTagException) {
+        // The expected negative. Says nothing about this device being broken: the envelope was
+        // minted for someone else, or under an identity the account no longer advertises.
+        android.util.Log.w(TAG, "Device envelope failed authentication; it was not sealed for this device")
+        null
+    } catch (e: java.security.GeneralSecurityException) {
+        // A bare `catch (Exception) { null }` reported this identically to the tag failure above,
+        // which is how "enrollment silently does nothing on this device" became undiagnosable.
+        android.util.Log.e(TAG, "Device envelope could not be opened", e)
         null
     } finally {
         // The derived key opens the account's PGP private key; do not leave it resident for GC.

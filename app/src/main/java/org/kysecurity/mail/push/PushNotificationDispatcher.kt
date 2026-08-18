@@ -75,6 +75,9 @@ object PushNotificationDispatcher : org.kysecurity.mail.ProcessScopedState {
     const val EXTRA_MFA_MATCH_DIGITS = "mfaMatchDigits"
     const val EXTRA_MFA_DECOY_DIGITS = "mfaDecoyDigits"
     const val EXTRA_MESSAGE_ID = "org.kysecurity.mail.push.EXTRA_MESSAGE_ID"
+
+    /** See [NotificationIntentToken]. Present only on PendingIntents this object builds. */
+    const val EXTRA_INTENT_TOKEN = "org.kysecurity.mail.push.EXTRA_INTENT_TOKEN"
     const val EXTRA_SENDER = "org.kysecurity.mail.push.EXTRA_SENDER"
     const val EXTRA_SUBJECT = "org.kysecurity.mail.push.EXTRA_SUBJECT"
 
@@ -200,6 +203,8 @@ object PushNotificationDispatcher : org.kysecurity.mail.ProcessScopedState {
     private fun mailPendingIntent(context: Context, payload: PushPayload, notificationId: Int): PendingIntent {
         val launchIntent = Intent(context, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            // MainActivity is exported; without this any app could hand it these three extras.
+            .putExtra(EXTRA_INTENT_TOKEN, NotificationIntentToken.current(context))
             .putExtra(EXTRA_MESSAGE_ID, payload.messageId)
             .putExtra(EXTRA_SENDER, payload.senderName)
             .putExtra(EXTRA_SUBJECT, payload.emailSubject)
@@ -226,8 +231,17 @@ object PushNotificationDispatcher : org.kysecurity.mail.ProcessScopedState {
     }
 
     /**
-     * True when the user turned on "Require unlock to receive push/MFA" and the app is currently
-     * locked, so no message metadata may be shown until they enter their PIN.
+     * True when the app lock is engaged, so no message metadata may be shown until the user enters
+     * their PIN.
+     *
+     * **Gated on the app lock, not on the credential gate.** This used to require
+     * `isCredentialPinGateEnabled()` — a second, separate, off-by-default setting — and relied on
+     * `setPublicVersion` for everything else. But the framework swaps public for private off
+     * *keyguard* state, which says nothing about this app's own lock: a user who set a PIN under
+     * "Require Unlock to Open", on a phone lying unlocked on a desk, had the sender and subject of
+     * every arriving message printed to the shade for anyone who swiped down. The control they
+     * configured was not in the path. It is now; `setPublicVersion` still covers the keyguard case
+     * on top of it.
      *
      * Reads [org.kysecurity.mail.security.AppLockManager.isLockedNow] rather than the `locked` flow, for
      * the same reason every other security decision does: a background grace window that has expired
@@ -239,7 +253,8 @@ object PushNotificationDispatcher : org.kysecurity.mail.ProcessScopedState {
      */
     private fun contentSuppressedWhileLocked(context: Context): Boolean = runCatching {
         val graph = org.kysecurity.mail.security.SecurityRuntime.graph(context)
-        graph.appLockStore.isCredentialPinGateEnabled() && graph.appLockManager.isLockedNow()
+        val gated = graph.appLockStore.isLockEnabled() || graph.appLockStore.isCredentialPinGateEnabled()
+        gated && graph.appLockManager.isLockedNow()
     }.getOrElse {
         android.util.Log.e("PushNotificationDispatcher", "Could not read the credential gate; redacting", it)
         true

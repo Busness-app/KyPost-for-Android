@@ -8,12 +8,19 @@ package org.kysecurity.mail.security
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Base64
+import android.util.Log
+import java.security.MessageDigest
 
 private const val ENCRYPTED_PREFS_FILE_NAME = "app_lock_secure"
 
 /** Unencrypted companion file to [ENCRYPTED_PREFS_FILE_NAME]; see [AppLockStore.tripwire]. */
 private const val TRIPWIRE_PREFS_FILE_NAME = "app_lock_tripwire"
 private const val KEY_TRIPWIRE_LOCK_WAS_ENABLED = "lock_was_enabled"
+
+/** HMAC over [KEY_TRIPWIRE_LOCK_WAS_ENABLED] under [KeystoreTripwireKey]; see [AppLockStore.tripwire]. */
+private const val KEY_TRIPWIRE_MAC = "lock_was_enabled_mac"
+
+private const val TAG = "AppLockStore"
 
 private const val KEY_LOCK_ENABLED = "lock_enabled"
 private const val KEY_BIOMETRIC_ENABLED = "biometric_enabled"
@@ -97,24 +104,76 @@ class AppLockStore(context: Context) : AppLockState {
     private val prefs: SharedPreferences by lazy { buildEncryptedPrefs(appContext) }
 
     /**
-     * A plain, unencrypted "the user had a lock configured" marker.
+     * The "a lock was configured" marker: a preference file **plus** [KeystoreTripwireKey].
      *
-     * The encrypted file above can become unreadable — Keystore invalidation, or an attacker
+     * The encrypted store above can become unreadable — Keystore invalidation, or an attacker
      * deleting the keyset — and recreating it empty would report `isLockEnabled() == false`, so
      * deleting one file would disable the lock. This marker lets [tripwireBroken] tell "never
      * configured" apart from "configured, and the state just vanished", and treat the latter as
      * hostile.
      *
+     * **The Keystore half is what makes it a control rather than a speed bump.** As a bare
+     * `MODE_PRIVATE` file this was both defeatable and weaponisable by anyone who could write the
+     * app sandbox: delete both preference files and the lock is gone with no wipe, or write
+     * `lock_was_enabled=true` onto a device that never had a lock and the next launch destroys the
+     * user's mail. The alias cannot be forged or deleted by writing files, so its presence is the
+     * durable claim and the HMAC below is what binds the file's value to it.
+     *
      * **Scope boundary.** The tripwire only fires at app *launch*, so it defends the UI against
-     * someone who tampers and then uses the app. It does nothing against someone who simply reads
-     * `kypost_mail.db` offline. Hostile Location Protection ([HostileLocationSettings]) is the
-     * feature for that threat model; see `app/src/main/AGENTS.md` for why encryption-at-rest was
-     * not chosen instead.
+     * someone who tampers and then uses the app. The at-rest protection for the cached mail itself
+     * is SQLCipher (see [DatabaseKey]), with Hostile Location Protection
+     * ([HostileLocationSettings]) as the stronger mode in which no file exists at all.
      */
     private val tripwire: SharedPreferences =
         appContext.getSharedPreferences(TRIPWIRE_PREFS_FILE_NAME, Context.MODE_PRIVATE)
 
-    fun wasLockEnabled(): Boolean = tripwire.getBoolean(KEY_TRIPWIRE_LOCK_WAS_ENABLED, false)
+    /**
+     * Whether a lock was configured, as far as anything that survives file deletion can tell.
+     *
+     * Fails towards "configured" on tampering, and towards the file's own claim when the Keystore
+     * cannot be consulted at all — asserting "configured" there would wipe a fresh install over a
+     * transient `keystore2` restart, and asserting "never configured" would disable the lock over
+     * the same failure.
+     */
+    fun wasLockEnabled(): Boolean {
+        val claimed = tripwire.getBoolean(KEY_TRIPWIRE_LOCK_WAS_ENABLED, false)
+        val storedMac = tripwire.getString(KEY_TRIPWIRE_MAC, null)
+
+        val keyPresent = try {
+            KeystoreTripwireKey.exists()
+        } catch (e: PepperUnavailableException) {
+            Log.e(TAG, "Could not consult the tripwire key; falling back to the file's own claim", e)
+            return claimed
+        }
+        if (!keyPresent) return false
+
+        if (storedMac == null) {
+            Log.e(TAG, "Tripwire key exists but its marker is gone; treating as tampering")
+            return true
+        }
+        val expected = runCatching { KeystoreTripwireKey.mix(tripwirePayload(claimed)) }.getOrNull()
+        if (expected == null) {
+            Log.e(TAG, "Tripwire marker could not be recomputed; treating as tampering")
+            return true
+        }
+        val actual = runCatching { Base64.decode(storedMac, Base64.NO_WRAP) }.getOrNull()
+        if (actual == null || !MessageDigest.isEqual(expected, actual)) {
+            Log.e(TAG, "Tripwire marker failed authentication; treating as tampering")
+            return true
+        }
+        return claimed
+    }
+
+    /** One byte, so the MAC covers the value and not just the fact that a marker exists. */
+    private fun tripwirePayload(enabled: Boolean): ByteArray = byteArrayOf(if (enabled) 1 else 0)
+
+    private fun writeTripwire(enabled: Boolean) {
+        val mac = KeystoreTripwireKey.mix(tripwirePayload(enabled))
+        tripwire.edit()
+            .putBoolean(KEY_TRIPWIRE_LOCK_WAS_ENABLED, enabled)
+            .putString(KEY_TRIPWIRE_MAC, Base64.encodeToString(mac, Base64.NO_WRAP))
+            .commit()
+    }
 
     /** True when the encrypted store lost its contents while [wasLockEnabled] says a lock was
      *  configured. [SecurityWipe.enforceTripwire] turns this into a wipe at startup. */
@@ -122,8 +181,14 @@ class AppLockStore(context: Context) : AppLockState {
 
     override fun isLockEnabled(): Boolean = prefs.getBoolean(KEY_LOCK_ENABLED, false)
     override fun setLockEnabled(enabled: Boolean) {
+        // Tripwire key FIRST when arming: writing the marker before the key it is authenticated
+        // with exists would leave an unverifiable marker, which wasLockEnabled() reads as tampering.
+        if (enabled) KeystoreTripwireKey.ensureExists()
         prefs.edit().putBoolean(KEY_LOCK_ENABLED, enabled).commit()
-        tripwire.edit().putBoolean(KEY_TRIPWIRE_LOCK_WAS_ENABLED, enabled).commit()
+        writeTripwire(enabled)
+        // Disarming goes through reset() in the UI, which also destroys the key. This covers the
+        // direct call: a marker saying "not configured" needs no durable claim behind it.
+        if (!enabled) KeystoreTripwireKey.destroy()
     }
 
     override fun isBiometricEnabled(): Boolean = prefs.getBoolean(KEY_BIOMETRIC_ENABLED, false)
@@ -163,18 +228,29 @@ class AppLockStore(context: Context) : AppLockState {
         return true
     }
 
-    override fun incrementFailedAttempts(): Int {
+    /**
+     * Serialises the read-modify-write below.
+     *
+     * [AppLockManager]'s own `pinGate` already covers every PIN check that goes through it, but this
+     * counter feeds the wipe threshold and the class publishes it to anyone holding an instance —
+     * [SecurityWipe] builds its own. An invariant that depends on callers is not an invariant.
+     */
+    private val counterLock = Any()
+
+    override fun incrementFailedAttempts(): Int = synchronized(counterLock) {
         val next = prefs.getInt(KEY_FAILED_ATTEMPTS, 0) + 1
         prefs.edit().putInt(KEY_FAILED_ATTEMPTS, next).commit()
-        return next
+        next
     }
 
     override fun resetFailedAttempts() {
-        prefs.edit()
-            .putInt(KEY_FAILED_ATTEMPTS, 0)
-            .putLong(KEY_LOCKOUT_UNTIL_ELAPSED, 0L)
-            .putLong(KEY_LOCKOUT_DURATION, 0L)
-            .commit()
+        synchronized(counterLock) {
+            prefs.edit()
+                .putInt(KEY_FAILED_ATTEMPTS, 0)
+                .putLong(KEY_LOCKOUT_UNTIL_ELAPSED, 0L)
+                .putLong(KEY_LOCKOUT_DURATION, 0L)
+                .commit()
+        }
     }
 
     override fun lockoutUntilElapsedMs(): Long = prefs.getLong(KEY_LOCKOUT_UNTIL_ELAPSED, 0L)
@@ -202,15 +278,14 @@ class AppLockStore(context: Context) : AppLockState {
      * Writes the credential salt, and **refuses to overwrite an existing one**.
      *
      * A second write is always a bug: every secret already wrapped under the old salt becomes
-     * permanently undecryptable the moment it lands. [AppLockManager] now serialises the only two
-     * paths that generate one, so this should be unreachable — which is the point of asserting it
-     * here rather than trusting that to stay true.
+     * permanently undecryptable the moment it lands. [AppLockManager] serialises the only two paths
+     * that generate one, so this is unreachable — and it throws rather than logging, because
+     * returning normally told the caller the salt had been persisted when it had not. The caller
+     * then wrapped the device secret under a key nothing would ever reproduce, which is a worse
+     * outcome than the crash.
      */
     override fun setCredentialSalt(salt: ByteArray) {
-        if (prefs.contains(KEY_CREDENTIAL_SALT)) {
-            android.util.Log.e("AppLockStore", "Refusing to overwrite an existing credential salt")
-            return
-        }
+        check(!prefs.contains(KEY_CREDENTIAL_SALT)) { "Refusing to overwrite an existing credential salt" }
         prefs.edit().putString(KEY_CREDENTIAL_SALT, Base64.encodeToString(salt, Base64.NO_WRAP)).commit()
     }
 
@@ -222,7 +297,19 @@ class AppLockStore(context: Context) : AppLockState {
         // a setting. This order fails safe instead: an interruption leaves the lock enabled with a
         // valid hash, which the user can simply retry.
         tripwire.edit().clear().commit()
+        // The durable half of the marker. Left behind, it says "a lock was configured" over a store
+        // that no longer holds a PIN hash, which is exactly the tripwire condition — so turning the
+        // lock off would arm a wipe for the next launch.
+        KeystoreTripwireKey.destroy()
         prefs.edit().clear().commit()
+    }
+
+    /** [reset] plus the step names it could not clear, so [SecurityWipe] can report an incomplete
+     *  wipe rather than a clean one when a Keystore alias outlives it. */
+    fun resetReportingLeftovers(): List<String> {
+        reset()
+        val leftBehind = runCatching { KeystoreTripwireKey.exists() }.getOrDefault(true)
+        return if (leftBehind) listOf("deleteTripwireKey") else emptyList()
     }
 
     /** See [openEncryptedPrefs]: resets only on an undecryptable keyset, never on a transient I/O
