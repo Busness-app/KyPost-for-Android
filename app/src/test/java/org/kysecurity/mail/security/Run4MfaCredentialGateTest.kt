@@ -31,7 +31,7 @@ private class GateState(
     private var lockoutDuration = 0L
 
     override fun isLockEnabled() = lockEnabled
-    override fun setLockEnabled(enabled: Boolean) { lockEnabled = enabled }
+    override fun enableLock() { lockEnabled = true }
     override fun isBiometricEnabled() = biometricEnabled
     override fun setBiometricEnabled(enabled: Boolean) { biometricEnabled = enabled }
     override fun isCredentialPinGateEnabled() = credentialGateEnabled

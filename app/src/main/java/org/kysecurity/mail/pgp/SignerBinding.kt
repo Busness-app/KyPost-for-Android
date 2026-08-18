@@ -22,8 +22,21 @@ internal data class SignerKey(
 )
 
 /**
- * Every key id present in [armoredPublicKey]: its primary key plus every subkey, regardless of that
- * subkey's usage flags — an encryption-only subkey's id is returned exactly like a signing subkey's.
+ * Every **currently usable** key id in [armoredPublicKey]: its primary key plus every subkey,
+ * regardless of that subkey's usage flags — an encryption-only subkey's id is returned exactly like
+ * a signing subkey's.
+ *
+ * This is the only place revocation and expiry are enforced. [signatureStateFor] answers
+ * SIGNER_UNKNOWN for a signature whose key id is not in this set, so a key dropped here can never
+ * render as VERIFIED however cleanly its signature verifies — which is what makes the omission
+ * below matter.
+ *
+ * **A ring is dropped whole when its primary key is revoked or expired.** Per-key filtering alone
+ * checked each subkey's own revocation signature and never the primary's, so revoking a compromised
+ * *primary* — which is what a user does when their key is stolen, and which every other OpenPGP
+ * implementation treats as revoking the whole certificate — left every unrevoked signing subkey
+ * under it still trusted. A thief holding the stolen subkey kept a green VERIFIED badge in this
+ * client after the owner had published the revocation.
  */
 internal fun signerKeyIdsOf(armoredPublicKey: String, now: Date = Date()): Set<Long> = runCatching {
     val rings = PGPPublicKeyRingCollection(
@@ -31,11 +44,15 @@ internal fun signerKeyIdsOf(armoredPublicKey: String, now: Date = Date()): Set<L
         BcKeyFingerprintCalculator(),
     )
     rings.keyRings.asSequence()
+        .filter { it.publicKey.isUsableAt(now) }
         .flatMap { it.publicKeys.asSequence() }
-        .filter { !it.hasRevocation() && !it.isExpiredAt(now) }
+        .filter { it.isUsableAt(now) }
         .map { it.keyID }
         .toSet()
 }.getOrDefault(emptySet())
+
+private fun org.bouncycastle.openpgp.PGPPublicKey.isUsableAt(now: Date): Boolean =
+    !hasRevocation() && !isExpiredAt(now)
 
 private fun org.bouncycastle.openpgp.PGPPublicKey.isExpiredAt(now: Date): Boolean {
     val validSeconds = getValidSeconds()

@@ -54,12 +54,18 @@ private const val WRITER_KEEP_ALIVE_SECONDS = 60L
  * [ATTACHMENT_TTL_MILLIS], and the TTL only matters if the process lives that long. Tapping a
  * handful of large attachments and backing out of each chooser (which never calls `take`) put
  * hundreds of megabytes of decrypted mail in the heap, on the one path whose entire premise is
- * that this plaintext is short-lived. Sized to comfortably hold several real attachments while
- * making "the user is opening things faster than viewers consume them" a refusal rather than an OOM.
+ * that this plaintext is short-lived.
+ *
+ * Set in [org.kysecurity.mail.MemoryBudget] rather than here: this is the only one of the app's
+ * three heap ceilings whose bytes are *retained* rather than transient, so it is the term that
+ * decides the realistic peak, and it cannot be sized without seeing the other two.
  */
-private const val MAX_PENDING_BYTES = 64L * 1024 * 1024
+private const val MAX_PENDING_BYTES = org.kysecurity.mail.MemoryBudget.PENDING_ATTACHMENT_BYTES
 
-internal data class PendingAttachment(
+/** **Not a `data class`**: identity `equals`/`hashCode` over [bytes] while advertising structural
+ *  equality is the trap [WrappedSecret] and [PinHash] both refuse in their own KDoc, and this one
+ *  is a map value, which is exactly where someone reaches for `==`. Enforced by `SourceRulesTest`. */
+internal class PendingAttachment(
     val bytes: ByteArray,
     val mimeType: String,
     /** What a viewer app shows the user. See [EphemeralAttachmentProvider.query]. */

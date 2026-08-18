@@ -41,11 +41,40 @@ private const val KEY_CREDENTIAL_SALT = "credential_salt"
 private const val KEY_WIPE_AFTER_ATTEMPTS = "wipe_after_attempts"
 private const val WIPE_DISABLED = -1
 
+/**
+ * What the app-lock tripwire can actually say, which is three things rather than two.
+ *
+ * [UNREADABLE] is the one that used to be missing. The Keystore alias is the durable half of the
+ * marker, so a Keystore that cannot be consulted leaves the question genuinely unanswered — and
+ * both available answers were wrong. Answering "configured" wipes a fresh install over a
+ * transient `keystore2` restart; answering with the *file's* claim, which is what this did, hands
+ * the decision to an unauthenticated `MODE_PRIVATE` file that anything able to write the sandbox
+ * can forge — the exact "write `lock_was_enabled=true` and the next launch destroys the user's
+ * mail" attack the Keystore half was introduced to close.
+ *
+ * So it is not answered here at all. [org.kysecurity.mail.security.LockedActivity] blocks the app
+ * until the Keystore can be consulted again, which is neither a wipe nor an unlock.
+ */
+enum class TripwireState {
+    NEVER_CONFIGURED,
+    CONFIGURED,
+
+    /** The Keystore could not be consulted, so neither answer above is knowable. */
+    UNREADABLE,
+}
+
 /** Everything [AppLockManager] needs from persisted app-lock state, kept as an interface so
  *  [AppLockManager] can be unit-tested against a fake instead of a real Context/Keystore. */
 interface AppLockState {
     fun isLockEnabled(): Boolean
-    fun setLockEnabled(enabled: Boolean)
+
+    /** Arms the lock. There is deliberately no `setLockEnabled(false)`: disarming is [reset],
+     *  which also destroys the PIN hash and [KeystoreTripwireKey]. A `Boolean` here selected
+     *  between two entirely different sequences, and the `false` one — write an authenticated
+     *  marker, *then* destroy the key that authenticates it — threw
+     *  [PepperUnavailableException] on any device that had never armed the lock. It had no
+     *  production caller, so nothing ever ran it. */
+    fun enableLock()
     fun isBiometricEnabled(): Boolean
     fun setBiometricEnabled(enabled: Boolean)
     fun isCredentialPinGateEnabled(): Boolean
@@ -130,39 +159,46 @@ class AppLockStore(context: Context) : AppLockState {
     /**
      * Whether a lock was configured, as far as anything that survives file deletion can tell.
      *
-     * Fails towards "configured" on tampering, and towards the file's own claim when the Keystore
-     * cannot be consulted at all — asserting "configured" there would wipe a fresh install over a
-     * transient `keystore2` restart, and asserting "never configured" would disable the lock over
-     * the same failure.
+     * Fails towards [TripwireState.CONFIGURED] on tampering, and towards [TripwireState.UNREADABLE]
+     * — not towards either answer — when the Keystore cannot be consulted at all. See
+     * [TripwireState].
      */
-    fun wasLockEnabled(): Boolean {
+    fun tripwireState(): TripwireState {
         val claimed = tripwire.getBoolean(KEY_TRIPWIRE_LOCK_WAS_ENABLED, false)
         val storedMac = tripwire.getString(KEY_TRIPWIRE_MAC, null)
 
         val keyPresent = try {
             KeystoreTripwireKey.exists()
         } catch (e: PepperUnavailableException) {
-            Log.e(TAG, "Could not consult the tripwire key; falling back to the file's own claim", e)
-            return claimed
+            Log.e(TAG, "Could not consult the tripwire key", e)
+            return TripwireState.UNREADABLE
         }
-        if (!keyPresent) return false
+        if (!keyPresent) return TripwireState.NEVER_CONFIGURED
 
         if (storedMac == null) {
             Log.e(TAG, "Tripwire key exists but its marker is gone; treating as tampering")
-            return true
+            return TripwireState.CONFIGURED
         }
         val expected = runCatching { KeystoreTripwireKey.mix(tripwirePayload(claimed)) }.getOrNull()
         if (expected == null) {
             Log.e(TAG, "Tripwire marker could not be recomputed; treating as tampering")
-            return true
+            return TripwireState.CONFIGURED
         }
         val actual = runCatching { Base64.decode(storedMac, Base64.NO_WRAP) }.getOrNull()
         if (actual == null || !MessageDigest.isEqual(expected, actual)) {
             Log.e(TAG, "Tripwire marker failed authentication; treating as tampering")
-            return true
+            return TripwireState.CONFIGURED
         }
-        return claimed
+        return if (claimed) TripwireState.CONFIGURED else TripwireState.NEVER_CONFIGURED
     }
+
+    /** [tripwireState] collapsed to the question [tripwireBroken] asks. [TripwireState.UNREADABLE]
+     *  answers false here — asserting "configured" off an unauthenticated file is the forged-marker
+     *  wipe this class exists to prevent — and is handled instead by
+     *  [LockedActivity], which refuses to open the app at all while the Keystore cannot be
+     *  consulted. Answering it here in either direction is what made one branch defeatable and the
+     *  other weaponisable. */
+    fun wasLockEnabled(): Boolean = tripwireState() == TripwireState.CONFIGURED
 
     /** One byte, so the MAC covers the value and not just the fact that a marker exists. */
     private fun tripwirePayload(enabled: Boolean): ByteArray = byteArrayOf(if (enabled) 1 else 0)
@@ -180,15 +216,12 @@ class AppLockStore(context: Context) : AppLockState {
     fun tripwireBroken(): Boolean = wasLockEnabled() && !prefs.contains(KEY_PIN_HASH)
 
     override fun isLockEnabled(): Boolean = prefs.getBoolean(KEY_LOCK_ENABLED, false)
-    override fun setLockEnabled(enabled: Boolean) {
-        // Tripwire key FIRST when arming: writing the marker before the key it is authenticated
-        // with exists would leave an unverifiable marker, which wasLockEnabled() reads as tampering.
-        if (enabled) KeystoreTripwireKey.ensureExists()
-        prefs.edit().putBoolean(KEY_LOCK_ENABLED, enabled).commit()
-        writeTripwire(enabled)
-        // Disarming goes through reset() in the UI, which also destroys the key. This covers the
-        // direct call: a marker saying "not configured" needs no durable claim behind it.
-        if (!enabled) KeystoreTripwireKey.destroy()
+    override fun enableLock() {
+        // Tripwire key FIRST: writing the marker before the key it is authenticated with exists
+        // would leave an unverifiable marker, which tripwireState() reads as tampering.
+        KeystoreTripwireKey.ensureExists()
+        prefs.edit().putBoolean(KEY_LOCK_ENABLED, true).commit()
+        writeTripwire(true)
     }
 
     override fun isBiometricEnabled(): Boolean = prefs.getBoolean(KEY_BIOMETRIC_ENABLED, false)
@@ -227,15 +260,6 @@ class AppLockStore(context: Context) : AppLockState {
         setPin(pin)
         return true
     }
-
-    /**
-     * Serialises the read-modify-write below.
-     *
-     * [AppLockManager]'s own `pinGate` already covers every PIN check that goes through it, but this
-     * counter feeds the wipe threshold and the class publishes it to anyone holding an instance —
-     * [SecurityWipe] builds its own. An invariant that depends on callers is not an invariant.
-     */
-    private val counterLock = Any()
 
     override fun incrementFailedAttempts(): Int = synchronized(counterLock) {
         val next = prefs.getInt(KEY_FAILED_ATTEMPTS, 0) + 1
@@ -318,6 +342,21 @@ class AppLockStore(context: Context) : AppLockState {
      *  read. */
     private fun buildEncryptedPrefs(appContext: Context): SharedPreferences =
         openEncryptedPrefs(appContext, ENCRYPTED_PREFS_FILE_NAME) {
-            android.util.Log.e("AppLockStore", "Encrypted app-lock store keyset is undecryptable", it)
+            android.util.Log.e(TAG, "Encrypted app-lock store keyset is undecryptable", it)
         }
+
+    private companion object {
+        /**
+         * Serialises the failed-attempt read-modify-write across **every** instance.
+         *
+         * `private val` on the instance did not: [SecurityWipe] builds its own [AppLockStore], so
+         * the two synchronised on two different monitors and serialised nothing — while the comment
+         * here named that second instance as the reason the lock existed. A counter that feeds the
+         * wipe threshold cannot be protected by a monitor that each holder gets a fresh copy of.
+         *
+         * Still process-scoped. If push ever moves to its own process, `SharedPreferences` offers
+         * nothing here and this needs a file lock.
+         */
+        val counterLock = Any()
+    }
 }

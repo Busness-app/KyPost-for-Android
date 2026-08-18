@@ -833,7 +833,7 @@ class SecuritySettingsActivity : LockedActivity() {
                         // off the main thread.
                         withContext(SecurityWork) {
                             appLockStore.setPin(entered)
-                            appLockStore.setLockEnabled(true)
+                            appLockStore.enableLock()
                             // Seal now rather than at the first unlock, so turning the biometric
                             // switch on below actually offers a fingerprint the first time the app
                             // locks.

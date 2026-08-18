@@ -15,8 +15,13 @@ import java.security.GeneralSecurityException
 private const val TAG = "EncryptedPrefs"
 
 /** Records that an encrypted store was reset, so the app can tell the user rather than presenting
- *  a clean first-run screen over a secret it destroyed. Survives the reset itself: this file is
- *  plain, and is in [SecurityWipe]'s retained set for the same reason the wipe marker is. */
+ *  a clean first-run screen over a secret it destroyed.
+ *
+ *  Plain, so it survives the reset of the encrypted store it is reporting on. It is deliberately
+ *  **not** in [SecurityWipe]'s retained set — a full wipe destroys it along with everything else,
+ *  because after a wipe there is no unexpected loss left to warn about and the notice would land on
+ *  top of "your data has been erased" saying the same thing less clearly. (An earlier version of
+ *  this comment claimed the opposite and was simply wrong; `PREFS_NAMES_RETAINED` never listed it.) */
 internal const val CREDENTIAL_RESET_PREFS = "org.kysecurity.mail.credential_reset"
 
 /**

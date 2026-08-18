@@ -224,15 +224,6 @@ tasks.matching { it.name == "packageRelease" || it.name == "signReleaseBundle" }
     }
 }
 
-configurations.all {
-    // androidx.security.crypto (used by SecurePairingStore) and the UnifiedPush connector
-    // both pull in Google's tink crypto library — the former via tink-android, the latter
-    // via plain tink. Both jars ship identical com.google.crypto.tink.* classes, so having
-    // both on the classpath is a duplicate-class build failure, not a real version conflict;
-    // excluding the plain jar and keeping tink-android (already required by security.crypto)
-    // is the fix the connector's own docs recommend.
-    exclude(group = "com.google.crypto.tink", module = "tink")
-}
 
 dependencies {
     implementation(libs.androidx.activity.ktx)
@@ -249,7 +240,30 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.messaging)
-    implementation(libs.unifiedpush.connector)
+    implementation(libs.unifiedpush.connector) {
+        // androidx.security.crypto (used by SecurePairingStore) and this connector both pull in
+        // Google's tink — the former via tink-android, the latter via plain tink. Both jars ship
+        // the same com.google.crypto.tink.* classes, so both on the classpath is a duplicate-class
+        // build failure rather than a real version conflict; dropping the plain jar and keeping
+        // tink-android (already required by security.crypto) is what the connector's own docs
+        // recommend.
+        //
+        // Scoped to this dependency, not `configurations.all`. Globally excluding a crypto artifact
+        // means a future version where the two jars stop being interchangeable — one class only the
+        // connector reflects on — surfaces as NoClassDefFoundError in the push path at runtime, on
+        // a subset of devices, after a routine bump. Here, the same change is a resolution failure
+        // at build time.
+        //
+        // The global form was also, silently, excluding tink from AGP's own
+        // `unified-test-platform-gradle-work-action` configuration — UTP, the instrumented-test
+        // runner, which pulls plain tink 1.18.0. Narrowing this therefore added seven artifacts
+        // (tink 1.18.0 plus protobuf/errorprone poms) to the resolved graph, and dependency
+        // verification correctly failed the emulator jobs until they were recorded in
+        // gradle/verification-metadata.xml. They are test-tooling dependencies of Google's own
+        // runner and are not on any classpath the APK ships; recording them is the right answer
+        // rather than keeping a blanket exclusion that hid them.
+        exclude(group = "com.google.crypto.tink", module = "tink")
+    }
     implementation(libs.play.services.code.scanner)
     // QR *generation* for the "My QR Code" screen — play-services-code-scanner above only scans.
     implementation(libs.zxing.core)

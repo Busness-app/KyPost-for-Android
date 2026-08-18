@@ -142,10 +142,19 @@ class AppLockManager(
      * Caching mirrors [attemptPin] exactly — only when the gate is on does anything need the key,
      * and only then is it held.
      */
-    fun unlockWithBiometric(keys: CredentialKeys) {
+    fun unlockWithBiometric(keys: CredentialKeys): UnlockAttemptResult {
+        // Under the same lockout as every PIN check. This used to unlock and reset the attempt
+        // counter with no gate at all, so a fingerprint mid-ladder cleared an hour of accumulated
+        // delay AND the progress toward the wipe threshold — an escape hatch from the throttle,
+        // given to the one attacker `setInvalidatedByBiometricEnrollment(true)` is aimed at, by
+        // omission rather than by decision.
+        val remaining = remainingLockoutMillis()
+        if (remaining > 0) return UnlockAttemptResult.Rejected(remaining)
+
         _locked.value = false
         state.resetFailedAttempts()
         if (state.isCredentialPinGateEnabled()) credentialKeys = keys
+        return UnlockAttemptResult.Success
     }
 
     /**
@@ -235,13 +244,26 @@ class AppLockManager(
     }
 
     /**
-     * Proof that its holder ran a PIN check on this manager that returned
+     * Proof that its holder ran a PIN check on **this** manager that returned
      * [UnlockAttemptResult.Success], carrying the keys that check derived.
      *
-     * A token can only be minted by [verifyLocked], and only on Success, so "the caller verified
-     * the PIN" is now a thing the type system knows rather than a thing a comment asks for.
+     * The constructor is `private` and the token records its issuer. `internal constructor` did
+     * not make this a type-system guarantee: `internal` is module-visible and this app is one
+     * module, so all 386 source files could mint a token and the KDoc claiming otherwise was
+     * strictly worse than the comment it replaced — it invited the next reader to stop checking.
+     * [keysFor] now verifies the issuer, so a forged token fails where it is used rather than
+     * passing silently.
      */
-    class DecisionToken internal constructor(internal val keys: CredentialKeys?)
+    class DecisionToken private constructor(
+        private val issuer: AppLockManager,
+        internal val keys: CredentialKeys?,
+    ) {
+        internal companion object {
+            fun issue(by: AppLockManager, keys: CredentialKeys?) = DecisionToken(by, keys)
+        }
+
+        internal fun issuedBy(manager: AppLockManager): Boolean = issuer === manager
+    }
 
     /**
      * Re-seals the biometric blob under [pin], which the caller has just established as the app-lock
@@ -303,7 +325,7 @@ class AppLockManager(
             var derivationFailed = false
             val result = verifyLocked(pin) {
                 if (!deriveKeys) {
-                    token = DecisionToken(null)
+                    token = DecisionToken.issue(this@AppLockManager, null)
                     return@verifyLocked
                 }
                 val keys = try {
@@ -313,7 +335,7 @@ class AppLockManager(
                     derivationFailed = true
                     null
                 }
-                if (keys != null) token = DecisionToken(keys)
+                if (keys != null) token = DecisionToken.issue(this@AppLockManager, keys)
             }
             if (result is UnlockAttemptResult.Success && derivationFailed) {
                 UnlockAttemptResult.VerifierUnavailable to null
@@ -323,8 +345,14 @@ class AppLockManager(
         }
     }
 
-    /** The keys a [DecisionToken] carries, or null when the gate was off and none were needed. */
-    fun keysFor(token: DecisionToken): CredentialKeys? = token.keys
+    /** The keys a [DecisionToken] carries, or null when the gate was off and none were needed.
+     *
+     *  @throws IllegalArgumentException if [token] was not issued by this manager — see
+     *    [DecisionToken]. */
+    fun keysFor(token: DecisionToken): CredentialKeys? {
+        require(token.issuedBy(this)) { "DecisionToken was not issued by this AppLockManager" }
+        return token.keys
+    }
 
     /**
      * Derives and caches the credential keys on demand, regardless of whether the credential gate

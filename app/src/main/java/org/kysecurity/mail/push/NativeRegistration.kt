@@ -119,10 +119,7 @@ sealed class NativeRegistrationResult {
 
 class NativeRegistrationClient(
     private val json: Json = Json { ignoreUnknownKeys = true },
-    // Call.Factory (not the concrete OkHttpClient) so a pinned-or-fallback factory (see
-    // PushGraph, finding C2 of the 2026-07-22 security-hardening spec's final-review fix round)
-    // can be injected here the same way every other pairing client accepts one; OkHttpClient
-    // itself still satisfies this interface, so the default below is unchanged behavior.
+    // Injected Call.Factory; see PairingAuthHeaders.kt for why every credentialed client takes one.
     private val callFactory: Call.Factory,
 ) {
     suspend fun register(

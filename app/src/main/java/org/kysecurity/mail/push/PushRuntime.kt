@@ -65,7 +65,10 @@ class PushGraph(context: Context) {
                 callTimeoutMillis = DEREGISTER_CALL_TIMEOUT_MS,
             ),
             pinStateProvider = { repository.tlsPinState() },
-            fallback = org.kysecurity.mail.pairingHttpClient(callTimeoutMillis = DEREGISTER_CALL_TIMEOUT_MS),
+            fallback = org.kysecurity.mail.pairingHttpClient(
+                posture = org.kysecurity.mail.PinPosture.TofuWindow,
+                callTimeoutMillis = DEREGISTER_CALL_TIMEOUT_MS,
+            ),
         ),
     )
 

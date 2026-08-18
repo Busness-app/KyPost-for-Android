@@ -78,10 +78,7 @@ private val JSON = Json { ignoreUnknownKeys = true }
  * tests run without a real network call, same device-header auth.
  */
 internal class PgpPayloadClient(
-    // Call.Factory (not the concrete OkHttpClient) so tests can inject a fake without a real
-    // network call or a MockWebServer dependency; OkHttpClient itself satisfies this interface.
-    // Every real caller builds this on the pinned pairing call factory, like every other
-    // credentialed request in this app — this default exists for tests only.
+    // Injected Call.Factory; see PairingAuthHeaders.kt for why every credentialed client takes one.
     private val callFactory: Call.Factory,
 ) {
     suspend fun fetch(

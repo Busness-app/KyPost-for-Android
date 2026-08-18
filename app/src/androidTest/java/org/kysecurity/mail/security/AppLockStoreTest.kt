@@ -36,7 +36,7 @@ class AppLockStoreTest {
     fun lockEnabled_defaultsFalse_andPersistsWhenSet() {
         val store = AppLockStore(context)
         assertFalse(store.isLockEnabled())
-        store.setLockEnabled(true)
+        store.enableLock()
         assertTrue(AppLockStore(context).isLockEnabled())
     }
 
@@ -53,7 +53,7 @@ class AppLockStoreTest {
     fun reset_clearsPinAndLockState() {
         val store = AppLockStore(context)
         store.setPin("123456".toCharArray())
-        store.setLockEnabled(true)
+        store.enableLock()
         store.incrementFailedAttempts()
 
         store.reset()
@@ -75,10 +75,14 @@ class AppLockStoreTest {
     fun tripwire_recordsThatALockExisted_andClearsWhenTheLockIsTurnedOff() {
         val store = AppLockStore(context)
         store.setPin("482913".toCharArray())
-        store.setLockEnabled(true)
+        store.enableLock()
         assertTrue(AppLockStore(context).wasLockEnabled())
 
-        store.setLockEnabled(false)
+        // reset() is the disarm path — the one "Require Unlock to Open" actually calls, and now the
+        // only one. `setLockEnabled(false)` used to exist alongside it, had no production caller,
+        // and threw PepperUnavailableException on a device that had never armed the lock, because
+        // it wrote a marker authenticated by a key it then destroyed.
+        store.reset()
         assertFalse(AppLockStore(context).wasLockEnabled())
     }
 
@@ -86,7 +90,7 @@ class AppLockStoreTest {
     fun tripwire_trips_whenTheEncryptedStateVanishesWhileALockWasConfigured() {
         val store = AppLockStore(context)
         store.setPin("482913".toCharArray())
-        store.setLockEnabled(true)
+        store.enableLock()
 
         // Simulates an attacker deleting the keyset (or OS-level key invalidation) to turn the
         // lock off. The old behaviour was to recreate the file empty and report "no lock
@@ -102,7 +106,7 @@ class AppLockStoreTest {
     fun corruptedKeyset_doesNotCrash_andTripsTheTripwire() {
         val store = AppLockStore(context)
         store.setPin("482913".toCharArray())
-        store.setLockEnabled(true)
+        store.enableLock()
 
         val rawPrefs = context.getSharedPreferences("app_lock_secure", android.content.Context.MODE_PRIVATE)
         val valueKeysetKey = "__androidx_security_crypto_encrypted_prefs_value_keyset__"
@@ -142,7 +146,7 @@ class AppLockStoreTest {
     fun tripwire_trips_whenBothPreferenceFilesAreDeleted() {
         val store = AppLockStore(context)
         store.setPin("482913".toCharArray())
-        store.setLockEnabled(true)
+        store.enableLock()
 
         context.deleteSharedPreferences("app_lock_secure")
         context.deleteSharedPreferences("app_lock_tripwire")
@@ -185,7 +189,7 @@ class AppLockStoreTest {
     fun tripwire_isDisarmedWhenTheLockIsTurnedOff() {
         val store = AppLockStore(context)
         store.setPin("482913".toCharArray())
-        store.setLockEnabled(true)
+        store.enableLock()
 
         store.reset()
 

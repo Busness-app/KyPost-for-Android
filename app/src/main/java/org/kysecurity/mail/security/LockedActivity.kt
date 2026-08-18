@@ -94,6 +94,17 @@ abstract class LockedActivity : AppCompatActivity() {
         // CAS makes it exactly one screen: the others come up after the relaunch and carry on.
         val verdict = SecurityWipe.startupVerdict.getCompleted()
 
+        // Before any verdict is acted on: the tripwire's durable half is a Keystore alias, and a
+        // Keystore that cannot be consulted leaves "is the app lock still intact" genuinely
+        // unanswered. Neither available answer is safe — see [TripwireState] — so the app answers
+        // neither and shows nothing. Not terminal, unlike the abandoned wipe below: a keystore2
+        // restart resolves on the next boot, so the user is told to restart rather than reinstall.
+        if (runCatching { AppLockStore(this).tripwireState() }.getOrNull() == TripwireState.UNREADABLE) {
+            redirectedToUnlock = true
+            blockOnUnreadableTripwire()
+            return false
+        }
+
         // Terminal, and checked before the one-shot below because it is NOT one-shot: the wipe
         // gave up with steps still failing, so plaintext mail, contacts or attachments may be on
         // this device right now. Relaunching into a first-run screen — what the branch below does —
@@ -144,13 +155,45 @@ abstract class LockedActivity : AppCompatActivity() {
         val reset = credentialResetsPending(this)
         if (reset.isEmpty() || !credentialResetReported.compareAndSet(false, true)) return
         android.util.Log.e("LockedActivity", "Encrypted stores were reset: $reset")
+        // The database key's loss is not the same event as a pairing's. Every other reset store
+        // costs a credential the user can re-establish; that one costs the cached mail itself, and
+        // saying "no mail or contacts were deleted" over it is a false claim about their data.
+        val message = if (org.kysecurity.mail.data.DATABASE_NAME in reset) {
+            org.kysecurity.mail.R.string.security_credential_reset_message_mail_lost
+        } else {
+            org.kysecurity.mail.R.string.security_credential_reset_message
+        }
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle(org.kysecurity.mail.R.string.security_credential_reset_title)
-            .setMessage(org.kysecurity.mail.R.string.security_credential_reset_message)
+            .setMessage(message)
             .setPositiveButton(android.R.string.ok) { _, _ -> acknowledgeCredentialResets(this) }
             .setCancelable(false)
             .create()
             .showSecurely()
+    }
+
+    /**
+     * The "the Keystore cannot be consulted" state: a non-dismissable notice over a blank window.
+     *
+     * Same shape as [blockOnAbandonedWipe] and for the same reason — there is nothing here it is
+     * safe to show — but a different claim. That one is permanent and needs a reinstall; this one
+     * is a transient device condition, so it says so and asks for a restart.
+     */
+    private fun blockOnUnreadableTripwire() {
+        android.util.Log.e("LockedActivity", "The tripwire key store is unreadable; refusing to open")
+        window.decorView.visibility = View.INVISIBLE
+        window.decorView.post {
+            if (isFinishing || isDestroyed) return@post
+            androidx.appcompat.app.AlertDialog.Builder(this)
+                .setCancelable(false)
+                .setTitle(org.kysecurity.mail.R.string.security_tripwire_unreadable_title)
+                .setMessage(org.kysecurity.mail.R.string.security_tripwire_unreadable_message)
+                .setPositiveButton(org.kysecurity.mail.R.string.security_wipe_blocked_close) { _, _ ->
+                    finishAffinity()
+                }
+                .create()
+                .showSecurely()
+        }
     }
 
     /**

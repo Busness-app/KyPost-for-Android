@@ -130,7 +130,9 @@ class PushRepository(
         object NotGated : PairingCredentialState()
 
         /** The gate is on and this process holds the PIN-derived key to wrap with. */
-        data class Available(
+        /** Not a `data class`: identity `equals`/`hashCode` over [salt] behind a promise of
+         *  structural equality. Only ever matched with `is`. Enforced by `SourceRulesTest`. */
+        class Available(
             val keys: org.kysecurity.mail.security.CredentialKeys,
             val salt: ByteArray,
         ) : PairingCredentialState()

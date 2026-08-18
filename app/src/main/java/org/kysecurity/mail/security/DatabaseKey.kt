@@ -2,9 +2,11 @@ package org.kysecurity.mail.security
 
 import android.content.Context
 import android.util.Base64
+import org.kysecurity.mail.data.DATABASE_NAME
 import java.security.SecureRandom
 import java.util.Arrays
 
+private const val TAG = "DatabaseKey"
 private const val PREFS_FILE = "db_key_secure"
 private const val KEY_PASSPHRASE = "db_passphrase"
 private const val PASSPHRASE_BYTES = 32
@@ -44,10 +46,12 @@ internal object DatabaseKey {
      * 32 random bytes of entropy, base64 to 44 characters.
      */
     fun passphrase(context: Context): String {
-        val prefs = openEncryptedPrefs(context, PREFS_FILE) {
-            android.util.Log.e("DatabaseKey", "Database key store keyset is undecryptable", it)
+        val appContext = context.applicationContext
+        val prefs = openEncryptedPrefs(appContext, PREFS_FILE) {
+            android.util.Log.e(TAG, "Database key store keyset is undecryptable", it)
         }
         prefs.getString(KEY_PASSPHRASE, null)?.let { return it }
+        discardUnopenableDatabase(appContext)
 
         val fresh = ByteArray(PASSPHRASE_BYTES).also { SecureRandom().nextBytes(it) }
         val encoded = Base64.encodeToString(fresh, Base64.NO_WRAP)
@@ -56,6 +60,28 @@ internal object DatabaseKey {
         // before an async flush would leave a database encrypted under a key nothing remembers.
         prefs.edit().putString(KEY_PASSPHRASE, encoded).commit()
         return encoded
+    }
+
+    /**
+     * Deletes [DATABASE_NAME] when a passphrase has to be minted while a database file already
+     * exists.
+     *
+     * No stored passphrase plus an existing file means one thing: [openEncryptedPrefs] reset an
+     * undecryptable keyset out from under us, and the file on disk is encrypted under a key that no
+     * longer exists anywhere. The rows are already unrecoverable at that point — the only remaining
+     * question is whether the app can still start, and without this it cannot: Room hands the file
+     * to SQLCipher, which fails SQLITE_NOTADB on the first query, on a background thread, on every
+     * launch, forever. [org.kysecurity.mail.data.DataGraph] guards that symptom for a file that is
+     * still *plaintext* and had no guard for this, the case where the key is gone.
+     *
+     * Records the loss so [org.kysecurity.mail.security.LockedActivity] tells the user their cached
+     * mail is gone, rather than presenting an empty mailbox.
+     */
+    private fun discardUnopenableDatabase(appContext: Context) {
+        if (!appContext.getDatabasePath(DATABASE_NAME).exists()) return
+        android.util.Log.e(TAG, "The database key was reset; $DATABASE_NAME can never be opened again")
+        recordCredentialReset(appContext, DATABASE_NAME)
+        appContext.deleteDatabase(DATABASE_NAME)
     }
 
     /** Part of [SecurityWipe]: an encrypted database is only as gone as its key. Returns the step

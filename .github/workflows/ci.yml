@@ -117,6 +117,28 @@ jobs:
       - name: assemble release
         run: ./gradlew :app:assembleRelease
 
+      # app/proguard-rules.pro told a reader to "verify with a look at mapping.txt" and nothing
+      # ever did, so R8's actual output was checked by a comment. A keep rule that over-matches —
+      # the blanket `Companion` rule this repo already had to remove kept most of the app — does
+      # not fail a build; it silently ships an unobfuscated binary on a green run. This is that
+      # instruction as a check.
+      #
+      # A ratio, not an absolute count, because the absolute number is meaningless without the
+      # denominator and both grow as the app does. Measured at the commit that added this step:
+      # 877 app classes, 195 keeping their original name (22%) — every one of them a @Serializable
+      # DTO, its generated $$serializer/$Companion, or a manifest-declared component, all kept on
+      # purpose. 30% is a regression tripwire with real headroom, not a target. If a legitimate
+      # change pushes it over, raise it deliberately and say in the commit which rule did it.
+      - name: R8 actually obfuscated the app
+        run: |
+          mapping=app/build/outputs/mapping/release/mapping.txt
+          test -f "$mapping" || { echo "No $mapping — is minification still enabled?" >&2; exit 1; }
+          total=$(grep -cE '^org\.kysecurity\.mail\.[^ ]* ->' "$mapping")
+          kept=$(grep -cE '^org\.kysecurity\.mail\.[^ ]* -> org\.kysecurity\.mail\.' "$mapping")
+          echo "app classes: $total, keeping their original name: $kept"
+          test "$total" -gt 0
+          test $((kept * 100 / total)) -lt 30
+
       - name: dependency verification metadata is unchanged
         run: git diff --exit-code -- gradle/verification-metadata.xml
 

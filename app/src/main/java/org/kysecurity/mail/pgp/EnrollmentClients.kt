@@ -49,9 +49,7 @@ internal sealed class EnrollmentCallResult {
  * tests still pass. That trap already cost this plan one green-but-empty suite in `DeviceEnvelope`.
  */
 internal class EnrollmentClients(
-    // Call.Factory (not the concrete OkHttpClient) so tests can inject a fake without a real network
-    // call or a MockWebServer dependency. Mirrors MfaResponseClient.
-    //
+    // Injected Call.Factory; see PairingAuthHeaders.kt for why every credentialed client takes one.
     private val callFactory: Call.Factory,
     private val json: Json = Json { ignoreUnknownKeys = true },
 ) {
