@@ -97,6 +97,15 @@ class PushPairingActivity : LockedActivity() {
         PushNotificationDispatcher.ensureChannel(this)
         requestNotificationPermissionIfNeeded()
         consumeDeepLink(intent)
+        // Consumed: a recreation must not replay it. This is the SAME guard onNewIntent carries,
+        // and it was missing here — on the path an attacker actually reaches first. A browser or a
+        // co-installed app delivers `kypost://native-pair` through PushPairingLinkActivity ->
+        // startActivity, which lands in onCreate, never onNewIntent; getIntent() then keeps
+        // returning that Intent with its data intact, so every rotation, dark-mode toggle and
+        // restore-after-eviction re-raised the "replace your server with evil.tld" prompt with no
+        // link tap to explain it. onNewIntent's own comment describes exactly this bug and fixed
+        // only the half that could not be hit first.
+        intent.data = null
 
         initViews()
         applyTopInsetWithHeader(this, findViewById(R.id.pushPairingRoot))

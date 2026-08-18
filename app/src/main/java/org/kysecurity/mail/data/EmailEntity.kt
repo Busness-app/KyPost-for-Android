@@ -35,4 +35,7 @@ data class EmailEntity(
     val pgpVerified: Boolean = false,
     val pgpSignerFingerprint: String = "",
     val pgpDecryptError: String = "",
-)
+) {
+    /** Redacted: the preview and body are cached message content. Enforced by `SourceRulesTest`. */
+    override fun toString(): String = "EmailEntity(redacted)"
+}

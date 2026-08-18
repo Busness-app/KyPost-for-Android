@@ -5,7 +5,7 @@ import java.security.SecureRandom
 import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.PBEKeySpec
 
-private const val PBKDF2_ITERATIONS = 150_000
+// Shared with [CredentialCipher] — see [CREDENTIAL_KDF_ITERATIONS] for why it is one constant.
 private const val KEY_LENGTH_BITS = 256
 private const val SALT_LENGTH_BYTES = 16
 
@@ -90,7 +90,7 @@ object PinHasher {
     /** [PBEKeySpec] copies the array it is given and exposes [PBEKeySpec.clearPassword] to zero
      *  that copy; the PIN reaches here as a [CharArray] precisely so both ends can be wiped. */
     private fun pbkdf2(pin: CharArray, salt: ByteArray): ByteArray {
-        val spec = PBEKeySpec(pin, salt, PBKDF2_ITERATIONS, KEY_LENGTH_BITS)
+        val spec = PBEKeySpec(pin, salt, CREDENTIAL_KDF_ITERATIONS, KEY_LENGTH_BITS)
         try {
             return SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
         } finally {

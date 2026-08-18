@@ -89,6 +89,14 @@ The flag is written with `commit()` rather than `apply()`, and *after* the on-di
 database has been deleted, so a process death cannot leave protection off while the user
 believes it is on.
 
+**The flag is authenticated.** It is a value plus an HMAC under a non-exportable
+AndroidKeyStore key (`KeystoreHlpKey`), and the key's presence is the durable half of the
+marker — the same construction as the app-lock tripwire. Without it the setting was a bare
+boolean in a private preferences file: anything able to write the app sandbox could turn
+protection off, and the next launch would begin persisting decrypted mail to a disk the
+user believed was empty, silently. Tampering now fails towards **enabled**, and a Keystore
+that cannot be consulted blocks the app with a notice rather than guessing.
+
 **Known limitation — attachments saved while HLP is off.** With protection off (the
 default), a single tap writes an attachment to the shared Downloads collection, which is
 outside the app sandbox. Nothing the wipe deletes reaches shared storage on its own, so
@@ -139,9 +147,23 @@ is minted by the server at registration and returned exactly once.
 - It authorises push delivery, pull, contact sync, MFA response, and — where enabled —
   enrollment. It is **not** the account password and cannot be used to sign in to webmail.
 - Revoke a lost device from the server's Security page. Revocation is per-device.
+- The wipe's server-side deregistration is sent over the **pinned** connection, using a
+  pin captured before the wipe deletes it. If no pin was captured the call is refused
+  rather than downgraded, so a wipe never hands this credential to an unpinned
+  connection — at the one moment the device is most likely to be on a hostile network.
+  The cost is that the relay may keep the device listed until it is revoked manually.
 
 ### Mail content and PGP
 
+- **A signature's "confirmed" badge comes from this device, never from the relay.** The
+  signer key is resolved out of the local contact store, whose fingerprints are computed
+  here from the key's own bytes (`pgp/PgpFingerprint.kt`). A key the relay supplies can
+  still support the weaker *continuity* badge for a first-contact message, but it is capped
+  there: the relay's own `verified` flag is not read at all, and a signature that does not
+  match a key this device already holds for the sender reports **key changed** rather than
+  a badge (`pgp/SignerBinding.kt`). Previously the key, the address it was bound to and the
+  `verified` flag all arrived in the same response as the ciphertext, so a compromised relay
+  could render "signature confirmed" over a message it had signed itself.
 - **Encrypted mail is decrypted on the device**, but only once this device holds a sealed
   key envelope (see below). Until it does — and on any device where enrollment is
   unavailable — encrypted mail is not decrypted here at all: the app hands the message off

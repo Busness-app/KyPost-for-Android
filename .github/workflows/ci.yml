@@ -69,6 +69,26 @@ jobs:
       - name: dependency verification metadata is unchanged
         run: git diff --exit-code -- gradle/verification-metadata.xml
 
+      # .gitignore is not a control, it is a default. It stops the accident it was written for and
+      # nothing else: a `git add -f`, a rule someone reorders, a path that moves. These artifacts
+      # are a signing identity and a signed binary, so "we listed it in .gitignore" is not the
+      # standard — "the build refuses if it is tracked" is.
+      #
+      # Checks what git TRACKS, not what is on disk: keystore.properties legitimately exists in a
+      # developer's tree (see keystore.properties.example) and is written by the release-build job
+      # below. Committed is the failure.
+      - name: no signing material or built artifacts are tracked
+        run: |
+          tracked=$(git ls-files -- \
+            'keystore.properties' 'signing.properties' \
+            '*.jks' '*.keystore' '*.aab' '*.apk' \
+            'app/google-services.json')
+          if [ -n "$tracked" ]; then
+            echo "These must never be committed:" >&2
+            echo "$tracked" >&2
+            exit 1
+          fi
+
       - name: unit test report
         if: failure()
         run: |
@@ -169,18 +189,32 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 31 is minSdk and 34 is what this job used to run alone. targetSdk 36 is DELIBERATELY
-        # ABSENT and that is a known gap, not an oversight: on the API 36 image every test that
-        # calls Activity.recreate() fails with
+        # 31 is minSdk, 34 is what this job used to run alone, and 36 is targetSdk.
+        #
+        # 36 is ADVISORY — see `continue-on-error` below — because on the API 36 image every test
+        # that calls Activity.recreate() fails with
         #   Activity never becomes requested state "[RESUMED]" (last lifecycle transition = "STOPPED")
         # — FoldLockBehaviourTest, ContactEditDraftTest, ContactsListStateRestoreTest,
         # InboxStateRestoreTest. Reproduced on unmodified main (run 32171765211), so it is not a
-        # regression from any branch; it surfaced the moment CI stopped running one API level.
+        # regression from any branch.
         #
-        # It is NOT known to be benign, and it is tracked. If it is the app rather than the
-        # headless emulator, activity recreation is broken for everyone on Android 16 — the
-        # version this app targets. Reproduce on a physical device before adding 36 back.
-        api-level: [31, 34]
+        # It was previously ABSENT rather than advisory, with that paragraph as the whole record.
+        # That is the wrong shape for a gap this size: the app declares targetSdk 36, so if the
+        # cause is the app rather than the headless emulator then activity recreation is broken for
+        # every user on Android 16 — and a comment cannot tell you whether it still is, whether the
+        # failure set grew, or whether a change fixed it. Running it advisory does: every run now
+        # produces the current evidence, at the cost of a leg that is allowed to be red.
+        #
+        # STILL OPEN: reproduce on a physical Android 16 device. If it passes there, the emulator
+        # image is the cause and this leg can be promoted to required. If it fails there, this is a
+        # user-facing data-loss bug in the default configuration and it outranks everything else in
+        # this file. Do not promote it to required, and do not delete it, until one of those two is
+        # established.
+        api-level: [31, 34, 36]
+    # Only 36 is allowed to fail. A leg marked continue-on-error does not contribute failure to the
+    # job's result, while 31 and 34 still do — so `instrumented-gate`'s existing aggregate check
+    # keeps meaning "the required legs passed" with no change needed there.
+    continue-on-error: ${{ matrix.api-level == 36 }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -272,7 +306,10 @@ jobs:
     needs: instrumented
     if: always()
     steps:
-      - name: require every emulator leg
+      # "Every REQUIRED leg" — API 36 is advisory and cannot fail this, by `continue-on-error` on
+      # the matrix rather than by anything here. Read the 36 leg's log when it is red; it is the
+      # open question recorded in that matrix comment, not noise to be silenced.
+      - name: require every required emulator leg
         run: |
-          echo "ci-emulator matrix result: ${{ needs.instrumented.result }}"
+          echo "ci-emulator matrix result (API 36 excluded, advisory): ${{ needs.instrumented.result }}"
           test "${{ needs.instrumented.result }}" = "success"

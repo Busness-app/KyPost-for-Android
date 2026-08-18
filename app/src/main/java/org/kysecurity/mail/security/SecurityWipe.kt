@@ -161,6 +161,20 @@ object SecurityWipe {
             .onFailure { android.util.Log.w(TAG, "Could not read the pairing before wiping; deregister will be skipped", it) }
             .getOrNull()
 
+        // The TLS pin, captured HERE for the same reason the pairing is: `clearPairingState` below
+        // removes both the pin and its tripwire, and the deregister call happens after it.
+        //
+        // Without this the wipe's one outbound request — the one carrying
+        // `X-Kypost-Device-Secret` — went out UNPINNED. `PinnedOrFallbackCallFactory` reads
+        // `TlsPinState`, the cleared tripwire made that read `NeverPaired` rather than `Lost`, and
+        // `NeverPaired` is the one state that legitimately falls back to bare system-CA trust. So
+        // the guard built specifically to refuse a silent downgrade of a credential-bearing request
+        // was routed around, during the operation whose entire premise is that the device is in
+        // hostile hands and quite possibly on the attacker's network.
+        val pinForDeregister = runCatching { PushRuntime.graph(appContext).repository.currentTlsPin() }
+            .onFailure { android.util.Log.w(TAG, "Could not read the TLS pin before wiping", it) }
+            .getOrNull()
+
         // ORDER IS THE POINT: local plaintext first, network last. An attacker holding the device
         // can force-stop the app at any moment, so every step that blocks — above all the ~20s of
         // OkHttp timeouts in the deregister — has to come after the destruction, not before it.
@@ -323,9 +337,24 @@ object SecurityWipe {
         // Deliberately NOT folded into `failed`: [WipeResult.Incomplete] means "local data may
         // still be on disk", and an unreachable relay says nothing about local data — every byte of
         // which is gone by this line.
+        //
+        // The client is built HERE from [pinForDeregister], not taken from PushGraph. PushGraph's
+        // resolves the pin per request, and by this line there is no pin left to resolve.
         val deregistered = runCatching {
-            PushRuntime.graph(appContext).repository
-                .unpairDevice(PushRuntime.graph(appContext).deregisterClient, pairingForDeregister)
+            val client = pinnedDeregisterClient(pinForDeregister)
+            if (client == null) {
+                // Fail closed. A pairing with no captured pin is `TlsPinState.Lost`, which the
+                // ordinary request path already refuses; the wipe must refuse it too rather than
+                // being the one caller that downgrades. The cost is a relay that keeps a revoked
+                // device listed until the user removes it from the server's Security page, which is
+                // logged below — strictly better than handing the credential to whoever is holding
+                // the network.
+                org.kysecurity.mail.push.DeregisterResult.Error(
+                    "no TLS pin was captured before the wipe; refusing to send the device secret unpinned",
+                )
+            } else {
+                PushRuntime.graph(appContext).repository.unpairDevice(client, pairingForDeregister)
+            }
         }.getOrElse { org.kysecurity.mail.push.DeregisterResult.Error(it.message ?: "deregister threw") }
         if (deregistered is org.kysecurity.mail.push.DeregisterResult.Error) {
             android.util.Log.e(
@@ -353,6 +382,26 @@ object SecurityWipe {
             recordFailedSteps(appContext, failed, abandoned = givingUp)
             WipeResult.Incomplete(failed, willRetry = !givingUp)
         }
+    }
+
+    /**
+     * A deregister client pinned to [pin], or null when there is nothing to pin to.
+     *
+     * Deliberately NOT [org.kysecurity.mail.push.PinnedOrFallbackCallFactory]: that type's whole
+     * job is to answer "pin, fall back, or refuse" from *current* state, and by the time the wipe
+     * reaches the network it has already destroyed the state that type would read. This binds one
+     * client to one pin captured before the deletion started, so there is nothing left to get wrong.
+     */
+    internal fun pinnedDeregisterClient(
+        pin: org.kysecurity.mail.push.TlsPin?,
+    ): org.kysecurity.mail.push.DeregisterClient? {
+        if (pin == null) return null
+        return org.kysecurity.mail.push.DeregisterClient(
+            callFactory = org.kysecurity.mail.pairingHttpClient(
+                posture = org.kysecurity.mail.PinPosture.Pinned(host = pin.host, spkiSha256 = pin.spkiSha256),
+                callTimeoutMillis = org.kysecurity.mail.push.PushGraph.DEREGISTER_CALL_TIMEOUT_MS,
+            ),
+        )
     }
 
     /** Whether a previously started wipe never reached the end — see [wipeAndResetApp]. */

@@ -23,7 +23,10 @@ data class PairingData(
     val deviceId: String?,
     val deviceSecret: String?,
     val pairedAtEpochMs: Long,
-)
+) {
+    /** Redacted: carries the device secret and pairing token. Enforced by `SourceRulesTest`. */
+    override fun toString(): String = "PairingData(redacted)"
+}
 
 /**
  * True when [candidate] and [reference] are the same https origin (scheme + host + effective port).

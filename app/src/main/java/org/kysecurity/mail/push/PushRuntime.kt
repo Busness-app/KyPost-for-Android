@@ -72,7 +72,10 @@ class PushGraph(context: Context) {
         ),
     )
 
-    private companion object {
+    internal companion object {
+        /** Internal, not private: [org.kysecurity.mail.security.SecurityWipe] builds its own
+         *  deregister client from a pin it captured before deleting anything, and it must not
+         *  invent a second ceiling for the same call. */
         const val DEREGISTER_CALL_TIMEOUT_MS = 3_000L
     }
 }

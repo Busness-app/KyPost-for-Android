@@ -62,7 +62,10 @@ data class RelayEmailDto(
     val pgpVerified: Boolean = false,
     val pgpSignerFingerprint: String = "",
     val pgpDecryptError: String = "",
-)
+) {
+    /** Redacted: the body is message content. Enforced by `SourceRulesTest`. */
+    override fun toString(): String = "RelayEmailDto(redacted)"
+}
 
 @Serializable
 data class RelayInboxResponseDto(
@@ -122,7 +125,10 @@ data class RelayMailRequestDto(
     val sign: Boolean = false,
     val encrypt: Boolean = false,
     val allowPickupFallback: Boolean = false,
-)
+) {
+    /** Redacted: the body is the user's outgoing message. Enforced by `SourceRulesTest`. */
+    override fun toString(): String = "RelayMailRequestDto(redacted)"
+}
 
 /** One pre-encrypted delivery for POST /api/mail/send-pgp. */
 @Serializable

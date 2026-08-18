@@ -99,7 +99,16 @@ abstract class LockedActivity : AppCompatActivity() {
         // unanswered. Neither available answer is safe — see [TripwireState] — so the app answers
         // neither and shows nothing. Not terminal, unlike the abandoned wipe below: a keystore2
         // restart resolves on the next boot, so the user is told to restart rather than reinstall.
-        if (runCatching { AppLockStore(this).tripwireState() }.getOrNull() == TripwireState.UNREADABLE) {
+        val lockTripwireUnreadable =
+            runCatching { AppLockStore(this).tripwireState() }.getOrNull() == TripwireState.UNREADABLE
+        // The protection flag's marker is anchored the same way and is unanswerable for the same
+        // reason. It is checked here too because `HostileLocationSettings.isEnabled()` resolves
+        // UNREADABLE to `true` — the only safe answer at a call site that has to decide where bytes
+        // go — and that would otherwise present a silently empty mailbox as if it were the user's,
+        // with no statement that the app could not read its own posture.
+        val protectionUnreadable = runCatching { HostileLocationSettings(this).state() }
+            .getOrNull() == HostileLocationState.UNREADABLE
+        if (lockTripwireUnreadable || protectionUnreadable) {
             redirectedToUnlock = true
             blockOnUnreadableTripwire()
             return false

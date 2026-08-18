@@ -13,7 +13,24 @@ import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
-private const val PBKDF2_ITERATIONS = 150_000
+/**
+ * The PBKDF2 work factor for **both** PIN-derived values in this package: the wrapping key here and
+ * the stored verifier in [PinHasher].
+ *
+ * One constant, not two. It was declared separately in each file with the same value and no link
+ * between them, so raising one would silently have left the other — and nothing would have failed,
+ * because the two derivations are never compared to each other.
+ *
+ * 150k is below OWASP's current standalone guidance, and that is a deliberate reading of what is
+ * actually defending the keyspace. Neither derivation is offline-attackable on its own: both are
+ * peppered afterwards with a non-exportable AndroidKeyStore HMAC ([CredentialPepper]), so every
+ * guess costs a Keystore round trip on the device the secret was created on. Against
+ * [PinPolicy.MIN_LENGTH]'s 10^8 that is the term that matters; the iteration count buys the margin
+ * for a PIN shorter than the floor, which only pre-existing installs have. Raise it here and both
+ * derivations move together — which is the point.
+ */
+internal const val CREDENTIAL_KDF_ITERATIONS = 150_000
+
 private const val KEY_LENGTH_BITS = 256
 private const val SALT_LENGTH_BYTES = 16
 private const val GCM_IV_LENGTH_BYTES = 12
@@ -34,8 +51,18 @@ class WrappedSecret(val iv: ByteArray, val ciphertext: ByteArray)
 
 /**
  * The two keys one PIN can produce, so a secret wrapped under the old scheme is still readable.
+ *
+ * **Not a `data class`**, for the same reason [WrappedSecret] and
+ * [org.kysecurity.mail.security.PinHash] are not — and this one was one for a long time while those
+ * two each carried a paragraph forbidding the shape. `SourceRulesTest` only looked for `ByteArray`,
+ * so a pair of `SecretKeySpec` walked straight past it. Nothing compares these; the only `==` in
+ * the tree is a null check on `cachedCredentialKeys()`.
  */
-data class CredentialKeys(val current: SecretKeySpec, val legacy: SecretKeySpec)
+class CredentialKeys(val current: SecretKeySpec, val legacy: SecretKeySpec) {
+    /** Redacted: [SecretKeySpec] has no `toString()` of its own today, so the generated one printed
+     *  whatever a future JDK's does. Not a risk worth inheriting. */
+    override fun toString(): String = "CredentialKeys(redacted)"
+}
 
 /**
  * Mixes a device-bound secret into the PBKDF2 output. Injected rather than hardcoded so the
@@ -84,6 +111,34 @@ object KeystorePinPepper : CredentialPepper {
  */
 object KeystoreTripwireKey : CredentialPepper {
     const val ALIAS = "kypost_lock_tripwire"
+    override fun mix(derived: ByteArray): ByteArray = keystoreHmac(ALIAS, derived)
+    fun ensureExists() { createPepperKeyIfAbsent(ALIAS) }
+
+    /** @throws PepperUnavailableException when the Keystore itself could not be consulted. */
+    fun exists(): Boolean = keystoreKeyExists(ALIAS)
+    fun destroy(): Boolean = deleteKeystoreKey(ALIAS)
+}
+
+/**
+ * Authenticates [HostileLocationSettings]'s enabled flag, and — by merely existing — *is* the
+ * durable half of it.
+ *
+ * A fourth alias, and the argument for it is [KeystoreTripwireKey]'s own argument applied to the
+ * setting it never covered. That KDoc establishes that a bare `MODE_PRIVATE` preferences file is
+ * "writable by anything that can write the app's sandbox", so it is "defeatable in one direction
+ * and weaponisable in the other" — and then Hostile Location Protection, the mode this app tells
+ * at-risk users to turn on when they expect the device to be inspected or seized, was exactly such
+ * a file and nothing else.
+ *
+ * Both directions were live. Flip the flag to `false` and the next process start builds a
+ * **disk-backed** database ([org.kysecurity.mail.data.DataGraph]), starts persisting decrypted mail
+ * and contacts, and lets an attachment tap write to shared Downloads — silently, for a user who
+ * chose the mode precisely so that no file would exist. Flip it to `true` and the cached mail
+ * disappears instead. A Keystore alias cannot be forged or deleted by writing files, which is what
+ * makes the marker below mean something.
+ */
+object KeystoreHlpKey : CredentialPepper {
+    const val ALIAS = "kypost_hostile_location"
     override fun mix(derived: ByteArray): ByteArray = keystoreHmac(ALIAS, derived)
     fun ensureExists() { createPepperKeyIfAbsent(ALIAS) }
 
@@ -214,7 +269,7 @@ object CredentialCipher {
     /** See [PinHasher]'s copy: [PBEKeySpec] duplicates the array, and that duplicate is zeroed
      *  here rather than left for the collector. */
     private fun pbkdf2(pin: CharArray, salt: ByteArray): ByteArray {
-        val spec = PBEKeySpec(pin, salt, PBKDF2_ITERATIONS, KEY_LENGTH_BITS)
+        val spec = PBEKeySpec(pin, salt, CREDENTIAL_KDF_ITERATIONS, KEY_LENGTH_BITS)
         try {
             return SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
         } finally {

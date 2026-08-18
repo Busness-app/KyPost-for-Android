@@ -26,16 +26,55 @@ internal const val MAX_DECRYPTED_PLAINTEXT_BYTES = org.kysecurity.mail.MemoryBud
  *  messages use one; anything past a handful is a decompression bomb, not a mail. */
 internal const val MAX_COMPRESSION_DEPTH = 4
 
-/** What the cryptography alone can say about a signature: nothing about *who* the sender is. */
-internal data class RawSignature(
-    val present: Boolean,
-    val valid: Boolean,
-    /** The signing key's id, so [SignerBinding] can match it against an address-bound key. */
-    val signerKeyId: Long,
-)
+/**
+ * What the cryptography alone can say about a signature: nothing about *who* the sender is.
+ *
+ * **Three states, not two booleans.** This was `(present, valid, signerKeyId)`, which could not
+ * express "signed, by a key we were not given" — that case set `valid = false`, making it
+ * indistinguishable from a signature that failed to verify. The two mean opposite things to a user:
+ * one is "we could not check this", the other is "we checked, and it is wrong", and INVALID is the
+ * strongest accusation this app renders.
+ *
+ * [signatureStateFor] recovered the distinction by re-matching the key id itself, which held only
+ * as long as its filter and [PgpDecryptor.verifyOnePass]'s stayed in agreement — and they did not:
+ * `signerKeyIdsOf` drops expired and revoked keys, `verifyOnePass` never did, so a signature by an
+ * expired subkey verified there as `valid = true` and was then filtered out here. Right answer,
+ * wrong reason, one refactor away from being wrong. Naming the state removes the coupling.
+ */
+internal sealed class RawSignature {
+    /** No signature packet at all. */
+    object Absent : RawSignature()
+
+    /** Signed, but no key with this id was among the ones offered — so nothing was checked. Never
+     *  an accusation; see [PgpSignatureState.SIGNER_UNKNOWN]. */
+    data class NoSuchKey(val keyId: Long) : RawSignature()
+
+    /** Signed, a key with this id was found, and [verified] is the result of checking against it. */
+    data class Checked(val keyId: Long, val verified: Boolean) : RawSignature()
+
+    val present: Boolean get() = this !is Absent
+
+    /**
+     * True only when a key was actually found AND the signature verified against it.
+     *
+     * Deliberately false for [NoSuchKey]: a caller asking "is this good" must get "no" for a
+     * signature nothing checked. A caller that needs to tell the two apart matches on the type.
+     */
+    val valid: Boolean get() = (this as? Checked)?.verified == true
+
+    /** 0 when there is no signature to attribute. */
+    val signerKeyId: Long get() = when (this) {
+        is Absent -> 0L
+        is NoSuchKey -> keyId
+        is Checked -> keyId
+    }
+}
 
 internal sealed class DecryptResult {
     data class Ok(val plaintext: ByteArray, val signature: RawSignature) : DecryptResult() {
+        /** Redacted: the plaintext is a decrypted message. Enforced by `SourceRulesTest`. */
+        override fun toString(): String = "Ok(redacted)"
+
         // Kotlin generates identity equals/hashCode for a ByteArray property, and a data class
         // silently promising structural equality it does not provide is a trap. Nothing compares
         // these, so both are explicitly unsupported rather than subtly wrong.
@@ -140,7 +179,7 @@ internal object PgpDecryptor {
         body: ByteArray,
         armoredSignature: String,
     ): RawSignature {
-        val absent = RawSignature(present = false, valid = false, signerKeyId = 0L)
+        val absent = RawSignature.Absent
 
         val signature = runCatching {
             val factory = org.bouncycastle.openpgp.jcajce.JcaPGPObjectFactory(
@@ -158,7 +197,7 @@ internal object PgpDecryptor {
                 PGPUtil.getDecoderStream(armoredPublicKey.byteInputStream(Charsets.UTF_8)),
                 BcKeyFingerprintCalculator(),
             ).getPublicKey(signature.keyID)
-        }.getOrNull() ?: return RawSignature(present = true, valid = false, signerKeyId = signature.keyID)
+        }.getOrNull() ?: return RawSignature.NoSuchKey(signature.keyID)
 
         val valid = runCatching {
             signature.init(BcPGPContentVerifierBuilderProvider(), key)
@@ -166,7 +205,7 @@ internal object PgpDecryptor {
             signature.verify()
         }.getOrDefault(false)
 
-        return RawSignature(present = true, valid = valid, signerKeyId = signature.keyID)
+        return RawSignature.Checked(signature.keyID, valid)
     }
 
     /**
@@ -203,20 +242,33 @@ internal object PgpDecryptor {
             }
             obj = factory.nextObject()
         }
-        return ByteArray(0) to RawSignature(present = false, valid = false, signerKeyId = 0L)
+        return ByteArray(0) to RawSignature.Absent
     }
 
     /**
      * Bounds the stream after OpenPGP decompression, and returns null once [limit] is exceeded.
      *
      * Accumulates fixed chunks and joins once, rather than writing into a [ByteArrayOutputStream]
-     * and calling `toByteArray()`. BAOS grows by doubling, so a message at the 32 MB ceiling held
-     * a 32 MB buffer plus the 16 MB one it had just outgrown, then allocated a third 32 MB array
-     * for the copy — roughly 80 MB peak and ~64 MB of memcpy, for an input a hostile sender fully
-     * controls. Chunking peaks at input + result with no intermediate copies.
+     * and calling `toByteArray()`. BAOS grows by doubling, so a message at the ceiling held a
+     * full-size buffer plus the half-size one it had just outgrown, then allocated a third for the
+     * copy — roughly 2.5x peak and ~2x the memcpy, for an input a hostile sender fully controls.
+     *
+     * **The peak here is 2x [limit], not 1x, and that is irreducible.** Materialising an
+     * exact-length [ByteArray] from a stream whose length is unknown until it ends requires the
+     * accumulated bytes and the joined result to exist at the same instant, whatever the
+     * accumulation strategy. [org.kysecurity.mail.MemoryBudget.PGP_PLAINTEXT_PEAK_BYTES] states
+     * that multiplier rather than leaving the budget to imply 1x; the two must move together.
+     *
+     * The list is drained as it is joined, so the peak is paid at the first copy and falls away
+     * across the rest of it instead of being held until the loop ends.
+     *
+     * A fresh buffer per `read()` is deliberate and is NOT a hoisting opportunity: a full buffer is
+     * handed to [chunks] by reference, so reusing one would mean copying every chunk instead — the
+     * same allocation count plus a full extra memcpy of the message. Only the final short read is
+     * copied, and only to trim it.
      */
     internal fun readAllWithLimit(input: InputStream, limit: Int): ByteArray? {
-        val chunks = ArrayList<ByteArray>()
+        val chunks = ArrayList<ByteArray?>()
         var total = 0
         while (true) {
             val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
@@ -228,9 +280,13 @@ internal object PgpDecryptor {
         }
         val result = ByteArray(total)
         var offset = 0
-        chunks.forEach { chunk ->
+        for (index in chunks.indices) {
+            val chunk = chunks[index] ?: continue
             chunk.copyInto(result, offset)
             offset += chunk.size
+            // Released here rather than when the loop ends: the accumulated bytes and `result`
+            // are both live only until the first chunk is copied.
+            chunks[index] = null
         }
         return result
     }
@@ -244,11 +300,11 @@ internal object PgpDecryptor {
         factory: org.bouncycastle.openpgp.jcajce.JcaPGPObjectFactory,
         signerPublicKeys: List<String>,
     ): RawSignature {
-        if (onePass == null) return RawSignature(present = false, valid = false, signerKeyId = 0L)
+        if (onePass == null) return RawSignature.Absent
         val tail = generateSequence { factory.nextObject() }
             .filterIsInstance<PGPSignatureList>()
             .firstOrNull()
-            ?: return RawSignature(present = true, valid = false, signerKeyId = onePass.keyID)
+            ?: return RawSignature.NoSuchKey(onePass.keyID)
 
         val key = signerPublicKeys.asSequence()
             .mapNotNull { armored ->
@@ -260,7 +316,7 @@ internal object PgpDecryptor {
                 }.getOrNull()
             }
             .firstOrNull()
-            ?: return RawSignature(present = true, valid = false, signerKeyId = onePass.keyID)
+            ?: return RawSignature.NoSuchKey(onePass.keyID)
 
         val valid = runCatching {
             onePass.init(BcPGPContentVerifierBuilderProvider(), key)
@@ -268,6 +324,6 @@ internal object PgpDecryptor {
             onePass.verify(tail[0])
         }.getOrDefault(false)
 
-        return RawSignature(present = true, valid = valid, signerKeyId = onePass.keyID)
+        return RawSignature.Checked(onePass.keyID, valid)
     }
 }
