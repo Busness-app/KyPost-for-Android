@@ -25,6 +25,12 @@
         <exclude domain="sharedpref" path="." />
         <exclude domain="file" path="." />
         <exclude domain="external" path="." />
+        <!-- Device-protected storage. Nothing writes there today; an absent domain is permissive,
+             not restrictive, so the first thing that does would be silently opted in. -->
+        <exclude domain="device_root" path="." />
+        <exclude domain="device_database" path="." />
+        <exclude domain="device_sharedpref" path="." />
+        <exclude domain="device_file" path="." />
     </cloud-backup>
     <device-transfer>
         <exclude domain="root" path="." />
@@ -32,5 +38,11 @@
         <exclude domain="sharedpref" path="." />
         <exclude domain="file" path="." />
         <exclude domain="external" path="." />
+        <!-- Device-protected storage. Nothing writes there today; an absent domain is permissive,
+             not restrictive, so the first thing that does would be silently opted in. -->
+        <exclude domain="device_root" path="." />
+        <exclude domain="device_database" path="." />
+        <exclude domain="device_sharedpref" path="." />
+        <exclude domain="device_file" path="." />
     </device-transfer>
 </data-extraction-rules>

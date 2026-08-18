@@ -126,12 +126,22 @@ jobs:
           find app/build/reports -name 'lint-results*' -print -exec cat {} + || true
 
   instrumented:
-    name: ci-instrumented
+    name: ci-instrumented (api ${{ matrix.api-level }})
     runs-on: ubuntu-latest
     # Slower and flakier than unit-only, and still worth it: the wipe, teardown, Keystore
     # and enrollment-state guarantees are asserted ONLY here. A CI that ran unit tests alone
     # would give this repository false confidence about precisely its most security-relevant
     # behaviour.
+    #
+    # A matrix, not a single version. This ran on API 34 alone while the app declares
+    # minSdk 31 and targetSdk 36 — so the two API levels whose behaviour the app actually
+    # commits to were the two never exercised, on a codebase whose security properties are
+    # heavily API-version dependent (Keystore, backup eligibility, setHideOverlayWindows,
+    # background-start restrictions).
+    strategy:
+      fail-fast: false
+      matrix:
+        api-level: [31, 34, 36]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -158,7 +168,7 @@ jobs:
       # below cannot run at all.
       - uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
         with:
-          api-level: 34
+          api-level: ${{ matrix.api-level }}
           target: google_apis
           arch: x86_64
           force-avd-creation: false

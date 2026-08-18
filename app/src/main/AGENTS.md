@@ -183,22 +183,44 @@ Owns production Android app code and resources.
   `android.disallowKotlinSourceSets=false` in `gradle.properties` to coexist with AGP's built-in
   Kotlin compilation (this project applies no separate `org.jetbrains.kotlin.android` plugin) — a
   known KSP/AGP-9 interaction (google/ksp#2729), not a general opt-out of that migration.
-- **`kypost_mail.db` is deliberately NOT encrypted at rest.** It is plain SQLite holding every
-  cached message body, every contact and every stored PGP key. The app-lock apparatus (PIN, lockout
-  ladder, wipe threshold, `AppLockStore`'s tripwire) defends the **UI**; the Android app sandbox is
-  what defends the **data**. An attacker with offline filesystem access — root, a hostile backup, a
-  forensic image — reads the database directly and none of the lock machinery is in the path. Say
-  this plainly rather than implying otherwise: `AppLockStore.tripwire`'s KDoc names "an attacker
-  with filesystem access" as in-scope, and it means one who tampers and then *launches the app*,
-  which is a much narrower adversary.
-  Hostile Location Protection (`security/HostileLocationSettings` → `data/DataGraph` builds Room
-  in-memory) is the answer for users whose threat model includes that adversary, at the cost of all
-  offline access. SQLCipher was NOT adopted: it is a large native dependency squarely against "do
-  not add new dependencies unless they reduce overall code size/complexity" below, and it would need
-  a passphrase design (the app-lock PIN is a 10^6 keyspace, so the Keystore pepper would be doing
-  all the work), a migration for existing plaintext databases, and rework of the wipe. Revisit that
-  decision deliberately rather than drifting into it — and if it changes, this bullet and
-  `AppLockStore.tripwire`'s KDoc both move together.
+- **Comments say what the code cannot; commits say what it used to be.** A third of this
+  module's non-blank lines are comments, and most of them follow the shape "X used to be Y, which
+  was wrong because Z". That is a commit message — `git log` already holds it, permanently, attached
+  to the diff that made the change — and in source it goes stale silently. It did: this file spent a
+  release telling every reader `kypost_mail.db` was plaintext, one commit after it was encrypted.
+  Keep in-source comments for what the code genuinely cannot state: a wire-format contract
+  (`Sec1Point.kt`), a packet-ordering requirement (`PgpEncryptor`), a non-obvious ordering
+  constraint. **Where a comment asserts a security property, write the test instead** — every
+  "this cannot happen" in the at-rest path that was checked in this review turned out to be able to
+  happen.
+- **`kypost_mail.db` IS encrypted at rest, with SQLCipher.** Room is built through
+  `SupportOpenHelperFactory` keyed from `security/DatabaseKey.kt`: 32 random bytes, base64, held in
+  a Keystore-backed `EncryptedSharedPreferences` file (`db_key_secure`) and never derived from the
+  app-lock PIN — the database has to open in processes where no PIN has been entered (an FCM
+  delivery, a WorkManager sync). The threat this closes is **offline** reading of the file: root, an
+  unlocked bootloader, a forensic image. It is explicitly not a defence against a live, rooted,
+  running device.
+  - Existing plaintext databases are converted in place by `data/DatabaseMigration.kt`
+    (`sqlcipher_export` into a temp file, verified under the new key, then one atomic `rename(2)`).
+    The conversion must never delete the original before the rename — a process death in that
+    window destroyed the mailbox, and `pending_contact_changes` exists nowhere else.
+    `recoverInterrupted` salvages temp files left by builds that did.
+  - `DataGraph` **checks** `encryptIfNeeded`'s return and throws `DatabaseUnavailableException`
+    rather than handing a plaintext file to SQLCipher, which surfaced as `SQLITE_NOTADB` on a
+    background thread on every launch with the cause nowhere near the symptom.
+  - `SecurityWipe` has a `databaseKey` step: an encrypted database is only as gone as its key.
+  - The app-lock apparatus (PIN, lockout ladder, wipe threshold, `AppLockStore`'s tripwire) still
+    defends the **UI** and is a separate control from this one. Hostile Location Protection
+    (`security/HostileLocationSettings` → `data/DataGraph` builds Room in-memory) remains the
+    stronger mode for users whose threat model includes a live rooted device, at the cost of all
+    offline access — under it there is no file at all.
+  - SQLCipher was previously rejected here as a large native dependency. That call was reversed on
+    2026-08-18 because the alternative was "your mail is in the clear on disk unless you find and
+    enable an off-by-default setting", which is the wrong default for a confidential mail client.
+    The AAR ships `libsqlcipher.so` and loads it nowhere, hence `sqlCipherLoaded` in
+    `DatabaseMigration.kt`. **If this decision is ever revisited again, update this bullet and
+    `AppLockStore.tripwire`'s KDoc in the same commit** — the previous change did not, and this
+    file spent a release telling every reader the database was plaintext.
 - STYLE_GUIDE.md §7 gaps are closed: `EmailDetailActivity`'s WebView renders the body in the real
   IBM Plex Mono font via a base64-inlined `@font-face` (`AppTheme.ibmPlexMonoFontFaceCss`, backed
   by `assets/fonts/IBMPlexMono-Regular.ttf`) rather than a `file://` base URL, to avoid granting
