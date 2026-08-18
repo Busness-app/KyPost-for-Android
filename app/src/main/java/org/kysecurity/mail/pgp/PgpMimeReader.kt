@@ -20,7 +20,10 @@ internal data class DecryptedBody(
     /** The real subject from the encrypted part's protected headers, when the sender used them.
      *  The outer envelope subject is a placeholder for KyPost-to-KyPost mail. */
     val protectedSubject: String?,
-)
+) {
+    /** Redacted: every field is a decrypted message. Enforced by `SourceRulesTest`. */
+    override fun toString(): String = "DecryptedBody(redacted)"
+}
 
 /**
  * Parses decrypted PGP/MIME bytes with `angus.mail`, with **no Android imports**.

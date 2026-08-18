@@ -34,7 +34,10 @@ data class NativeRegistrationRequest(
     // without them, messages arrive as undecryptable ciphertext.
     @SerialName("p256dh") val p256dh: String? = null,
     @SerialName("auth") val auth: String? = null,
-)
+) {
+    /** Redacted: the pairing token authorises registration. Enforced by `SourceRulesTest`. */
+    override fun toString(): String = "NativeRegistrationRequest(redacted)"
+}
 
 @Serializable
 data class NativeRegistrationResponse(
@@ -53,7 +56,10 @@ data class NativeRegistrationResponse(
     // so the client displays an authoritative value rather than just assuming its request won.
     // Absent on older servers.
     @SerialName("transport") val transport: String? = null,
-)
+) {
+    /** Redacted: carries a freshly minted device secret. Enforced by `SourceRulesTest`. */
+    override fun toString(): String = "NativeRegistrationResponse(redacted)"
+}
 
 /**
  * Resolves the pull endpoint: the server-provided value wins only if it shares the paired
@@ -113,7 +119,10 @@ sealed class NativeRegistrationResult {
         // is what stops the pin being enforced against a different host later on — see
         // PinnedCallFactoryProvider. The caller decides whether to persist it.
         val tlsPin: TlsPin? = null,
-    ) : NativeRegistrationResult()
+    ) : NativeRegistrationResult() {
+        /** Redacted: carries a freshly minted device secret. Enforced by `SourceRulesTest`. */
+        override fun toString(): String = "Success(redacted)"
+    }
     data class Error(val message: String, val expiredPairingToken: Boolean = false) : NativeRegistrationResult()
 }
 

@@ -81,7 +81,10 @@ sealed interface SecretWrite {
     }
 
     /** Store it as-is; the credential gate is off. */
-    data class Plaintext(val secret: String) : SecretWrite
+    data class Plaintext(val secret: String) : SecretWrite {
+        /** Redacted: the secret is an unwrapped device credential. Enforced by `SourceRulesTest`. */
+        override fun toString(): String = "Plaintext(redacted)"
+    }
 }
 
 /**

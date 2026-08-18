@@ -14,7 +14,12 @@ class EncryptedMessageReaderTest {
     private fun reader(
         opener: FakeVaultOpener = FakeVaultOpener(),
         payloads: FakePayloadSource = FakePayloadSource(successPayload()),
-    ) = EncryptedMessageReader(opener, payloads) to payloads
+        localKeys: Map<String, List<LocalSignerKey>> = emptyMap(),
+    ) = EncryptedMessageReader(
+        opener,
+        payloads,
+        localSignerKeys = { address -> localKeys[address].orEmpty() },
+    ) to payloads
 
     private fun read(
         r: EncryptedMessageReader,
@@ -306,5 +311,95 @@ class EncryptedMessageReaderTest {
         assertEquals(ReadOutcome.NeedsUnlock, outcome)
         assertEquals("the unseal itself must still have run exactly once", 1, opener.opened)
         assertEquals("must not spend a fetch when there is no key to decrypt with", 0, payloads.fetched)
+    }
+
+    // --- The relay is not the source of truth about who signed a message. ---
+
+    @Test
+    fun aRelaySuppliedVerifiedFlagCannotConfirmASigner() {
+        // End to end through the reader, not just the verdict function: the relay hands over a key
+        // for the resolved sender AND marks it verified, which is the whole of what it takes to
+        // have rendered "✅ signature confirmed" before this device held an opinion of its own.
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
+        val relayKey = SignerKey(
+            addresses = listOf("bob@example.com"),
+            publicKey = TestPgpPrivateKey.ARMORED_PUBLIC,
+            verified = true,
+            source = "qr",
+            conflict = false,
+        )
+        val (r, _) = reader(payloads = FakePayloadSource(successPayload(signerKeys = listOf(relayKey))))
+
+        val outcome = read(r, unlockIfNeeded = false)
+
+        assertTrue("expected Decrypted, got $outcome", outcome is ReadOutcome.Decrypted)
+        assertEquals(
+            "a server-supplied verified flag must be capped at continuity, never identity",
+            PgpSignatureState.VERIFIED_SEEN_BEFORE,
+            (outcome as ReadOutcome.Decrypted).signature,
+        )
+    }
+
+    @Test
+    fun aLocallyHeldKeyIsResolvedForTheServersResolvedSender() {
+        // The lookup key is `resolvedSender`. A relay that names a different sender gets a lookup
+        // that misses, which is the fail-safe direction.
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
+        var askedFor: String? = null
+        val payloads = FakePayloadSource(successPayload(resolvedSender = "bob@example.com"))
+        val r = EncryptedMessageReader(
+            FakeVaultOpener(),
+            payloads,
+            localSignerKeys = { address -> askedFor = address; emptyList() },
+        )
+
+        read(r, unlockIfNeeded = false)
+
+        assertEquals("bob@example.com", askedFor)
+    }
+
+    @Test
+    fun aLocalKeyThatDidNotSignOutranksAnyRelayClaim() {
+        // This device holds a key for bob@example.com. The message decrypts, but it was signed by
+        // some other key — and the relay is vouching for that other key as verified. The local
+        // opinion wins and the user is told the key changed, rather than being shown a badge.
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
+        val relayKey = SignerKey(
+            addresses = listOf("bob@example.com"),
+            publicKey = TestPgpPrivateKey.ARMORED_PUBLIC,
+            verified = true,
+            source = "qr",
+            conflict = false,
+        )
+        val (r, _) = reader(
+            payloads = FakePayloadSource(successPayload(signerKeys = listOf(relayKey))),
+            // A real, parseable key that is NOT the one the message was signed with.
+            localKeys = mapOf("bob@example.com" to listOf(LocalSignerKey(TestPgpKey.ARMORED, confirmed = true))),
+        )
+
+        val outcome = read(r, unlockIfNeeded = false)
+
+        assertTrue("expected Decrypted, got $outcome", outcome is ReadOutcome.Decrypted)
+        assertEquals(
+            PgpSignatureState.KEY_CHANGED,
+            (outcome as ReadOutcome.Decrypted).signature,
+        )
+    }
+
+    @Test
+    fun aLookupFailureDegradesToTheRelayRatherThanFailingTheRead() {
+        // Room can throw — a wipe closed the database out from under this call, protection is on
+        // and the in-memory graph is being rebuilt. Reading a message must not become impossible
+        // because the trust lookup did; it degrades to the capped server-key path.
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
+        val r = EncryptedMessageReader(
+            FakeVaultOpener(),
+            FakePayloadSource(successPayload()),
+            localSignerKeys = { error("database is closed") },
+        )
+
+        val outcome = read(r, unlockIfNeeded = false)
+
+        assertTrue("expected Decrypted, got $outcome", outcome is ReadOutcome.Decrypted)
     }
 }

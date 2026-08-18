@@ -48,7 +48,10 @@ data class PullNotification(
     @SerialName("body") val body: String = "",
     @SerialName("data") val data: Map<String, String>? = null,
     @SerialName("createdAt") val createdAt: String? = null,
-)
+) {
+    /** Redacted: the body is message content. Enforced by `SourceRulesTest`. */
+    override fun toString(): String = "PullNotification(redacted)"
+}
 
 /** Body of a 200 response from the pull endpoint. */
 @Serializable

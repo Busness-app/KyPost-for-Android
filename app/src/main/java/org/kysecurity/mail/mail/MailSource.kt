@@ -114,7 +114,10 @@ data class MailDraft(
      *  fallback stores this message's plaintext on the server, unencrypted, for up to seven days.
      *  Per-message by design — never persisted as a preference. */
     val allowPickupFallback: Boolean = false,
-)
+) {
+    /** Redacted: the body is the user's outgoing message. Enforced by `SourceRulesTest`. */
+    override fun toString(): String = "MailDraft(redacted)"
+}
 
 /** An attachment the user picked to send: raw base64 payload plus display metadata. */
 data class OutgoingAttachment(
@@ -156,7 +159,10 @@ data class MailMessageBody(
     val bodyMode: String = "",
     val toAddresses: List<String>,
     val ccAddresses: List<String>,
-)
+) {
+    /** Redacted: the html is message content. Enforced by `SourceRulesTest`. */
+    override fun toString(): String = "MailMessageBody(redacted)"
+}
 
 /** One received attachment's metadata (no content), from GET /api/mail/attachments. */
 data class AttachmentInfo(val index: Int, val name: String, val mimeType: String, val size: Int)

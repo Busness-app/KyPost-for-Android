@@ -20,24 +20,63 @@ import kotlin.test.assertNotNull
 class SourceRulesTest {
 
     /**
-     * `data class` + a [ByteArray] property means Kotlin generates identity `equals`/`hashCode`
+     * `data class` + a key-material property means Kotlin generates identity `equals`/`hashCode`
      * while the type advertises structural equality — a silent trap on exactly the types that hold
      * key material, ciphertext and plaintext.
      *
      * A class that writes both overrides itself has made the decision deliberately and is allowed;
      * see `PgpDecryptor.DecryptResult.Ok`.
+     *
+     * The type list is not just `ByteArray`. It was, and that was the wrong half of the problem:
+     * `ByteArray`'s generated `toString()` prints `[B@1f2e3d`, which leaks nothing, while
+     * `SecretKeySpec` and `CharArray` sit in the same trap and `CredentialKeys` was carrying two of
+     * the former the whole time this rule was green.
      */
     @Test
-    fun noDataClassCarriesAByteArrayWithoutOverridingEquality() {
+    fun noDataClassCarriesKeyMaterialWithoutOverridingEquality() {
         val offenders = mainSources().flatMap { file ->
             dataClassesIn(file.readText())
-                .filter { PARAM_IS_BYTE_ARRAY.containsMatchIn(it.parameters) }
+                .filter { PARAM_IS_KEY_MATERIAL.containsMatchIn(it.parameters) }
                 .filterNot { it.declaresOwnEquality() }
                 .map { "${file.path}: data class ${it.name}" }
         }
         assertEquals(
             emptyList(), offenders,
             "Use a plain class (or override equals/hashCode). See WrappedSecret and PinHash.",
+        )
+    }
+
+    /**
+     * A `data class` whose generated `toString()` would print a secret or a plaintext message body
+     * must override it.
+     *
+     * **This is the half the `ByteArray` rule above never covered, and it is the half that leaks.**
+     * `ByteArray.toString()` is an identity hash. `String.toString()` is the string — so
+     * `DecryptedBody`, whose whole purpose is to hold a decrypted message, printed the entire mail
+     * into any `Log.e(TAG, "...$outcome")` or crash-reporter frame that ever touched it. Nothing in
+     * the tree does that today; the point is that adding the line is a one-token change and nothing
+     * would have failed.
+     *
+     * Matched on **property name**, deliberately, because the type cannot answer this: `body:
+     * String` and `serverUrl: String` are the same type and only one of them is mail. Crude, and
+     * the same kind of crude as the reader below — a new field called `plaintext` that does not need
+     * redacting is a two-second suppression, while a new field called `plaintext` that does is
+     * exactly what this catches.
+     */
+    @Test
+    fun noDataClassPrintsASecretOrAPlaintextBody() {
+        val offenders = mainSources().flatMap { file ->
+            dataClassesIn(file.readText())
+                .filter { clazz -> clazz.parameterNames().any { it in SENSITIVE_PROPERTY_NAMES } }
+                .filterNot { it.declaresOwnToString() }
+                .map { clazz ->
+                    val named = clazz.parameterNames().filter { it in SENSITIVE_PROPERTY_NAMES }
+                    "${file.path}: data class ${clazz.name} (${named.joinToString()})"
+                }
+        }
+        assertEquals(
+            emptyList(), offenders,
+            "Override toString() to redact. See PgpMimeReader.DecryptedBody.",
         )
     }
 
@@ -94,6 +133,40 @@ class SourceRulesTest {
     private class DataClass(val name: String, val parameters: String, private val body: String) {
         fun declaresOwnEquality(): Boolean =
             body.contains("override fun equals") && body.contains("override fun hashCode")
+
+        fun declaresOwnToString(): Boolean = body.contains("override fun toString")
+
+        /**
+         * The declared property names, at the top level of the parameter list only.
+         *
+         * Depth-tracked so a default value that is itself a call with named arguments — or a
+         * generic type argument — cannot contribute a name. `val` prefix required, so a plain
+         * constructor parameter that is not a property is not matched either.
+         */
+        fun parameterNames(): List<String> {
+            val names = mutableListOf<String>()
+            var depth = 0
+            var atTopLevelStart = true
+            var index = 0
+            while (index < parameters.length) {
+                when (parameters[index]) {
+                    '(', '<', '[' -> depth++
+                    ')', '>', ']' -> depth--
+                    ',' -> if (depth == 0) atTopLevelStart = true
+                }
+                if (depth == 0 && atTopLevelStart) {
+                    val match = PROPERTY_DECL.find(parameters, index)
+                    if (match != null && match.range.first <= index + LOOKAHEAD_CHARS) {
+                        names += match.groupValues[1]
+                        atTopLevelStart = false
+                        index = match.range.last
+                        continue
+                    }
+                }
+                index++
+            }
+            return names
+        }
     }
 
     /**
@@ -134,8 +207,39 @@ class SourceRulesTest {
          *  build that fails on a class that did the right thing. */
         const val BODY_SCAN_CHARS = 1200
 
+        /** How far past a top-level comma a `val` may sit and still be that parameter's — covers
+         *  annotations and modifiers (`@SerialName("x") val ...`, `internal val ...`). */
+        const val LOOKAHEAD_CHARS = 200
+
         val DATA_CLASS_HEADER = Regex("""\bdata class\s+(\w+)\s*\(""")
-        val PARAM_IS_BYTE_ARRAY = Regex(""":\s*ByteArray""")
+        val PROPERTY_DECL = Regex("""\bval\s+(\w+)\s*:""")
+
+        /**
+         * Types whose generated `equals`/`hashCode` are identity-based while the declaration
+         * advertises structure. `SecretKeySpec` is here because `CredentialKeys` held two.
+         */
+        val PARAM_IS_KEY_MATERIAL =
+            Regex(""":\s*(ByteArray|CharArray|SecretKeySpec|SecretKey)\b""")
+
+        /**
+         * Property names that mean "this holds a secret or a plaintext message body".
+         *
+         * `publicKey` is deliberately ABSENT: it is public by construction, it is rendered in the
+         * UI, and including it would have put a redaction requirement on eight DTOs that lose
+         * nothing by printing.
+         */
+        val SENSITIVE_PROPERTY_NAMES = setOf(
+            // Decrypted or cached message content.
+            "plaintext", "body", "html", "plain", "preview", "protectedSubject", "encryptedPayload",
+            // Credentials and key material.
+            "secret", "deviceSecret", "pairingToken", "passphrase",
+            "privateKey", "armoredPrivateKey",
+        )
+        // `pin` is deliberately ABSENT, and it is the one name that looks like it belongs. The only
+        // `pin` property in the tree is `TlsPinState.Pinned.pin` — an SPKI hash of a *public*
+        // certificate, which is useful in a log and secret from nobody. The app-lock PIN is never a
+        // property: it lives in a `CharArray` that is passed, used and zeroed, so the key-material
+        // rule above is what covers it.
         val IMPORT = Regex("""^import\s+([\w.]+)""", RegexOption.MULTILINE)
         val SILENTLY_STUBBED = listOf("android.util.Base64", "org.json")
     }

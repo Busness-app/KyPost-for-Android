@@ -673,6 +673,10 @@ class EmailDetailActivity : LockedActivity() {
                 override suspend fun fetch(mailbox: String, messageId: String) =
                     client.fetch(pairing.serverUrl, deviceId, deviceSecret, mailbox, messageId)
             },
+            // Wired, and load-bearing: without it the signature verdict is whatever the relay says
+            // it is. Application context, because the reader outlives nothing but this screen and
+            // the graph behind it is process-scoped.
+            localSignerKeys = org.kysecurity.mail.pgp.RoomLocalSignerKeys(applicationContext),
         )
     }
 

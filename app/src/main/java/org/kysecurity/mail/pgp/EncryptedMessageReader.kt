@@ -23,7 +23,10 @@ internal sealed class ReadOutcome {
          *  Rendered in place of the raw sender wherever a verdict is shown — the two are separable
          *  by an attacker. Empty when the server could not resolve one. */
         val resolvedSender: String,
-    ) : ReadOutcome()
+    ) : ReadOutcome() {
+        /** Redacted: the body is a decrypted message. Enforced by `SourceRulesTest`. */
+        override fun toString(): String = "Decrypted(redacted)"
+    }
 
     /** The key is not held and this call was not allowed to prompt. The screen offers Decrypt. */
     object NeedsUnlock : ReadOutcome()
@@ -56,6 +59,12 @@ internal sealed class ReadOutcome {
 internal class EncryptedMessageReader(
     private val opener: VaultOpener,
     private val payloads: PayloadSource,
+    /**
+     * This device's own answer to "whose key is this". Defaults to holding none, which is what a
+     * caller with no contact store (and every JVM fixture that does not care) gets: the verdict
+     * then falls back to the relay's keys, capped below `VERIFIED_CONFIRMED`.
+     */
+    private val localSignerKeys: LocalSignerKeyLookup = LocalSignerKeyLookup { emptyList() },
 ) {
 
     suspend fun read(
@@ -98,6 +107,15 @@ internal class EncryptedMessageReader(
             is PgpPayloadResult.Failed -> return ReadOutcome.FetchFailed(result.message)
         }
 
+        // The local answer, resolved before any verdict is computed. `resolvedSender` is still the
+        // server's parse of the From header — the client deliberately holds no parser of its own —
+        // but what that address is used for has changed: it is now a lookup key into this device's
+        // own contact store rather than a label to hang the server's own `verified` claim on. A
+        // relay that lies about the address gets a lookup that misses, which produces KEY_CHANGED
+        // or SIGNER_UNKNOWN, never a confirmation.
+        val localKeys = runCatching { localSignerKeys.keysFor(payload.resolvedSender) }
+            .getOrDefault(emptyList())
+
         // `payload.signerKeys` arrives ALREADY narrowed to the displayed sender by the server (Task
         // 14's `boundSignerKeysForSender`). Do not re-narrow here, and do not parse `sender` to do
         // it: a second parser deciding the same binding is exactly the defect an earlier task
@@ -120,7 +138,15 @@ internal class EncryptedMessageReader(
         // first. If that ever happens, offering a key that failed its TOFU pin would start to
         // matter, and deleting this filter now would make that future edit silently unsafe. Do not
         // delete this as "dead code" without re-checking signatureStateFor's precedence first.
-        val offeredKeys = payload.signerKeys.filter { !it.conflict }.map { it.publicKey }
+        //
+        // Locally-held keys go FIRST. PgpDecryptor resolves the verifying key by key id out of the
+        // first ring that contains it, so when this device and the relay both hold a key for the
+        // same id, the copy that was fingerprinted locally is the one the signature is checked
+        // against. The relay's copies stay in the list because they are what makes a first-contact
+        // message verifiable at all — and offering them is safe now that the verdict below will not
+        // promote anything they support past VERIFIED_SEEN_BEFORE.
+        val offeredKeys =
+            localKeys.map { it.publicKey } + payload.signerKeys.filter { !it.conflict }.map { it.publicKey }
 
         // A signed-but-not-encrypted message arrives with a readable body and a detached
         // signature; there is nothing to decrypt.
@@ -176,7 +202,7 @@ internal class EncryptedMessageReader(
                 ?: DecryptedBody(html = null, plain = payload.body, protectedSubject = null)
             return ReadOutcome.Decrypted(
                 parsed,
-                signatureStateFor(raw, payload.signerKeys),
+                signatureStateFor(raw, payload.signerKeys, localKeys),
                 payload.resolvedSender,
             )
         }
@@ -200,7 +226,7 @@ internal class EncryptedMessageReader(
 
         return ReadOutcome.Decrypted(
             body,
-            signatureStateFor(decrypted.signature, payload.signerKeys),
+            signatureStateFor(decrypted.signature, payload.signerKeys, localKeys),
             payload.resolvedSender,
         )
     }

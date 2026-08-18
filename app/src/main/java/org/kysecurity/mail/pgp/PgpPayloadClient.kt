@@ -31,7 +31,10 @@ internal sealed class PgpPayloadResult {
         /** The addr-spec the server resolved and narrowed [signerKeys] to. The verdict is about
          *  THIS. Empty when the server could not resolve one, e.g. a multi-mailbox From. */
         val resolvedSender: String,
-    ) : PgpPayloadResult()
+    ) : PgpPayloadResult() {
+        /** Redacted: the body and payload are message content. Enforced by `SourceRulesTest`. */
+        override fun toString(): String = "Success(redacted)"
+    }
 
     /** 409 — this account's key is not client-protected. A bug if it is ever seen here. */
     object NotClientProtected : PgpPayloadResult()
@@ -66,7 +69,10 @@ private data class PgpPayloadDto(
     val signerKeys: List<SignerKeyDto> = emptyList(),
     val sender: String = "",
     val resolvedSender: String = "",
-)
+) {
+    /** Redacted: the body and payload are message content. Enforced by `SourceRulesTest`. */
+    override fun toString(): String = "PgpPayloadDto(redacted)"
+}
 
 private val JSON = Json { ignoreUnknownKeys = true }
 

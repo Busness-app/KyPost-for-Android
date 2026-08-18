@@ -23,7 +23,7 @@ class SignerBindingTest {
     private val testKeyId = signerKeyIdsOf(TestPgpKey.ARMORED).single()
 
     private fun sig(valid: Boolean = true, signerKeyId: Long = testKeyId) =
-        RawSignature(present = true, valid = valid, signerKeyId = signerKeyId)
+        RawSignature.Checked(signerKeyId, verified = valid)
 
     private fun key(
         address: String = "bob@example.com",
@@ -35,17 +35,63 @@ class SignerBindingTest {
 
     @Test
     fun unsignedIsNone() {
-        val state = signatureStateFor(
-            RawSignature(present = false, valid = false, signerKeyId = 0L),
-            listOf(key()),
-        )
+        val state = signatureStateFor(RawSignature.Absent, listOf(key()))
         assertEquals(PgpSignatureState.NONE, state)
     }
 
     @Test
-    fun confirmedKeyBoundToTheSenderIsConfirmed() {
+    fun aServerSuppliedVerifiedFlagCannotConfirmASigner() {
+        // THE headline change. `SignerKey.verified` arrives in the same JSON body as the
+        // ciphertext, so a hostile relay setting it to true used to render "✅ signature confirmed"
+        // over a key it chose, beside a sender it also chose. The server's keys are still worth a
+        // continuity claim — that is what makes a first-contact message say anything — but the
+        // verdict is capped, and `verified` is not read at all.
         val state = signatureStateFor(sig(), listOf(key(verified = true, source = "qr")))
+        assertEquals(PgpSignatureState.VERIFIED_SEEN_BEFORE, state)
+    }
+
+    @Test
+    fun onlyALocallyHeldKeyCanConfirmASigner() {
+        val state = signatureStateFor(
+            sig(),
+            serverKeys = emptyList(),
+            localKeys = listOf(LocalSignerKey(TestPgpKey.ARMORED, confirmed = true)),
+        )
         assertEquals(PgpSignatureState.VERIFIED_CONFIRMED, state)
+    }
+
+    @Test
+    fun aLocalKeyWithAnOutstandingAlarmIsSeenBeforeNotConfirmed() {
+        val state = signatureStateFor(
+            sig(),
+            serverKeys = listOf(key(verified = true, source = "qr")),
+            localKeys = listOf(LocalSignerKey(TestPgpKey.ARMORED, confirmed = false)),
+        )
+        assertEquals(PgpSignatureState.VERIFIED_SEEN_BEFORE, state)
+    }
+
+    @Test
+    fun aLocalKeyOverridesEveryServerClaim() {
+        // The relay offers its own key, marked verified, and signs with it. This device holds a
+        // DIFFERENT key for the sender. Whatever the relay says, the message was not signed with
+        // the key we hold — and saying so is the entire point of resolving locally first.
+        val relayKeyId = testKeyId + 1
+        val state = signatureStateFor(
+            sig(signerKeyId = relayKeyId),
+            serverKeys = listOf(key(verified = true, source = "qr")),
+            localKeys = listOf(LocalSignerKey(TestPgpKey.ARMORED, confirmed = true)),
+        )
+        assertEquals(PgpSignatureState.KEY_CHANGED, state)
+    }
+
+    @Test
+    fun aBadSignatureAgainstALocallyHeldKeyIsInvalid() {
+        val state = signatureStateFor(
+            sig(valid = false),
+            serverKeys = emptyList(),
+            localKeys = listOf(LocalSignerKey(TestPgpKey.ARMORED, confirmed = true)),
+        )
+        assertEquals(PgpSignatureState.INVALID, state)
     }
 
     @Test
@@ -110,7 +156,9 @@ class SignerBindingTest {
         assertEquals(PgpSignatureState.VERIFIED_SEEN_BEFORE, seenBefore)
 
         val confirmed = signatureStateFor(
-            sig(signerKeyId = testKeyId), listOf(key(verified = true, source = "manual")),
+            sig(signerKeyId = testKeyId),
+            serverKeys = listOf(key(verified = true, source = "manual")),
+            localKeys = listOf(LocalSignerKey(TestPgpKey.ARMORED, confirmed = true)),
         )
         assertEquals(PgpSignatureState.VERIFIED_CONFIRMED, confirmed)
     }
@@ -150,22 +198,40 @@ class SignerBindingTest {
     // --- Finding 3: the subkey path, uncovered before this test. ---
 
     @Test
-    fun aSignatureFromASubkeyIdIsAccepted() {
-        // Real one-pass signatures are ordinarily made by a dedicated SUBKEY, never the primary
-        // key. TestPgpKey.ARMORED (used everywhere else in this suite) has no subkey, so every
-        // other test here is accidentally blind to this path. TestPgpPrivateKey.ARMORED_PUBLIC has
-        // a primary key plus one subkey; this signs with the SUBKEY's id specifically.
+    fun anEncryptionOnlySubkeyIsNotASigner() {
+        // This test used to assert the OPPOSITE, and said so: it pinned that signerKeyIdsOf
+        // "accepts a subkey's id regardless of usage flags, exactly the looseness recorded in that
+        // function's KDoc", and noted that "a signature could not really be produced with this
+        // specific key in practice".
         //
-        // That subkey (204EA3568BC889DD, algo 18/ECDH) is ENCRYPTION-only per `gpg --list-packets`
-        // (key flags 0C) — not a signing key. Naming this test "the signing subkey" would be false:
-        // it actually pins that signerKeyIdsOf accepts a subkey's id regardless of usage flags,
-        // exactly the looseness recorded in that function's KDoc. A signature could not really be
-        // produced with this specific key in practice; the id match is what's under test.
+        // That looseness is now closed. TestPgpPrivateKey.ARMORED_PUBLIC's subkey
+        // (204EA3568BC889DD, algo 18/ECDH) is ENCRYPTION-only per `gpg --list-packets` (key flags
+        // 0C), so a signature claiming to come from it is not a signature from this identity, and
+        // the id no longer matches anything.
         val subkeyId = subkeyIdOf(TestPgpPrivateKey.ARMORED_PUBLIC)
         assertNotEquals(primaryKeyIdOf(TestPgpPrivateKey.ARMORED_PUBLIC), subkeyId)
         val boundKey = key(verified = true, source = "manual", publicKey = TestPgpPrivateKey.ARMORED_PUBLIC)
         val state = signatureStateFor(sig(signerKeyId = subkeyId), listOf(boundKey))
-        assertEquals(PgpSignatureState.VERIFIED_CONFIRMED, state)
+        assertEquals(PgpSignatureState.SIGNER_UNKNOWN, state)
+    }
+
+    @Test
+    fun anUnboundSubkeyGraftedOntoAGenuineKeyIsNotASigner() {
+        // The grafting attack. BouncyCastle's PGPPublicKeyRing constructor stores subkeys without
+        // verifying their binding signatures, so an attacker who supplies the armored blob — which
+        // on the client-protected read path the relay does — could append a subkey of their own to
+        // a genuine contact's key and have signatures by it attributed to that contact.
+        //
+        // Built by splicing the subkey packets of one real key onto another real key's primary, so
+        // the binding signature present is over the WRONG primary and cannot verify.
+        val grafted = graftSubkeysOf(TestPgpPrivateKey.ARMORED_PUBLIC, onto = TestPgpKey.ARMORED)
+        val graftedIds = signerKeyIdsOf(grafted)
+        val foreignSubkeyId = subkeyIdOf(TestPgpPrivateKey.ARMORED_PUBLIC)
+        assertEquals(
+            "a subkey bound by a signature over a different primary must not be a signer",
+            false,
+            foreignSubkeyId in graftedIds,
+        )
     }
 
     @Test
@@ -187,7 +253,27 @@ class SignerBindingTest {
             source = "manual",
         )
         val state = signatureStateFor(sig(), listOf(keyWithUselessAddress))
-        assertEquals(PgpSignatureState.VERIFIED_CONFIRMED, state)
+        assertEquals(PgpSignatureState.VERIFIED_SEEN_BEFORE, state)
+    }
+
+    /**
+     * A key ring made of [onto]'s primary key plus [armoredPublicKey]'s subkeys.
+     *
+     * `PGPPublicKeyRing.insertPublicKey` is what an attacker's own tooling would do: it appends the
+     * subkey and its existing binding signature verbatim, and BouncyCastle stores both without ever
+     * checking that the signature is over THIS primary. The resulting blob parses cleanly.
+     */
+    private fun graftSubkeysOf(armoredPublicKey: String, onto: String): String {
+        var ring = PGPPublicKeyRingCollection(
+            PGPUtil.getDecoderStream(onto.byteInputStream(Charsets.UTF_8)),
+            BcKeyFingerprintCalculator(),
+        ).keyRings.next()
+        publicKeysOf(armoredPublicKey).filter { !it.isMasterKey }.forEach { subkey ->
+            ring = org.bouncycastle.openpgp.PGPPublicKeyRing.insertPublicKey(ring, subkey)
+        }
+        val out = java.io.ByteArrayOutputStream()
+        org.bouncycastle.bcpg.ArmoredOutputStream(out).use { ring.encode(it) }
+        return out.toString(Charsets.UTF_8.name())
     }
 
     private fun subkeyIdOf(armoredPublicKey: String): Long =
