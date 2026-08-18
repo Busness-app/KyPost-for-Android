@@ -8,8 +8,7 @@ import kotlin.coroutines.CoroutineContext
  * Runs a destructive security change and the session reset that completes it as **one**
  * non-cancellable unit.
  *
- * This exists because splitting the two is a silent correctness hole, and the split reads as
- * obviously fine:
+ * Splitting the two is a silent correctness hole that reads as obviously fine:
  *
  * ```
  * lifecycleScope.launch {
@@ -18,23 +17,19 @@ import kotlin.coroutines.CoroutineContext
  * }
  * ```
  *
- * `NonCancellable` protects the *block*, so the destruction and the flag commit both complete even
- * if the Activity is destroyed mid-operation. But the statement after `withContext` is an ordinary
- * cancellable continuation: it resumes through `resumeCancellableWith`, sees the cancelled parent
- * `Job`, and throws instead of running. The setting is committed and the reset is skipped.
+ * `NonCancellable` protects the *block*, so the destruction and the flag commit both complete. But
+ * the statement after `withContext` is an ordinary cancellable continuation: it resumes through
+ * `resumeCancellableWith`, sees the cancelled parent `Job`, and throws. The setting is committed and
+ * the reset is skipped — leaving the outgoing session's decrypted attachment bytes, compose draft
+ * and notification bookkeeping resident in a live process, under a Hostile Location Protection
+ * switch reading ON.
  *
- * The behaviour depends on the dispatchers, which is what makes it easy to reason about wrongly —
- * with the *same* interceptor on both sides the continuation resumes undispatched and does run.
- * `lifecycleScope` is `Dispatchers.Main.immediate` and the security context is `Dispatchers.Default`,
- * so the failing case is the one that applied.
+ * It depends on the dispatchers, which is what makes it easy to reason about wrongly: with the same
+ * interceptor on both sides the continuation resumes undispatched and does run. `lifecycleScope` is
+ * `Dispatchers.Main.immediate` and the security context is `Dispatchers.Default`, so the failing
+ * case is the one that applied.
  *
- * What was actually skipped is [org.kysecurity.mail.ProcessState.resetAll] — the only call to it on that
- * path — leaving the outgoing session's decrypted attachment bytes, compose draft and notification
- * bookkeeping resident in a live process, under a Hostile Location Protection switch reading ON and
- * a confirmation dialog that had just promised nothing from before the toggle survives.
- *
- * [NonCancellable] is added here rather than taken from [workContext] so a caller cannot forget it
- * and quietly reintroduce the hole.
+ * [NonCancellable] is added here rather than taken from [workContext] so a caller cannot forget it.
  */
 internal suspend fun runSecurityChangeThenReset(
     workContext: CoroutineContext,

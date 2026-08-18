@@ -61,13 +61,21 @@ class DeviceContactSyncEnabler(
         }
         activity.lifecycleScope.launch {
             try {
-                graph.accountManager.ensureAccount()
+                // Enabling over a failed account creation scheduled the periodic worker against an
+                // account that does not exist, and left teardown with no account to purge rows under.
+                if (!graph.accountManager.ensureAccount()) {
+                    Toast.makeText(activity, R.string.contacts_device_sync_account_failed, Toast.LENGTH_LONG).show()
+                    return@launch
+                }
                 graph.settings.setEnabled(true)
                 graph.observer.register()
                 DeviceContactSyncScheduler.ensurePeriodic(activity)
                 graph.coordinator.syncNowAsync()
                 Toast.makeText(activity, R.string.contacts_device_sync_enabled_toast, Toast.LENGTH_SHORT).show()
                 onEnabled()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // The activity went away mid-enable; swallowing it toasts a destroyed activity.
+                throw e
             } catch (e: Exception) {
                 Toast.makeText(activity, "Failed to enable device sync: ${e.message}", Toast.LENGTH_SHORT).show()
             }

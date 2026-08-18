@@ -212,9 +212,16 @@ class PushRepository(
         // DeviceContactPurge, not DeviceContactsRuntime.graph(...).repository: building that graph
         // constructs DataRuntime.graph(...), which during a wipe rebuilds the database this is
         // running after the deletion of.
-        org.kysecurity.mail.contacts.device.DeviceContactPurge.deleteSyncedRows(context)
+        // Best-effort here — an unpair has no incomplete-result channel the way SecurityWipe does —
+        // but not silent: both failures leave the previous account's address book in ContactsContract.
+        if (org.kysecurity.mail.contacts.device.DeviceContactPurge.deleteSyncedRows(context) < 0) {
+            android.util.Log.e(TAG, "Could not delete this app's raw contacts on unpair; they may remain")
+        }
         runCatching {
-            org.kysecurity.mail.contacts.device.DeviceContactAccountManager(context).removeAccountBlocking()
+            val accounts = org.kysecurity.mail.contacts.device.DeviceContactAccountManager(context)
+            if (accounts.accountExists() && !accounts.removeAccountBlocking()) {
+                android.util.Log.e(TAG, "Could not remove the device contacts account on unpair; its rows may remain")
+            }
         }.onFailure { android.util.Log.e(TAG, "Failed to remove the device contacts account", it) }
         runCatching { org.kysecurity.mail.contacts.device.DeviceContactSyncScheduler.cancelPeriodic(context) }
             .onFailure { android.util.Log.e(TAG, "Failed to cancel the device contact worker", it) }

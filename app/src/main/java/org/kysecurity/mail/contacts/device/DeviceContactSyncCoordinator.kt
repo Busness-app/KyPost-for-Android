@@ -29,15 +29,7 @@ class DeviceContactSyncCoordinator(
 
     fun syncNowAsync() {
         if (!syncAllowed() || isSyncing.getAndSet(true)) return
-        scope.launch {
-            try {
-                withTimeoutOrNull(30_000L) {
-                    runCatching { repository.syncAll() }
-                }
-            } finally {
-                isSyncing.set(false)
-            }
-        }
+        scope.launch { runBoundedSync("syncNow") }
     }
 
     fun syncWithDebounce() {
@@ -45,15 +37,42 @@ class DeviceContactSyncCoordinator(
         debounceJob?.cancel()
         debounceJob = scope.launch {
             delay(3000)
-            if (!isSyncing.getAndSet(true)) {
+            if (!isSyncing.getAndSet(true)) runBoundedSync("debounced")
+        }
+    }
+
+    /**
+     * One sync cycle under the 30-second ceiling, releasing [isSyncing] however it ends.
+     *
+     * Deliberately not `runCatching`, which catches **`Throwable`** and so would swallow the
+     * `TimeoutCancellationException` that `withTimeoutOrNull` aborts with — eating the cancellation
+     * of the very timeout that bounds it.
+     */
+    private suspend fun runBoundedSync(trigger: String) {
+        try {
+            val failedStages = withTimeoutOrNull(SYNC_TIMEOUT_MS) {
                 try {
-                    withTimeoutOrNull(30_000L) {
-                        runCatching { repository.syncAll() }
-                    }
-                } finally {
-                    isSyncing.set(false)
+                    repository.syncAll()
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    android.util.Log.e(TAG, "Sync ($trigger) threw before any stage could report", e)
+                    listOf("syncAll")
                 }
             }
+            when {
+                failedStages == null ->
+                    android.util.Log.e(TAG, "Sync ($trigger) hit the ${SYNC_TIMEOUT_MS}ms ceiling and was abandoned")
+                failedStages.isNotEmpty() ->
+                    android.util.Log.e(TAG, "Sync ($trigger) stages failed: $failedStages")
+            }
+        } finally {
+            isSyncing.set(false)
         }
+    }
+
+    private companion object {
+        const val TAG = "DeviceContactSync"
+        const val SYNC_TIMEOUT_MS = 30_000L
     }
 }

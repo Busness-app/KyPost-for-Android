@@ -560,6 +560,11 @@ class ComposeActivity : LockedActivity() {
                 // The provider under-reported, or omitted, OpenableColumns.SIZE.
                 android.util.Log.i(TAG, "Picked attachment exceeded the remaining budget", e)
                 return@withContext PickedAttachment.TooLarge(name)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // Nothing in this block suspends today, so this is unreachable — but it is inside
+                // withContext, and the catch below is broad enough that it would swallow a
+                // cancellation the moment anything here does start suspending.
+                throw e
             } catch (e: Exception) {
                 android.util.Log.w(TAG, "Could not read the picked attachment", e)
                 return@withContext PickedAttachment.Unreadable(name)

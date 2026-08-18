@@ -273,6 +273,10 @@ class ContactsListActivity : LockedActivity() {
                     Toast.LENGTH_SHORT,
                 ).show()
                 invalidateOptionsMenu()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // The activity went away mid-disable. Rethrow rather than reporting it as a failure
+                // and touching the UI of a destroyed activity — same rule as the collect above.
+                throw e
             } catch (e: Exception) {
                 Toast.makeText(
                     this@ContactsListActivity,

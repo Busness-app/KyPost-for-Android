@@ -33,10 +33,21 @@ class DeviceContactSyncWorker(
             DeviceContactSyncScheduler.cancelPeriodic(applicationContext)
             return Result.success()
         }
+        // syncAll() reports failed stages rather than throwing, so the retry decision reads them
+        // rather than a catch that no real failure reaches.
         return try {
-            graph.repository.syncAll()
-            Result.success()
+            val failedStages = graph.repository.syncAll()
+            if (failedStages.isEmpty()) {
+                Result.success()
+            } else {
+                android.util.Log.e("DeviceContactSyncWorker", "Sync stages failed: $failedStages")
+                Result.retry()
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // WorkManager stopped us; not a sync failure.
+            throw e
         } catch (e: Exception) {
+            android.util.Log.e("DeviceContactSyncWorker", "Sync threw before any stage could report", e)
             Result.retry()
         }
     }

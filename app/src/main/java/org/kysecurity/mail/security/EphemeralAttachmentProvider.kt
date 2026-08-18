@@ -143,6 +143,10 @@ object EphemeralAttachmentBytes : org.kysecurity.mail.ProcessScopedState {
     /**
      * Parks [bytes] for a single ephemeral read, or returns null when doing so would push the
      * held-plaintext total past [MAX_PENDING_BYTES].
+     *
+     * **Takes ownership of [bytes] on every path, including the refusals**, so callers must not
+     * reuse the array. A refused attachment left unzeroed is readable in a heap dump until the
+     * collector runs, and possibly after if the buffer was promoted.
      */
     fun register(bytes: ByteArray, mimeType: String, displayName: String): Uri? {
         // Nothing may be parked under an unknown authority. [configure] runs from the provider's
@@ -152,13 +156,17 @@ object EphemeralAttachmentBytes : org.kysecurity.mail.ProcessScopedState {
         val authority = this.authority
         if (authority.isBlank()) {
             android.util.Log.e("EphemeralAttachmentProvider", "Refusing to register before the provider is attached")
+            Arrays.fill(bytes, 0)
             return null
         }
         purgeExpired()
         val token = UUID.randomUUID().toString()
         synchronized(this) {
             val held = pending.values.sumOf { it.bytes.size.toLong() }
-            if (held + bytes.size > MAX_PENDING_BYTES) return null
+            if (held + bytes.size > MAX_PENDING_BYTES) {
+                Arrays.fill(bytes, 0)
+                return null
+            }
             pending[token] = PendingAttachment(bytes, mimeType, displayName)
         }
         return Uri.parse("content://$authority/$token")

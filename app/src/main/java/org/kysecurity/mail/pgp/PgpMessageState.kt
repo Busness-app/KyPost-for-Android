@@ -64,20 +64,17 @@ fun pgpMessageStateOf(
  * Whether the screen would otherwise render **nothing at all**: no body, no preview text, and no
  * PGP notice explaining the absence.
  *
- * This is the one combination the state machine above cannot speak for. [PgpMessageState.NONE] means
- * "no OpenPGP content, render normally", and rendering normally is correct — right up to the point
- * where there is nothing to render, at which case the user gets a blank screen with no explanation.
+ * The one combination the state machine above cannot speak for: [PgpMessageState.NONE] means "render
+ * normally", which is correct right up to the point where there is nothing to render.
  *
- * It is reachable, and not rare. `pgpEncrypted` is `omitempty` server-side and defaults to `false`
- * here, so **an encrypted message the server has not warmed yet is indistinguishable on the wire from
- * an unencrypted one** — it arrives with the flag clear and no body, and lands in [NONE]. The sibling
- * `hasAttachments` field already carries a comment saying it reads `false` until the server warms the
- * message; the PGP flags have the same caveat and it was never written down.
+ * Reachable, and not rare. `pgpEncrypted` is `omitempty` server-side and defaults to `false` here,
+ * so **an encrypted message the server has not warmed yet is indistinguishable on the wire from an
+ * unencrypted one** — flag clear, no body, lands in [NONE].
  *
- * Nothing here guesses which case it is. The client genuinely cannot tell an unwarmed encrypted
- * message from a genuinely empty one, and inventing a lock glyph for the first would repeat the
- * mistake [PgpMessageState.BODY_UNAVAILABLE] exists to prevent — asserting the stronger privacy
- * property on evidence that does not support it. It only says that *something* should be on screen.
+ * Nothing here guesses which case it is. The client cannot tell an unwarmed encrypted message from a
+ * genuinely empty one, and inventing a lock glyph for the first would assert the stronger privacy
+ * property on evidence that does not support it — the mistake [PgpMessageState.BODY_UNAVAILABLE]
+ * exists to prevent. It only says that *something* should be on screen.
  */
 fun rendersNothing(state: PgpMessageState, body: String?, preview: String): Boolean =
     state == PgpMessageState.NONE && body.isNullOrBlank() && preview.isBlank()

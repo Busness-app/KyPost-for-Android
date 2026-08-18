@@ -204,19 +204,29 @@ android {
     }
     testOptions {
         unitTests {
-            // On so that `android.util.Log` does not throw "not mocked", which would force
-            // Context-free production code (AppLockManager) to choose between logging a
-            // security-relevant event and being unit-testable.
+            // OFF, so an unmocked android.* call throws instead of quietly returning a default.
             //
-            // THE COST, STATED PLAINLY: every other android.* call in JVM-tested production code
-            // also returns a default instead of working, silently. `android.util.Base64` returns
-            // null; `org.json` returns nothing. A suite can go green against a `= null` body.
+            // It was on, for one reason: `android.util.Log` otherwise throws "not mocked", which
+            // would force Context-free production code (AppLockManager, DeviceEnvelope,
+            // EnrollmentCeremony) to choose between recording a security-relevant event and being
+            // unit-testable. The price was paid by every OTHER android.* call in JVM-tested code,
+            // silently — `android.util.Base64` returned null, `org.json` returned nothing — so a
+            // suite could go green over a body that did nothing. That is not hypothetical:
+            // DeviceEnvelope's KDoc records its tests passing vacuously, with `= null` as the whole
+            // function body leaving the suite green.
             //
-            // THE RULE THAT FOLLOWS: production code reachable from src/test must not call android.*
-            // for anything but logging. Use java.util.Base64 and kotlinx.serialization, as
-            // DeviceEnvelope and Sec1Point do. Code that genuinely needs the framework belongs in
-            // src/androidTest. `SourceRulesTest` enforces this for the two APIs that fail silently.
-            isReturnDefaultValues = true
+            // src/test/java/android/util/Log.java buys the logging back on its own. It shadows the
+            // stub with a real implementation, so the one API this flag existed for keeps working
+            // while everything else now fails loudly. Flipping it cost ten test failures, all of
+            // them that same Log class and none of them anything else — which is the measurement
+            // that says the rule below was already being followed.
+            //
+            // THE RULE, now enforced by the runtime rather than by convention: production code
+            // reachable from src/test must not call android.* for anything but logging. Use
+            // java.util.Base64 and kotlinx.serialization, as DeviceEnvelope and Sec1Point do. Code
+            // that genuinely needs the framework belongs in src/androidTest. `SourceRulesTest`
+            // keeps the two historically silent APIs named explicitly.
+            isReturnDefaultValues = false
         }
     }
     packaging {

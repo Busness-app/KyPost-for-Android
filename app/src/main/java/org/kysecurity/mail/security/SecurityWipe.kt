@@ -289,7 +289,15 @@ object SecurityWipe {
         step("sharedPrefs") { deleteAllSharedPrefs(appContext) }
         step("webViewState") { clearWebViewState(appContext) }
         step("deviceContactRows") { deleteSyncedDeviceContactRows(appContext) }
-        step("deviceContactAccount") { DeviceContactAccountManager(appContext).removeAccountBlocking() }
+        // Checked, like every other teardown step here. Removing the account is what makes CP2
+        // hard-delete the raw contacts under it, so this is the last thing standing between a wipe
+        // and an address book left in ContactsContract, outside this sandbox.
+        step("deviceContactAccount") {
+            val accounts = DeviceContactAccountManager(appContext)
+            if (accounts.accountExists() && !accounts.removeAccountBlocking()) {
+                throw IOException("Could not remove the contacts sync account; its raw contacts remain")
+            }
+        }
 
         step("appLock") {
             // Reports rather than merely resets: the tripwire's durable half is a Keystore alias,
@@ -612,9 +620,10 @@ object SecurityWipe {
         // constructing any graph — building DeviceContactsGraph here would rebuild the database this
         // wipe has already deleted.
         val deleted = org.kysecurity.mail.contacts.device.DeviceContactPurge.deleteSyncedRows(context)
-        // A negative count is the provider reporting it did not act. Zero is legitimate (sync was
-        // never enabled), so it is not an error — but it must not be *assumed*, which is what
-        // discarding the return value did.
+        // A negative count means the rows could not be reached — the provider refused, or the
+        // contacts permission is gone while the sync account (and so its rows) is still here. Zero
+        // is legitimate (no account, so no rows can exist), so it is not an error — but it must not
+        // be *assumed*, which is what discarding the return value did.
         if (deleted < 0) {
             throw IOException("Contacts provider refused to delete this app's raw contacts")
         }

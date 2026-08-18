@@ -81,11 +81,15 @@ class SourceRulesTest {
     }
 
     /**
-     * `isReturnDefaultValues = true` makes every stubbed `android.*` call return a default instead
-     * of working. Most stubs are harmless in a JVM test — nothing exercises a `TextView`. These two
-     * are not: `android.util.Base64` returns null and `org.json` returns nothing, *silently*, so a
-     * suite over code that uses them passes without testing anything. `DeviceEnvelope`'s KDoc
-     * records a suite that stayed green against a `= null` body for exactly this reason.
+     * `isReturnDefaultValues` is now **false** (see app/build.gradle.kts), so these two throw at the
+     * call rather than returning null and nothing *silently* — which is how `DeviceEnvelope`'s suite
+     * once stayed green against a `= null` body. The runtime is therefore the primary control and
+     * this rule is no longer the only thing standing between the two.
+     *
+     * It is kept, and it still earns its place: a throw is a failure in whichever test happens to
+     * reach that line, reported as a mystery `RuntimeException` somewhere downstream. This names the
+     * real problem — the wrong API in production code — at the file that has it, and it fires even
+     * for a branch no test exercises.
      *
      * Scoped to production files that have a same-named JVM test, which is the only place the
      * failure mode is reachable — and is a check with no reachability guesswork in it. Use
@@ -105,6 +109,40 @@ class SourceRulesTest {
         assertEquals(
             emptyList(), offenders,
             "These return defaults rather than throwing under isReturnDefaultValues.",
+        )
+    }
+
+    /**
+     * A broad `catch` in coroutine code has to say something about cancellation.
+     *
+     * `kotlinx.coroutines.CancellationException` is an `Exception`, so `catch (e: Exception)` eats
+     * it. In a `suspend` function that means a cancelled job does not unwind: it logs an error and
+     * carries on, on a scope that is already dead. `DeviceContactRepository.syncAll` did exactly
+     * that at five sites — cancelling a sync ran the four remaining stages anyway, holding the
+     * contacts mutex and writing to ContactsContract — and `DeviceContactSyncWorker` caught the
+     * same thing and reported it as a sync failure.
+     *
+     * `SecurityWipe.step` already states the rule: swallowing it is right "here and nowhere else",
+     * because that one runs under `NonCancellable`. This is that sentence as a check.
+     *
+     * Deliberately file-scoped rather than function-scoped: matching a Kotlin function body with a
+     * regex is how a rule like this ends up silently matching nothing. A file that declares a
+     * `suspend fun` and catches broadly must *mention* `CancellationException` somewhere — as a
+     * rethrow, or as a stated reason for not needing one. Coarse, and it is an over-approximation
+     * in the safe direction: the failure mode is asking for a line of thought, never allowing one
+     * to be skipped.
+     */
+    @Test
+    fun broadCatchesInSuspendingFilesAddressCancellation() {
+        val offenders = mainSources().filter { file ->
+            val text = file.readText()
+            "suspend fun" in text &&
+                BROAD_CATCH.containsMatchIn(text) &&
+                "CancellationException" !in text
+        }.map { it.path }
+        assertEquals(
+            emptyList(), offenders,
+            "catch (e: Exception) swallows CancellationException. Rethrow it, or say why this file need not.",
         )
     }
 
@@ -242,5 +280,6 @@ class SourceRulesTest {
         // rule above is what covers it.
         val IMPORT = Regex("""^import\s+([\w.]+)""", RegexOption.MULTILINE)
         val SILENTLY_STUBBED = listOf("android.util.Base64", "org.json")
+        val BROAD_CATCH = Regex("""catch\s*\(\s*\w+\s*:\s*(Exception|Throwable)\s*\)""")
     }
 }

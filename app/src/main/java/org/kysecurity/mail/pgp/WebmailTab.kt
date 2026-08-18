@@ -17,13 +17,10 @@ private const val TAG = "WebmailTab"
  * contents or its account-password field.
  *
  * **There is no Custom Tab path, and that is the security property.** A Custom Tab is the
- * browser's activity launched into *this* app's task, and `FLAG_SECURE` is a per-window flag: the
- * blanket one [org.kysecurity.mail.security.LockedActivity] sets on every KyPost window does not
- * reach the browser's. The Recents card for the KyPost task would then show decrypted message
- * content, on the one app whose every other screen is blank there — while the user's own choice of
- * browser, and whatever Recents posture it keeps, is the boundary they already accepted. The tab
- * bought one thing: a back gesture returning here instead of a task switch. That is not worth
- * paying for with plaintext in a task preview, so it is gone rather than shipped unverified.
+ * browser's activity launched into *this* app's task, and `FLAG_SECURE` is per-window: the blanket
+ * one [org.kysecurity.mail.security.LockedActivity] sets on every KyPost window does not reach the
+ * browser's. The Recents card would then show decrypted message content, on the one app whose every
+ * other screen is blank there. All the tab bought was a back gesture instead of a task switch.
  *
  * Only ever called with a URL built from the pairing's own `serverUrl`; [isFirstPartyWebmailUrl]
  * enforces that rather than trusting it.
@@ -40,9 +37,8 @@ fun openWebmail(activity: Activity, serverUrl: String, url: String): Boolean {
         Log.e(TAG, "Refused to open a URL that is not this account's webmail")
         return false
     }
-    // First success wins — `any` stops there. Every launcher reports failure instead of throwing,
-    // so the fallback chain is walked in order and a device that can open the URL no way at all
-    // ends up back at the caller with false rather than a crash.
+    // First success wins. Every launcher reports failure instead of throwing, so the chain is
+    // walked in order and a device that cannot open the URL at all returns false rather than crashing.
     return order.any { mode ->
         when (mode) {
             WebmailLaunchMode.NATIVE_APP -> launchNonBrowser(activity, url)
@@ -64,10 +60,9 @@ fun openWebmail(activity: Activity, serverUrl: String, url: String): Boolean {
  * harvest aimed at the one screen a client-custody account has no alternative to. `openExternally`
  * in `EmailDetailActivity` adds the category for the same reason, and a browser gets it too.
  *
- * It costs nothing on the PWA path an earlier comment here worried about. A WebAPK's VIEW filter,
- * like any app link's, is *required* to declare BROWSABLE, and an intent's categories only ever
- * narrow the match to filters that declare them — so adding it can exclude only components that
- * never declared it, which is precisely the set that must be excluded.
+ * It costs nothing on the PWA path: a WebAPK's VIEW filter, like any app link's, is *required* to
+ * declare BROWSABLE, and an intent's categories only narrow the match to filters that declare them.
+ * Adding it can exclude only components that never declared it — precisely the set to exclude.
  */
 private fun webIntent(url: String): Intent =
     Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE)
@@ -88,17 +83,12 @@ private fun launchNonBrowser(activity: Activity, url: String): Boolean =
         .isSuccess
 
 /**
- * [WebmailLaunchMode.EXTERNAL_BROWSER]: the last resort, and the previous behaviour of this handoff
- * minus the `resolveActivity` guard.
+ * [WebmailLaunchMode.EXTERNAL_BROWSER]: the last resort. Same web intent as [launchNonBrowser]
+ * without the non-browser flag, so a browser is exactly what answers it.
  *
- * Same web intent as [launchNonBrowser] without the non-browser flag, so a browser — the thing the
- * flag exists to exclude — is exactly what answers it.
- *
- * The dropped guard was a false-negative trap. With `minSdk 31` and package-visibility filtering,
- * `resolveActivity` returns null for an implicit https intent even when a browser is installed,
- * so the read path could report "no webmail" to a user who had one — stalling the only route a
- * client-custody account has to an encrypted message. `ComposeActivity` documented this and
- * avoided it; this path did not. Attempt the launch, catch the genuine no-handler case.
+ * Deliberately no `resolveActivity` guard. With `minSdk 31` and package-visibility filtering it
+ * returns null for an implicit https intent even when a browser is installed, so guarding reported
+ * "no webmail" to users who had one. Attempt the launch, catch the genuine no-handler case.
  */
 private fun launchExternalBrowser(activity: Activity, url: String): Boolean =
     runCatching { activity.startActivity(webIntent(url)) }

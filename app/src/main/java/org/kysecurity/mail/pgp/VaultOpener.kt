@@ -3,14 +3,12 @@ package org.kysecurity.mail.pgp
 /**
  * The result of unsealing the device envelope.
  *
- * [Opened] carries **no key material**, deliberately. [VaultSealer]'s KDoc records the same rule for
- * the sealing direction — "the sealer owns the ciphertext end to end so that no key material passes
- * back through the state machine" — and the opener is its mirror: it writes the plaintext straight
- * into [EnrollmentSession] and tells the caller only that it worked.
+ * [Opened] carries **no key material**, mirroring [VaultSealer]: the plaintext goes straight into
+ * [EnrollmentSession] and the caller is told only that it worked, so no key material passes back
+ * through the state machine.
  *
- * [Cancelled] is not a failure. The user dismissed the prompt, or the hosting Activity went away.
- * The reader returns to offering the Decrypt button and says nothing, exactly as the enrollment
- * ceremony treats its own `Cancelled`.
+ * [Cancelled] is not a failure — the user dismissed the prompt, or the hosting Activity went away.
+ * The reader returns to offering the Decrypt button and says nothing.
  */
 internal sealed class OpenOutcome {
     object Opened : OpenOutcome()
@@ -29,10 +27,8 @@ internal sealed class OpenOutcome {
 
 /**
  * The unseal, behind an interface because `BiometricPrompt` is Activity-bound and the orchestrator
- * must stay free of Android imports.
- *
- * This is the seam that makes "the user dismissed the prompt" a JVM test with a fake rather than an
- * instrumented one — the same reason [VaultSealer] exists.
+ * must stay free of Android imports. That seam is what makes "the user dismissed the prompt" a JVM
+ * test with a fake rather than an instrumented one.
  */
 internal interface VaultOpener {
     /** On [OpenOutcome.Opened], and only then, the armored private key is in [EnrollmentSession]. */

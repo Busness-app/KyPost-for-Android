@@ -34,35 +34,45 @@ class DeviceContactRepository(
      *  mid-flight. The coordinator and the worker both gate on entry; this is the in-loop check. */
     private fun syncPermitted(): Boolean = !hostileLocationSettings.isEnabled()
 
-    // Shares syncRepository.syncMutex with ContactSyncRepository.sync() — see that mutex's KDoc
-    // for why: both sides read-modify-write the same contacts table from independent scopes.
-    suspend fun syncAll() = syncRepository.syncMutex.withLock {
+    /**
+     * Fault-isolates one sync stage, returning its name if it failed and null if it did not. Same
+     * shape as [org.kysecurity.mail.security.SecurityWipe]'s `step`: a stage that cannot fail cannot
+     * be reported.
+     *
+     * `CancellationException` is an `Exception`, so a broad catch here would let a cancelled sync
+     * run its remaining stages holding [ContactSyncRepository.syncMutex] and writing to
+     * ContactsContract. It is rethrown.
+     */
+    private suspend fun stage(name: String, body: suspend () -> Unit): String? =
         try {
-            pruneForeignLinks()
+            body()
+            null
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
-            android.util.Log.e("DeviceContactSync", "Error pruning foreign links", e)
+            android.util.Log.e("DeviceContactSync", "Sync stage failed: $name", e)
+            name
         }
-        try {
-            groupSyncRepository.sync()
-            reconcileGroupRenames()
-        } catch (e: Exception) {
-            android.util.Log.e("DeviceContactSync", "Error refreshing groups cache", e)
-        }
-        try {
-            pullDeviceChangesForOwnAccount()
-        } catch (e: Exception) {
-            android.util.Log.e("DeviceContactSync", "Error pulling device changes", e)
-        }
-        try {
-            importNewDeviceContacts()
-        } catch (e: Exception) {
-            android.util.Log.e("DeviceContactSync", "Error importing device contacts", e)
-        }
-        try {
-            pushRoomChangesToDevice()
-        } catch (e: Exception) {
-            android.util.Log.e("DeviceContactSync", "Error pushing to device", e)
-        }
+
+    /**
+     * Runs every sync stage, returning the names of those that failed — empty when all succeeded.
+     * The stages are ordered and each builds on the last, so a non-empty list means the cycle is
+     * incomplete, not that only those stages matter.
+     *
+     * Shares syncRepository.syncMutex with ContactSyncRepository.sync() — see that mutex's KDoc:
+     * both sides read-modify-write the same contacts table from independent scopes.
+     */
+    suspend fun syncAll(): List<String> = syncRepository.syncMutex.withLock {
+        listOfNotNull(
+            stage("pruneForeignLinks") { pruneForeignLinks() },
+            stage("refreshGroups") {
+                groupSyncRepository.sync()
+                reconcileGroupRenames()
+            },
+            stage("pullDeviceChanges") { pullDeviceChangesForOwnAccount() },
+            stage("importNewDeviceContacts") { importNewDeviceContacts() },
+            stage("pushRoomChanges") { pushRoomChangesToDevice() },
+        )
     }
 
     /**
