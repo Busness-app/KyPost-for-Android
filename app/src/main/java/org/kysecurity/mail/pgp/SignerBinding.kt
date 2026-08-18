@@ -12,10 +12,6 @@ import java.util.Date
  * it from the key's own User IDs: one key can self-assert two User IDs, so a binding taken from the
  * key material is forgeable, and re-deriving it with a second parser is how a client can end up
  * vouching for a key the server's own binding rejects.
- *
- * [conflict] means the stored key no longer matches its TOFU pin. Such an entry carries no
- * [publicKey] and is never offered to a signature check — it exists so the reader can say the key
- * changed instead of silently reporting an unknown signer.
  */
 internal data class SignerKey(
     val addresses: List<String>,
@@ -28,12 +24,6 @@ internal data class SignerKey(
 /**
  * Every key id present in [armoredPublicKey]: its primary key plus every subkey, regardless of that
  * subkey's usage flags — an encryption-only subkey's id is returned exactly like a signing subkey's.
- *
- * A one-pass signature is ordinarily made with a dedicated signing subkey, whose id differs from
- * the primary key's, so matching only the primary key's id would silently reject every normally
- * signed message. Revoked and expired keys are excluded before matching. Returns an empty set —
- * never throws — on a key that fails to parse: an unparseable bound key must never grant a pass,
- * only ever shrink the candidate set.
  */
 internal fun signerKeyIdsOf(armoredPublicKey: String, now: Date = Date()): Set<Long> = runCatching {
     val rings = PGPPublicKeyRingCollection(
@@ -58,15 +48,6 @@ private fun org.bouncycastle.openpgp.PGPPublicKey.isExpiredAt(now: Date): Boolea
 /**
  * The signature verdict for a message being displayed as being from a sender the **server** has
  * already resolved.
- *
- * [signerKeys] arrives narrowed to that sender by `boundSignerKeysForSender`. This function does
- * not know the sender's address and must not learn it: the client used to parse the raw `From`
- * header itself, and a differential harness over 111 adversarial headers found 27 divergences from
- * the server's parser — most seriously RFC 5322 comments, where `Bob (Eve <eve@evil>) <bob@x>` is
- * valid, the server binds `bob@x`, and the client bound `eve@evil`, letting any contact forge a
- * verified badge for anyone. Three fix rounds each closed one construct and opened another.
- *
- * A second parser deciding the same binding is the defect. Do not reintroduce one.
  */
 internal fun signatureStateFor(
     signature: RawSignature,

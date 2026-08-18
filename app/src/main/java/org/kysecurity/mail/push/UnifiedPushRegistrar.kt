@@ -5,6 +5,7 @@ import android.content.Context
 import androidx.appcompat.app.AlertDialog
 import org.unifiedpush.android.connector.UnifiedPush
 import org.unifiedpush.android.connector.data.ResolvedDistributor
+import org.kysecurity.mail.security.showSecurely
 
 /**
  * Drives the UnifiedPush distributor selection + registration flow from an Activity.
@@ -34,7 +35,8 @@ object UnifiedPushRegistrar {
                     .setMessage("Choose which app should deliver your push notifications.")
                     .setPositiveButton(android.R.string.ok) { _, _ -> confirmAndRegister(activity, onResult) }
                     .setNegativeButton(android.R.string.cancel) { _, _ -> onResult(false, null) }
-                    .show()
+                    .create()
+                    .showSecurely()
             }
         }
     }

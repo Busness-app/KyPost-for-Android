@@ -5,6 +5,7 @@ import org.kysecurity.mail.SingletonGraph
 import org.kysecurity.mail.pairingHttpClient
 import okhttp3.Call
 import okhttp3.Request
+import javax.net.ssl.SSLPeerUnverifiedException
 
 /**
  * Builds (and caches) a TLS-pinned [Call.Factory] from the stored TOFU pin, rebuilding only when
@@ -48,12 +49,56 @@ class PinnedCallFactoryProvider(
  * one is captured, re-checked on every request rather than snapshotted once at construction time —
  * important since these clients are built once and live for the process's lifetime, well before
  * the first pairing (and thus the first TLS pin) may exist.
+ *
+ * **The fallback is only for [TlsPinState.NeverPaired].** This used to be `pinnedProvider() ?:
+ * fallback`, which answered "we have no pin yet" and "our pin is gone" with the same unpinned
+ * client — so a reset of the encrypted store (or any other loss of `KEY_TLS_PIN`) silently
+ * downgraded every credential-bearing request to bare system-CA trust, permanently, with nothing
+ * visible changing. [TlsPinState.Lost] now fails closed.
  */
 class PinnedOrFallbackCallFactory(
     private val pinnedProvider: () -> Call.Factory?,
+    private val pinStateProvider: () -> TlsPinState,
     private val fallback: Call.Factory = pairingHttpClient(),
 ) : Call.Factory {
-    override fun newCall(request: Request): Call = (pinnedProvider() ?: fallback).newCall(request)
+    override fun newCall(request: Request): Call {
+        pinnedProvider()?.let { return it.newCall(request) }
+        return when (pinStateProvider()) {
+            // The legitimate TOFU window: nothing has ever been pinned, so there is nothing to
+            // downgrade from.
+            TlsPinState.NeverPaired -> fallback.newCall(request)
+            // A pin existed and no longer does. Falling back here is a silent downgrade of every
+            // request carrying this device's credential, on the one event that most plausibly
+            // means something went wrong with the encrypted store. Refuse instead — the user
+            // re-pairs, which re-establishes a pin they can actually rely on.
+            TlsPinState.Lost -> FailedCall(
+                request,
+                SSLPeerUnverifiedException(
+                    "The stored TLS pin for this server is gone; re-pair this device before it will connect again.",
+                ),
+            )
+            // Unreachable: pinnedProvider() returns non-null exactly when this is Pinned. Refusing
+            // is still the right answer if that ever stops being true.
+            is TlsPinState.Pinned -> FailedCall(
+                request,
+                SSLPeerUnverifiedException("TLS pin could not be applied"),
+            )
+        }
+    }
+}
+
+/** A [Call] that fails with [cause] the moment it is executed or enqueued, so a refusal reaches
+ *  callers through the same `IOException` path every other network failure does. */
+private class FailedCall(private val request: Request, private val cause: java.io.IOException) : Call {
+    @Volatile private var canceled = false
+    override fun request(): Request = request
+    override fun execute(): okhttp3.Response = throw cause
+    override fun enqueue(responseCallback: okhttp3.Callback) = responseCallback.onFailure(this, cause)
+    override fun cancel() { canceled = true }
+    override fun isExecuted(): Boolean = false
+    override fun isCanceled(): Boolean = canceled
+    override fun timeout(): okio.Timeout = okio.Timeout.NONE
+    override fun clone(): Call = FailedCall(request, cause)
 }
 
 /**
@@ -63,25 +108,16 @@ class PinnedOrFallbackCallFactory(
  * [PinnedCallFactoryProvider] directly to their own repository instance — see
  * `PushGraph.pinnedOrFallbackCallFactory`.
  *
- * Process-scoped, because this used to build a brand-new one — and with it a brand-new
- * [pairingHttpClient] for the unpinned fallback, plus a fresh pinned client the moment a pin
- * existed — on **every call**. It is invoked from default-argument positions that re-evaluate per
- * call ([org.kysecurity.mail.pgp.hasPgpIdentity]) and per screen
- * ([org.kysecurity.mail.ComposePgpController.from], twice), so opening the contacts list or the composer
- * repeatedly accumulated `OkHttpClient`s, each holding its own `ConnectionPool` of idle keep-alive
- * sockets for five minutes plus a cleanup thread. Sharing one instance also means TLS sessions and
- * connections are actually reused across these clients, which was the point of [PushGraph] holding
- * a single factory in the first place.
- *
  * Safe to hold across an [org.kysecurity.mail.security.AppRestart]: the pin is resolved through
  * [PushRuntime.graph] on every request rather than captured, so a rebuilt graph — or a re-pairing
  * that replaces the pin — is picked up on the next call with nothing to invalidate here.
  */
 private val sharedPinnedCallFactory = SingletonGraph<Call.Factory> { appContext ->
     PinnedOrFallbackCallFactory(
-        PinnedCallFactoryProvider(
+        pinnedProvider = PinnedCallFactoryProvider(
             tlsPinProvider = { PushRuntime.graph(appContext).repository.currentTlsPin() },
         ),
+        pinStateProvider = { PushRuntime.graph(appContext).repository.tlsPinState() },
     )
 }
 

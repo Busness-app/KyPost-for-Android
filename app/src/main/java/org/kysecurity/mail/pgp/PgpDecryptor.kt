@@ -53,7 +53,9 @@ internal sealed class DecryptResult {
 internal object PgpDecryptor {
 
     fun decrypt(
-        armoredPrivateKey: String,
+        /** The enrolled key as a [CharArray], never a `String`: [EnrollmentSession] holds it in a
+         *  wipeable array precisely so no caller has to mint an immortal copy to reach this. */
+        armoredPrivateKey: CharArray,
         armoredMessage: String,
         /** The public keys the address book binds to the displayed sender, from [SignerKey]. A
          *  one-pass signature cannot be completed without one, and the key travelling inside the
@@ -61,10 +63,9 @@ internal object PgpDecryptor {
          *  only that whoever wrote it owned a key. Empty means "present but unverifiable". */
         signerPublicKeys: List<String>,
     ): DecryptResult = runCatching {
-        val secretKeys = PGPSecretKeyRingCollection(
-            PGPUtil.getDecoderStream(armoredPrivateKey.byteInputStream(Charsets.UTF_8)),
-            BcKeyFingerprintCalculator(),
-        )
+        val secretKeys = armoredPrivateKey.useArmoredStream { keyStream ->
+            PGPSecretKeyRingCollection(PGPUtil.getDecoderStream(keyStream), BcKeyFingerprintCalculator())
+        }
 
         val factory = org.bouncycastle.openpgp.jcajce.JcaPGPObjectFactory(
             PGPUtil.getDecoderStream(armoredMessage.byteInputStream(Charsets.UTF_8)),
@@ -114,43 +115,55 @@ internal object PgpDecryptor {
         DecryptResult.Ok(plaintext, signature)
     }.getOrElse { DecryptResult.Failed(it.message ?: "could not decrypt this message") }
 
-    /** Verifies an RFC 3156 detached signature over an already-readable body. */
+    /**
+     * Verifies an RFC 3156 detached signature over an already-readable body.
+     *
+     * **The two catches below are scoped separately, and conflating them was a downgrade.** A
+     * failure to *parse* means no signature was readable at all, which is `present = false` — the
+     * same thing `decrypt()` reports for a message that never parsed as OpenPGP. A failure inside
+     * `init`/`update`/`verify` means a signature was found and is broken, which is
+     * `present = true, valid = false`.
+     *
+     * One `runCatching` around the whole body mapped both to `present = false`, so a signature
+     * truncated or corrupted in transit rendered as "this message is unsigned" — a state users see
+     * on ordinary mail every day — instead of the alarm a mangled signature has to raise.
+     */
     fun verifyDetached(
         armoredPublicKey: String,
         body: ByteArray,
         armoredSignature: String,
-    ): RawSignature = runCatching {
-        val factory = org.bouncycastle.openpgp.jcajce.JcaPGPObjectFactory(
-            PGPUtil.getDecoderStream(armoredSignature.byteInputStream(Charsets.UTF_8)),
-        )
-        val list = generateSequence { factory.nextObject() }
-            .filterIsInstance<PGPSignatureList>()
-            .firstOrNull()
-            ?: return RawSignature(present = false, valid = false, signerKeyId = 0L)
-        val signature = list[0]
+    ): RawSignature {
+        val absent = RawSignature(present = false, valid = false, signerKeyId = 0L)
 
-        val rings = PGPPublicKeyRingCollection(
-            PGPUtil.getDecoderStream(armoredPublicKey.byteInputStream(Charsets.UTF_8)),
-            BcKeyFingerprintCalculator(),
-        )
-        val key = rings.getPublicKey(signature.keyID)
-            ?: return RawSignature(present = true, valid = false, signerKeyId = signature.keyID)
+        val signature = runCatching {
+            val factory = org.bouncycastle.openpgp.jcajce.JcaPGPObjectFactory(
+                PGPUtil.getDecoderStream(armoredSignature.byteInputStream(Charsets.UTF_8)),
+            )
+            generateSequence { factory.nextObject() }
+                .filterIsInstance<PGPSignatureList>()
+                .firstOrNull()
+                ?.get(0)
+        }.getOrNull() ?: return absent
 
-        signature.init(BcPGPContentVerifierBuilderProvider(), key)
-        signature.update(body)
-        RawSignature(present = true, valid = signature.verify(), signerKeyId = signature.keyID)
-        // Anything that throws here — including armoredSignature failing to parse as OpenPGP data
-        // at all — never got as far as confirming a PGPSignatureList exists. That is "no signature
-        // was readable", the same present = false decrypt() reports for a message that never
-        // parsed as OpenPGP in the first place, not a signature this code declined to trust.
-    }.getOrElse { RawSignature(present = false, valid = false, signerKeyId = 0L) }
+        // From here on a signature exists, so every remaining failure is INVALID, never ABSENT.
+        val key = runCatching {
+            PGPPublicKeyRingCollection(
+                PGPUtil.getDecoderStream(armoredPublicKey.byteInputStream(Charsets.UTF_8)),
+                BcKeyFingerprintCalculator(),
+            ).getPublicKey(signature.keyID)
+        }.getOrNull() ?: return RawSignature(present = true, valid = false, signerKeyId = signature.keyID)
+
+        val valid = runCatching {
+            signature.init(BcPGPContentVerifierBuilderProvider(), key)
+            signature.update(body)
+            signature.verify()
+        }.getOrDefault(false)
+
+        return RawSignature(present = true, valid = valid, signerKeyId = signature.keyID)
+    }
 
     /**
      * Walks the decrypted stream to its literal data, checking any one-pass signature on the way.
-     *
-     * The signature is verified over the literal data as it is read, which is why this cannot be
-     * split into "get the bytes" and "check the signature" — the one-pass form requires both in a
-     * single traversal.
      */
     private fun readLiteral(
         clear: InputStream,
@@ -169,11 +182,8 @@ internal object PgpDecryptor {
                     onePass = obj[0]
                 }
                 is PGPLiteralData -> {
-                    val out = ByteArrayOutputStream()
-                    if (!copyWithLimit(obj.inputStream, out, MAX_DECRYPTED_PLAINTEXT_BYTES)) {
-                        return null
-                    }
-                    val bytes = out.toByteArray()
+                    val bytes = readAllWithLimit(obj.inputStream, MAX_DECRYPTED_PLAINTEXT_BYTES)
+                        ?: return null
                     return bytes to verifyOnePass(onePass, bytes, factory, signerPublicKeys)
                 }
             }
@@ -182,30 +192,37 @@ internal object PgpDecryptor {
         return ByteArray(0) to RawSignature(present = false, valid = false, signerKeyId = 0L)
     }
 
-    /** Bounds the stream after OpenPGP decompression, before allocating its final byte array. */
-    internal fun copyWithLimit(input: InputStream, output: ByteArrayOutputStream, limit: Int): Boolean {
-        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+    /**
+     * Bounds the stream after OpenPGP decompression, and returns null once [limit] is exceeded.
+     *
+     * Accumulates fixed chunks and joins once, rather than writing into a [ByteArrayOutputStream]
+     * and calling `toByteArray()`. BAOS grows by doubling, so a message at the 32 MB ceiling held
+     * a 32 MB buffer plus the 16 MB one it had just outgrown, then allocated a third 32 MB array
+     * for the copy — roughly 80 MB peak and ~64 MB of memcpy, for an input a hostile sender fully
+     * controls. Chunking peaks at input + result with no intermediate copies.
+     */
+    internal fun readAllWithLimit(input: InputStream, limit: Int): ByteArray? {
+        val chunks = ArrayList<ByteArray>()
         var total = 0
         while (true) {
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
             val count = input.read(buffer)
-            if (count < 0) return true
-            if (count > limit - total) return false
-            output.write(buffer, 0, count)
+            if (count < 0) break
+            if (count > limit - total) return null
+            chunks += if (count == buffer.size) buffer else buffer.copyOf(count)
             total += count
         }
+        val result = ByteArray(total)
+        var offset = 0
+        chunks.forEach { chunk ->
+            chunk.copyInto(result, offset)
+            offset += chunk.size
+        }
+        return result
     }
 
     /**
      * Completes a one-pass signature against the literal bytes just read.
-     *
-     * The signer's public key travels inside the signed message often enough to be tempting, and it
-     * is deliberately NOT used to self-verify: a message that vouches for itself proves only that
-     * whoever wrote it owned a key. Only [signerPublicKeys] — which the address book bound to the
-     * displayed sender — can produce `valid = true`.
-     *
-     * `present = true, valid = false` with no offered key is **not** an accusation. It means "signed,
-     * unverifiable here", and [signatureStateFor] is what decides whether that reads as
-     * SIGNER_UNKNOWN (no key bound) or INVALID (a key is bound and it did not match).
      */
     private fun verifyOnePass(
         onePass: org.bouncycastle.openpgp.PGPOnePassSignature?,

@@ -17,11 +17,15 @@ private const val QUIESCE_TIMEOUT_MS = 2_000L
 // Activity-scoped executor so the IMAP round trip keeps running after the screen that triggered
 // it finishes, letting the UI update optimistically instead of waiting on the network.
 object MailBackgroundExecutor {
-    @Volatile
-    private var executor: ExecutorService = Executors.newFixedThreadPool(2)
+    /**
+     * [java.util.concurrent.atomic.AtomicReference], not `@Volatile` plus a plain assignment.
+     */
+    private val executor = java.util.concurrent.atomic.AtomicReference<ExecutorService>(
+        Executors.newFixedThreadPool(2),
+    )
 
     fun submit(task: () -> Unit) {
-        executor.execute(task)
+        executor.get().execute(task)
     }
 
     /**
@@ -39,8 +43,7 @@ object MailBackgroundExecutor {
      * started) is torn down rather than left pointing at a closed database.
      */
     fun quiesce(): Boolean {
-        val previous = executor
-        executor = Executors.newFixedThreadPool(2)
+        val previous = executor.getAndSet(Executors.newFixedThreadPool(2))
         previous.shutdownNow()
         // `awaitTermination` returns false on timeout and throws only on interruption, so wrapping
         // it in `runCatching` and inspecting only the failure branch discarded the one answer that
@@ -63,12 +66,6 @@ object MailBackgroundExecutor {
     /**
      * Runs a mail mutation and reports failure to the user.
      *
-     * Every caller of [submit] used to discard the returned [MailOutcome]. The UI removed the row
-     * optimistically, so a 401, a 502 or a certificate-pin mismatch was completely invisible: the
-     * user believed the message was archived or deleted on the server, and it reappeared on the
-     * next full resync with no explanation. Optimistic UI is only honest if the pessimistic case
-     * is surfaced.
-     *
      * The toast is posted against the application context because the Activity that started this
      * has usually already finished — that is the whole reason this executor exists.
      */
@@ -78,7 +75,7 @@ object MailBackgroundExecutor {
         task: () -> MailOutcome<*>,
     ) {
         val appContext = context.applicationContext
-        executor.execute {
+        executor.get().execute {
             val outcome = runCatching { task() }.getOrElse { error ->
                 android.util.Log.e("MailBackground", "$actionLabel threw", error)
                 MailOutcome.UpstreamFailure(error.message ?: "Unexpected error")

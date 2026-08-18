@@ -23,18 +23,17 @@ private const val ANDROID_KEYSTORE = "AndroidKeyStore"
 private const val PEPPER_KEY_ALIAS = "kypost_credential_pepper"
 private const val PIN_PEPPER_KEY_ALIAS = "kypost_pin_pepper"
 
-/** The PBKDF2 salt is deliberately not part of this type — it's an input to [CredentialCipher.deriveKeys],
+/** **Not a `data class`**: Kotlin would generate identity `equals`/`hashCode` over the two
+ *  [ByteArray] fields while advertising structural equality, and a wrapped credential is exactly
+ *  the kind of value someone reaches for `==` or a `Set` on. Nothing compares these.
+ *
+ *  The PBKDF2 salt is deliberately not part of this type — it's an input to [CredentialCipher.deriveKeys],
  *  owned and persisted once per pairing by the caller ([org.kysecurity.mail.push.SecurePairingStore]),
  *  not an output of wrapping a single value. */
-data class WrappedSecret(val iv: ByteArray, val ciphertext: ByteArray)
+class WrappedSecret(val iv: ByteArray, val ciphertext: ByteArray)
 
 /**
  * The two keys one PIN can produce, so a secret wrapped under the old scheme is still readable.
- *
- * [current] is peppered (see [CredentialCipher.deriveKeys]) and is what every new wrap uses.
- * [legacy] is the bare PBKDF2 output that builds before the pepper existed wrapped with; it is
- * only ever used to *read* a legacy blob, which is then immediately re-wrapped under [current]
- * by [rewrapPairingIfNeeded].
  */
 data class CredentialKeys(val current: SecretKeySpec, val legacy: SecretKeySpec)
 
@@ -70,13 +69,6 @@ object KeystorePinPepper : CredentialPepper {
 
 /**
  * The pepper key for [alias] is gone or unusable, so a PIN cannot be evaluated at all.
- *
- * Emphatically **not** the same as "the PIN was wrong", which is the conflation this type exists to
- * make impossible. [pepperKey] used to create a fresh key whenever it found none — so an OS-level
- * Keystore reset (an invalidated key, a restored backup, a device-credential change on some OEM
- * builds) silently produced a *different* pepper, every subsequent correct PIN verified as false,
- * and ten of those tripped [LockoutPolicy.WIPE_THRESHOLD]. The app destroyed the user's mail,
- * contacts and pairing in response to an event they did not cause and could not have avoided.
  */
 class PepperUnavailableException(alias: String, cause: Throwable? = null) :
     IllegalStateException("Keystore pepper '$alias' is unavailable", cause)
@@ -134,7 +126,7 @@ object CredentialCipher {
 
     /** Both derivations for [pin]; see [CredentialKeys]. Runs PBKDF2 once and peppers a copy. */
     fun deriveKeys(
-        pin: String,
+        pin: CharArray,
         salt: ByteArray,
         pepper: CredentialPepper = KeystoreCredentialPepper,
     ): CredentialKeys {
@@ -162,8 +154,14 @@ object CredentialCipher {
         String(cipher.doFinal(wrapped.ciphertext), Charsets.UTF_8)
     }.getOrNull()
 
-    private fun pbkdf2(pin: String, salt: ByteArray): ByteArray {
-        val spec = PBEKeySpec(pin.toCharArray(), salt, PBKDF2_ITERATIONS, KEY_LENGTH_BITS)
-        return SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
+    /** See [PinHasher]'s copy: [PBEKeySpec] duplicates the array, and that duplicate is zeroed
+     *  here rather than left for the collector. */
+    private fun pbkdf2(pin: CharArray, salt: ByteArray): ByteArray {
+        val spec = PBEKeySpec(pin, salt, PBKDF2_ITERATIONS, KEY_LENGTH_BITS)
+        try {
+            return SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
+        } finally {
+            spec.clearPassword()
+        }
     }
 }

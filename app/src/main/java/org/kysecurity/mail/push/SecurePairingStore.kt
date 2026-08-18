@@ -6,9 +6,8 @@ package org.kysecurity.mail.push
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Base64
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 import org.kysecurity.mail.security.CredentialCipher
+import org.kysecurity.mail.security.openEncryptedPrefs
 import org.kysecurity.mail.security.CredentialKeys
 import org.kysecurity.mail.security.WrappedSecret
 import kotlinx.coroutines.Dispatchers
@@ -34,20 +33,52 @@ private const val KEY_DEVICE_SECRET_VERSION = "pair_device_secret_version"
 private const val KEY_TLS_PIN = "pair_tls_spki_pin"
 private const val KEY_TLS_PIN_HOST = "pair_tls_spki_pin_host"
 
+/** Plain companion file; see [SecurePairingStore.tlsPinState]. */
+internal const val TLS_PIN_TRIPWIRE_PREFS = "push_tls_pin_tripwire"
+private const val KEY_TLS_PIN_EVER_CAPTURED = "tls_pin_ever_captured"
+
 /** A TOFU certificate pin together with the host it was actually observed on. The host used to be
  *  inferred from the pairing's `serverUrl` at enforcement time, while the pin itself came from the
  *  *registration* URL's handshake — two different URLs, one pin, correct only by coincidence. */
 data class TlsPin(val host: String, val spkiSha256: String)
 
 /**
+ * Why a request is or is not pinned.
+ *
+ * Exists so "we have never paired" cannot be answered the same way as "we had a pin and it is
+ * gone". The first is the legitimate TOFU window and must allow an unpinned connection; the second
+ * is a downgrade and must fail closed.
+ */
+sealed interface TlsPinState {
+    /** No pairing has ever completed, so there is nothing to pin against yet. */
+    object NeverPaired : TlsPinState
+    data class Pinned(val pin: TlsPin) : TlsPinState
+
+    /** A pin was captured once and is no longer readable. Requests must fail rather than downgrade. */
+    object Lost : TlsPinState
+}
+
+/**
+ * What [SecurePairingStore.savePairing] should do with the stored `deviceSecret`.
+ */
+sealed interface SecretWrite {
+    /** Leave whatever is on disk untouched — the caller is not allowed to persist one right now. */
+    object Preserve : SecretWrite
+
+    /** There is no secret; remove any stored one. */
+    object Clear : SecretWrite
+
+    /** Store it wrapped behind the PIN-derived credential key. */
+    data class Wrapped(val secret: String, val keys: CredentialKeys, val salt: ByteArray) : SecretWrite
+
+    /** Store it as-is; the credential gate is off. */
+    data class Plaintext(val secret: String) : SecretWrite
+}
+
+/**
  * Holds pairing proof material (device secret, pairing token) in a Keystore-backed
  * EncryptedSharedPreferences file rather than the plaintext DataStore used for the rest of the
  * push state (history, sync status, server URL setting).
- *
- * Construct this exactly once, in [PushGraph]. It owns a [StateFlow] of the current pairing, and
- * the four ad-hoc `SecurePairingStore(context)` call sites that used to exist each had their own
- * copy of that flow — so a write through one instance never reached the collector on another, and
- * `PushRepository` could keep reporting a pairing that had already been cleared.
  */
 class SecurePairingStore(context: Context) {
     private val prefs: SharedPreferences by lazy { buildEncryptedPrefs(context.applicationContext) }
@@ -61,30 +92,32 @@ class SecurePairingStore(context: Context) {
     @Volatile
     private var cachedTlsPin: TlsPin? = null
 
+    /** Plain, unencrypted companion to [KEY_TLS_PIN] — see [tlsPinState]. Same shape and same
+     *  reason as [org.kysecurity.mail.security.AppLockStore]'s tripwire: a marker that survives the
+     *  encrypted file being reset, so "the pin vanished" is distinguishable from "there never was
+     *  one". */
+    private val tlsPinTripwire =
+        context.applicationContext.getSharedPreferences(TLS_PIN_TRIPWIRE_PREFS, Context.MODE_PRIVATE)
+
     init {
         _pairing.value = readPairing(credentialKeys = null)
         cachedTlsPin = readTlsPin()
     }
 
     /**
-     * @param preserveStoredSecret leaves whatever secret is already on disk untouched, instead of
-     *   reading a null [PairingData.deviceSecret] as "there is no secret, delete it".
+     * Writes the pairing, applying [secret] to the stored `deviceSecret`.
      *
-     *   The two meanings were conflated, and the difference is a credential the user cannot get
-     *   back. `PushRepository.savePairing` passes `deviceSecret = null` to mean "I am not allowed to
-     *   persist this one right now" (the credential gate is on and no PIN-derived key is cached),
-     *   and this method obligingly erased the stored credential as well — while the server had
-     *   just minted a replacement and invalidated the previous one. The device was left with no
-     *   usable secret at all, a UI still reading "Paired", and no repair path:
-     *   [org.kysecurity.mail.security.rewrapPairingIfNeeded] bails on a blank secret, and turning the
-     *   gate back off unwraps a value that is no longer there.
+     * The secret's fate is a [SecretWrite], not a nullable `String` plus a `preserveStoredSecret`
+     * boolean. Those two encoded four intentions in two arguments, and two of them meant opposite
+     * things: `deviceSecret = null` was "delete it" from one caller and "leave it alone" from
+     * another, and getting that wrong destroyed a credential the user cannot get back — the server
+     * had just minted a replacement and invalidated the previous one, leaving the device with no
+     * usable secret, a UI still reading "Paired", and no repair path
+     * ([org.kysecurity.mail.security.rewrapPairingIfNeeded] bails on a blank secret, and turning the
+     * gate back off unwraps a value that is no longer there). A sealed type makes each intention
+     * say its own name and makes the `when` exhaustive.
      */
-    suspend fun savePairing(
-        pairing: PairingData,
-        credentialKeys: CredentialKeys? = null,
-        credentialSalt: ByteArray? = null,
-        preserveStoredSecret: Boolean = false,
-    ) {
+    suspend fun savePairing(pairing: PairingData, secret: SecretWrite) {
         withContext(Dispatchers.IO + NonCancellable) {
             val editor = prefs.edit()
                 .putString(KEY_SUBSCRIBER_ID, pairing.subscriberId)
@@ -94,24 +127,48 @@ class SecurePairingStore(context: Context) {
                 .putLong(KEY_PAIRED_AT, pairing.pairedAtEpochMs)
             if (pairing.deviceId.isNullOrBlank()) editor.remove(KEY_DEVICE_ID) else editor.putString(KEY_DEVICE_ID, pairing.deviceId)
 
-            val deviceSecret = pairing.deviceSecret
-            when {
-                preserveStoredSecret -> Unit
-                deviceSecret.isNullOrBlank() -> editor.clearWrappedSecret().remove(KEY_DEVICE_SECRET)
-                credentialKeys != null && credentialSalt != null -> {
-                    val wrapped = CredentialCipher.wrap(deviceSecret, credentialKeys.current)
+            when (secret) {
+                SecretWrite.Preserve -> Unit
+                SecretWrite.Clear -> editor.clearWrappedSecret().remove(KEY_DEVICE_SECRET)
+                is SecretWrite.Wrapped -> {
+                    val wrapped = CredentialCipher.wrap(secret.secret, secret.keys.current)
                     editor.remove(KEY_DEVICE_SECRET)
                         .putString(KEY_DEVICE_SECRET_CIPHERTEXT, Base64.encodeToString(wrapped.ciphertext, Base64.NO_WRAP))
-                        .putString(KEY_DEVICE_SECRET_SALT, Base64.encodeToString(credentialSalt, Base64.NO_WRAP))
+                        .putString(KEY_DEVICE_SECRET_SALT, Base64.encodeToString(secret.salt, Base64.NO_WRAP))
                         .putString(KEY_DEVICE_SECRET_IV, Base64.encodeToString(wrapped.iv, Base64.NO_WRAP))
                         .putInt(KEY_DEVICE_SECRET_VERSION, SECRET_VERSION_PEPPERED)
                 }
-                else -> editor.clearWrappedSecret().putString(KEY_DEVICE_SECRET, deviceSecret)
+                is SecretWrite.Plaintext ->
+                    editor.clearWrappedSecret().putString(KEY_DEVICE_SECRET, secret.secret)
             }
             editor.commit()
         }
         _pairing.value = readPairing(credentialKeys = null)
     }
+
+    /** Convenience for the callers that hold a pairing and want its own secret written under the
+     *  current gate posture: wrapped when keys are supplied, plaintext when they are not, and
+     *  [SecretWrite.Clear] when the pairing carries no secret at all. */
+    suspend fun savePairing(
+        pairing: PairingData,
+        credentialKeys: CredentialKeys? = null,
+        credentialSalt: ByteArray? = null,
+    ) {
+        val deviceSecret = pairing.deviceSecret
+        val secret = when {
+            deviceSecret.isNullOrBlank() -> SecretWrite.Clear
+            credentialKeys != null && credentialSalt != null ->
+                SecretWrite.Wrapped(deviceSecret, credentialKeys, credentialSalt)
+            else -> SecretWrite.Plaintext(deviceSecret)
+        }
+        savePairing(pairing, secret)
+    }
+
+    /** Whether a pairing exists on disk at all, without decrypting anything. Distinguishes "there
+     *  is no secret to strand" from "there is one and we cannot read it" — see
+     *  [org.kysecurity.mail.security.SecuritySettingsActivity]'s unwrap path, where the two used to
+     *  be conflated into a silent `return`. */
+    fun hasStoredPairing(): Boolean = !prefs.getString(KEY_SUBSCRIBER_ID, null).isNullOrBlank()
 
     /** Reads pairing state, unwrapping `deviceSecret` with [credentialKeys] if it was stored
      *  wrapped. Returns the same shape either way; `deviceSecret` comes back `null` if it's
@@ -143,6 +200,8 @@ class SecurePairingStore(context: Context) {
                 .putString(KEY_TLS_PIN, pin.spkiSha256)
                 .putString(KEY_TLS_PIN_HOST, pin.host)
                 .commit()
+            // The plain marker, so losing the encrypted file cannot look like "never pinned".
+            tlsPinTripwire.edit().putBoolean(KEY_TLS_PIN_EVER_CAPTURED, true).commit()
         }
         cachedTlsPin = pin
     }
@@ -151,6 +210,19 @@ class SecurePairingStore(context: Context) {
      *  a pin stored without its host, which is ignored rather than applied to a host it may not
      *  have come from. */
     fun currentTlsPin(): TlsPin? = cachedTlsPin
+
+    /**
+     * The pin, or why there isn't one. **"No pin yet" and "the pin is gone" are different answers
+     * and must not be collapsed.**
+     */
+    fun tlsPinState(): TlsPinState {
+        cachedTlsPin?.let { return TlsPinState.Pinned(it) }
+        return if (tlsPinTripwire.getBoolean(KEY_TLS_PIN_EVER_CAPTURED, false)) {
+            TlsPinState.Lost
+        } else {
+            TlsPinState.NeverPaired
+        }
+    }
 
     private fun readTlsPin(): TlsPin? {
         val pin = prefs.getString(KEY_TLS_PIN, null) ?: return null
@@ -172,6 +244,9 @@ class SecurePairingStore(context: Context) {
                 .remove(KEY_TLS_PIN)
                 .remove(KEY_TLS_PIN_HOST)
                 .commit()
+            // Deliberate unpair: there genuinely is no pin any more, so the marker goes too and the
+            // next pairing gets a clean TOFU window rather than being refused as "lost".
+            tlsPinTripwire.edit().clear().commit()
         }
         _pairing.value = null
         cachedTlsPin = null
@@ -222,33 +297,13 @@ class SecurePairingStore(context: Context) {
         return CredentialCipher.unwrap(WrappedSecret(iv, ciphertext), key)
     }
 
-    private fun buildEncryptedPrefs(appContext: Context): SharedPreferences {
-        return try {
-            createEncryptedPrefs(appContext)
-        } catch (e: Exception) {
-            // The Keystore-backed key can become unable to decrypt the stored keyset (e.g. OS-level
-            // key invalidation) — unrecoverable, and it happens in the init path, so an uncaught
-            // failure here crashes the app on every launch. Reset to a fresh, empty encrypted file
-            // instead; readPairing() then reports null and the user just re-pairs. Failing closed
-            // is correct here: losing the pairing revokes this device's access.
-            android.util.Log.e("SecurePairingStore", "Encrypted pairing store unreadable, resetting", e)
-            appContext.deleteSharedPreferences(ENCRYPTED_PREFS_FILE_NAME)
-            createEncryptedPrefs(appContext)
+    /** See [openEncryptedPrefs]. A reset costs the pairing AND the TOFU TLS pin, so it happens only
+     *  for an undecryptable keyset — never for a transient I/O failure, which is what the bare
+     *  `catch (Exception)` this replaces treated identically. */
+    private fun buildEncryptedPrefs(appContext: Context): SharedPreferences =
+        openEncryptedPrefs(appContext, ENCRYPTED_PREFS_FILE_NAME) {
+            android.util.Log.e("SecurePairingStore", "Encrypted pairing store keyset is undecryptable", it)
         }
-    }
-
-    private fun createEncryptedPrefs(appContext: Context): SharedPreferences {
-        val masterKey = MasterKey.Builder(appContext)
-            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-            .build()
-        return EncryptedSharedPreferences.create(
-            appContext,
-            ENCRYPTED_PREFS_FILE_NAME,
-            masterKey,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-        )
-    }
 
     companion object {
         /** Bare PBKDF2 wrapping key, written by builds before the Keystore pepper existed. Read-only

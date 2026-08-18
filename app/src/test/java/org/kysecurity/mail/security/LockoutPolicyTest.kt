@@ -19,22 +19,53 @@ class LockoutPolicyTest {
         assertEquals(300_000L, LockoutPolicy.delayMillisFor(5))
         assertEquals(900_000L, LockoutPolicy.delayMillisFor(6))
         assertEquals(1_800_000L, LockoutPolicy.delayMillisFor(7))
+        assertEquals(3_600_000L, LockoutPolicy.delayMillisFor(8))
     }
 
     @Test
-    fun delayMillisFor_caps_atThirtyMinutes() {
-        assertEquals(1_800_000L, LockoutPolicy.delayMillisFor(8))
-        assertEquals(1_800_000L, LockoutPolicy.delayMillisFor(9))
+    fun delayMillisFor_caps_atOneHour() {
+        assertEquals(3_600_000L, LockoutPolicy.delayMillisFor(9))
+        assertEquals(3_600_000L, LockoutPolicy.delayMillisFor(50))
     }
 
     @Test
     fun shouldWipe_isFalse_belowThreshold() {
-        assertFalse(LockoutPolicy.shouldWipe(9))
+        assertFalse(LockoutPolicy.shouldWipe(9, wipeAfterAttempts = 10))
+        assertFalse(LockoutPolicy.shouldWipe(29, wipeAfterAttempts = 30))
     }
 
     @Test
     fun shouldWipe_isTrue_atThreshold() {
-        assertTrue(LockoutPolicy.shouldWipe(10))
-        assertTrue(LockoutPolicy.shouldWipe(11))
+        assertTrue(LockoutPolicy.shouldWipe(10, wipeAfterAttempts = 10))
+        assertTrue(LockoutPolicy.shouldWipe(11, wipeAfterAttempts = 10))
+    }
+
+    /**
+     * The wipe used to be a hardcoded ten attempts with no off-switch — an effective denial of
+     * service for anyone with an afternoon's access to the phone, against data the app
+     * deliberately keeps no backup of.
+     */
+    @Test
+    fun shouldWipe_isNeverTrue_whenTheUserTurnedItOff() {
+        assertFalse(LockoutPolicy.shouldWipe(10, wipeAfterAttempts = null))
+        assertFalse(LockoutPolicy.shouldWipe(1_000, wipeAfterAttempts = null))
+    }
+
+    /**
+     * The point of the longer ladder: the default threshold has to be out of reach of someone who
+     * borrows the phone, not merely inconvenient. Eighty minutes was the old figure.
+     */
+    @Test
+    fun reachingTheDefaultThresholdTakesMostOfADay() {
+        val hours = LockoutPolicy.timeToWipeMillis(LockoutPolicy.DEFAULT_WIPE_THRESHOLD) / 3_600_000.0
+        assertTrue("expected > 12h, was ${hours}h", hours > 12.0)
+    }
+
+    @Test
+    fun everyOfferedThresholdIsAtLeastSeveralHours() {
+        LockoutPolicy.WIPE_THRESHOLD_CHOICES.forEach { threshold ->
+            val hours = LockoutPolicy.timeToWipeMillis(threshold) / 3_600_000.0
+            assertTrue("threshold $threshold reached in ${hours}h", hours > 3.0)
+        }
     }
 }

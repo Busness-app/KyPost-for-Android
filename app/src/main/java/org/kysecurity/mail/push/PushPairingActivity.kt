@@ -37,6 +37,7 @@ import kotlinx.coroutines.tasks.await
 import java.text.DateFormat
 import java.util.Date
 import org.kysecurity.mail.security.LockedActivity
+import org.kysecurity.mail.security.showSecurely
 
 class PushPairingActivity : LockedActivity() {
     private val viewModel: PushHomeViewModel by viewModels()
@@ -317,12 +318,18 @@ class PushPairingActivity : LockedActivity() {
             Toast.makeText(this, R.string.pairing_confirm_bad_url, Toast.LENGTH_LONG).show()
             return
         }
+        // showSecurely, not show(): `kypost://native-pair` is a BROWSABLE deep link, so any web
+        // page can raise this dialog, and it is the dialog that decides where this device's
+        // `X-Kypost-Device-Secret` gets minted. A plain show() leaves its accept button coverable
+        // by any app holding SYSTEM_ALERT_WINDOW — one tap on an attacker's own overlay and the
+        // device is paired to their relay, with the TOFU pin locking their certificate in.
         AlertDialog.Builder(this)
             .setTitle(R.string.pairing_confirm_title)
             .setMessage(getString(messageRes, shownHost))
             .setPositiveButton(R.string.pairing_confirm_positive) { _, _ -> viewModel.applyPairing(pairing) }
             .setNegativeButton(R.string.cancel, null)
-            .show()
+            .create()
+            .showSecurely()
     }
 
     /** Unpairing now revokes server-side access (not just local state), so it gets the same
@@ -333,7 +340,8 @@ class PushPairingActivity : LockedActivity() {
             .setMessage(R.string.push_pairing_unpair_confirm_message)
             .setPositiveButton(R.string.push_pairing_unpair) { _, _ -> viewModel.unpairDevice() }
             .setNegativeButton(R.string.cancel, null)
-            .show()
+            .create()
+            .showSecurely()
     }
 
     private inner class PushHistoryAdapter(context: android.content.Context) : BaseAdapter() {
@@ -347,7 +355,10 @@ class PushPairingActivity : LockedActivity() {
 
         override fun getCount(): Int = items.size
         override fun getItem(position: Int): PushPayload = items[position]
-        override fun getItemId(position: Int): Long = items[position].messageId.hashCode().toLong()
+        // Position, not messageId.hashCode(). hasStableIds() is false so this is unused today,
+        // but a hashCode collapsed to a Long is not a stable id, and overriding hasStableIds()
+        // later would silently make two different messages the same row.
+        override fun getItemId(position: Int): Long = position.toLong()
 
         override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
             val view = convertView ?: inflater.inflate(R.layout.item_push_history, parent, false)

@@ -10,9 +10,6 @@ import org.kysecurity.mail.mail.OutgoingAttachment
  * `TransactionTooLargeException` on any real attachment. Both Activities live in this process, so
  * a single-use handoff is both correct and cheaper than making Compose re-download what the detail
  * screen already has in hand.
- *
- * Single-use ([take] clears) so a later plain Compose cannot silently inherit the attachments of a
- * forward the user abandoned.
  */
 object ForwardAttachmentHandoff : ProcessScopedState {
     @Volatile

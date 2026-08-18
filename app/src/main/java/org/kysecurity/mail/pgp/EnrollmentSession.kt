@@ -31,17 +31,48 @@ internal object EnrollmentSession : ProcessScopedState {
     override fun resetForNewSession() = clear()
 
     /** Clears first, so replacing a key does not strand the previous one in the heap. */
-    fun put(armoredKey: String) {
+    fun put(armoredKey: CharArray) {
         clear()
-        held = armoredKey.toCharArray()
+        held = armoredKey.copyOf()
+    }
+
+    /**
+     * Decodes UTF-8 [plaintext] straight into the held [CharArray], without ever building a
+     * `String`.
+     */
+    fun putUtf8(plaintext: ByteArray) {
+        val decoded = Charsets.UTF_8.decode(java.nio.ByteBuffer.wrap(plaintext))
+        val chars = CharArray(decoded.remaining()).also { decoded.get(it) }
+        try {
+            put(chars)
+        } finally {
+            java.util.Arrays.fill(chars, ' ')
+            if (decoded.hasArray()) java.util.Arrays.fill(decoded.array(), ' ')
+        }
     }
 
     /** True while a key is held, with no copy minted to answer it. Use this instead of
-     *  `peek() != null` for a plain presence check — that would allocate an unwipeable `String`
-     *  copy of the private key purely to throw it away. */
+     *  `withKey { it != null }` for a plain presence check. */
     fun isHeld(): Boolean = held != null
 
-    fun peek(): String? = held?.let { String(it) }
+    /**
+     * Runs [block] against the held key, or returns null if none is held.
+     *
+     * **Scoped, and a [CharArray], because the whole point of this class is a key that can be
+     * zeroed.** The accessor this replaces was `fun peek(): String? = held?.let { String(it) }` —
+     * it minted a fresh, immutable, unwipeable copy of the OpenPGP private key on every call, and
+     * its two callers are the read path and the send path, so ordinary use accumulated copies in
+     * the heap that [clear] could not touch. The KDoc on [isHeld] named that exact hazard one line
+     * above the method that committed it.
+     *
+     * The array handed to [block] is the live one. Do not retain it and do not mutate it; the PGP
+     * entry points take `CharArray` precisely so nothing has to.
+     */
+    fun <T> withKey(block: (CharArray) -> T): T? = held?.let(block)
+
+    /** Test-only view of the held key. Never call this from production code — see [withKey]. */
+    @VisibleForTesting
+    fun peekForTest(): String? = held?.let { String(it) }
 
     fun clear() {
         held?.fill(' ')

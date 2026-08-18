@@ -18,11 +18,6 @@ object DeviceContactMatcher {
     /**
      * Every normalized email and phone in [existing], mapped to the uid that owns it.
      *
-     * Built once per sync and reused across candidates. [findMatch] used to rescan and re-normalize
-     * the whole contact list for every candidate, so a device with 2,000 contacts and a Room store
-     * of 2,000 did millions of string comparisons per sync cycle — and re-derived the same
-     * normalized values every time.
-     *
      * Each value carries its owner's position in [existing], and [Index.findMatch] returns the
      * lowest-positioned match. That reproduces the old scan exactly — "the first contact in list
      * order that matches on either an email or a phone" — rather than quietly preferring whichever
@@ -58,12 +53,6 @@ object DeviceContactMatcher {
     /**
      * Emails and phones share one map, so they are namespaced to keep a phone-shaped email from
      * matching a phone.
-     *
-     * Null for a value that normalizes to nothing, which identifies nobody. `normalizePhone` strips
-     * every non-digit, so placeholders like "n/a", "-" and "+" all collapse to the empty string, and
-     * `ContactFieldDto.value` defaults to empty server-side. Indexing those made one stored
-     * placeholder a bucket that every later blank-valued candidate matched, so unrelated device
-     * contacts were reported as already-known and silently skipped from import.
      */
     private fun emailKey(value: String): String? =
         normalizeEmail(value).takeIf { it.isNotBlank() }?.let { "e:$it" }

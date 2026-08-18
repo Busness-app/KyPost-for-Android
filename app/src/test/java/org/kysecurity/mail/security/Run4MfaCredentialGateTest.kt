@@ -21,7 +21,7 @@ import javax.crypto.spec.SecretKeySpec
  */
 private class GateState(
     private var lockEnabled: Boolean = true,
-    private var pin: String? = "48291374",
+    private var pin: CharArray? = "48291374".toCharArray(),
     private var credentialSalt: ByteArray? = null,
     private var credentialGateEnabled: Boolean = true,
 ) : AppLockState {
@@ -36,8 +36,8 @@ private class GateState(
     override fun setBiometricEnabled(enabled: Boolean) { biometricEnabled = enabled }
     override fun isCredentialPinGateEnabled() = credentialGateEnabled
     override fun setCredentialPinGateEnabled(enabled: Boolean) { credentialGateEnabled = enabled }
-    override fun setPin(pin: String) { this.pin = pin }
-    override fun verifyPin(pin: String): Boolean = this.pin == pin
+    override fun setPin(pin: CharArray) { this.pin = pin }
+    override fun verifyPin(pin: CharArray): Boolean = this.pin.contentEquals(pin)
     override fun hasPin() = pin != null
     override fun incrementFailedAttempts(): Int { failedAttempts++; return failedAttempts }
     override fun resetFailedAttempts() { failedAttempts = 0; lockoutUntilElapsed = 0L; lockoutDuration = 0L }
@@ -47,6 +47,9 @@ private class GateState(
         lockoutUntilElapsed = untilElapsedMs
         lockoutDuration = durationMs
     }
+    private var wipeThreshold: Int? = LockoutPolicy.DEFAULT_WIPE_THRESHOLD
+    override fun wipeAfterAttempts() = wipeThreshold
+    override fun setWipeAfterAttempts(attempts: Int?) { wipeThreshold = attempts }
     override fun credentialSalt() = credentialSalt
     override fun setCredentialSalt(salt: ByteArray) { credentialSalt = salt }
     override fun reset() = Unit
@@ -84,14 +87,17 @@ class Run4MfaCredentialGateTest {
         assertTrue("fresh process must start locked", m.isLockedNow())
         assertNull("credentialGateNeedsPin() precondition", m.cachedCredentialKeys())
 
-        val result = m.deriveAndCacheCredentialKeys("48291374")
+        val (result, token) = m.verifyPinForDecision("48291374".toCharArray(), deriveKeys = true)
         assertTrue("correct PIN must verify", result is UnlockAttemptResult.Success)
 
         // MfaApprovalActivity captures this and hands it to MfaResponder, which passes it to
-        // PushRepository.pairingForAuthenticatedCall(keys).
+        // PushRepository.pairingForAuthenticatedCall(keys). The token is the ONLY way to obtain
+        // it: the accessor this replaced was public, unguarded and returned the cached key to any
+        // caller that asked, which made it the credential gate's own bypass.
+        assertNotNull("a verified decision must mint a token", token)
         assertNotNull(
             "the just-authenticated decision must be sendable",
-            m.credentialKeysForDecision(),
+            m.keysFor(token!!),
         )
 
         // ...and none of that unlocks the app. A notification tap must not open the mailbox, and
@@ -106,9 +112,9 @@ class Run4MfaCredentialGateTest {
         val state = GateState()
         val m = manager(state)
 
-        val result = m.deriveAndCacheCredentialKeys("00000000")
+        val (result, token) = m.verifyPinForDecision("00000000".toCharArray(), deriveKeys = true)
         assertTrue(result is UnlockAttemptResult.Rejected)
-        assertNull("no key may be derived from an unverified PIN", m.credentialKeysForDecision())
+        assertNull("no token may be minted from an unverified PIN", token)
     }
 
     /** The contrast: the unlock screen's path clears _locked first, so the same key is usable. */
@@ -117,7 +123,7 @@ class Run4MfaCredentialGateTest {
         val state = GateState()
         val m = manager(state)
 
-        val result = m.attemptPin("48291374")
+        val result = m.attemptPin("48291374".toCharArray())
         assertTrue(result is UnlockAttemptResult.Success)
         assertNotNull("attemptPin unlocks first, so the key is readable", m.cachedCredentialKeys())
     }
@@ -134,7 +140,7 @@ class Run4MfaCredentialGateTest {
         val state = GateState(credentialSalt = CredentialCipher.randomSalt())
         val m = manager(state)
 
-        m.unlockWithBiometric(CredentialCipher.deriveKeys("48291374", state.credentialSalt()!!, GatePepper))
+        m.unlockWithBiometric(CredentialCipher.deriveKeys("48291374".toCharArray(), state.credentialSalt()!!, GatePepper))
 
         assertNotNull("the sealed keys are the gate's key", m.cachedCredentialKeys())
     }
@@ -158,11 +164,11 @@ class Run4MfaCredentialGateTest {
             onWipe = { WipeResult.Complete },
         )
 
-        assertTrue(m.attemptPin("48291374") is UnlockAttemptResult.Success)
+        assertTrue(m.attemptPin("48291374".toCharArray()) is UnlockAttemptResult.Success)
         assertNull("a lost pepper leaves the gate shut, without failing the unlock", m.cachedCredentialKeys())
 
         exploding = false
-        assertTrue(m.deriveAndCacheCredentialKeys("48291374") is UnlockAttemptResult.Success)
+        assertTrue(m.deriveAndCacheCredentialKeys("48291374".toCharArray()) is UnlockAttemptResult.Success)
         assertNotNull("unlocked already, so the derived key is readable", m.cachedCredentialKeys())
     }
 }

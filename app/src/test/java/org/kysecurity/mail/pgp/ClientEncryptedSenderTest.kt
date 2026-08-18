@@ -105,11 +105,11 @@ class ClientEncryptedSenderTest {
 
         assertTrue(
             "the BCC recipient must be able to open their own delivery",
-            PgpDecryptor.decrypt(TestPgpSecondKey.ARMORED_PRIVATE, bccDelivery, emptyList()) is DecryptResult.Ok,
+            PgpDecryptor.decrypt(TestPgpSecondKey.ARMORED_PRIVATE.toCharArray(), bccDelivery, emptyList()) is DecryptResult.Ok,
         )
         assertTrue(
             "the To recipient must NOT be able to open the BCC delivery",
-            PgpDecryptor.decrypt(TestPgpPrivateKey.ARMORED_PRIVATE, bccDelivery, emptyList()) is DecryptResult.Failed,
+            PgpDecryptor.decrypt(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray(), bccDelivery, emptyList()) is DecryptResult.Failed,
         )
     }
 
@@ -252,11 +252,11 @@ class ClientEncryptedSenderTest {
 
         assertTrue(
             "the sender must be able to read their own Sent copy",
-            PgpDecryptor.decrypt(TestPgpPrivateKey.ARMORED_PRIVATE, sentCopy, emptyList()) is DecryptResult.Ok,
+            PgpDecryptor.decrypt(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray(), sentCopy, emptyList()) is DecryptResult.Ok,
         )
         assertTrue(
             "a server-supplied recipient key must not be what the Sent copy was encrypted to",
-            PgpDecryptor.decrypt(TestPgpSecondKey.ARMORED_PRIVATE, sentCopy, emptyList()) is DecryptResult.Failed,
+            PgpDecryptor.decrypt(TestPgpSecondKey.ARMORED_PRIVATE.toCharArray(), sentCopy, emptyList()) is DecryptResult.Failed,
         )
     }
 
@@ -271,7 +271,7 @@ class ClientEncryptedSenderTest {
         ).send(draft(), sign = true)
 
         val decrypted = PgpDecryptor.decrypt(
-            TestPgpPrivateKey.ARMORED_PRIVATE,
+            TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray(),
             armorOf(transport.sent.single().deliveries[0].ciphertext),
             listOf(TestPgpPrivateKey.ARMORED_PUBLIC),
         ) as DecryptResult.Ok
@@ -295,7 +295,7 @@ class ClientEncryptedSenderTest {
         assertFalse("the real subject must not be in cleartext", delivery.contains("Subject: Subject"))
 
         val decrypted = PgpDecryptor.decrypt(
-            TestPgpPrivateKey.ARMORED_PRIVATE,
+            TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray(),
             armorOf(delivery),
             emptyList(),
         ) as DecryptResult.Ok

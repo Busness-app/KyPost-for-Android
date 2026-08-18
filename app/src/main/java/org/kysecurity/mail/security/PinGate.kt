@@ -8,14 +8,6 @@ import org.kysecurity.mail.R
  * Turns an [UnlockAttemptResult] into "may this screen proceed?", handling the two outcomes that
  * are not about the PIN at all.
  *
- * [UnlockAttemptResult.Wiped] and [UnlockAttemptResult.WipeFailed] mean [SecurityWipe] **has
- * already run**: the database is deleted, every SharedPreferences file this app owns is gone, the
- * synced OS contact rows are removed and the device has been deregistered from the relay. Three
- * call sites used to write `verifyPinThrottled(pin) is UnlockAttemptResult.Success` and treat both
- * as a plain `false` — so a wipe reached from the settings screen or the MFA approval prompt showed
- * "Incorrect PIN", left the Activity running against a closed database, and never relaunched. Only
- * [UnlockActivity] handled it.
- *
  * Routing every caller through here is what makes that unrepresentable: the `when` below is
  * exhaustive over the sealed class, so a new outcome is a compile error rather than a silent
  * `false`. **No screen outside this file may test the result for `Success` directly.**

@@ -27,12 +27,6 @@ data class MfaRespondRequest(
      * approval that does not carry it — this endpoint is reachable by anyone holding device
      * credentials, so the on-device comparison in [MfaApprovalActivity.onMatchChosen] is UX, not
      * the control. Always serialized, including as `""` on a deny, which the server ignores.
-     *
-     * An *approve* with `""` is therefore never something to send: it cannot succeed, and it spends
-     * one of the challenge's three attempts on the way to failing. [MfaApprovalActivity] has no
-     * approve path that can produce one — a challenge without a complete number match offers Deny
-     * only. The client used to keep a bare Approve button for "un-upgraded servers" and document it
-     * as accepted without a number, which was never true of any server that mints digits.
      */
     @SerialName("matchDigits") val matchDigits: String,
 )

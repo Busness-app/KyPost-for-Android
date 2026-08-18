@@ -35,7 +35,7 @@ class PgpEncryptorTest {
         )
 
         val decrypted = PgpDecryptor.decrypt(
-            armoredPrivateKey = TestPgpPrivateKey.ARMORED_PRIVATE,
+            armoredPrivateKey = TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray(),
             armoredMessage = armored,
             signerPublicKeys = emptyList(),
         )
@@ -58,11 +58,11 @@ class PgpEncryptorTest {
         val result = PgpEncryptor.encrypt(
             plaintext = plaintext,
             recipientPublicKeys = listOf(TestPgpPrivateKey.ARMORED_PUBLIC),
-            armoredSigningKey = TestPgpPrivateKey.ARMORED_PRIVATE,
+            armoredSigningKey = TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray(),
         )
 
         val decrypted = PgpDecryptor.decrypt(
-            armoredPrivateKey = TestPgpPrivateKey.ARMORED_PRIVATE,
+            armoredPrivateKey = TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray(),
             armoredMessage = (result as EncryptResult.Ok).armored,
             signerPublicKeys = listOf(TestPgpPrivateKey.ARMORED_PUBLIC),
         ) as DecryptResult.Ok
@@ -81,7 +81,7 @@ class PgpEncryptorTest {
         )
 
         val decrypted = PgpDecryptor.decrypt(
-            armoredPrivateKey = TestPgpPrivateKey.ARMORED_PRIVATE,
+            armoredPrivateKey = TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray(),
             armoredMessage = (result as EncryptResult.Ok).armored,
             signerPublicKeys = listOf(TestPgpPrivateKey.ARMORED_PUBLIC),
         ) as DecryptResult.Ok
@@ -156,7 +156,7 @@ class PgpEncryptorTest {
 
         listOf(TestPgpPrivateKey.ARMORED_PRIVATE, TestPgpSecondKey.ARMORED_PRIVATE).forEach { key ->
             val decrypted = PgpDecryptor.decrypt(
-                armoredPrivateKey = key,
+                armoredPrivateKey = key.toCharArray(),
                 armoredMessage = armored,
                 signerPublicKeys = emptyList(),
             )
@@ -176,7 +176,7 @@ class PgpEncryptorTest {
      */
     @Test
     fun ownPublicKeyRoundTripsBackIntoAnEncryptionKey() {
-        val own = PgpEncryptor.ownPublicKey(TestPgpPrivateKey.ARMORED_PRIVATE)
+        val own = PgpEncryptor.ownPublicKey(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
 
         val result = PgpEncryptor.encrypt(
             plaintext = "A copy for the Sent folder.\n".toByteArray(Charsets.UTF_8),
@@ -185,7 +185,7 @@ class PgpEncryptorTest {
         )
 
         val decrypted = PgpDecryptor.decrypt(
-            armoredPrivateKey = TestPgpPrivateKey.ARMORED_PRIVATE,
+            armoredPrivateKey = TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray(),
             armoredMessage = (result as EncryptResult.Ok).armored,
             signerPublicKeys = emptyList(),
         )

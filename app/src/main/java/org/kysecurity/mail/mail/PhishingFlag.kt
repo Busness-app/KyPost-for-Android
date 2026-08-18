@@ -16,10 +16,6 @@ const val PHISHING_KEYWORD = "\$Phishing"
 
 /**
  * Reports whether a message carries the phishing flag.
- *
- * Case-insensitive because IMAP keywords are: a server may echo back
- * `$phishing` for a keyword the poller set as `$Phishing`, and a case-sensitive
- * check would silently drop the warning on precisely the mail it exists for.
  */
 fun isFlaggedPhishing(keywords: Set<String>): Boolean =
     keywords.any { it.trim().equals(PHISHING_KEYWORD, ignoreCase = true) }

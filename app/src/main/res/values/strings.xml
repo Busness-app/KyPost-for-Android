@@ -113,6 +113,11 @@
     <string name="email_pgp_signature_key_changed">Signing Key Mismatch</string>
     <string name="email_row_pgp_failed_description">Encrypted, couldn\'t be decrypted: %1$s</string>
     <string name="attachment_downloading">Downloading %1$s…</string>
+    <string name="email_attachments_label_tap_to_view">Attachments — tap to open</string>
+    <string name="email_attachments_label_tap_to_view_hold_to_save">Attachments — tap to open, hold to save</string>
+    <string name="attachment_save_confirm_title">Save to Downloads?</string>
+    <string name="attachment_save_confirm_message">“%1$s” will be written to your Downloads folder, outside KyPost. Other apps on this device can read it there, and a KyPost security wipe deletes it only on a best-effort basis.\n\nTapping the attachment opens it without saving anything.</string>
+    <string name="attachment_save_confirm_positive">Save</string>
     <string name="attachment_opening">Opening %1$s…</string>
     <string name="attachment_saved">Saved %1$s to Downloads</string>
     <string name="attachment_save_failed">Couldn\'t save %1$s</string>
@@ -420,6 +425,14 @@
     <string name="security_wiped_notice">Too many wrong PIN attempts. Local data on this device has been erased.</string>
     <string name="security_wipe_incomplete_notice">Too many wrong PIN attempts. Erasing local data did not finish; it will be retried when the app next starts.</string>
     <string name="security_wipe_incomplete_final_notice">Erasing local data did not finish and will not be retried automatically. Some data may still be on this device — reinstall the app to remove it.</string>
+    <string name="security_disable_lock_unwrap_failed">KyPost could not unlock this device’s stored pairing credential, so the lock was left on. Nothing was deleted. Unpair and pair this device again, then try turning the lock off.</string>
+    <string name="security_wipe_threshold_button">Erase after: %1$s</string>
+    <string name="security_wipe_threshold_never">Never erase</string>
+    <string name="security_wipe_threshold_dialog_title">Erase after wrong PINs</string>
+    <string name="security_wipe_threshold_dialog_message">After this many wrong PINs in a row, KyPost erases the mail and contacts cached on this device, removes the contacts it synced to your phone, and unpairs this device. None of it can be recovered — KyPost deliberately keeps no backup.\n\nEach wrong PIN after the second one also delays the next attempt, up to an hour, so reaching the limit takes most of a day.</string>
+    <string name="security_wipe_threshold_intro">What happens after repeated wrong PINs. Erasing protects a lost or stolen phone; turning it off protects you from someone who just wants to cause damage.</string>
+    <string name="security_credential_reset_title">Stored credentials were reset</string>
+    <string name="security_credential_reset_message">This device’s secure storage could no longer be read, so KyPost had to reset it. This usually happens after a change to the device’s screen lock or a system update.\n\nAnything that was stored there is gone: you may need to pair this device again, set your KyPost PIN again, and re-enrol this device for encrypted mail. No mail or contacts were deleted.</string>
     <string name="security_wipe_blocked_title">Manual recovery required</string>
     <string name="security_wipe_blocked_close">Close</string>
     <string name="security_verifier_unavailable">This device\'s secure key store has changed, so your PIN can no longer be checked. This attempt was not counted. Reinstall the app to set it up again.</string>
@@ -446,6 +459,7 @@
     <string name="mfa_auth_title">Confirm it\'s you</string>
     <string name="mfa_auth_subtitle">Authenticate to approve or deny this sign-in</string>
     <string name="mfa_auth_required">Authentication is required to answer a sign-in request</string>
+    <string name="mfa_approve_needs_device_lock">This device has no screen lock or PIN, so a sign-in cannot be approved from it — anyone holding the phone could. You can still deny this request. Set a device screen lock, or a KyPost PIN under Security, to approve sign-ins here.</string>
     <string name="mfa_auth_subtitle_pin_required">Enter your app PIN. Secure messaging is on, so only your PIN can unlock the credential this device answers with.</string>
     <string name="mfa_challenge_unavailable">This sign-in request is no longer available. It expired, it was already answered, or newer requests replaced it. Start the sign-in again.</string>
     <string name="mfa_respond_not_paired">Not paired with a server</string>
@@ -581,4 +595,8 @@
          user who creates their identity a week after pairing still finds the entry where this said
          it would be. -->
     <string name="push_pairing_encryption_hint">If your account uses encrypted mail, you can set this device up for it in Settings → Security.</string>
+    <plurals name="security_wipe_threshold_attempts">
+        <item quantity="one">%1$d wrong PIN</item>
+        <item quantity="other">%1$d wrong PINs</item>
+    </plurals>
 </resources>

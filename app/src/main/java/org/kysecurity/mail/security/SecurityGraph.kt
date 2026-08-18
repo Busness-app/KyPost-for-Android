@@ -8,12 +8,6 @@ class SecurityGraph(context: Context) {
 
     /**
      * The single [AppLockStore] for the process.
-     *
-     * Nine ad-hoc `AppLockStore(context)` constructions used to exist — two of them in the same
-     * function ([org.kysecurity.mail.push.PushRepository.savePairing]) — and each one builds its own
-     * `MasterKey` and `EncryptedSharedPreferences`, meaning a Keystore access and a Tink keyset
-     * load apiece. [org.kysecurity.mail.push.SecurePairingStore]'s KDoc already diagnosed exactly this
-     * pattern for the pairing store and fixed it there; the same reasoning applies here.
      */
     val appLockStore = AppLockStore(appContext)
 

@@ -14,13 +14,6 @@ private const val COORDINATE_BYTES = 32
  * disagreement does not fail loudly — it fails as "the codes never match" on every honest
  * enrollment, which the browser reports to the user as *"the key this server gave the browser is
  * not the key on that device"*. An encoding bug arrives dressed as an active attack.
- *
- * Two cases [BigInteger.toByteArray] gets wrong for this purpose, both handled here:
- *  - **33 bytes with a leading `0x00` sign byte**, whenever the coordinate's top bit is set —
- *    roughly half of all real keys. The sign byte must be stripped, not encoded.
- *  - **Fewer than 32 bytes**, for a coordinate with leading zeros. It must be left-padded, not
- *    right-aligned or emitted short. Occurs in about one random key in 128, which is why an
- *    instrumented test over generated keys effectively never exercises it.
  */
 internal fun sec1UncompressedPoint(x: BigInteger, y: BigInteger): ByteArray =
     byteArrayOf(0x04) + coordinate(x) + coordinate(y)

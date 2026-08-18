@@ -81,24 +81,6 @@ internal fun parseDeviceEnvelope(json: String): DeviceEnvelopeFields? = runCatch
  * Binds the sealing to this device and this identity, as **length-prefixed** fields.
  *
  * `info || uint16BE(len(deviceId)) || deviceId || uint16BE(len(fingerprint)) || fingerprint`
- *
- * It used to be `info|deviceId|fingerprint` — unescaped pipe concatenation, which is ambiguous: an
- * envelope sealed under (deviceId = "dev|BADC0FFEE", fp = "0123...") produces byte-identical AAD to
- * one sealed under (deviceId = "dev", fp = "BADC0FFEE|0123..."), and each opens under the other.
- * That was not exploitable as it stood — cross-device replay already fails at the HKDF, whose salt is
- * this device's own public key, and two fixed-length hex fingerprints cannot collide across the
- * boundary — but it is a latent structural weakness, and Matrix uses a structured transcript rather
- * than a delimiter precisely because this class produced real key-binding CVEs there. Length
- * prefixing removes the class rather than arguing about reachability, and it costs two bytes a field.
- *
- * Normalises and validates [pgpFingerprint] rather than trusting the caller. The requirement used to
- * be a KDoc comment, and the repository's only fingerprint producer — [PgpFingerprint.compute], via
- * `ownFingerprintFromBootstrap` — returns *space-grouped* hex, while the browser strips whitespace
- * before building its AAD. So the natural implementation of the caller produced an AAD that could
- * never authenticate, and the design's error table turns that into "hostile or stale, no retry",
- * which the browser reports as *"the key this server gave the browser is not the key on that
- * device"*. A formatting bug arriving as a substituted-key alarm trains users to dismiss the one
- * alarm this feature has. A doc comment is not a contract across three implementations.
  */
 internal fun deviceEnvelopeAad(deviceId: String, pgpFingerprint: String): ByteArray {
     val fingerprint = pgpFingerprint.uppercase().filterNot { it.isWhitespace() }
@@ -128,13 +110,6 @@ internal fun deviceEnvelopeAad(deviceId: String, pgpFingerprint: String): ByteAr
  *
  * [ownRawPublicKey] is the HKDF salt — this device's own raw 65-byte SEC1 point, not the ephemeral
  * one in the envelope.
- *
- * Returns **bytes, not a `String`**, for two reasons. A JVM `String` cannot be zeroed, and design
- * decision 3 requires the caller to hold the armored key only until the app locks and then clear
- * it — impossible for a value whose backing array is immutable and shared. And `String(bytes, UTF_8)`
- * is silently lossy: malformed bytes become U+FFFD and the function returns non-null, which reads as
- * success while handing back different bytes than were sealed. The intermediate key material is
- * zeroed here; the plaintext's lifetime belongs to the caller.
  */
 internal fun openDeviceEnvelope(
     sharedSecret: ByteArray,

@@ -37,6 +37,12 @@ object QuotedHtmlSanitizer {
      * `javascript:` and `data:` URLs, and it does not permit `style`, so CSS-based tricks go too.
      */
     private val safelist: Safelist = Safelist.relaxed()
+        // `relaxed()` permits <img src="http://…">, and the composer WebView has network access and
+        // JavaScript on. Quoting a message into a reply therefore fired the sender's tracking
+        // beacon — reporting the reply as it was being written — in a client that goes to real
+        // trouble to block exactly that in the reader (`blockNetworkLoads = true`, plus the
+        // opt-in "Show images" bar). The reader's posture has to hold in the composer too.
+        .removeTags("img")
 
     fun sanitize(html: String): String {
         if (html.isBlank()) return ""

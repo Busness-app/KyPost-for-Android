@@ -26,7 +26,7 @@ class CredentialCipherTest {
     @Test
     fun wrap_thenUnwrap_roundTripsWithCorrectKey() {
         val salt = CredentialCipher.randomSalt()
-        val keys = CredentialCipher.deriveKeys("123456", salt, pepper)
+        val keys = CredentialCipher.deriveKeys("123456".toCharArray(), salt, pepper)
         val wrapped = CredentialCipher.wrap("top-secret-device-secret", keys.current)
 
         assertEquals("top-secret-device-secret", CredentialCipher.unwrap(wrapped, keys.current))
@@ -35,8 +35,8 @@ class CredentialCipherTest {
     @Test
     fun unwrap_returnsNull_withWrongPinDerivedKey() {
         val salt = CredentialCipher.randomSalt()
-        val correct = CredentialCipher.deriveKeys("123456", salt, pepper)
-        val wrong = CredentialCipher.deriveKeys("098231", salt, pepper)
+        val correct = CredentialCipher.deriveKeys("123456".toCharArray(), salt, pepper)
+        val wrong = CredentialCipher.deriveKeys("098231".toCharArray(), salt, pepper)
         val wrapped = CredentialCipher.wrap("top-secret-device-secret", correct.current)
 
         assertNull(CredentialCipher.unwrap(wrapped, wrong.current))
@@ -45,9 +45,15 @@ class CredentialCipherTest {
     @Test
     fun unwrap_returnsNull_forTamperedCiphertext() {
         val salt = CredentialCipher.randomSalt()
-        val keys = CredentialCipher.deriveKeys("123456", salt, pepper)
+        val keys = CredentialCipher.deriveKeys("123456".toCharArray(), salt, pepper)
         val wrapped = CredentialCipher.wrap("top-secret-device-secret", keys.current)
-        val tampered = wrapped.copy(ciphertext = wrapped.ciphertext.also { it[0] = it[0].inc() })
+        // The old `wrapped.copy(...)` mutated `wrapped.ciphertext` in place and then "copied" it,
+        // so it was testing the same array twice over. Explicit, and no longer relying on a
+        // generated `copy` that WrappedSecret deliberately no longer has.
+        val tampered = WrappedSecret(
+            iv = wrapped.iv,
+            ciphertext = wrapped.ciphertext.copyOf().also { it[0] = it[0].inc() },
+        )
 
         assertNull(CredentialCipher.unwrap(tampered, keys.current))
     }
@@ -55,7 +61,7 @@ class CredentialCipherTest {
     @Test
     fun currentKey_differsFromLegacyKey_soAnExtractedBlobIsNotPinOnlyBruteForceable() {
         val salt = CredentialCipher.randomSalt()
-        val keys = CredentialCipher.deriveKeys("123456", salt, pepper)
+        val keys = CredentialCipher.deriveKeys("123456".toCharArray(), salt, pepper)
 
         assertFalse(keys.current.encoded.contentEquals(keys.legacy.encoded))
     }
@@ -65,7 +71,7 @@ class CredentialCipherTest {
         // The migration path: a v1 blob was wrapped with the bare PBKDF2 output and must stay
         // readable so rewrapPairingIfNeeded can move it onto the peppered key.
         val salt = CredentialCipher.randomSalt()
-        val keys = CredentialCipher.deriveKeys("123456", salt, pepper)
+        val keys = CredentialCipher.deriveKeys("123456".toCharArray(), salt, pepper)
         val legacyWrapped = CredentialCipher.wrap("legacy-secret", keys.legacy)
 
         assertEquals("legacy-secret", CredentialCipher.unwrap(legacyWrapped, keys.legacy))
@@ -77,8 +83,8 @@ class CredentialCipherTest {
         // Stands in for the real property: the pepper key never leaves the device's keystore, so
         // an extracted blob plus a known PIN is not enough to recover the secret off-device.
         val salt = CredentialCipher.randomSalt()
-        val onDevice = CredentialCipher.deriveKeys("123456", salt, FixedPepper("device-a".toByteArray()))
-        val attacker = CredentialCipher.deriveKeys("123456", salt, FixedPepper("attacker".toByteArray()))
+        val onDevice = CredentialCipher.deriveKeys("123456".toCharArray(), salt, FixedPepper("device-a".toByteArray()))
+        val attacker = CredentialCipher.deriveKeys("123456".toCharArray(), salt, FixedPepper("attacker".toByteArray()))
         val wrapped = CredentialCipher.wrap("top-secret-device-secret", onDevice.current)
 
         assertNull(CredentialCipher.unwrap(wrapped, attacker.current))

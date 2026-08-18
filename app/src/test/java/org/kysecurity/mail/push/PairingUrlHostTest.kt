@@ -1,6 +1,7 @@
 package org.kysecurity.mail.push
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -81,5 +82,52 @@ class PairingUrlHostTest {
         assertTrue(sameOrigin("https://relay.example.com/api", "https://relay.example.com"))
         assertTrue(!sameOrigin("https://good@relay.example.com/api", "https://relay.example.com"))
         assertTrue(!sameOrigin("https://relay.example.com/api", "https://good@relay.example.com"))
+    }
+
+    /**
+     * Validation and connection now use the *same* parser (OkHttp's `HttpUrl`).
+     *
+     * They used to differ: every check ran on `java.net.URI` while the request was built from
+     * `HttpUrl`. Two parsers either side of a trust decision is the classic shape of a
+     * parser-differential bypass, and there was no reason for it.
+     */
+    @Test
+    fun rejectsBaseUrlsCarryingAQueryOrFragment() {
+        // Appending a path to either of these produces a request to somewhere other than the path
+        // the caller asked for — `https://relay.example?x=/api/register` requests `/`.
+        assertNull(pairingUrlHost("https://relay.example?x=1"))
+        assertNull(pairingUrlHost("https://relay.example#frag"))
+    }
+
+    @Test
+    fun endpointsResolveAgainstTheParsedBaseRatherThanStringConcatenation() {
+        assertEquals(
+            "https://relay.example/api/register",
+            pairingEndpoint("https://relay.example", "/api/register").toString(),
+        )
+        // A sub-path base keeps its prefix, with exactly one separator either way.
+        assertEquals(
+            "https://relay.example/kypost/api/register",
+            pairingEndpoint("https://relay.example/kypost", "/api/register").toString(),
+        )
+        assertEquals(
+            "https://relay.example/kypost/api/register",
+            pairingEndpoint("https://relay.example/kypost/", "/api/register").toString(),
+        )
+    }
+
+    @Test
+    fun endpointsRefuseAnyUrlPairingUrlHostRefuses() {
+        assertNull(pairingEndpoint("https://mail.trusted-corp.com@evil.tld", "/api/register"))
+        assertNull(pairingEndpoint("http://relay.example", "/api/register"))
+    }
+
+    @Test
+    fun sameOriginComparesSchemeHostAndEffectivePort() {
+        assertTrue(sameOrigin("https://relay.example/api/x", "https://relay.example"))
+        assertTrue(sameOrigin("https://relay.example:443/api/x", "https://relay.example"))
+        assertFalse(sameOrigin("https://relay.example:8443", "https://relay.example"))
+        assertFalse(sameOrigin("https://evil.tld", "https://relay.example"))
+        assertFalse(sameOrigin("https://mail.relay.example@evil.tld", "https://relay.example"))
     }
 }

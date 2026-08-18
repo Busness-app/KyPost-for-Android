@@ -31,6 +31,7 @@ import kotlinx.coroutines.tasks.await
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.kysecurity.mail.security.LockedActivity
+import org.kysecurity.mail.security.showSecurely
 
 /**
  * "PGP Key Signing": a single screen that shows the user's own PGP QR code (minted via
@@ -160,12 +161,6 @@ class PgpKeyActivity : LockedActivity() {
     /**
      * Shows the user their own fingerprint beside the QR, so that when the other device asks them
      * to "confirm this fingerprint matches", they have something on screen to compare it to.
-     *
-     * Sourced from `GET /api/pgp/bootstrap` and hashed locally — see [ownFingerprintFromBootstrap]
-     * for why the self-contact's `pgpKey` column, which this used to read, is empty for essentially
-     * every user and made this line read "unavailable" always. Not sourced from the QR token just
-     * minted either: `/api/pgp/qr/key` is single-use server-side, so fetching our own key with it
-     * would burn the code the other person is about to scan.
      */
     private fun renderOwnFingerprint(serverUrl: String, deviceId: String, deviceSecret: String) {
         lifecycleScope.launch {
@@ -307,7 +302,8 @@ class PgpKeyActivity : LockedActivity() {
             )
             .setPositiveButton(R.string.pgp_qr_scan_save_new_button) { _, _ -> createNewContactFromCard(key) }
             .setNegativeButton(R.string.pgp_qr_scan_save_existing_button) { _, _ -> launchContactPicker() }
-            .show()
+            .create()
+            .showSecurely()
     }
 
     /**
@@ -337,7 +333,8 @@ class PgpKeyActivity : LockedActivity() {
                 .setOnCancelListener {
                     if (continuation.isActive) continuation.resumeWith(Result.success(false))
                 }
-                .show()
+                .create()
+                .showSecurely()
         }
 
     private fun launchContactPicker() {

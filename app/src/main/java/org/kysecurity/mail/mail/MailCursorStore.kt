@@ -113,12 +113,6 @@ class MailCursorStore(
         /**
          * Hashes the folder into the key name instead of interpolating it, which fixes two things.
          *
-         * Folder paths are unvalidated server strings, and the old scheme used one prefix that was
-         * a prefix of the other (`inbox_cursor_` / `inbox_cursor_sub_`), so a folder named
-         * `sub_INBOX` produced a key name identical to INBOX's scope marker — same name, same type,
-         * same file, and `Preferences.Key` equality is on the name alone. That silently corrupted
-         * both folders' cursors and could write the subscriber id where a cursor belonged.
-         *
          * It also stopped the key names from spelling out the user's folder taxonomy (`Archive/
          * Legal/Asylum-Case`) in a plaintext DataStore. The prefixes are now non-prefixing, so no
          * hash value can collide across the two roles either.

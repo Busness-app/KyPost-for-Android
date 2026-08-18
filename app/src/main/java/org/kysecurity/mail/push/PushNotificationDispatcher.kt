@@ -22,16 +22,6 @@ object PushNotificationDispatcher : org.kysecurity.mail.ProcessScopedState {
     /**
      * Repeat MFA challenges inside this window post silently instead of alerting again — the
      * client-side half of MFA-fatigue resistance (the server caps push rate; see mfaPushLimiter).
-     *
-     * Thirty seconds, not the five minutes this used to be. Five minutes silenced the second
-     * genuine sign-in prompt of any session: combined with `VISIBILITY_SECRET`, which keeps MFA
-     * rows off the lock screen by design, a suppressed alert on a pocketed phone is no sound and
-     * nothing to see, i.e. indistinguishable from the notification never arriving. It was
-     * calibrated as if a retry and a flood were the same event. They are not — a flood arrives
-     * many times a second, and a human retrying a sign-in takes tens of seconds — so the window
-     * only has to be long enough to collapse the former. [MFA_BURST_THRESHOLD] remains the
-     * defence that actually bounds a flood, and it is the one that does not depend on the relay
-     * being honest.
      */
     private const val MFA_ALERT_COOLDOWN_MS = 30 * 1000L
 
@@ -51,12 +41,6 @@ object PushNotificationDispatcher : org.kysecurity.mail.ProcessScopedState {
     /**
      * The notification id each challenge was actually posted under.
      *
-     * [cancelMfaChallenge] used to recompute `mfaNotificationId(challengeId)`, which is only correct
-     * outside a burst — during one, every challenge shares [MFA_BURST_NOTIFICATION_ID]. So answering
-     * or burning a challenge mid-flood cancelled a notification that had never been posted and left
-     * the burst row sitting in the shade pointing at a dead challenge. That is a bug that exists
-     * *only* during an MFA-fatigue flood, i.e. only in the scenario this whole feature is for.
-     *
      * Bounded by the same ceiling as the tracker: entries are removed on cancel, but a challenge
      * that is never answered would otherwise linger for the life of the process.
      */
@@ -66,13 +50,6 @@ object PushNotificationDispatcher : org.kysecurity.mail.ProcessScopedState {
 
     /**
      * The challenge the burst summary currently points at, or null when no burst row is showing.
-     *
-     * A burst posts ONE notification whose `PendingIntent` is rewritten (`FLAG_UPDATE_CURRENT`) to
-     * the newest challenge each time. The previous occupant is then unreachable from the UI — but it
-     * stayed marked deliverable in [MfaChallengeTracker] for five minutes, so up to
-     * [MAX_TRACKED_CHALLENGES] challenges were answerable while exactly one had ever been shown.
-     * [MfaApprovalActivity] treats "tracked" as "the user was really shown this", and that invariant
-     * was simply false in burst mode. Revoking the outgoing one keeps it true.
      */
     @Volatile
     private var burstChallengeId: String? = null
@@ -165,14 +142,6 @@ object PushNotificationDispatcher : org.kysecurity.mail.ProcessScopedState {
     /**
      * Posts a new-mail notification, with lock-screen redaction delegated to the framework.
      *
-     * This used to decide redaction itself, from [org.kysecurity.mail.security.AppLockManager.isLockedNow],
-     * and the result was that mail notifications were blanked permanently rather than "while
-     * locked". `AppLockManager._locked` is initialised to `isLockEnabled()`, so a fresh process
-     * starts out locked — and FCM delivery *is* routinely a fresh process. Anyone with "Require
-     * Unlock to Open" on therefore hit the redacted branch on essentially every delivery, and
-     * because the title and body are baked in at post time, unlocking afterwards never restored
-     * them: the row read "New activity — unlock to view" for its whole life.
-     *
      * [NotificationCompat.Builder.setPublicVersion] is the framework's mechanism for exactly this
      * decision, and it is a better one on both sides. The system swaps the two forms live off
      * *keyguard* state, so the redacted form shows while the phone is locked (which is the threat
@@ -182,12 +151,6 @@ object PushNotificationDispatcher : org.kysecurity.mail.ProcessScopedState {
      * "Require Unlock to Open" is enforced where it was always actually enforced, on the tap target:
      * [MainActivity] extends [org.kysecurity.mail.security.LockedActivity], which finishes it and shows
      * the unlock screen.
-     *
-     * The stronger setting — "Require unlock to receive push/MFA" — is enforced *here*, by
-     * [contentSuppressedWhileLocked]. Its KDoc used to say it "works by not delivering the push at
-     * all, upstream of here"; no such upstream check existed anywhere in the app, so the setting
-     * suppressed nothing and sender plus subject were posted in full whenever the phone's keyguard
-     * was unlocked but the app lock was engaged — the exact window the user turned it on to close.
      */
     fun show(context: Context, payload: PushPayload) {
         ensureChannel(context)
@@ -202,13 +165,13 @@ object PushNotificationDispatcher : org.kysecurity.mail.ProcessScopedState {
         if (contentSuppressedWhileLocked(context)) {
             postNotification(
                 context,
-                stableNotificationId("mail-${payload.messageId}"),
+                uniqueNotificationId("mail-${payload.messageId}"),
                 redactedNotification(context, payload),
             )
             return
         }
 
-        val notificationId = stableNotificationId("mail-${payload.messageId}")
+        val notificationId = uniqueNotificationId("mail-${payload.messageId}")
         val pendingIntent = mailPendingIntent(context, payload, notificationId)
 
         val body = PushPayloadParser.body(payload)
@@ -251,7 +214,7 @@ object PushNotificationDispatcher : org.kysecurity.mail.ProcessScopedState {
     /** That something arrived, and nothing about what. Used as the lock-screen public version
      *  always, and as the entire notification when [contentSuppressedWhileLocked]. */
     private fun redactedNotification(context: Context, payload: PushPayload): android.app.Notification {
-        val notificationId = stableNotificationId("mail-${payload.messageId}")
+        val notificationId = uniqueNotificationId("mail-${payload.messageId}")
         return NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle(context.getString(R.string.app_name))
@@ -291,10 +254,6 @@ object PushNotificationDispatcher : org.kysecurity.mail.ProcessScopedState {
      * apparatus wholesale, and bypassing the [MfaChallengeTracker] check as well, since the
      * receiver they invoked never consulted it. The decision now only happens inside
      * [MfaApprovalActivity], behind re-authentication.
-     *
-     * Each challenge also gets its own notification id. Distinct challenges used to be coalesced
-     * onto one shared id, so answering either one cancelled the notification for both and the
-     * second challenge silently disappeared — in a feature built to resist MFA fatigue.
      */
     fun showMfaChallenge(context: Context, payload: MfaChallengePayload) {
         val tracker = PushRuntime.graph(context).mfaChallengeTracker
@@ -487,6 +446,42 @@ object PushNotificationDispatcher : org.kysecurity.mail.ProcessScopedState {
      * `FLAG_UPDATE_CURRENT` rewrites the survivor's extras — so the tap opens the wrong message.
      * SHA-256 truncated to 31 bits stays positive (some launchers dislike negative ids).
      */
+    /**
+     * Ids handed out so far, so a hash collision is detected rather than silently replacing another
+     * message's row in the shade.
+     *
+     * `stableNotificationId` truncates a hash to `Int`; two distinct messages collide often enough
+     * to matter on a busy mailbox, and the symptom — a notification that vanishes when an unrelated
+     * one arrives — is indistinguishable from the app being broken. Bounded, because this is
+     * process-scoped bookkeeping on a delivery path.
+     */
+    private val assignedIds = object : LinkedHashMap<Int, String>(16, 0.75f, false) {
+        override fun removeEldestEntry(eldest: Map.Entry<Int, String>): Boolean = size > MAX_TRACKED_CHALLENGES * 8
+    }
+
+    /** Records [key] against [id] and returns an id no other live key is using. */
+    private fun uniqueNotificationId(key: String): Int = synchronized(assignedIds) {
+        var id = stableNotificationId(key)
+        var attempt = 0
+        while (true) {
+            val existing = assignedIds[id]
+            if (existing == null || existing == key) {
+                assignedIds[id] = key
+                return id
+            }
+            // Deterministic probe, so the same key keeps resolving to the same id for as long as
+            // the colliding one is still tracked — cancelling a notification has to find it again.
+            attempt++
+            id = stableNotificationId("$key#$attempt")
+            if (attempt > 8) {
+                android.util.Log.e("PushNotificationDispatcher", "Could not find a free notification id for $key")
+                return id
+            }
+        }
+        @Suppress("UNREACHABLE_CODE")
+        id
+    }
+
     internal fun stableNotificationId(key: String): Int {
         val digest = java.security.MessageDigest.getInstance("SHA-256").digest(key.toByteArray())
         return ((digest[0].toInt() and 0x7F) shl 24) or

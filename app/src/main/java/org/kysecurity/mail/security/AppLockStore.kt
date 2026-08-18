@@ -8,8 +8,6 @@ package org.kysecurity.mail.security
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Base64
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 
 private const val ENCRYPTED_PREFS_FILE_NAME = "app_lock_secure"
 
@@ -30,6 +28,12 @@ private const val KEY_LOCKOUT_UNTIL_ELAPSED = "lockout_until_elapsed_ms"
 private const val KEY_LOCKOUT_DURATION = "lockout_duration_ms"
 private const val KEY_CREDENTIAL_SALT = "credential_salt"
 
+/** Absent means "never chosen", which reads as [LockoutPolicy.DEFAULT_WIPE_THRESHOLD]. The
+ *  sentinel below is how "the user turned the wipe off" is stored, since absent already means
+ *  something else. */
+private const val KEY_WIPE_AFTER_ATTEMPTS = "wipe_after_attempts"
+private const val WIPE_DISABLED = -1
+
 /** Everything [AppLockManager] needs from persisted app-lock state, kept as an interface so
  *  [AppLockManager] can be unit-tested against a fake instead of a real Context/Keystore. */
 interface AppLockState {
@@ -39,8 +43,8 @@ interface AppLockState {
     fun setBiometricEnabled(enabled: Boolean)
     fun isCredentialPinGateEnabled(): Boolean
     fun setCredentialPinGateEnabled(enabled: Boolean)
-    fun setPin(pin: String)
-    fun verifyPin(pin: String): Boolean
+    fun setPin(pin: CharArray)
+    fun verifyPin(pin: CharArray): Boolean
     fun hasPin(): Boolean
     fun incrementFailedAttempts(): Int
     fun resetFailedAttempts()
@@ -55,6 +59,17 @@ interface AppLockState {
     fun lockoutUntilElapsedMs(): Long
     fun lockoutDurationMs(): Long
     fun setLockout(untilElapsedMs: Long, durationMs: Long)
+
+    /**
+     * How many consecutive wrong PINs trigger [SecurityWipe], or null when the user has turned the
+     * wipe off.
+     *
+     * Lives in the encrypted store rather than [AppLockSettings] deliberately: it is the one
+     * setting whose value decides whether the user's mail gets destroyed, so it must not be
+     * writable by anything that can write a plain preferences file.
+     */
+    fun wipeAfterAttempts(): Int?
+    fun setWipeAfterAttempts(attempts: Int?)
 
     /** PBKDF2 salt for [CredentialCipher.deriveKeys], generated once on first use and persisted —
      *  regenerating it per-unlock would make any secret already wrapped under the old key
@@ -121,7 +136,7 @@ class AppLockStore(context: Context) : AppLockState {
         prefs.edit().putBoolean(KEY_CREDENTIAL_PIN_GATE_ENABLED, enabled).commit()
     }
 
-    override fun setPin(pin: String) {
+    override fun setPin(pin: CharArray) {
         val hash = PinHasher.hash(pin)
         prefs.edit()
             .putString(KEY_PIN_SALT, Base64.encodeToString(hash.salt, Base64.NO_WRAP))
@@ -132,7 +147,7 @@ class AppLockStore(context: Context) : AppLockState {
 
     override fun hasPin(): Boolean = prefs.contains(KEY_PIN_HASH)
 
-    override fun verifyPin(pin: String): Boolean {
+    override fun verifyPin(pin: CharArray): Boolean {
         val salt = prefs.getString(KEY_PIN_SALT, null)?.let { Base64.decode(it, Base64.NO_WRAP) } ?: return false
         val hash = prefs.getString(KEY_PIN_HASH, null)?.let { Base64.decode(it, Base64.NO_WRAP) } ?: return false
         val version = prefs.getInt(KEY_PIN_HASH_VERSION, PinHasher.VERSION_LEGACY_UNPEPPERED)
@@ -171,10 +186,31 @@ class AppLockStore(context: Context) : AppLockState {
             .commit()
     }
 
+    override fun wipeAfterAttempts(): Int? {
+        val stored = prefs.getInt(KEY_WIPE_AFTER_ATTEMPTS, LockoutPolicy.DEFAULT_WIPE_THRESHOLD)
+        return if (stored == WIPE_DISABLED) null else stored
+    }
+
+    override fun setWipeAfterAttempts(attempts: Int?) {
+        prefs.edit().putInt(KEY_WIPE_AFTER_ATTEMPTS, attempts ?: WIPE_DISABLED).commit()
+    }
+
     override fun credentialSalt(): ByteArray? =
         prefs.getString(KEY_CREDENTIAL_SALT, null)?.let { Base64.decode(it, Base64.NO_WRAP) }
 
+    /**
+     * Writes the credential salt, and **refuses to overwrite an existing one**.
+     *
+     * A second write is always a bug: every secret already wrapped under the old salt becomes
+     * permanently undecryptable the moment it lands. [AppLockManager] now serialises the only two
+     * paths that generate one, so this should be unreachable — which is the point of asserting it
+     * here rather than trusting that to stay true.
+     */
     override fun setCredentialSalt(salt: ByteArray) {
+        if (prefs.contains(KEY_CREDENTIAL_SALT)) {
+            android.util.Log.e("AppLockStore", "Refusing to overwrite an existing credential salt")
+            return
+        }
         prefs.edit().putString(KEY_CREDENTIAL_SALT, Base64.encodeToString(salt, Base64.NO_WRAP)).commit()
     }
 
@@ -189,31 +225,12 @@ class AppLockStore(context: Context) : AppLockState {
         prefs.edit().clear().commit()
     }
 
-    private fun buildEncryptedPrefs(appContext: Context): SharedPreferences {
-        return try {
-            createEncryptedPrefs(appContext)
-        } catch (e: Exception) {
-            // The Keystore-backed key can become unable to decrypt the stored keyset (e.g. OS-level
-            // key invalidation), and this runs in the init path — an uncaught failure here crashes
-            // the app on every launch. Recreate the file empty so the app is usable, but do NOT
-            // treat that as "no lock was ever set": the tripwire above still says one was, and
-            // SecurityWipe.enforceTripwire destroys the cached data before it can be read.
-            android.util.Log.e("AppLockStore", "Encrypted app-lock store unreadable, resetting", e)
-            appContext.deleteSharedPreferences(ENCRYPTED_PREFS_FILE_NAME)
-            createEncryptedPrefs(appContext)
+    /** See [openEncryptedPrefs]: resets only on an undecryptable keyset, never on a transient I/O
+     *  failure. A reset here does NOT mean "no lock was ever set" — the plain tripwire above still
+     *  says one was, and [SecurityWipe.enforceTripwire] destroys the cached data before it can be
+     *  read. */
+    private fun buildEncryptedPrefs(appContext: Context): SharedPreferences =
+        openEncryptedPrefs(appContext, ENCRYPTED_PREFS_FILE_NAME) {
+            android.util.Log.e("AppLockStore", "Encrypted app-lock store keyset is undecryptable", it)
         }
-    }
-
-    private fun createEncryptedPrefs(appContext: Context): SharedPreferences {
-        val masterKey = MasterKey.Builder(appContext)
-            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-            .build()
-        return EncryptedSharedPreferences.create(
-            appContext,
-            ENCRYPTED_PREFS_FILE_NAME,
-            masterKey,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-        )
-    }
 }

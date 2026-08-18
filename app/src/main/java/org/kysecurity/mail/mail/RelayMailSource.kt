@@ -54,18 +54,22 @@ class RelayMailSource(
     private val pairingProvider: () -> PairingData?,
     private val cursorProvider: MailCursorProvider,
     private val json: Json = Json { ignoreUnknownKeys = true },
-    // Call.Factory (not the concrete OkHttpClient) so tests can inject a fake without a real
-    // network call or a MockWebServer dependency; OkHttpClient itself satisfies this interface.
+    /**
+     * Call.Factory (not the concrete OkHttpClient) so tests can inject a fake without a real
+     * network call or a MockWebServer dependency; OkHttpClient itself satisfies this interface.
+     *
+     * **In production this is a [org.kysecurity.mail.push.PinnedOrFallbackCallFactory]**, which
+     * re-reads the TLS pin per request and refuses outright once a pin that existed has gone. It
+     * used to be a plain unpinned client plus a separate `pinnedCallFactory: () -> Call.Factory?`
+     * that this class null-coalesced against — so the mail endpoints, which carry every message
+     * body and this device's credential, fell back to bare system-CA trust for any reason the pin
+     * could not be read, silently and permanently. There is one factory now and it owns that
+     * decision; see [org.kysecurity.mail.push.TlsPinState].
+     */
     private val callFactory: Call.Factory = pairingHttpClient(),
-    // Re-read on every call (mirrors pairingProvider above, not a one-time snapshot) so a TLS
-    // pin captured by pairing after this object was constructed — or replaced by a fresh
-    // re-pair — takes effect immediately. Returns null (meaning: fall back to [callFactory]
-    // unpinned) until a pin actually exists, which is exactly [callFactory]'s own default
-    // behavior, so every existing test/call site that doesn't pass this is unaffected.
-    private val pinnedCallFactory: () -> Call.Factory? = { null },
 ) : MailSource {
 
-    private fun effectiveCallFactory(): Call.Factory = pinnedCallFactory() ?: callFactory
+    private fun effectiveCallFactory(): Call.Factory = callFactory
 
     /** Attaches this device's own pairing credentials. A missing deviceId/deviceSecret (not yet
      *  registered) sends blank headers, which the server rejects with 401 — surfaced through the
@@ -223,11 +227,6 @@ class RelayMailSource(
 
     /**
      * Relays ciphertext this device already built, via `POST /api/mail/send-pgp`.
-     *
-     * `subject` and `sentCopyEncrypted` are fixed here rather than taken from the caller. The
-     * subject is the placeholder because the real one is inside the ciphertext; the flag is `true`
-     * because [ClientEncryptedMessage.sentCopy] is defined to be ciphertext, and a copy that does
-     * not claim it is silently dropped server-side.
      */
     override fun sendClientEncrypted(message: ClientEncryptedMessage): MailOutcome<MailSendOutcome> {
         val pairing = pairingProvider() ?: return MailOutcome.Unauthorized("Device is not paired")
@@ -391,14 +390,6 @@ class RelayMailSource(
      * carries `X-Kypost-Device-Secret`, so a pairing persisted by a build predating
      * `NativePairingDeepLinkParser`'s https gate reached this point looking valid.
      *
-     * `network_security_config.xml` is what actually stops those bytes leaving the device, and it
-     * still is — this is the second lock, not the first. It buys two things. The platform refusal
-     * surfaces as an opaque `UnknownServiceException` mapped to `UpstreamFailure`, i.e. "the server
-     * is having problems"; refusing here yields `BadRequest("Server URL is not valid")`, which is
-     * true and points at re-pairing. And it does not depend on the merged manifest — the network
-     * config's own comment warns that any dependency declaring `usesCleartextTraffic="true"` flips
-     * that default silently, which is precisely the kind of change no test would catch.
-     *
      * `sameOrigin` and `pairingUrlHost` both already carry doc comments about re-validating
      * persisted pairings; this was the one consumer that didn't.
      */
@@ -418,27 +409,11 @@ private const val MAX_ATTACHMENT_DOWNLOAD_BYTES = 25L * 1024 * 1024
  *  allocating the whole of an oversized body, which is the out-of-memory kill this bound exists to
  *  prevent.
  *
- *  It THROWS rather than returning the prefix. Returning what it got made "read exactly [limit]
- *  bytes" and "read the first [limit] bytes of a much larger body" indistinguishable, and
- *  [RelayMailSource.downloadAttachment] wrapped both in `MailOutcome.Success` — so an oversized
- *  attachment was saved to Downloads, and carried into a forward, as a silently corrupt prefix. The
- *  old doc justified that with "the caller's checksum/parse will fail", but there is no checksum on
- *  this path and most formats read a truncated file without complaining. Throwing matches
- *  [org.kysecurity.mail.BodySizeLimitInterceptor], which bounds every other response the same way and
- *  for the same stated reason: callers map an IOException to `UpstreamFailure`, and a named failure
- *  beats a mystery.
- *
- *  The read LOOPS. `BufferedSource.read(sink, byteCount)` reads *up to* `byteCount` and returns how
- *  many bytes it actually got; it does not fill. Okio's `RealBufferedSource` — what wraps a real
- *  socket — performs exactly one `source.read(buffer, Segment.SIZE)` when its internal buffer is
- *  empty, so a single call returned at most 8 KiB and every attachment past that arrived silently
- *  truncated, reported as `MailOutcome.Success`.
- *
  *  The unit tests could not see it: `FakeCalls.response()` builds a `Buffer`-backed body, and
  *  `Buffer.read` copies `min(byteCount, size)` from itself in one call with no segment limit. The
  *  fake took a fast path that does not exist on a socket, in exactly the dimension under test. See
  *  `RelayMailSourceTest.downloadAttachment_readsBodiesLargerThanOneOkioSegment`, which drives a
- *  multi-segment body through a non-Buffer source. */
+ */
 internal fun readBounded(body: okhttp3.ResponseBody, limit: Long): ByteArray {
     val source = body.source()
     val buffer = okio.Buffer()

@@ -40,7 +40,6 @@ data class RelayEmailDto(
     // The message's real IMAP keywords. `omitempty` server-side, so an absent
     // key means none. Previously ignored entirely, which meant Email.keywords
     // was synthesised from `label` alone and a keyword the server actually set
-    // — notably the $Phishing anti-phishing flag — could never reach the UI.
     val keywords: List<String> = emptyList(),
     val status: String = "unread",
     val atUtc: String? = null,

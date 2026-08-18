@@ -24,7 +24,7 @@ class EncryptedMessageReaderTest {
 
     @Test
     fun aHeldKeyDecryptsWithoutPrompting() {
-        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE)
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
         val opener = FakeVaultOpener()
         val (r, _) = reader(opener)
 
@@ -86,7 +86,7 @@ class EncryptedMessageReaderTest {
     @Test
     fun aTooLargeMessageSaysSoRatherThanBlamingTheNetwork() {
         val (r, _) = reader(payloads = FakePayloadSource(PgpPayloadResult.TooLarge))
-        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE)
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
 
         assertEquals(ReadOutcome.TooLarge, read(r, unlockIfNeeded = false))
     }
@@ -94,7 +94,7 @@ class EncryptedMessageReaderTest {
     @Test
     fun aFetchFailureIsRetryable() {
         val (r, _) = reader(payloads = FakePayloadSource(PgpPayloadResult.Failed("offline")))
-        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE)
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
 
         assertTrue(read(r, unlockIfNeeded = false) is ReadOutcome.FetchFailed)
     }
@@ -103,18 +103,18 @@ class EncryptedMessageReaderTest {
     fun aFailedDecryptDoesNotClearTheHeldKey() {
         // One bad payload says nothing about the key. Clearing would force a fresh biometric
         // prompt for every later message because of one broken message.
-        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE)
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
         val (r, _) = reader(payloads = FakePayloadSource(successPayload(encrypted = "not a pgp message")))
 
         val outcome = read(r, unlockIfNeeded = false)
 
         assertTrue("expected DecryptFailed, got $outcome", outcome is ReadOutcome.DecryptFailed)
-        assertEquals(TestPgpPrivateKey.ARMORED_PRIVATE, EnrollmentSession.peek())
+        assertEquals(TestPgpPrivateKey.ARMORED_PRIVATE, EnrollmentSession.peekForTest())
     }
 
     @Test
     fun theSignatureVerdictComesFromTheBoundKeyNotTheMessage() {
-        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE)
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
         val (r, _) = reader(payloads = FakePayloadSource(successPayload(signerKeys = emptyList())))
 
         val outcome = read(r, unlockIfNeeded = false) as ReadOutcome.Decrypted
@@ -131,7 +131,7 @@ class EncryptedMessageReaderTest {
         // PgpDecryptor, `valid` stays false, and signatureStateFor maps signed + bound + invalid
         // to INVALID — telling the user that every legitimately signed message from a
         // correspondent they DO hold a key for is an impersonation.
-        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE)
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
         val bound = SignerKey(
             addresses = listOf("bob@example.com"),
             // NOT ARMORED_PRIVATE: PGPPublicKeyRingCollection (what both PgpDecryptor's one-pass
@@ -167,7 +167,7 @@ class EncryptedMessageReaderTest {
         // signer's key regardless of which address a SignerKey entry claims it is bound to. Offering
         // it would spuriously verify no matter what `.addresses` says, which is exactly the false
         // positive this test exists to catch.
-        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE)
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
         val otherContact = SignerKey(
             addresses = listOf("eve@evil.example"),
             publicKey = TestPgpKey.ARMORED,
@@ -194,7 +194,7 @@ class EncryptedMessageReaderTest {
         // observe — and must not claim to prove — that the conflicted key's material was kept out
         // of the crypto layer. See the KDoc on the `offeredKeys` filter in
         // EncryptedMessageReader.kt for why the filter still stays despite being unobservable here.
-        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE)
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
         val conflicted = SignerKey(
             addresses = listOf("bob@example.com"),
             // "" per SignerKey's own KDoc: a conflicted entry carries no key material.
@@ -225,7 +225,7 @@ class EncryptedMessageReaderTest {
         // and this would come back NONE ("not signed") for a message that plainly is signed, and a
         // conflicted-key case (below) would silently lose its KEY_CHANGED warning behind the same
         // NONE. Nothing else in this suite reaches this fallback.
-        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE)
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
         val (r, _) = reader(payloads = FakePayloadSource(detachedSignedPayload(signerKeys = emptyList())))
 
         val outcome = read(r, unlockIfNeeded = false) as ReadOutcome.Decrypted
@@ -235,7 +235,7 @@ class EncryptedMessageReaderTest {
 
     @Test
     fun aDetachedSignatureFromABoundKeyVerifies() {
-        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE)
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
         val bound = SignerKey(
             addresses = listOf("bob@example.com"),
             publicKey = TestPgpPrivateKey.ARMORED_PUBLIC,
@@ -254,7 +254,7 @@ class EncryptedMessageReaderTest {
 
     @Test
     fun aDetachedSignatureWithOnlyAConflictedKeyIsKeyChanged() {
-        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE)
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
         val conflicted = SignerKey(
             addresses = listOf("bob@example.com"),
             publicKey = "",
@@ -276,7 +276,7 @@ class EncryptedMessageReaderTest {
     @Test
     fun aClientUnprotectedAccountSaysSo() {
         val (r, _) = reader(payloads = FakePayloadSource(PgpPayloadResult.NotClientProtected))
-        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE)
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
 
         assertEquals(ReadOutcome.NotClientProtected, read(r, unlockIfNeeded = false))
     }
@@ -287,7 +287,7 @@ class EncryptedMessageReaderTest {
         // with a Retry button. Retry cannot help a terminal 404 — the message simply carries no
         // OpenPGP payload — so it gets its own outcome instead.
         val (r, _) = reader(payloads = FakePayloadSource(PgpPayloadResult.NoPayload))
-        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE)
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
 
         assertEquals(ReadOutcome.NoEncryptedContent, read(r, unlockIfNeeded = false))
     }

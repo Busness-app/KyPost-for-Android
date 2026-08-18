@@ -39,17 +39,12 @@ data class PairingData(
  * exactly where a userinfo URL saved before [pairingUrlHost] existed would still be sitting.
  */
 internal fun sameOrigin(candidate: String, reference: String): Boolean {
-    val a = runCatching { URI(candidate) }.getOrNull() ?: return false
-    val b = runCatching { URI(reference) }.getOrNull() ?: return false
-    if (a.host.isNullOrBlank() || b.host.isNullOrBlank()) return false
-    if (a.rawUserInfo != null || b.rawUserInfo != null) return false
+    val a = pairingUrl(candidate) ?: return false
+    val b = pairingUrl(reference) ?: return false
     return a.scheme.equals(b.scheme, ignoreCase = true) &&
         a.host.equals(b.host, ignoreCase = true) &&
-        effectivePort(a) == effectivePort(b)
+        a.port == b.port
 }
-
-private fun effectivePort(uri: URI): Int =
-    if (uri.port != -1) uri.port else if (uri.scheme.equals("https", ignoreCase = true)) 443 else 80
 
 object NativeRegistrationEndpointResolver {
     sealed class Resolution {
@@ -157,28 +152,47 @@ object NativePairingDeepLinkParser {
  * The host a pairing URL will actually connect to, or null if the URL is not one this app may
  * ever send credentials to.
  *
- * Userinfo is rejected outright, and this — not the raw string — is what the confirmation dialog
- * must display. `https://mail.trusted-corp.com@evil.tld/` is a perfectly valid https URL whose
- * host is `evil.tld`; every check here used to pass it (the scheme is https, `getHost()` is
- * non-blank, and `sameOrigin` compared the same attacker host on both sides), while
- * [org.kysecurity.mail.push.PushPairingActivity] rendered the raw string in the "Pair with…" prompt.
- * On a wrapped dialog that reads as the trusted host, so the user approved sending
- * `X-Kypost-Device-Secret` to the attacker — and the TOFU pin then locked the attacker's
- * certificate in. `kypost://native-pair` is a BROWSABLE deep link, so any web page could fire it.
- *
  * A path is still allowed — `reg` legitimately carries `/api/notifications/native/register`, and a
  * self-hosted server may live under a sub-path — because a path cannot change which host the
  * request reaches. Userinfo can, which is the whole bug.
  */
-internal fun pairingUrlHost(value: String): String? {
-    val parsed = runCatching { URI(value) }.getOrNull() ?: return null
-    if (!parsed.scheme.equals("https", ignoreCase = true)) return null
-    if (parsed.rawUserInfo != null) return null
-    return parsed.host?.takeIf { it.isNotBlank() }
+internal fun pairingUrlHost(value: String): String? = pairingUrl(value)?.host
+
+/**
+ * Parses a pairing URL with **the same parser that will make the request**, or null if it is not
+ * one this app may ever send credentials to.
+ *
+ * OkHttp's [HttpUrl], not [java.net.URI]. The two disagree — on backslashes, on percent-encoding, on
+ * what counts as an authority — and every one of those disagreements sits between a trust decision
+ * and the request it authorises: the checks ran on `URI` while the connection was built from
+ * `HttpUrl`. Validating with the parser that does not decide where the bytes go is the classic
+ * shape of a parser-differential bypass, and there is no reason to keep two parsers here.
+ *
+ * https-only, because the server is arbitrary (self-hosted relays, no fixed domain to allowlist) so
+ * that is the one property that can be enforced. Userinfo is rejected outright:
+ * `https://mail.trusted-corp.com@evil.tld/` is a valid https URL whose host is `evil.tld`, and the
+ * pairing dialog renders this function's `host`.
+ */
+internal fun pairingUrl(value: String): HttpUrl? {
+    val url = value.trim().toHttpUrlOrNull() ?: return null
+    if (!url.scheme.equals("https", ignoreCase = true)) return null
+    if (url.username.isNotEmpty() || url.password.isNotEmpty()) return null
+    if (url.host.isBlank()) return null
+    // A query or fragment on a base URL is meaningless and, once a path is appended to it (see
+    // [pairingEndpoint]), silently changes which path is actually requested.
+    if (url.querySize > 0 || url.fragment != null) return null
+    return url
 }
 
-/** Builds an endpoint that may receive this device's pairing credential. */
+/**
+ * Builds an endpoint that may receive this device's pairing credential.
+ *
+ * Resolves [path] against the parsed base rather than concatenating strings and re-parsing: string
+ * concatenation onto a URL with a query or fragment produces a request to somewhere else entirely.
+ * [pairingUrl] already rejects those, so this is belt and braces — and it is the form that stays
+ * correct if that ever changes.
+ */
 internal fun pairingEndpoint(serverUrl: String, path: String): HttpUrl? {
-    if (pairingUrlHost(serverUrl) == null) return null
-    return "${serverUrl.trimEnd('/')}$path".toHttpUrlOrNull()
+    val base = pairingUrl(serverUrl) ?: return null
+    return base.resolve(base.encodedPath.trimEnd('/') + path)
 }

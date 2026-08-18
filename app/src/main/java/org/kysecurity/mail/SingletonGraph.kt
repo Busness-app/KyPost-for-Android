@@ -7,6 +7,13 @@ import android.content.Context
  * (mail/MailGraph, contacts/ContactsGraph, data/DataRuntime, push/PushRuntime) so the
  * double-checked-locking singleton logic lives in one place instead of four.
  */
+/**
+ * A graph that owns something needing an orderly shutdown when it is dropped.
+ */
+interface ClosableGraph {
+    fun closeGraph()
+}
+
 class SingletonGraph<T>(private val factory: (Context) -> T) {
     @Volatile
     private var instance: T? = null
@@ -26,15 +33,17 @@ class SingletonGraph<T>(private val factory: (Context) -> T) {
      * no longer does.
      */
     fun invalidate() {
-        synchronized(this) { instance = null }
+        synchronized(this) {
+            (instance as? ClosableGraph)?.let { graph ->
+                runCatching { graph.closeGraph() }
+                    .onFailure { android.util.Log.e("SingletonGraph", "Graph teardown failed", it) }
+            }
+            instance = null
+        }
     }
 
     /**
      * Atomically removes and returns the cached instance, or null if one was never built.
-     *
-     * For teardown that has to act on the *live* object rather than a replacement: closing a Room
-     * database is the case this exists for. `invalidate()` then `get()` would have built a brand-new
-     * instance and closed that one, leaving the database everything is actually using wide open.
      *
      * Taking it also means no later caller can be handed the instance that is about to be closed —
      * which `invalidate()` alone only guarantees for callers that arrive after it returns.

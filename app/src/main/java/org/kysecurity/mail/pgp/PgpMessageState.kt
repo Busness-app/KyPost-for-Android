@@ -95,15 +95,6 @@ fun rendersNothing(state: PgpMessageState, body: String?, preview: String): Bool
  * other three ([PgpSignatureState.VERIFIED_CONFIRMED], [PgpSignatureState.SIGNER_UNKNOWN],
  * [PgpSignatureState.KEY_CHANGED]) come only from a local decrypt against a locally-held key, via
  * [signatureStateFor] — see that KDoc below.
- *
- * This used to be the whole story: `pgpSigned`/`pgpVerified`/`pgpSignerFingerprint` were parsed off
- * the wire, mapped into [org.kysecurity.mail.Email], and persisted to Room behind their own schema
- * migration — and then never rendered anywhere on Android. An attacker who fetched the victim's
- * published key, encrypted to it, signed with their own key and forged the `From` header got a
- * message that displayed as ordinary encrypted mail, while the same message in webmail read
- * "signature does not match sender". That gap is closed: [org.kysecurity.mail.EmailAdapter] renders the
- * inbox-row marker via [pgpRowMarker] and [org.kysecurity.mail.EmailDetailActivity] renders the detail
- * notice via `signatureNoticeFor`, both keyed off this enum.
  */
 enum class PgpSignatureState {
     /** Not signed, or no opinion was expressed. Nothing to say. */
@@ -134,10 +125,6 @@ enum class PgpSignatureState {
 
     /**
      * A key IS bound to this sender and it no longer matches its TOFU pin.
-     *
-     * Under trust-on-first-use this is the one alarm worth raising. It used to be indistinguishable
-     * from [SIGNER_UNKNOWN], because the server dropped a pin-mismatched contact entirely — so an
-     * active key substitution displayed as the most routine message in the app.
      */
     KEY_CHANGED,
 

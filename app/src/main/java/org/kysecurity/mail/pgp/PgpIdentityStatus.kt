@@ -47,13 +47,6 @@ suspend fun hasPgpIdentity(
  * The account's own PGP fingerprint, computed locally from the public key `GET /api/pgp/bootstrap`
  * returned, or null when the account has no identity, the key doesn't parse, or the call failed.
  *
- * The obvious-looking local source — the self-contact's `pgpKey` column — is the wrong one and is
- * why [PgpKeyActivity] used to tell every user their fingerprint was unavailable: that column is an
- * ordinary contact field, written only when a key is attached to a contact by hand or by the QR
- * scan, with no connection to the account's real PGP identity (see
- * [org.kysecurity.mail.contacts.contactHasLinkedPgpKey], which exists for the same reason). The identity
- * itself lives server-side, and bootstrap is the only route a paired device has to it.
- *
  * Hashing those bytes rather than reading the response's `fingerprint` field is the same rule
  * [PgpKeyActivity.showFetchedKey] follows for the other party's key: a fingerprint the user is
  * about to read aloud must describe the key material actually in hand.

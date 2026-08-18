@@ -122,12 +122,6 @@ class ContactSyncRepository(
     /**
      * [verifiedInPerson] is passed only by the PGP QR flow, where the user has just compared this
      * fingerprint out-of-band.
-     *
-     * [identityChanged] has **no default on purpose**. It used to default to false, and the
-     * device-contact merge was the only caller that passed it — so every other path (in-app edits,
-     * the PGP QR save) silently answered "no, this does not rebind identity" on behalf of a contact
-     * that may hold a pinned key. Whether an update moves the identity a key vouches for is a
-     * question each call site has to answer for itself; see [org.kysecurity.mail.contacts.toEntity].
      */
     suspend fun queueUpdate(
         contact: ContactDto,
@@ -182,9 +176,6 @@ class ContactSyncRepository(
             // Non-destructive: reset the cursor so the next pull starts from 0 and rebuilds the
             // mirror from a full snapshot, but do NOT clear first. Clearing here used to return
             // before clearFlushed below, so the acknowledged pending changes were replayed — and
-            // since toWireDto sends an empty uid for a create, the server minted a fresh uid per
-            // replay, duplicating the contact on both sides. The server applies pushed changes
-            // before it computes tooOld, so they are already persisted and must be flushed.
             db.withTransaction {
                 cursorStore.resetCursor(subscriberId)
                 if (flushedChanges.isNotEmpty()) {

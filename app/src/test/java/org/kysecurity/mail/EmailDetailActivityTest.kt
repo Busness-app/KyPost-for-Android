@@ -292,13 +292,32 @@ class EmailDetailActivityTest {
 
     @Test
     fun safeFileName_stripsPathsAndControlCharacters() {
-        assertEquals("invoice.pdf", safeFileName("../../etc/invoice.pdf"))
-        assertEquals("invoice.pdf", safeFileName("""C:\windows\invoice.pdf"""))
-        assertEquals("invoice.pdf.apk", safeFileName("invoice.pdf\u0000.apk"))
+        assertEquals("invoice", safeFileName("../../etc/invoice.pdf"))
+        assertEquals("invoice", safeFileName("""C:\windows\invoice.pdf"""))
         assertEquals("attachment", safeFileName(""))
         assertEquals("attachment", safeFileName("///"))
         assertEquals("hidden", safeFileName(".hidden"))
         assertEquals(120, safeFileName("a".repeat(500)).length)
+    }
+
+    /**
+     * The extension is derived from the type this app decided to declare, never from the sender's
+     * filename. Previously the name's own suffix survived sanitisation intact, so
+     * `invoice.pdf\u0000.apk` came out as `invoice.pdf.apk`: the MIME type handed to MediaStore
+     * was already downgraded to octet-stream, but the name a user sees in a file picker still read
+     * as an installer.
+     */
+    @Test
+    fun safeFileName_takesItsExtensionFromTheDeclaredTypeNotTheSenderName() {
+        assertEquals("invoice.pdf", safeFileName("invoice.pdf", "application/pdf"))
+        assertEquals("invoice.pdf", safeFileName("invoice.exe", "application/pdf"))
+        assertEquals("invoice", safeFileName("invoice.pdf\u0000.apk", "application/octet-stream"))
+        assertEquals("photo.jpg", safeFileName("photo.jpeg", "image/jpeg"))
+        // A type this app will not declare gets no extension at all rather than the sender's.
+        assertEquals("payload", safeFileName("payload.apk", "application/vnd.android.package-archive"))
+        // Ordinary dotted names keep their text: only short alphanumeric trailing segments count
+        // as extensions.
+        assertEquals("minutes.2026 Q1 final", safeFileName("minutes.2026 Q1 final", ""))
     }
 
     @Test

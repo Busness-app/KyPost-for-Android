@@ -40,6 +40,7 @@ import org.kysecurity.mail.push.PushRuntime
 import org.kysecurity.mail.push.pinnedPairingCallFactory
 import java.util.concurrent.Executors
 import org.kysecurity.mail.security.LockedActivity
+import org.kysecurity.mail.security.showSecurely
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -48,7 +49,10 @@ import kotlinx.coroutines.withContext
 
 class EmailDetailActivity : LockedActivity() {
 
-    private val ioExecutor = Executors.newSingleThreadExecutor()
+    // Two threads, not one. Every background task on this screen shared a single thread, so
+    // downloading a 25 MB attachment blocked the body render — and the `Show images` reload, and
+    // the quoted-HTML sanitize — behind it for the whole transfer.
+    private val ioExecutor = Executors.newFixedThreadPool(2)
     private lateinit var mailRepository: MailRepository
     private lateinit var actionButtons: List<ImageButton>
 
@@ -444,12 +448,6 @@ class EmailDetailActivity : LockedActivity() {
 
     /**
      * Opens the composer with the whole message: the real body, and every attachment.
-     *
-     * Forward used to send `emailPreview` — 140 characters of the sender's raw HTML — with no
-     * attachments at all, which meant the feature did not forward the message in any meaningful
-     * sense. Anything not already downloaded for this screen is fetched here first, because a
-     * forward without its attachments is a silent data-loss bug the user only discovers when the
-     * recipient asks where the file is.
      */
     private fun forwardMessage(
         emailId: String,
@@ -493,10 +491,6 @@ class EmailDetailActivity : LockedActivity() {
                 // Same sanitize-or-escape hop as the no-missing-attachments branch above. This one
                 // used to interpolate `emailPreview` — 140 characters of the sender's raw HTML —
                 // straight into the quote, which is the only path into the compose editor that did
-                // not reach QuotedHtmlSanitizer. The editor is a JavaScript-enabled WebView with a
-                // bound @JavascriptInterface, and its `exportHtml` global is what produces the body
-                // that actually gets sent, so markup surviving to it can rewrite the outgoing
-                // message under the sender's own identity and signature.
                 quotedBodyHtmlAsync(emailPreview) { quoted ->
                     openCompose(
                         to = "",
@@ -645,12 +639,6 @@ class EmailDetailActivity : LockedActivity() {
      * for free (as "disabled", with no reason) — the same substitution [EmailAdapter] already makes
      * for the inbox row's own PGP markers, and for the same reason: an emoji or a plain disabled
      * state tells a screen-reader user nothing a sighted user wouldn't also be missing.
-     *
-     * Only touches the buttons when [pgpState] blocks them. `renderBody` calls this exactly once
-     * per Activity instance, and every one of these `ImageButton`s already carries its own
-     * `android:contentDescription` ("Reply", "Reply all", "Forward") from the layout — clearing
-     * that unconditionally on the allowed path would silently strip those labels from every
-     * ordinary message, not just this one's.
      */
     private fun applyReplyForwardAvailability(pgpState: PgpMessageState) {
         replyForwardState = pgpState
@@ -911,20 +899,48 @@ class EmailDetailActivity : LockedActivity() {
         // the loop.
         val protectionEnabled = org.kysecurity.mail.security.SecurityRuntime
             .graph(this).hostileLocationSettings.isEnabled()
+        val saveOffered = org.kysecurity.mail.security.attachmentSaveOffered(protectionEnabled)
         infos.forEach { info ->
             val chip = Chip(this).apply {
-                text = if (protectionEnabled) "👁 ${info.name}" else "📎 ${info.name}"
-                setOnClickListener { downloadAttachment(emailId, emailFolder, info) }
+                text = "\uD83D\uDC41 ${info.name}"
+                // A tap views; it never writes to disk. Saving into shared Downloads puts decrypted
+                // mail outside the sandbox where no wipe reaches it, so it is a deliberate second
+                // gesture with its own confirmation rather than the meaning of a single tap.
+                setOnClickListener {
+                    downloadAttachment(emailId, emailFolder, info, org.kysecurity.mail.security.AttachmentAction.VIEW_EPHEMERAL)
+                }
+                if (saveOffered) {
+                    setOnLongClickListener {
+                        confirmSaveToDownloads(emailId, emailFolder, info)
+                        true
+                    }
+                }
             }
             applyPillChipTheme(this, chip)
             chips.addView(chip)
         }
+        label.text = getString(
+            if (saveOffered) R.string.email_attachments_label_tap_to_view_hold_to_save
+            else R.string.email_attachments_label_tap_to_view,
+        )
     }
 
-    private fun downloadAttachment(emailId: String, emailFolder: String, info: AttachmentInfo) {
-        val hostileLocationProtectionEnabled = org.kysecurity.mail.security.SecurityRuntime
-            .graph(this).hostileLocationSettings.isEnabled()
-        val action = org.kysecurity.mail.security.attachmentActionFor(hostileLocationProtectionEnabled)
+    /**
+     * Fetches an attachment and applies [action] to it.
+     *
+     * **Everything except the Toast and the chooser runs on [ioExecutor].** This used to hop back
+     * to the main thread on completion and then do the whole of the save there: a base64 encode
+     * for the forward cache plus a `ContentResolver` insert and a full stream write, of a payload
+     * bounded only by the relay's 25 MB attachment ceiling. That is a guaranteed ANR on a large
+     * attachment and a plausible OOM (base64 of 25 MB is a ~34 MB `String`, i.e. ~68 MB of UTF-16),
+     * on the default code path.
+     */
+    private fun downloadAttachment(
+        emailId: String,
+        emailFolder: String,
+        info: AttachmentInfo,
+        action: org.kysecurity.mail.security.AttachmentAction,
+    ) {
         val loadingMessage = if (action == org.kysecurity.mail.security.AttachmentAction.VIEW_EPHEMERAL) {
             getString(R.string.attachment_opening, info.name)
         } else {
@@ -934,33 +950,52 @@ class EmailDetailActivity : LockedActivity() {
         ioExecutor.execute {
             val outcome = mailRepository.downloadAttachment(emailId, emailFolder, info.index)
             val downloaded = (outcome as? MailOutcome.Success)?.value
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
-                if (downloaded == null) {
-                    val message = outcome.userFacingMessage() ?: getString(R.string.attachment_save_failed, info.name)
-                    Toast.makeText(this, message, Toast.LENGTH_LONG).show()
-                    return@runOnUiThread
+            if (downloaded == null) {
+                val message = outcome.userFacingMessage() ?: getString(R.string.attachment_save_failed, info.name)
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) Toast.makeText(this, message, Toast.LENGTH_LONG).show()
                 }
-                when (action) {
-                    // Deliberately NOT cached for forwarding on this path. rememberForForwarding
-                    // base64-encodes the plaintext into an immutable String that lives for the life
-                    // of this Activity — and, once forwarded, in the process-scoped
-                    // ForwardAttachmentHandoff. A String cannot be zeroed. That silently undid the
-                    // entire point of EphemeralAttachmentBytes, which goes to some trouble to
-                    // Arrays.fill(bytes, 0) on a timer, and it did so under Hostile Location
-                    // Protection specifically — the mode whose contract is that attachment
-                    // plaintext never persists anywhere. forwardMessage() already re-fetches
-                    // anything it does not have, so the cost is one extra download on a forward.
-                    org.kysecurity.mail.security.AttachmentAction.VIEW_EPHEMERAL -> viewAttachmentEphemerally(downloaded)
-                    org.kysecurity.mail.security.AttachmentAction.SAVE_TO_DOWNLOADS -> {
-                        rememberForForwarding(info.index, downloaded)
-                        val saved = saveToDownloads(downloaded.name, downloaded.mimeType, downloaded.bytes)
-                        val message = if (saved) getString(R.string.attachment_saved, info.name) else getString(R.string.attachment_save_failed, info.name)
-                        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                return@execute
+            }
+            when (action) {
+                // Deliberately NOT cached for forwarding on this path. rememberForForwarding
+                // base64-encodes the plaintext into an immutable String that lives for the life
+                // of this Activity — and, once forwarded, in the process-scoped
+                // ForwardAttachmentHandoff. A String cannot be zeroed. That silently undid the
+                // entire point of EphemeralAttachmentBytes, which goes to some trouble to
+                // Arrays.fill(bytes, 0) on a timer. forwardMessage() already re-fetches anything it
+                // does not have, so the cost is one extra download on a forward.
+                org.kysecurity.mail.security.AttachmentAction.VIEW_EPHEMERAL -> runOnUiThread {
+                    // Registering and launching the chooser is cheap and needs an Activity context.
+                    if (!isFinishing && !isDestroyed) viewAttachmentEphemerally(downloaded)
+                }
+                org.kysecurity.mail.security.AttachmentAction.SAVE_TO_DOWNLOADS -> {
+                    rememberForForwarding(info.index, downloaded)
+                    val saved = saveToDownloads(downloaded.name, downloaded.mimeType, downloaded.bytes)
+                    val message = if (saved) getString(R.string.attachment_saved, info.name) else getString(R.string.attachment_save_failed, info.name)
+                    runOnUiThread {
+                        if (!isFinishing && !isDestroyed) Toast.makeText(this, message, Toast.LENGTH_LONG).show()
                     }
                 }
             }
         }
+    }
+
+    /**
+     * Saving puts decrypted mail into shared storage, outside this app's sandbox, where no wipe
+     * step can reach it except through [DownloadedAttachmentLedger]. That is a real decision, so it
+     * gets a real prompt rather than being what an ordinary tap happens to mean.
+     */
+    private fun confirmSaveToDownloads(emailId: String, emailFolder: String, info: AttachmentInfo) {
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle(R.string.attachment_save_confirm_title)
+            .setMessage(getString(R.string.attachment_save_confirm_message, info.name))
+            .setPositiveButton(R.string.attachment_save_confirm_positive) { _, _ ->
+                downloadAttachment(emailId, emailFolder, info, org.kysecurity.mail.security.AttachmentAction.SAVE_TO_DOWNLOADS)
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .create()
+            .showSecurely()
     }
 
     /** Hostile Location Protection path: hands the bytes to [org.kysecurity.mail.security.EphemeralAttachmentBytes]
@@ -997,9 +1032,11 @@ class EmailDetailActivity : LockedActivity() {
      */
     private fun saveToDownloads(name: String, mimeType: String, bytes: ByteArray): Boolean {
         val resolver = contentResolver
+        val safeType = safeMimeType(mimeType)
         val values = ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, safeFileName(name))
-            put(MediaStore.Downloads.MIME_TYPE, safeMimeType(mimeType))
+            // The name's extension is derived from safeType, not from the sender's filename.
+            put(MediaStore.Downloads.DISPLAY_NAME, safeFileName(name, safeType))
+            put(MediaStore.Downloads.MIME_TYPE, safeType)
             put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
         }
         return runCatching {
@@ -1098,12 +1135,6 @@ class EmailDetailActivity : LockedActivity() {
 
     /**
      * The quoted original, as HTML, sanitized for the compose editor.
-     *
-     * This used to interpolate `emailPreview`, which is `body.take(140)` of the sender's **raw
-     * HTML** (see `RelayMailSource.toUiEmail`). Replying to any HTML message therefore quoted 140
-     * characters of markup — `<div dir="ltr"><div class="gmail_quote"><div dir="l` — and
-     * forwarding sent that instead of the message. The real body is already fetched by this
-     * screen's own body load; [fetchedBodyHtml] holds it.
      *
      * Falls back to the escaped preview only when the body genuinely is not available (an
      * uncached message under Hostile Location Protection, or a client-protected one), which is the
@@ -1209,14 +1240,9 @@ class EmailDetailActivity : LockedActivity() {
 }
 
 /** Wraps [bodyToRender] (the email's own, untrusted HTML) in a themed document for [WebView].
- *
  *  Pulled out of the `onCreate` body-loading callback so it's unit-testable without a
  *  Context-backed WebView/Activity (same extraction rationale as [mergedContactDto] in
  *  `ContactEditActivity`).
- *
- *  For a light [palette] this only sets `body`'s own color/background — the same as before this
- *  function existed, and enough, since a light palette already looks like a typical email's
- *  default white-background/dark-text design.
  *
  *  For a dark [palette], a plain `body` rule isn't enough: most email HTML hardcodes its own
  *  light-mode colors (inline `style="color:#000"`, legacy `bgcolor` attributes, or a `<style>`
@@ -1244,7 +1270,7 @@ class EmailDetailActivity : LockedActivity() {
  *  [isDark] (from [isDarkPalette]) is a caller-supplied `Boolean` rather than computed in here from
  *  [palette] directly so this function stays free of any `android.graphics.Color` call — same
  *  reasoning as [mergedContactDto]'s extraction: a plain-JVM unit test can exercise it with no
- *  Android framework/Robolectric dependency. */
+ */
 internal fun buildEmailBodyHtml(bodyToRender: String, palette: ThemePalette, monoFontFace: String, isDark: Boolean): String {
     val darkModeOverrideCss = if (isDark) {
         """
@@ -1405,9 +1431,6 @@ internal fun showsRetryButton(outcome: ReadOutcome): Boolean = outcome is ReadOu
  * place. Showing a verdict with no resolved mailbox to pin it to lets that verdict read as being
  * about whatever raw sender text the screen still has on it — so with no resolved mailbox to
  * display, this returns [PgpSignatureState.NONE]: there is nothing safe to say.
- *
- * A security rule, not a cosmetic one, which is why it is pulled out as its own pure, tested
- * function rather than left as the compound boolean it replaced.
  */
 internal fun displaySignatureVerdict(outcome: ReadOutcome.Decrypted): PgpSignatureState =
     outcome.signature.takeIf { outcome.resolvedSender.isNotBlank() } ?: PgpSignatureState.NONE
@@ -1450,19 +1473,67 @@ internal fun initialReplyForwardState(pgpEncrypted: Boolean): PgpMessageState =
 
 /**
  * The sender's filename, reduced to something safe to hand MediaStore.
- *
- * Drops path separators (so nothing can steer the write out of `Downloads/`), drops every character
- * that is not plainly part of a filename — which also removes the NUL and control bytes used to
- * make a name read as one extension and resolve as another — and bounds the length.
  */
-internal fun safeFileName(raw: String): String =
-    raw.substringAfterLast('/')
+internal fun safeFileName(raw: String, mimeType: String = ""): String {
+    val base = raw.substringAfterLast('/')
         .substringAfterLast('\\')
         .filter { it.isLetterOrDigit() || it in "._- ()[]" }
         .trim()
         .trimStart('.')
         .take(120)
         .ifBlank { "attachment" }
+    // The extension comes from the type WE decided to declare, never from the sender's filename.
+    // Sanitising the name and then trusting its suffix let `invoice.pdf.apk` through intact: the
+    // MIME type handed to MediaStore was already reduced to application/octet-stream, but the name
+    // on disk still read as an installer, and a name is what the user sees in a file picker.
+    val expected = extensionForMimeType(mimeType)
+    val stem = stripExtensions(base).ifBlank { "attachment" }
+    return if (expected == null) stem else "$stem.$expected"
+}
+
+/**
+ * Removes every trailing segment that looks like a file extension, so exactly one — ours, or none
+ * — is put back by [safeFileName].
+ *
+ * Repeated, not `substringBeforeLast('.')`: a single strip leaves `invoice.pdf.apk` as
+ * `invoice.pdf`, which is still a name claiming a type this app did not declare. Shaped as "what
+ * is an extension" rather than "which extensions are dangerous", because a denylist of risky
+ * suffixes is exactly the control that goes stale.
+ *
+ * A dot-segment counts as an extension only if it is 1–5 characters and entirely alphanumeric, so
+ * ordinary dotted names (`minutes.2026 Q1 final`) keep their text.
+ */
+private val EXTENSION_SUFFIX = Regex("""\.[A-Za-z0-9]{1,5}$""")
+
+internal fun stripExtensions(name: String): String {
+    var result = name
+    while (true) {
+        val stripped = result.replace(EXTENSION_SUFFIX, "")
+        if (stripped == result) return result
+        result = stripped
+    }
+}
+
+/** The one extension this app will put on a file, per type it is willing to declare. Null means
+ *  "no extension" — which is what an unrecognised type gets, since octet-stream has no meaningful
+ *  one and inventing the sender's is the bug above. */
+internal fun extensionForMimeType(mimeType: String): String? = when (
+    mimeType.substringBefore(';').trim().lowercase()
+) {
+    "application/pdf" -> "pdf"
+    "image/jpeg" -> "jpg"
+    "image/png" -> "png"
+    "image/gif" -> "gif"
+    "image/webp" -> "webp"
+    "image/heic" -> "heic"
+    "text/plain" -> "txt"
+    "audio/mpeg" -> "mp3"
+    "audio/mp4" -> "m4a"
+    "audio/ogg" -> "ogg"
+    "video/mp4" -> "mp4"
+    "video/webm" -> "webm"
+    else -> null
+}
 
 /**
  * MIME types this app will hand to another app as-declared. Anything else becomes

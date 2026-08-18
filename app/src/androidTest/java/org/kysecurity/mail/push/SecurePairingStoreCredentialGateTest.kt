@@ -41,7 +41,7 @@ class SecurePairingStoreCredentialGateTest {
     @Test
     fun savePairing_withCredentialKeys_readingWithoutKeys_omitsDeviceSecret() = runBlocking {
         val salt = CredentialCipher.randomSalt()
-        val keys = CredentialCipher.deriveKeys("482913", salt)
+        val keys = CredentialCipher.deriveKeys("482913".toCharArray(), salt)
         val store = SecurePairingStore(context)
         store.savePairing(pairing, credentialKeys = keys, credentialSalt = salt)
 
@@ -55,7 +55,7 @@ class SecurePairingStoreCredentialGateTest {
     @Test
     fun savePairing_withCredentialKeys_readingWithCorrectKeys_restoresDeviceSecret() = runBlocking {
         val salt = CredentialCipher.randomSalt()
-        val keys = CredentialCipher.deriveKeys("482913", salt)
+        val keys = CredentialCipher.deriveKeys("482913".toCharArray(), salt)
         val store = SecurePairingStore(context)
         store.savePairing(pairing, credentialKeys = keys, credentialSalt = salt)
 
@@ -74,9 +74,9 @@ class SecurePairingStoreCredentialGateTest {
     fun aWrongPinCannotUnwrap() = runBlocking {
         val salt = CredentialCipher.randomSalt()
         val store = SecurePairingStore(context)
-        store.savePairing(pairing, credentialKeys = CredentialCipher.deriveKeys("482913", salt), credentialSalt = salt)
+        store.savePairing(pairing, credentialKeys = CredentialCipher.deriveKeys("482913".toCharArray(), salt), credentialSalt = salt)
 
-        val wrongKeys = CredentialCipher.deriveKeys("000001", salt)
+        val wrongKeys = CredentialCipher.deriveKeys("000001".toCharArray(), salt)
         assertNull(store.pairingSnapshot(credentialKeys = wrongKeys)?.deviceSecret)
     }
 
@@ -89,7 +89,7 @@ class SecurePairingStoreCredentialGateTest {
         assertTrue(store.needsCredentialRewrap())
 
         val salt = CredentialCipher.randomSalt()
-        store.savePairing(pairing, credentialKeys = CredentialCipher.deriveKeys("482913", salt), credentialSalt = salt)
+        store.savePairing(pairing, credentialKeys = CredentialCipher.deriveKeys("482913".toCharArray(), salt), credentialSalt = salt)
         assertFalse(store.needsCredentialRewrap())
     }
 
@@ -104,9 +104,9 @@ class SecurePairingStoreCredentialGateTest {
      * value that is no longer there.
      */
     @Test
-    fun savePairing_withPreserveStoredSecret_leavesAWrappedSecretIntact() = runBlocking {
+    fun savePairing_withSecretWritePreserve_leavesAWrappedSecretIntact() = runBlocking {
         val salt = CredentialCipher.randomSalt()
-        val keys = CredentialCipher.deriveKeys("482913", salt)
+        val keys = CredentialCipher.deriveKeys("482913".toCharArray(), salt)
         val store = SecurePairingStore(context)
         store.savePairing(pairing, credentialKeys = keys, credentialSalt = salt)
 
@@ -114,7 +114,7 @@ class SecurePairingStoreCredentialGateTest {
         // secret.
         store.savePairing(
             pairing.copy(deviceId = "rotated-device-id", deviceSecret = null),
-            preserveStoredSecret = true,
+            SecretWrite.Preserve,
         )
 
         val reread = store.pairingSnapshot(credentialKeys = keys)
@@ -123,11 +123,11 @@ class SecurePairingStoreCredentialGateTest {
     }
 
     @Test
-    fun savePairing_withPreserveStoredSecret_leavesAnUnwrappedSecretIntact() = runBlocking {
+    fun savePairing_withSecretWritePreserve_leavesAnUnwrappedSecretIntact() = runBlocking {
         val store = SecurePairingStore(context)
         store.savePairing(pairing)
 
-        store.savePairing(pairing.copy(deviceSecret = null), preserveStoredSecret = true)
+        store.savePairing(pairing.copy(deviceSecret = null), SecretWrite.Preserve)
 
         assertEquals(pairing.deviceSecret, store.pairingSnapshot(credentialKeys = null)?.deviceSecret)
     }
@@ -148,7 +148,7 @@ class SecurePairingStoreCredentialGateTest {
     fun clearPairing_dropsTheWrappedSecretAndTheTlsPin() = runBlocking {
         val salt = CredentialCipher.randomSalt()
         val store = SecurePairingStore(context)
-        store.savePairing(pairing, credentialKeys = CredentialCipher.deriveKeys("482913", salt), credentialSalt = salt)
+        store.savePairing(pairing, credentialKeys = CredentialCipher.deriveKeys("482913".toCharArray(), salt), credentialSalt = salt)
         store.saveTlsPin(TlsPin(host = "server.example.com", spkiSha256 = "sha256/AAAA"))
 
         store.clearPairing()

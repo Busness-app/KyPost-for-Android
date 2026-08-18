@@ -8,22 +8,10 @@ import kotlinx.coroutines.withContext
 
 /**
  * Sends the user's approve/deny decision for an MFA challenge.
- *
- * This used to be a companion object on a `BroadcastReceiver` wired to "Approve"/"Deny" actions on
- * the notification itself. Those actions are gone (see
- * [PushNotificationDispatcher.showMfaChallenge]), and with them the receiver: the only caller now
- * is [MfaApprovalActivity], which re-authenticates the user first. Keeping this as a plain object
- * means there is no exported-or-not surface to reason about at all.
  */
 object MfaResponder {
     /**
      * Returns true when the decision actually reached the server.
-     *
-     * The notification is cancelled and the tracker cleared only on success. Doing both up front —
-     * as this used to — meant a network failure left the user with a toast and no way back: the
-     * notification was gone, and [MfaChallengeTracker.isPending] now rejected the id, so
-     * [MfaApprovalActivity.adoptChallenge] would finish immediately on any later attempt. The
-     * sign-in they meant to approve then timed out with "Network error" as the only explanation.
      *
      * Cancel-on-success still preserves the replay property that ordering was there for: a
      * decision that reached the server cannot be re-opened.

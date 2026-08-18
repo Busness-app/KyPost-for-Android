@@ -11,22 +11,22 @@ class EnrollmentSessionTest {
 
     @Test
     fun holdsTheKeyForTheSession() {
-        EnrollmentSession.put("-----BEGIN PGP PRIVATE KEY BLOCK-----")
-        assertEquals("-----BEGIN PGP PRIVATE KEY BLOCK-----", EnrollmentSession.peek())
+        EnrollmentSession.put("-----BEGIN PGP PRIVATE KEY BLOCK-----".toCharArray())
+        assertEquals("-----BEGIN PGP PRIVATE KEY BLOCK-----", EnrollmentSession.peekForTest())
     }
 
     @Test
     fun clearForgetsIt() {
-        EnrollmentSession.put("secret")
+        EnrollmentSession.put("secret".toCharArray())
         EnrollmentSession.clear()
-        assertNull(EnrollmentSession.peek())
+        assertNull(EnrollmentSession.peekForTest())
     }
 
     /** Zeroed in place, not merely dereferenced: a String's backing array cannot be wiped, so a
      *  heap dump taken after the app locked would still hold the private key. */
     @Test
     fun clearZeroesTheBackingArray() {
-        EnrollmentSession.put("secret")
+        EnrollmentSession.put("secret".toCharArray())
         val held = EnrollmentSession.backingArrayForTest()
         EnrollmentSession.clear()
         assertEquals("      ", String(held))
@@ -43,11 +43,11 @@ class EnrollmentSessionTest {
      */
     @Test
     fun theProcessWideResetClearsIt() {
-        EnrollmentSession.put("-----BEGIN PGP PRIVATE KEY BLOCK-----")
+        EnrollmentSession.put("-----BEGIN PGP PRIVATE KEY BLOCK-----".toCharArray())
 
         val failed = org.kysecurity.mail.ProcessState.resetAll()
 
-        assertNull(EnrollmentSession.peek())
+        assertNull(EnrollmentSession.peekForTest())
         assertEquals(emptyList<String>(), failed)
     }
 
@@ -55,12 +55,12 @@ class EnrollmentSessionTest {
      *  an ordinary thing to do, and it would leave a copy per attempt. */
     @Test
     fun putZeroesWhatItReplaces() {
-        EnrollmentSession.put("first!")
+        EnrollmentSession.put("first!".toCharArray())
         val first = EnrollmentSession.backingArrayForTest()
 
-        EnrollmentSession.put("second")
+        EnrollmentSession.put("second".toCharArray())
 
         assertEquals("      ", String(first))
-        assertEquals("second", EnrollmentSession.peek())
+        assertEquals("second", EnrollmentSession.peekForTest())
     }
 }

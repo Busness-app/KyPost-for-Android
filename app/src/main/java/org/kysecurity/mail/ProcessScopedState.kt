@@ -9,13 +9,6 @@ import java.util.concurrent.CopyOnWriteArrayList
  * "process-scoped" stopped being its own expiry. Every static holder of message plaintext,
  * account-scoped state or notification bookkeeping therefore has to be reset by hand at a
  * session boundary — a security wipe, an unpair, or a re-pair.
- *
- * That obligation used to be discharged by remembering: three ad-hoc `clear()` calls scattered
- * across [org.kysecurity.mail.security.SecurityWipe] and
- * [org.kysecurity.mail.push.PushRepository.purgeAccountScopedData], and one holder
- * ([org.kysecurity.mail.security.EphemeralAttachmentBytes], up to 64 MB of decrypted attachment
- * plaintext) that was written after those call sites and never added to them. Registration
- * inverts it: a holder announces itself, and the wipe resets whatever announced itself.
  */
 interface ProcessScopedState {
     /**

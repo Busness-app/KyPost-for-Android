@@ -88,12 +88,7 @@ internal class EncryptedMessageReader(
         // Re-read rather than trusting the branch above: the app can lock between the unseal and
         // here, and lockNow() clears this holder.
         //
-        // This does mint an unwipeable String copy of the private key (peek(), not isHeld()) — the
-        // key material itself is what BouncyCastle needs next, not just its presence, so there is no
-        // presence-only check to substitute here. That copy is real residue: it is not zeroed and
-        // will sit in the heap until GC reclaims it, same as any other Kotlin String. Accepted
-        // because the alternative is decrypting nothing.
-        val key = EnrollmentSession.peek() ?: return ReadOutcome.NeedsUnlock
+        if (!EnrollmentSession.isHeld()) return ReadOutcome.NeedsUnlock
 
         val payload = when (val result = payloads.fetch(mailbox, messageId)) {
             is PgpPayloadResult.Success -> result
@@ -186,9 +181,14 @@ internal class EncryptedMessageReader(
             )
         }
 
-        val decrypted = when (
-            val result = PgpDecryptor.decrypt(key, payload.encryptedPayload, offeredKeys)
-        ) {
+        // The key never leaves the holder's CharArray: withKey scopes it to this one call. Null
+        // means the app locked between the check above and here, which is NeedsUnlock, not a
+        // decryption failure.
+        val result = EnrollmentSession.withKey { key ->
+            PgpDecryptor.decrypt(key, payload.encryptedPayload, offeredKeys)
+        } ?: return ReadOutcome.NeedsUnlock
+
+        val decrypted = when (result) {
             is DecryptResult.Ok -> result
             // Deliberately does NOT clear EnrollmentSession: one message failing says nothing
             // about the held key, and clearing would re-prompt for every later message.

@@ -44,19 +44,6 @@ fun ContactDto.toEntity(
     // The mirror of [keyRotated]: same person, different key vs. same key, different person. A
     // device-side merge carries pgpKey over untouched, so the fingerprint is unchanged and the
     // rotation check cannot fire — but ContactsContract has no per-account write ACL, so any app
-    // holding WRITE_CONTACTS can swap the address the key is displayed beside, and that edit is
-    // then uploaded to the paired server. Re-arm on the identity, not just on the key.
-    //
-    // Deliberately NOT suppressed by verifiedInPerson, unlike the two above. A QR ceremony attests
-    // to the *key*: the user compared a fingerprint. It says nothing about which addresses that key
-    // is bound to, and the save path builds its DTO from the current — possibly already tampered —
-    // Room row while the confirmation screen shows the addresses from the *scanned card*. So the
-    // ceremony was clearing an alarm raised about an address injection it never examined, and doing
-    // it as the user's own recommended remediation. A rotated key it does answer for; a rebound
-    // identity it does not.
-    // Raised by this sync, OR still outstanding from an earlier one. Carrying the previous value
-    // forward is the half that was missing: identityRebound reflected only the CURRENT call, so a QR
-    // ceremony (which passes identityChanged = false) dropped an alarm raised by an earlier sync.
     val identityRebound = (identityChanged || previous?.identityNeedsReview == true) &&
         !pgpKey.isNullOrBlank()
 

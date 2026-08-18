@@ -123,10 +123,6 @@ class ComposeActivity : LockedActivity() {
 
     /**
      * Restores the Encrypt/Sign toggles a fold destroyed, once both halves are ready.
-     *
-     * Not left to the framework: the compose form is excluded from the saved-state Bundle, and the
-     * chips' unchecked layout default would otherwise silently send in the clear a message the user
-     * had asked to encrypt.
      */
     private fun applyRestoredPgpToggles() {
         if (!pgpChipListenersReady) return
@@ -506,7 +502,8 @@ class ComposeActivity : LockedActivity() {
                 if (url.isNotBlank()) bodyEditor.createLink(textField.text.toString().trim(), url)
             }
             .setNegativeButton(R.string.cancel, null)
-            .show()
+            .create()
+            .showSecurely()
     }
 
     private fun plainTextToHtml(text: String): String {
@@ -541,11 +538,6 @@ class ComposeActivity : LockedActivity() {
      * `onStop` could cache the draft). The read, the 33 MB base64 `String` and the whole thing again
      * for every file in a multi-select all ran on the main thread, from the picker callback — an ANR
      * on any real attachment. And the KDoc said "off the UI thread", which is where it was.
-     *
-     * The declared size is a hint, not a guarantee — a provider may under-report or omit it — so the
-     * stream read is bounded too, and refuses rather than truncating. Same contract as
-     * [org.kysecurity.mail.mail.readBounded] on the inbound side, for the same reason: a silently
-     * truncated attachment is worse than a refused one.
      */
     private suspend fun addAttachment(uri: Uri) {
         val resolver = contentResolver
@@ -659,7 +651,6 @@ class ComposeActivity : LockedActivity() {
             // A client-custody account encrypts here, not on the relay. Both chips unchecked is a
             // deliberate plaintext send and still goes down the ordinary path — which is what the
             // web client does, and what restores a capability the old withdraw-Send behaviour
-            // removed entirely.
             if (clientSideAccount && (draft.sign || draft.encrypt)) {
                 dispatchClientSend(draft)
             } else {
@@ -878,12 +869,6 @@ class ComposeActivity : LockedActivity() {
      *
      * The draft is saved without the PGP flags, since [MailDraft]'s sign/encrypt only apply to
      * /api/mail/send, not the plain /api/mail/draft endpoint.
-     *
-     * Always built from the *current* fields, never from [sentDraft]: unlike the post-409 re-send
-     * (where byte-identity with what the relay already evaluated is the whole point), a failed send
-     * can leave [sentDraft] holding a stale, pre-edit message. Reusing it here would park that stale
-     * draft on the server and silently discard whatever the user typed afterward — see the fix-round
-     * report for the traced scenario.
      */
     private fun handOffToWebmail() {
         // Disabled for the whole in-flight window, starting before the async exportHtml/saveDraft
@@ -960,7 +945,6 @@ class ComposeActivity : LockedActivity() {
         // Prefers the installed PWA, then any browser — either way the browser session webmail
         // already holds comes with it, so the user is not asked to log in again just to press
         // send. Both land in another app's task, never this one's; see WebmailTab. Still no
-        // resolveActivity: see WebmailTab.launchExternalBrowser.
         if (openWebmail(this, serverUrl, url)) {
             finish()
         } else {
@@ -1000,9 +984,6 @@ class ComposeActivity : LockedActivity() {
             // Guarded like every other exportHtml callback in this file — this one had been missed,
             // and it is the one that writes into a process-scoped static. A security wipe clears
             // ComposeDraftCache as its first step on an IO thread; a callback already queued on the
-            // main looper then landed afterwards and put the victim's unsent message straight back
-            // into a cache that survives AppRestart.relaunch. ComposeDraftCache also refuses writes
-            // while sealed, so this is the second of two gates rather than the only one.
             if (isDestroyed) return@exportHtml
             ComposeDraftCache.save(
                 CachedDraft(
@@ -1056,11 +1037,6 @@ private const val ATTACHMENT_COPY_BUFFER_BYTES = 64 * 1024
 /**
  * Reads [input] fully, or throws [AttachmentTooLargeException] as soon as it has produced more than
  * [limit] bytes — never allocating the whole of an oversized source.
- *
- * Throws rather than returning the prefix, for the same reason
- * [org.kysecurity.mail.mail.readBounded] does on the inbound side: a truncated attachment is
- * indistinguishable from a complete one to almost every file format, so returning what it got would
- * mean silently sending a corrupt file.
  *
  * `internal` rather than private so it is reachable from a plain JVM test — the bound is the whole
  * point of this function and the old code had none.

@@ -23,6 +23,7 @@ import org.kysecurity.mail.data.DataRuntime
 import org.kysecurity.mail.pgp.hasPgpIdentity
 import kotlinx.coroutines.launch
 import org.kysecurity.mail.security.LockedActivity
+import org.kysecurity.mail.security.showSecurely
 
 /** Create/edit form, organized into collapsible sections (Name, Work, Contact, Addresses, Online,
  *  Personal, Notes, Other). Only fn is required per Mobile_Contact_Sync.md's field table; everything
@@ -559,7 +560,8 @@ class ContactEditActivity : LockedActivity() {
             .setMessage(R.string.contacts_delete_confirm_message)
             .setPositiveButton(R.string.contacts_delete_confirm_positive) { _, _ -> delete() }
             .setNegativeButton(R.string.cancel, null)
-            .show()
+            .create()
+            .showSecurely()
     }
 
     private fun delete() {

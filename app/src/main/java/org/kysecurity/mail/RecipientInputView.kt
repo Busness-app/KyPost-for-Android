@@ -23,7 +23,10 @@ import org.kysecurity.mail.contacts.RecipientCandidate
 import org.kysecurity.mail.contacts.isDuplicateRecipient
 import org.kysecurity.mail.contacts.isValidEmailFormat
 import org.kysecurity.mail.contacts.matchRanges
-import kotlinx.coroutines.runBlocking
+import androidx.lifecycle.findViewTreeLifecycleOwner
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * One TO/CC/BCC recipient field: an [AutoCompleteTextView] backed by a local-contact [Filter],
@@ -46,6 +49,9 @@ class RecipientInputView @JvmOverloads constructor(
      *  [recipientEmails], never per keystroke. ComposeActivity uses this to re-run the encrypt
      *  preflight when the committed address set changes while Encrypt is checked. */
     var onRecipientsChanged: (() -> Unit)? = null
+
+    /** The in-flight suggestion lookup, cancelled by the next keystroke. See [debounceAndSearch]. */
+    private var searchJob: kotlinx.coroutines.Job? = null
 
     init {
         orientation = VERTICAL
@@ -84,7 +90,9 @@ class RecipientInputView @JvmOverloads constructor(
      *  itself offers TO/CC/BCC actions per contact, so a single entry point covers all three
      *  fields; showing the icon on every field would just be three doors to the same room. */
     fun configure(search: suspend (String) -> List<RecipientCandidate>, onOpenAddressBook: (() -> Unit)? = null) {
-        field.setAdapter(SuggestionAdapter(context, search))
+        val adapter = SuggestionAdapter(context)
+        field.setAdapter(adapter)
+        field.doAfterTextChanged { editable -> debounceAndSearch(adapter, search, editable?.toString().orEmpty()) }
         if (onOpenAddressBook != null) {
             bookButton.visibility = View.VISIBLE
             bookButton.setOnClickListener { onOpenAddressBook() }
@@ -151,17 +159,14 @@ class RecipientInputView @JvmOverloads constructor(
         addRecipient(typed)
     }
 
-    /** [Filterable] adapter backing the dropdown. [Filter.performFiltering] already runs on a
-     *  dedicated background thread that [Filter] itself serializes one call at a time — blocking
-     *  there via [runBlocking] is safe and mirrors this app's existing "blocking call off a
-     *  background thread" convention (e.g. ComposeActivity.sendEmail's ioExecutor usage) rather
-     *  than threading coroutines through this view. [Thread.sleep] before querying gives the
-     *  150ms debounce ContactAutocomplete.md asks for; [publishResults] then drops stale results
-     *  by comparing its constraint against the field's *current* text, so a fast typist never sees
-     *  an older query's results clobber a newer one. */
+    /**
+     * Dropdown adapter. **No [Filterable], and no [Filter].**
+     *
+     * [debounceAndSearch] does it in the coroutine world instead, where cancelling the previous
+     * job actually cancels it and the query never runs at all.
+     */
     private inner class SuggestionAdapter(
         context: Context,
-        private val search: suspend (String) -> List<RecipientCandidate>,
     ) : BaseAdapter(), Filterable {
 
         private var results: List<RecipientCandidate> = emptyList()
@@ -199,26 +204,65 @@ class RecipientInputView @JvmOverloads constructor(
             return span
         }
 
-        override fun getFilter(): Filter = object : Filter() {
-            override fun performFiltering(constraint: CharSequence?): FilterResults {
-                val query = constraint?.toString().orEmpty()
-                Thread.sleep(DEBOUNCE_MS)
-                val matches = if (query.isBlank()) emptyList() else runBlocking { search(query) }.take(MAX_RESULTS)
-                return FilterResults().apply {
-                    values = query to matches
-                    count = 1
-                }
-            }
+        /** Called on the main thread once a debounced search has actually completed. */
+        fun submit(query: String, matches: List<RecipientCandidate>) {
+            lastQuery = query
+            results = matches
+            notifyDataSetChanged()
+        }
 
-            @Suppress("UNCHECKED_CAST")
+        /**
+         * [AutoCompleteTextView.setAdapter] requires a [Filterable], so one is provided — but it
+         * does no work.
+         *
+         * All this does is hand back whatever [submit] last published, so the dropdown can size
+         * itself. The searching happens in [debounceAndSearch], on a cancellable coroutine, because
+         * `Filter`'s single serialised worker thread is the wrong place for a debounce and the
+         * worst place for a blocking database call.
+         */
+        override fun getFilter(): Filter = object : Filter() {
+            override fun performFiltering(constraint: CharSequence?): FilterResults =
+                FilterResults().apply {
+                    values = results
+                    count = this@SuggestionAdapter.count
+                }
+
             override fun publishResults(constraint: CharSequence?, filterResults: FilterResults?) {
-                val (query, matches) = filterResults?.values as? Pair<String, List<RecipientCandidate>> ?: return
-                if (field.text.toString() != query) return
-                lastQuery = query
-                results = matches
                 notifyDataSetChanged()
             }
         }
+    }
+
+    /**
+     * A real debounce: the pending job is cancelled outright by the next keystroke, so a superseded
+     * query never reaches the database.
+     *
+     * Scoped to the view's lifecycle via [findViewTreeLifecycleOwner], so a search in flight when
+     * the screen goes away is cancelled with it rather than resuming against a closed database —
+     * which the old `runBlocking` on a `Filter` thread had no way to avoid.
+     */
+    private fun debounceAndSearch(
+        adapter: SuggestionAdapter,
+        search: suspend (String) -> List<RecipientCandidate>,
+        query: String,
+    ) {
+        searchJob?.cancel()
+        val scope = findViewTreeLifecycleOwner()?.lifecycleScope ?: return
+        searchJob = scope.launch {
+            delay(DEBOUNCE_MS)
+            val matches = if (query.isBlank()) emptyList() else search(query).take(MAX_RESULTS)
+            // Still the current text? The delay above already drops most stale queries; this covers
+            // a search slower than the next keystroke.
+            if (field.text.toString() != query) return@launch
+            adapter.submit(query, matches)
+            if (matches.isNotEmpty() || query.isNotBlank()) field.showDropDown()
+        }
+    }
+
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        searchJob?.cancel()
+        searchJob = null
     }
 
     private companion object {

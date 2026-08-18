@@ -10,9 +10,14 @@
 -keepattributes *Annotation*, InnerClasses
 -dontnote kotlinx.serialization.**
 -keepclassmembers class **$$serializer { *** descriptor; }
--keepclasseswithmembers class org.kysecurity.mail.** {
-    public static ** Companion;
-}
+# The `-if @Serializable` rule below is the whole of what serialization needs, and it is precise:
+# it keeps the companion and serializer of the annotated classes only.
+#
+# There used to be a blanket `-keepclasseswithmembers class org.kysecurity.mail.** { public static
+# ** Companion; }` above it. That matches every class in this app with a companion object — which,
+# in idiomatic Kotlin, is most of them — so it kept their names and undid a large part of the
+# obfuscation this file exists to get. Verify with `./gradlew :app:assembleRelease` and a look at
+# `app/build/outputs/mapping/release/mapping.txt`: `org.kysecurity.mail.*` names should be rare.
 -if @kotlinx.serialization.Serializable class org.kysecurity.mail.**
 -keepclassmembers class <1> {
     static <1>$Companion Companion;
@@ -22,16 +27,19 @@
 -keep,includedescriptorclasses class org.kysecurity.mail.**$$serializer { *; }
 
 # --- Manifest-declared components ----------------------------------------------------------
-# Instantiated by class name by the framework, so R8 sees no reference to them.
--keep class org.kysecurity.mail.KyPostApp { *; }
--keep class org.kysecurity.mail.security.EphemeralAttachmentProvider { *; }
--keep class org.kysecurity.mail.push.KyPostFirebaseMessagingService { *; }
--keep class org.kysecurity.mail.push.KyPostUnifiedPushService { *; }
--keep class org.kysecurity.mail.contacts.device.KyPostContactAuthenticatorService { *; }
+# Instantiated by class name by the framework, so R8 sees no reference to them. Only the class name
+# and the no-arg constructor need to survive: `{ *; }` additionally kept every private field and
+# method of five security-relevant classes, which is exactly what enabling R8 was meant to stop.
+# Overridden framework methods are kept by the Android default rules, not by these.
+-keep class org.kysecurity.mail.KyPostApp { <init>(); }
+-keep class org.kysecurity.mail.security.EphemeralAttachmentProvider { <init>(); }
+-keep class org.kysecurity.mail.push.KyPostFirebaseMessagingService { <init>(); }
+-keep class org.kysecurity.mail.push.KyPostUnifiedPushService { <init>(); }
+-keep class org.kysecurity.mail.contacts.device.KyPostContactAuthenticatorService { <init>(); }
 
 # Referenced only by name from AndroidManifest metadata, so R8 cannot see the reference and would
 # strip it — leaving splits silently dead in release while they work in debug.
--keep class org.kysecurity.mail.ui.SplitInitializer { *; }
+-keep class org.kysecurity.mail.ui.SplitInitializer { <init>(); }
 
 # WorkManager instantiates workers reflectively via their (Context, WorkerParameters) constructor.
 -keep class * extends androidx.work.ListenableWorker {

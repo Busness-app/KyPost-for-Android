@@ -138,10 +138,6 @@ internal class EnrollmentCeremony(
         // Mints a FRESH keypair, destroying any previous one. A key that outlives a ceremony is a
         // standing unauthenticated path to every envelope the relay has retained.
         //
-        // Marked live BEFORE the check, not after. `newKeyPair()` deletes the previous key and then
-        // generates — attempting StrongBox first and falling back to the TEE — so a `false` can
-        // still leave something behind. Treating a failed mint as "nothing was created" is how a
-        // half-generated key survives a ceremony.
         keyPairLive = true
         if (!keys.newKeyPair()) {
             failAndDestroy(FailureReason.NO_DEVICE_KEY)

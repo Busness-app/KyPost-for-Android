@@ -117,10 +117,6 @@ internal class ClientEncryptedSender(
                 is OpenOutcome.Failed -> return ClientSendOutcome.UnsealFailed(outcome.message)
             }
         }
-        // Re-read rather than trusting the branch above: the app can lock between the unseal and
-        // here, and lockNow() clears this holder. Same reasoning as EncryptedMessageReader.
-        val privateKey = EnrollmentSession.peek() ?: return ClientSendOutcome.NotEnrolled
-
         // Built once and shared by every delivery and the Sent copy, so no recipient can receive a
         // subtly different message from another.
         val protectedContent = buildProtectedContent(
@@ -134,7 +130,6 @@ internal class ClientEncryptedSender(
         ).toByteArray(Charsets.UTF_8)
 
         val date = rfc5322Date(now())
-        val signingKey = privateKey.takeIf { sign }
 
         // To and CC share one ciphertext; each BCC gets their own, so no BCC recipient's key id
         // appears in a packet another recipient can read.
@@ -144,11 +139,64 @@ internal class ClientEncryptedSender(
             fields.bcc.forEach { add(listOf(it)) }
         }
 
+        // Every use of the private key is inside this one scope, so it stays the holder's wipeable
+        // CharArray rather than an immortal String copy — see [EnrollmentSession.withKey]. Null
+        // means the app locked between the unseal above and here, which lockNow() does by clearing
+        // the holder.
+        val ciphertexts = EnrollmentSession.withKey { privateKey ->
+            encryptAll(privateKey, sign, protectedContent, groups, byAddress, fields, from, date, boundaryToken)
+        } ?: return ClientSendOutcome.NotEnrolled
+        val (deliveries, sentCopyArmored) = when (ciphertexts) {
+            is EncryptedBundle.Ok -> ciphertexts.deliveries to ciphertexts.sentCopy
+            is EncryptedBundle.Failed -> return ClientSendOutcome.EncryptFailed(ciphertexts.message)
+        }
+
+        val outcome = transport.send(
+            ClientEncryptedMessage(
+                from = from,
+                to = fields.to,
+                cc = fields.cc,
+                bcc = fields.bcc,
+                deliveries = deliveries,
+                sentCopy = wrapAsPgpMime(
+                    envelope = OutgoingEnvelope(from = from, to = fields.to, cc = fields.cc, date = date),
+                    armoredMessage = sentCopyArmored,
+                    boundaryToken = boundaryToken,
+                ),
+                mode = draft.mode.ifBlank { "html" },
+            ),
+        )
+        return when (outcome) {
+            is MailOutcome.Success -> ClientSendOutcome.Sent(outcome.value.sentSaved, outcome.value.warning)
+            else -> ClientSendOutcome.SendFailed(outcome)
+        }
+    }
+
+    /** Everything the private key is needed for, so [EnrollmentSession.withKey] can scope it to a
+     *  single call rather than the whole send — the network round trip below needs no key. */
+    private sealed class EncryptedBundle {
+        data class Ok(val deliveries: List<ClientEncryptedDelivery>, val sentCopy: String) : EncryptedBundle()
+        data class Failed(val message: String) : EncryptedBundle()
+    }
+
+    @Suppress("LongParameterList")
+    private fun encryptAll(
+        privateKey: CharArray,
+        sign: Boolean,
+        protectedContent: ByteArray,
+        groups: List<List<String>>,
+        byAddress: Map<String, ResolvedRecipientKey>,
+        fields: RecipientFields,
+        from: String,
+        date: String,
+        boundaryToken: () -> String,
+    ): EncryptedBundle {
+        val signingKey = privateKey.takeIf { sign }
         val deliveries = groups.map { recipients ->
             val keys = recipients.mapNotNull { byAddress[it.lowercase()]?.publicKey }
             val encrypted = PgpEncryptor.encrypt(protectedContent, keys, signingKey)
             if (encrypted !is EncryptResult.Ok) {
-                return ClientSendOutcome.EncryptFailed((encrypted as EncryptResult.Failed).message)
+                return EncryptedBundle.Failed((encrypted as EncryptResult.Failed).message)
             }
             ClientEncryptedDelivery(
                 recipients = recipients,
@@ -164,31 +212,12 @@ internal class ClientEncryptedSender(
         // supplied. A hostile server handing back "your" public key would otherwise get a readable
         // copy of every message sent, with nothing on screen looking any different.
         val ownKey = PgpEncryptor.ownPublicKey(privateKey)
-            ?: return ClientSendOutcome.EncryptFailed("could not derive this account's own key")
+            ?: return EncryptedBundle.Failed("could not derive this account's own key")
         val sentCopy = PgpEncryptor.encrypt(protectedContent, listOf(ownKey), signingKey)
         if (sentCopy !is EncryptResult.Ok) {
-            return ClientSendOutcome.EncryptFailed((sentCopy as EncryptResult.Failed).message)
+            return EncryptedBundle.Failed((sentCopy as EncryptResult.Failed).message)
         }
-
-        val outcome = transport.send(
-            ClientEncryptedMessage(
-                from = from,
-                to = fields.to,
-                cc = fields.cc,
-                bcc = fields.bcc,
-                deliveries = deliveries,
-                sentCopy = wrapAsPgpMime(
-                    envelope = OutgoingEnvelope(from = from, to = fields.to, cc = fields.cc, date = date),
-                    armoredMessage = sentCopy.armored,
-                    boundaryToken = boundaryToken,
-                ),
-                mode = draft.mode.ifBlank { "html" },
-            ),
-        )
-        return when (outcome) {
-            is MailOutcome.Success -> ClientSendOutcome.Sent(outcome.value.sentSaved, outcome.value.warning)
-            else -> ClientSendOutcome.SendFailed(outcome)
-        }
+        return EncryptedBundle.Ok(deliveries, sentCopy.armored)
     }
 
     private fun String.asContentType(): String = if (equals("plain", ignoreCase = true)) "text/plain" else "text/html"

@@ -12,10 +12,6 @@ import android.content.Context
  *  - SecurityWipe, reached by too many wrong PIN attempts. A key surviving that would outlive a
  *    wipe nobody chose.
  *
- * Returns the names of the steps that failed; empty means everything is gone. Reporting rather than
- * swallowing is the point: both callers announce success to the user, and a teardown that cannot
- * fail would have them announce it over a live sealed envelope.
- *
  * The vault goes first. If the process dies between the two, what survives is the agreement key,
  * which opens only the relay's transport copy; the reverse order would leave the durable sealed
  * blob — the thing actually worth protecting — behind.
@@ -30,11 +26,6 @@ internal object EnrollmentTeardown {
 
     /**
      * [destroy] plus the correction to the server, for the user-initiated "Remove from this device".
-     *
-     * The report goes through [EnrollmentStateWorker] rather than a direct `reportState(false)`
-     * because the worker re-probes live state on every run and retries when offline — so if the
-     * teardown half-failed, the server is told this device is still enrolled rather than being told
-     * a comforting lie. A direct call would be a second reporting path that can fail silently.
      *
      * `SecuritySettingsActivity.tearDownEnrollmentForHostileLocation` performs the same two steps
      * for the protection toggle. It is deliberately left alone rather than routed through here: it

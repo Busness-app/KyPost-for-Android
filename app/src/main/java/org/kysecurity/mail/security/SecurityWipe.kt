@@ -20,22 +20,10 @@ import java.io.IOException
 private val DATASTORE_NAMES = listOf("push_state", "contacts_state", "mail_sync_state")
 
 /**
- * SharedPreferences files the enumeration in [deleteAllSharedPrefs] must NOT touch.
- *
- * The two app-lock files belong to [AppLockStore.reset], which deletes the unencrypted tripwire
- * *before* the encrypted store — an order this enumeration cannot promise. The wipe marker has to
- * outlive the wipe's own deletions, or an interruption erases the evidence that a wipe was started.
- * The UnifiedPush connector's file is deleted by the dedicated `unifiedPushPrefs` step, which runs
- * after `unifiedPushUnregister` because it holds the distributor selection that
- * `UnifiedPush.unregister` needs to actually unsubscribe. That step is what makes excluding it here
- * safe; the exclusion previously rested on the unregister step deleting it, which it never did.
- *
- * The downloaded-attachment ledger is retained for the same reason as the wipe marker: it is the
- * record of work still owed. `downloadedAttachments` keeps the rows it could not delete and throws,
- * which promises the user a retry — and this sweep, eleven steps later, used to delete the ledger
- * anyway, so the resumed wipe iterated an empty set and reported success over attachment plaintext
- * still in shared Downloads. [DownloadedAttachmentLedger.deleteAll] removes the file itself once
- * there is nothing left to retry.
+ * Files [deleteAllSharedPrefs] must NOT sweep, each because a named step owns it and needs it
+ * *later* in the run: [AppLockStore.reset] (ordering), the wipe marker and the attachment ledger
+ * (records of work still owed, so a resumed wipe has something to iterate), and the UnifiedPush
+ * connector's file (holds the distributor selection `unifiedPushUnregister` reads).
  */
 private val PREFS_NAMES_RETAINED = setOf(
     "app_lock_secure",
@@ -46,14 +34,10 @@ private val PREFS_NAMES_RETAINED = setOf(
 )
 
 /**
- * The plaintext stores that hold mail metadata but no credentials: folder cursors keyed by
- * server-supplied folder *path*, contact cursors, the push history (sender + subject for the last
- * 30 messages), and every label the server has ever applied.
+ * Plaintext mail metadata, no credentials: folder cursors (whose *keys* are server folder paths),
+ * contact cursors, the 30-entry sender/subject push history, and accumulated labels.
  *
- * Shared by the full wipe and by Hostile Location Protection's enable path, so the two cannot
- * drift. Enabling protection previously switched Room to in-memory and diverted only *new* push
- * payloads, leaving everything already written on disk — so "nothing from before the toggle
- * survives" was not true of the sender/subject history or the folder taxonomy.
+ * Shared by the full wipe and Hostile Location Protection's enable path so the two cannot drift.
  */
 private val METADATA_PREFS_NAMES = listOf(org.kysecurity.mail.KeywordSettings.PREFS_NAME)
 
@@ -64,16 +48,9 @@ private const val KEY_WIPE_IN_PROGRESS = "wipe_in_progress"
 private const val KEY_WIPE_ATTEMPTS = "wipe_attempts"
 
 /**
- * Set once a wipe has exhausted [MAX_WIPE_RESUMES] with steps still failing. It stops the app
- * re-running the destructive pass at every launch **without** clearing [KEY_WIPE_IN_PROGRESS] —
- * which is the distinction this flag exists for.
- *
- * Clearing the marker was how giving up used to be expressed, and it discarded the only durable
- * record that data may still be on disk: `wipeInterrupted` answered false from then on, so the
- * final "some data may still be on this device" notice was shown exactly once, on the run that
- * gave up, and never again. Every later launch presented a clean first-run app over plaintext mail,
- * contacts or attachments that were never deleted. The marker now survives until a run completes
- * cleanly; this flag only says "stop retrying by itself".
+ * "Stop retrying by itself" — set once a wipe has exhausted [MAX_WIPE_RESUMES] with steps still
+ * failing. Deliberately does **not** clear [KEY_WIPE_IN_PROGRESS]: that marker is the only durable
+ * record that data may still be on disk, and it must survive until a run completes cleanly.
  */
 private const val KEY_WIPE_ABANDONED = "wipe_abandoned"
 
@@ -82,30 +59,18 @@ private const val KEY_WIPE_ABANDONED = "wipe_abandoned"
 private const val KEY_WIPE_FAILED_STEPS = "wipe_failed_steps"
 
 /**
- * The Hostile Location Protection posture captured at the *start* of the wipe, stored in the one
- * preferences file the wipe retains.
- *
- * It used to be read into a local at the top of [SecurityWipe.wipeAndResetApp] and restored at the
- * bottom — forty lines and seven steps later, on the far side of the deregister's ~20s of OkHttp
- * timeouts. The `sharedPrefs` step in between deletes the flag's own file, so a process death in
- * that window left the flag gone; the resumed wipe then re-read it from the file the first run had
- * deleted, got `false`, and skipped the restore permanently. The user re-paired onto a disk-backed
- * plaintext database on a device the app had just decided was hostile.
+ * The Hostile Location Protection posture as it was at the *start* of the wipe, stored in the one
+ * preferences file the wipe retains — the `sharedPrefs` step deletes the flag's own file, so a
+ * resumed run has to read it from here or it silently reverts the setting to `false`.
  */
 private const val KEY_HOSTILE_LOCATION_WAS_ENABLED = "hostile_location_was_enabled"
 
 /**
  * How many times an incomplete wipe may be resumed at startup before the app stops retrying.
  *
- * The marker used to be cleared only on a fully clean run, with no ceiling — so a step that fails
- * *permanently* meant the app wiped itself on every launch, forever, with no way for the user to
- * get past it. That was not hypothetical: [clearWebViewState] recursively deleted `cacheDir` while
- * the process was live and OkHttp, WebView and the code cache were recreating files inside it, and
- * `deleteRecursively()` reports false for any partial delete. Losing that race is routine.
- *
- * Three attempts is enough to ride out a transient failure (a file held open, a provider that was
- * briefly unavailable) and few enough that a permanent one surfaces as a reported problem rather
- * than a brick.
+ * Enough to ride out a transient failure (a file held open, a provider briefly unavailable), few
+ * enough that a permanent one surfaces as a reported problem rather than an app that wipes itself
+ * on every launch forever.
  */
 private const val MAX_WIPE_RESUMES = 3
 
@@ -121,15 +86,9 @@ sealed class WipeResult {
     object Complete : WipeResult()
 
     /**
-     * [willRetry] is false once [MAX_WIPE_RESUMES] has been reached, because at that point the app
-     * has stopped resuming the wipe by itself. The distinction exists so the UI does not promise a
-     * retry that will never happen — `security_wipe_incomplete_notice` says "it will be retried
-     * when the app next starts", which was shown on precisely the run that gave up.
-     *
-     * `willRetry = false` is terminal, not merely informational:
-     * [org.kysecurity.mail.security.LockedActivity] blocks every gated screen behind
-     * `security_wipe_incomplete_final_notice` on it, and the state persists across launches (see
-     * [KEY_WIPE_ABANDONED]) until a reinstall.
+     * `willRetry = false` is **terminal**, not informational: the app has stopped resuming the wipe
+     * by itself, [LockedActivity] blocks every gated screen on it, and the state survives launches
+     * (see [KEY_WIPE_ABANDONED]) until a reinstall.
      */
     data class Incomplete(
         val failedSteps: List<String>,
@@ -138,47 +97,33 @@ sealed class WipeResult {
 }
 
 /**
- * Full destructive reset: runs when [LockoutPolicy.WIPE_THRESHOLD] wrong PIN attempts accumulate,
- * when the [AppLockStore] tripwire fires, and when disabling "Require Unlock to Open" needs to
- * recover a credential-gate wrapped `deviceSecret`.
+ * Full destructive reset: runs on the user's configured run of wrong PIN attempts, and when the
+ * [AppLockStore] tripwire fires.
  *
- * Its scope is deliberately wider than the Room database: the push history holds sender names and
- * subjects, and the contacts this app synced live in the OS provider, outside its sandbox
- * entirely. A wipe that runs precisely because the device is presumed hostile cannot leave message
- * metadata behind — and must never report [WipeResult.Complete] unless every step really ran.
+ * Wider than the Room database on purpose — the push history holds senders and subjects, and the
+ * synced contacts live in the OS provider, outside this sandbox. It must never report
+ * [WipeResult.Complete] unless every step really ran.
  */
 object SecurityWipe {
     private const val TAG = "SecurityWipe"
 
     /**
-     * Performs the destructive reset described above, then drops the graph holders so nothing in
-     * this process keeps serving from the closed database. Callers should still follow this with
-     * [AppRestart.relaunch] to put the UI back into a coherent first-run state.
+     * Performs the reset, then drops the graph holders. Follow with [AppRestart.relaunch].
      *
-     * Runs under [NonCancellable]: a wipe interrupted halfway leaves the device in a worse state
-     * than either finishing or never starting, and every caller is a coroutine that may be
-     * cancelled by the Activity teardown the wipe itself triggers.
+     * [NonCancellable]: every caller is a coroutine the wipe's own teardown may cancel, and a
+     * half-finished wipe is worse than either outcome.
      */
     suspend fun wipeAndResetApp(context: Context): WipeResult = withContext(Dispatchers.IO + NonCancellable) {
         val appContext = context.applicationContext
         val failed = mutableListOf<String>()
 
         /**
-         * Every step is individually fault-isolated — one failure must not abandon the rest — but
-         * never silently. A bare `runCatching {}` here reported a clean wipe whether or not
-         * anything was actually destroyed, on the one code path where that claim matters most.
+         * Fault-isolates one step without silencing it: a failure is recorded in [failed], which is
+         * what stops [WipeResult.Complete] being claimed over data that is still here.
          *
-         * **Nothing below may catch its own exceptions.** Three steps used to delegate to helpers
-         * whose every statement sat in its own `runCatching { }.onFailure { Log }`, so the step
-         * could not fail however badly it went — including `deviceContacts`, which deletes the
-         * user's contacts out of the OS provider, outside this app's sandbox. `Complete` was
-         * therefore a claim the code structurally could not support. Let it throw; that is what
-         * this function is for.
-         *
-         * Swallowing [kotlinx.coroutines.CancellationException] here is deliberate and is the one
-         * place it is right: this whole block runs under [NonCancellable], so it cannot be *our*
-         * job being cancelled, and abandoning the remaining destruction because one step was
-         * interrupted leaves the device in the half-wiped state the marker exists to prevent.
+         * **Nothing below may catch its own exceptions** — a step that cannot fail cannot be
+         * reported. Swallowing `CancellationException` is right here and nowhere else: this runs
+         * under [NonCancellable], so it is never *our* job being cancelled.
          */
         suspend fun step(name: String, body: suspend () -> Unit) {
             runCatching { body() }.onFailure {
@@ -187,37 +132,22 @@ object SecurityWipe {
             }
         }
 
-        // Captured BEFORE the destruction below, and restored after it.
-        //
-        // `org.kysecurity.mail.hostile_location_settings` is not in PREFS_NAMES_RETAINED, so the
-        // enumeration in deleteAllSharedPrefs removes it and the flag reverts to its `false`
-        // default. This wipe runs *precisely* when the device is presumed hostile — ten wrong PINs,
-        // or the tripwire firing — and its side effect was therefore to silently switch off the one
-        // feature that exists for that exact situation. The user re-paired on a device the app had
-        // just decided was compromised, and every message body went straight back to
-        // `kypost_mail.db` in plaintext. A wipe may destroy data; it must not downgrade posture.
-        //
-        // Read here and handed to markWipeInProgress, which persists it into the retained
-        // wipe_state file in the same commit that sets the marker. A resumed wipe reads it back
-        // from there rather than from the file this run is about to delete — see
-        // [KEY_HOSTILE_LOCATION_WAS_ENABLED].
+        // Captured BEFORE the destruction and restored after: the sweep deletes this flag's file,
+        // and a wipe that runs *because* the device is presumed hostile must not switch off the
+        // feature for that exact situation. A wipe may destroy data; it must not downgrade posture.
+        // Persisted by markWipeInProgress so a resumed run reads it from the retained file.
         val currentlyEnabled = runCatching { HostileLocationSettings(appContext).isEnabled() }
             .onFailure { android.util.Log.e(TAG, "Could not read the protection flag before wiping", it) }
             .getOrDefault(false)
 
-        // A wipe interrupted halfway is worse than one that never started, and this runs while an
-        // attacker is holding the device — force-stopping the app is one tap away in Settings. The
-        // marker makes an interrupted wipe resumable: KyPostApp re-runs the whole thing at next
-        // launch until it completes cleanly. Written with commit(), before anything is destroyed.
+        // Makes an interrupted wipe resumable — force-stopping the app is one tap away in
+        // Settings, and this runs while an attacker holds the device. commit(), before anything
+        // is destroyed.
         val hostileLocationWasEnabled = markWipeInProgress(appContext, currentlyEnabled)
 
-        // Captured BEFORE the destruction below, which deletes `push_pairing_secure` in the
-        // sharedPrefs step. The deregister runs last on purpose — destroying the plaintext must not
-        // wait on a network round trip — but it authenticates with a credential that lives in the
-        // file that step removes, so reading it at call time meant the deregister could only ever
-        // report "Device is not paired" and the server kept pushing to a wiped device forever.
-        // Holding the secret in memory for the duration of the wipe costs nothing: this process is
-        // about to be relaunched, and the same secret was already in memory to get here.
+        // Captured BEFORE the sharedPrefs step deletes `push_pairing_secure`. The deregister runs
+        // last (destroying plaintext must not wait on the network) but authenticates with a
+        // credential that step removes, so it has to be read now.
         val pairingForDeregister = runCatching { PushRuntime.graph(appContext).repository.pairingForAuthenticatedCall() }
             .onFailure { android.util.Log.w(TAG, "Could not read the pairing before wiping; deregister will be skipped", it) }
             .getOrNull()
@@ -226,8 +156,7 @@ object SecurityWipe {
         // can force-stop the app at any moment, so every step that blocks — above all the ~20s of
         // OkHttp timeouts in the deregister — has to come after the destruction, not before it.
         //
-        // The in-memory draft leads because it needs no I/O and is the most sensitive thing here:
-        // AppRestart relaunches into the same JVM rather than killing the process, so an uncleared
+        // Leads because it needs no I/O and AppRestart relaunches into the same JVM: an uncleared
         // draft is restorable from the compose screen in the attacker's session.
         step("inMemoryPlaintext") {
             val unclearedHolders = InMemoryPlaintext.clearAll()
@@ -248,24 +177,16 @@ object SecurityWipe {
             }
         }
 
-        // Local push teardown BEFORE the network call, not after it. These are the pieces that
-        // keep delivery working — the connector's own SQLite database holds the WebPush ECDH
-        // private key and auth secret — plus the already-delivered metadata sitting in the shade.
-        // They used to sit *after* the deregister inside a `withTimeoutOrNull(3s)` whose bound was
-        // set to exactly the deregister client's own 3s `callTimeout`, so the two raced and an
-        // unreachable server (airplane mode: one swipe, before burning ten PINs) reliably cancelled
-        // the coroutine before any of this ran. None of it needs the network; none of it belongs
+        // Local push teardown BEFORE the network call: the connector's SQLite database holds the
+        // WebPush ECDH private key, and none of this needs the network, so none of it belongs
         // behind something that does.
         step("cancelNotifications") {
             // A mail notification posted while unlocked keeps sender and subject in the shade after
             // the wipe, readable with no forensics at all.
             appContext.getSystemService(android.app.NotificationManager::class.java)?.cancelAll()
         }
-        // UNREGISTER FIRST, THEN DELETE THE CONNECTOR'S STATE. Reversed, the unregister ran against
-        // a connector whose own registration records had just been deleted, so it had nothing left
-        // to tell the distributor to unsubscribe — the device stayed subscribed at the distributor
-        // and its push server. The `PREFS_NAMES_RETAINED` note already applied this reasoning to
-        // the connector's preferences file and stopped short of its database.
+        // UNREGISTER FIRST, THEN DELETE THE CONNECTOR'S STATE — reversed, the unregister has no
+        // registration records left to unsubscribe with and the device stays subscribed.
         step("unifiedPushUnregister") { org.kysecurity.mail.push.UnifiedPushRegistrar.unregister(appContext) }
         step("unifiedPushDatabase") {
             // Lives in our sandbox but is not ours to name elsewhere. Holds the WebPush ECDH
@@ -273,12 +194,9 @@ object SecurityWipe {
             appContext.deleteDatabase("unifiedpush-connector")
         }
         step("unifiedPushPrefs") {
-            // Explicit, because `PREFS_NAMES_RETAINED` excludes this file from the enumeration and
-            // claimed the unregister step removed it. It does not: `UnifiedPushRegistrar.unregister`
-            // delegates to `UnifiedPush.unregister`, which unsubscribes the instance and
-            // deliberately keeps the distributor selection so a later re-register reuses it. So the
-            // record of which push distributor this user runs survived a wipe performed precisely
-            // because the device is presumed hostile.
+            // Explicit: `UnifiedPush.unregister` deliberately keeps the distributor selection for a
+            // later re-register, so nothing else removes the record of which distributor this user
+            // runs.
             if (!appContext.deleteSharedPreferences("unifiedpush.connector")) {
                 // Absent is the normal case (UnifiedPush was never selected); only a file that is
                 // there and will not go is a failure.
@@ -287,21 +205,15 @@ object SecurityWipe {
             }
         }
         step("fcmToken") {
-            // Awaited, because both return Tasks. Firing and forgetting made this step succeed
-            // unconditionally, so the Fid below survived whenever the delete failed — offline most
-            // obviously, which is one swipe away and exactly the state a thief leaves the device in.
+            // Awaited: both return Tasks, and a fire-and-forget step succeeds unconditionally.
             com.google.firebase.messaging.FirebaseMessaging.getInstance().deleteToken().await()
-            // Rotating the messaging token leaves the Firebase *installation* — and its stable Fid
-            // in `files/PersistedInstallation.<app>.json` — in place, so a device this wipe has just
-            // decided is hostile stays linkable across the wipe and a subsequent re-pair.
-            // delete() needs a round trip; on failure it leaves that file behind.
+            // The token is not the installation. Leaving the Fid behind keeps this device linkable
+            // across the wipe and a later re-pair.
             com.google.firebase.installations.FirebaseInstallations.getInstance().delete().await()
         }
         step("downloadedAttachments") {
-            // Files this app wrote into shared MediaStore Downloads are outside the sandbox, so no
-            // sandbox deletion reaches them — but the app put them there and this routine tells the
-            // user their local data has been erased. Saving an attachment is a single unprompted tap
-            // in the default configuration, so these accumulate.
+            // Outside the sandbox, so no sandbox deletion reaches them — but this routine tells the
+            // user their local data has been erased, and it has to be true of these too.
             DownloadedAttachmentLedger.deleteAll(appContext)
         }
         // Before the sharedPrefs sweep below, so the vault deletes its own file rather than having
@@ -331,6 +243,15 @@ object SecurityWipe {
             val leftBehind = AuthGateKey.destroy()
             check(leftBehind.isEmpty()) { "auth gate key left $leftBehind" }
         }
+        // The database is encrypted at rest, so it is only as destroyed as its key. `database`
+        // above deletes the file and reports if it could not; this makes any surviving copy of the
+        // file unreadable as well, which is the property that matters when the file delete is the
+        // step most likely to fail. Runs AFTER `database`, so the delete is not attempted against a
+        // database whose key has already gone.
+        step("databaseKey") {
+            val leftBehind = DatabaseKey.destroy(appContext)
+            check(leftBehind.isEmpty()) { "database key left $leftBehind" }
+        }
         step("pullWorker") { org.kysecurity.mail.push.PullScheduler.cancelPeriodic(appContext) }
         step("deviceContactWorker") { org.kysecurity.mail.contacts.device.DeviceContactSyncScheduler.cancelPeriodic(appContext) }
 
@@ -341,20 +262,13 @@ object SecurityWipe {
         step("deviceContactRows") { deleteSyncedDeviceContactRows(appContext) }
         step("deviceContactAccount") { DeviceContactAccountManager(appContext).removeAccountBlocking() }
 
-        // Network LAST, and bounded only by the deregister client's own `callTimeout` (see
-        // PushGraph.deregisterClient). No `withTimeoutOrNull`: coroutine cancellation cannot
-        // interrupt a thread blocked in a socket read, so it never delivered the bound it claimed —
-        // all it did was skip whatever came after it, which is why every local teardown above was
-        // moved in front of this call.
+        // Network LAST, bounded by the client's own `callTimeout` — coroutine cancellation cannot
+        // interrupt a thread blocked in a socket read, so `withTimeoutOrNull` here would only skip
+        // whatever came after it.
         //
-        // Deliberately NOT folded into `failed`. [WipeResult.Incomplete] means "local data may
-        // still be on disk" — that is what the UI says on the back of it — and an unreachable relay
-        // says nothing about local data, every byte of which is already gone by this line. Counting
-        // it would tell an offline user their mail might still be here when it is not, and would
-        // keep the resume marker set so the app re-ran the whole destructive wipe at every launch
-        // until the server came back. Logged loudly instead: the consequence is server-side (the
-        // relay keeps pushing to a device that will never answer), and the remedy is server-side
-        // too.
+        // Deliberately NOT folded into `failed`: [WipeResult.Incomplete] means "local data may
+        // still be on disk", and an unreachable relay says nothing about local data — every byte of
+        // which is gone by this line.
         val deregistered = runCatching {
             PushRuntime.graph(appContext).repository
                 .unpairDevice(PushRuntime.graph(appContext).deregisterClient, pairingForDeregister)
@@ -427,19 +341,12 @@ object SecurityWipe {
     }
 
     /**
-     * "Refuse to do anything at all" — the abandoned-wipe state as a guard, for the entry points
-     * that are not Activities and so cannot go through [LockedActivity]'s terminal block.
+     * "Refuse to do anything at all", for the non-Activity entry points that cannot go through
+     * [LockedActivity]'s terminal block. The pairing credential is often among what survived an
+     * abandoned wipe, so push, lock-screen previews and MFA approval all stay reachable otherwise.
      *
-     * The state that reaches here is precisely: a wipe ran because the device was presumed
-     * hostile, it could not delete everything, and it has stopped trying. The pairing credential
-     * is very often part of what survived — `sharedPrefs` is the step that holds it and one of the
-     * likelier ones to fail — so the app can still receive push, still render sender and subject
-     * on a lock screen, and still approve an account login, on a device it has already decided is
-     * in the wrong hands. Every one of those is the thing the wipe existed to prevent.
-     *
-     * Reads one boolean out of SharedPreferences: no graph, no coroutine, no Keystore. Safe from a
-     * Service's or a Worker's first line, and deliberately independent of [startupVerdict], which
-     * is published asynchronously and may not be complete when a push arrives.
+     * One boolean from SharedPreferences: no graph, no coroutine, no Keystore, and independent of
+     * [startupVerdict], which may not be complete when a push arrives.
      */
     fun blockedByAbandonedWipe(context: Context): Boolean = abandonedWipe(context) != null
 
@@ -455,30 +362,17 @@ object SecurityWipe {
     }
 
     /**
-     * Sets the marker, counts this attempt and records the protection posture, in one `commit()`,
-     * before anything is destroyed. Returns the posture the *first* run of this wipe observed.
-     *
-     * The posture is sticky across resumes on purpose. Re-reading
-     * `org.kysecurity.mail.hostile_location_settings` on a resumed run reads the file an interrupted run
-     * already deleted, which answers `false` and loses the setting permanently — so once a wipe has
-     * recorded that protection was on, every resume of that wipe restores it.
+     * Marker, attempt count and protection posture in one `commit()`, before anything is destroyed.
+     * Returns the posture the *first* run observed — sticky across resumes, because a resumed run
+     * would otherwise read the settings file an interrupted run already deleted.
      */
     private fun markWipeInProgress(appContext: Context, hostileLocationEnabled: Boolean): Boolean {
         val prefs = appContext.getSharedPreferences(WIPE_STATE_PREFS, Context.MODE_PRIVATE)
         val alreadyRecorded = prefs.getBoolean(KEY_HOSTILE_LOCATION_WAS_ENABLED, false)
         val posture = hostileLocationEnabled || alreadyRecorded
-        // The attempt counter belongs to ONE wipe, not to the install. A set marker means this run is
-        // resuming an episode already under way, so the count climbs and MAX_WIPE_RESUMES bounds it.
-        // A clear marker means this is a new wipe, which gets the full budget — otherwise the counter
-        // is monotonic for the life of the install, and since ordinary user actions trigger wipes
-        // (turning off "Require Unlock to Open" with the credential gate on runs one), the budget is
-        // spent long before the wipe that matters: a thief burning PIN attempts, which would then
-        // abandon itself on its first failed step and tell the user to reinstall.
-        //
-        // An abandoned episode is over, even though its marker is still set (see
-        // [KEY_WIPE_ABANDONED]) — so a wipe triggered after one, by a thief burning PIN attempts on
-        // the reinstall-less device the user kept, starts a NEW episode with the full budget rather
-        // than inheriting a spent counter and abandoning itself on its first failed step.
+        // The attempt counter belongs to ONE wipe episode, not to the install: a new episode gets
+        // the full budget, or an install-lifetime counter would be spent before the wipe that
+        // matters. An abandoned episode is over even though its marker is still set.
         val resuming = prefs.getBoolean(KEY_WIPE_IN_PROGRESS, false) &&
             !prefs.getBoolean(KEY_WIPE_ABANDONED, false)
         val attempts = if (resuming) prefs.getInt(KEY_WIPE_ATTEMPTS, 0) + 1 else 1
@@ -492,18 +386,9 @@ object SecurityWipe {
     }
 
     /**
-     * Ends this wipe, keeping the attempt count.
-     *
-     * Deliberately not `clear()`. That dropped [KEY_WIPE_ATTEMPTS] along with the in-progress flag,
-     * so reaching [MAX_WIPE_RESUMES] reset the budget to zero and the ceiling bounded nothing —
-     * measured across seven consecutive failing wipes, the counter cycled 1, 2, 0, 1, 2, 0, 1.
-     *
-     * The count is left here on purpose and reset by [markWipeInProgress] instead, when it observes
-     * a clear marker. Resetting in both places would re-open the cycling bug the moment either one
-     * changed; resetting only at episode start keeps "the ceiling bounds one wipe" true even if this
-     * method is edited later. The
-     * posture flag goes with the marker: it belongs to the wipe that recorded it, and a later,
-     * unrelated wipe must observe the setting as it stands then.
+     * Ends this wipe, **keeping** [KEY_WIPE_ATTEMPTS]. `clear()` would drop it, so reaching
+     * [MAX_WIPE_RESUMES] would reset the budget and the ceiling would bound nothing. The count is
+     * reset only by [markWipeInProgress], at episode start.
      */
     private fun clearWipeMarker(appContext: Context) {
         appContext.getSharedPreferences(WIPE_STATE_PREFS, Context.MODE_PRIVATE)
@@ -518,40 +403,31 @@ object SecurityWipe {
     }
 
     /**
-     * Closes the current Room database instance, deletes `kypost_mail.db` (plus its `-wal`/`-shm`
-     * journal files), and invalidates [DataRuntime] so the next access rebuilds it rather than
-     * handing out the closed instance — which is what the old "callers MUST restart the process"
-     * doc contract was standing in for.
+     * Closes and deletes the database (plus its journal files) and drops [DataRuntime], so the next
+     * access rebuilds rather than being handed the closed instance.
      *
-     * Shared with Hostile Location Protection's toggle handler: enabling it must delete any
-     * on-disk cache written before protection was turned on, and disabling it is a harmless
-     * safety net.
+     * Shared with Hostile Location Protection's toggle: enabling it must delete any on-disk cache
+     * written before it was turned on.
      */
     suspend fun closeAndDeleteDatabase(context: Context) = withContext(Dispatchers.IO + NonCancellable) {
         val appContext = context.applicationContext
 
-        // ORDER MATTERS, and it used to be wrong in both directions.
-        //
-        // Quiesce first: `invalidate()` only makes the *next* `get()` rebuild, so work already in
-        // flight keeps its own reference to the instance about to be closed, and closing it out
-        // from under a pool thread is an uncaught exception on a non-UI thread — a process kill.
-        //
-        // Then `take()`, not `invalidate()` + `graph()`: the latter would build a brand-new database
-        // and close *that*, leaving the live one open. Taking removes it from the holder and hands
-        // back the instance actually in use, in one step, so no later caller can be given it either.
+        // ORDER MATTERS. Quiesce first, or closing the database out from under an in-flight pool
+        // thread is an uncaught exception on a non-UI thread — a process kill. Then `take()`, not
+        // `invalidate()` + `graph()`: the latter builds a new database and closes *that*.
         val settled = org.kysecurity.mail.MailBackgroundExecutor.quiesce()
         val doomed = DataRuntime.takeGraph()
         runCatching { doomed?.database?.close() }
             .onFailure { android.util.Log.e(TAG, "Failed to close the database before deleting it", it) }
-        val deleted = appContext.deleteDatabase("kypost_mail.db")
+        val deleted = appContext.deleteDatabase(org.kysecurity.mail.data.DATABASE_NAME)
         // Reported, not merely logged. `deleteDatabase` returns false when the file is still there,
         // which after an unquiesced teardown is exactly what "mail work is still holding it open"
         // looks like — and the cached message bodies are the single most sensitive thing a wipe is
         // supposed to destroy. The quiesce result is folded in so the cause is named rather than
         // guessed at from a bare "false".
-        if (!deleted && appContext.getDatabasePath("kypost_mail.db").exists()) {
+        if (!deleted && appContext.getDatabasePath(org.kysecurity.mail.data.DATABASE_NAME).exists()) {
             throw IOException(
-                "kypost_mail.db still exists after deletion" +
+                "${org.kysecurity.mail.data.DATABASE_NAME} still exists after deletion" +
                     if (!settled) " (mail work did not quiesce first)" else "",
             )
         }
@@ -582,10 +458,6 @@ object SecurityWipe {
     /**
      * Every SharedPreferences file this app owns, minus [PREFS_NAMES_RETAINED].
      *
-     * Enumerated rather than listed by name. The list this replaced claimed to be complete and was
-     * not — `org.kysecurity.mail.app_lock_settings` had never been added to it — and a hardcoded list
-     * silently goes stale every time a preference file is introduced.
-     *
      * Throws on the first failure so [wipeAndResetApp] records the step as failed.
      */
     private fun deleteAllSharedPrefs(appContext: Context) {
@@ -605,16 +477,12 @@ object SecurityWipe {
     }
 
     /**
-     * Clears Chromium's per-application profile: tapping "Show images" makes the mail WebView
-     * perform real network fetches, after which cookies, `TransportSecurity` (HSTS hosts) and
-     * `Network Persistent State` (alt-svc/QUIC hosts) persist under `app_webview` as a host-level
-     * record of the remote-content servers contacted while reading mail.
+     * Clears Chromium's per-application profile. "Show images" makes the mail WebView fetch for
+     * real, after which cookies, HSTS and alt-svc state under `app_webview` are a host-level record
+     * of the servers contacted while reading mail.
      *
-     * Nothing here is caught. Every statement used to sit inside a bare `runCatching {}`, so a
-     * failure could not reach [wipeAndResetApp]'s `failed` list and the wipe reported
-     * [WipeResult.Complete] with the browsing state still on disk — the one claim that must never
-     * be made falsely. The WebView statics additionally run on the main thread: this function is
-     * called from `Dispatchers.IO`, and initialising the WebView provider off the UI thread throws.
+     * Nothing here is caught — a failure has to reach [wipeAndResetApp]'s `failed` list. The
+     * WebView statics must run on Main; this is called from `Dispatchers.IO`.
      */
     private suspend fun clearWebViewState(appContext: Context) {
         withContext(Dispatchers.Main) {
@@ -631,16 +499,9 @@ object SecurityWipe {
             throw IOException("Failed to delete the WebView profile directory")
         }
 
-        // The caches are emptied child by child, and their failures are logged rather than thrown.
-        //
-        // `deleteRecursively()` on `cacheDir` itself was the single most likely cause of a
-        // permanently incomplete wipe: this runs in a live process where OkHttp, WebView and ART
-        // are still creating files underneath it, so losing that race is routine — and an
-        // Incomplete wipe used to re-run at every launch forever (see MAX_WIPE_RESUMES). Deleting
-        // the directory itself is also wrong: code that writes to `cacheDir` afterwards expects it
-        // to exist. Nothing security-relevant is unique to these two directories anyway; the mail
-        // bodies are in the database and the browsing state is in `app_webview`, both handled
-        // above and both fatal on failure.
+        // Child by child, and logged rather than thrown: this runs in a live process where OkHttp,
+        // WebView and ART are still creating files underneath, so a partial delete is routine and
+        // must not brick the wipe. Nothing security-relevant is unique to these directories.
         listOf(appContext.cacheDir, appContext.codeCacheDir).forEach { dir ->
             dir.listFiles().orEmpty().forEach { child ->
                 if (!child.deleteRecursively()) {
@@ -652,15 +513,11 @@ object SecurityWipe {
 
     /**
      * Deletes the raw contacts this app wrote into the OS contacts provider.
-     * `CALLER_IS_SYNCADAPTER` makes the delete immediate rather than a tombstone — a tombstoned row
-     * still holds the contact's data until the provider next syncs, which for an account we are
-     * about to remove is never.
+     * `CALLER_IS_SYNCADAPTER` makes the delete immediate rather than a tombstone, which would keep
+     * the data until a sync that will never happen for an account we are about to remove.
      *
-     * Throws on failure, and is a separate step from removing the account, because this is the one
-     * thing a wipe destroys that lives **outside this app's sandbox**: real names, phone numbers
-     * and email addresses in the OS provider. It used to wrap both operations in their own
-     * `runCatching { }.onFailure { Log }`, so `step("deviceContacts")` could not fail and the wipe
-     * reported `Complete` with the user's contacts still on the device.
+     * Throws on failure, and is its own step, because this is the one thing a wipe destroys that
+     * lives **outside this app's sandbox**.
      */
     private fun deleteSyncedDeviceContactRows(context: Context) {
         // Shared with the unpair path via DeviceContactPurge, which does the provider delete without
@@ -681,13 +538,6 @@ object SecurityWipe {
      * Keystore invalidation or someone deleting the keyset to disable the lock — and the old
      * behaviour of silently reporting "no lock configured" opened the inbox with every cached
      * message intact. Wipe instead, and let the user set the app up again.
-     *
-     * Returns null when no wipe was needed, otherwise the [WipeResult] of the wipe that ran, so
-     * [org.kysecurity.mail.KyPostApp] can skip the rest of its startup work *and* the first screen can
-     * tell the user what actually happened. It used to return a bare `true` on both wipe branches,
-     * discarding the `Complete`/`Incomplete` distinction — so a wipe that failed every step still
-     * presented as "Local data on this device has been erased", which is the one claim that must
-     * never be made falsely. [resolvePinAttempt] already draws that distinction on the PIN path.
      */
     suspend fun enforceTripwire(context: Context): WipeResult? {
         val appContext = context.applicationContext
@@ -719,18 +569,8 @@ object SecurityWipe {
     /**
      * Completes once the startup tripwire check has finished, carrying whether it wiped.
      *
-     * This exists because the check is a **gate**, and it was not being used as one.
-     * [org.kysecurity.mail.KyPostApp] ran [enforceTripwire] inside an `appScope.launch` on
-     * `Dispatchers.IO` under a comment reading *"Runs before anything reads cached data"* —
-     * a guarantee `Application.onCreate` cannot make, since it returns immediately and the launcher
-     * Activity starts while that coroutine is still doing a MasterKey round trip and a Tink keyset
-     * load. An attacker who deletes the app-lock keyset to disable the lock therefore got the
-     * inbox rendered with every cached message intact, and the wipe landed a few hundred
-     * milliseconds later, tearing the database out from under a live screen.
-     *
-     * [org.kysecurity.mail.security.LockedActivity] awaits this before doing anything, so the verdict is
-     * in before any screen can read data. Kept here rather than in `KyPostApp` so a test — and any
-     * future entry point — can await the same signal without reaching into the Application object.
+     * The check is a **gate**: `Application.onCreate` returns before the launcher Activity starts,
+     * so it cannot promise to run first. [LockedActivity] awaits this before rendering anything.
      */
     val startupVerdict: kotlinx.coroutines.CompletableDeferred<WipeResult?> =
         kotlinx.coroutines.CompletableDeferred()

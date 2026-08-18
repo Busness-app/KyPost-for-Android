@@ -15,15 +15,6 @@ import org.kysecurity.mail.push.PushRuntime
  * Needed whenever a setting requires a new [org.kysecurity.mail.data.DataGraph] — Room decides
  * disk-backed vs in-memory once, at construction time — or after [SecurityWipe] has closed the
  * database out from under the live graph.
- *
- * This used to schedule an `AlarmManager` alarm a few hundred ms out and then call
- * `Process.killProcess`. That was unreliable in exactly the moment it mattered: the alarm used
- * `ELAPSED_REALTIME` (which does not fire while the device is dozing) and `set()` (inexact, and
- * deferrable by minutes under App Standby), so toggling a security setting could make the app
- * vanish and not come back. Invalidating the graph holders achieves the same thing synchronously,
- * with no permission, no alarm, and no window where the process is gone. `CLEAR_TASK` plus
- * [Activity.finishAffinity] destroys every Activity that could still hold a reference to the old
- * graph's objects.
  */
 object AppRestart {
     fun relaunch(activity: Activity) {
@@ -45,6 +36,12 @@ object AppRestart {
     /** [DataRuntime] backs the three graphs above it, so those must be dropped too — otherwise
      *  they keep a DAO handle on the closed database. */
     private fun invalidateGraphs() {
+        // Quiesce BEFORE dropping DataRuntime, which now closes the database it owns rather than
+        // leaking it (see [org.kysecurity.mail.ClosableGraph]). Mail mutations are deliberately fired
+        // on a pool that outlives the screen that started them, so closing the database out from
+        // under one is an uncaught exception on a non-UI thread — a process kill. Same reasoning,
+        // and the same call, as SecurityWipe.closeAndDeleteDatabase.
+        org.kysecurity.mail.MailBackgroundExecutor.quiesce()
         MailRuntime.invalidate()
         DeviceContactsRuntime.invalidate()
         ContactsRuntime.invalidate()

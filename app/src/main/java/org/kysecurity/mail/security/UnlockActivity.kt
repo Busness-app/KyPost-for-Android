@@ -25,10 +25,6 @@ import kotlinx.coroutines.withContext
 /**
  * Full-screen PIN gate shown whenever [AppLockManager.locked] is true. Biometric unlock layers on
  * top of this; the PIN field here is always present as the fallback.
- *
- * Deliberately NOT a [LockedActivity] — it is the thing the lock redirects *to*. Back is bound to
- * "send the task to the background" rather than `finish()`: finishing used to drop the user
- * straight through onto whatever Activity was underneath, which was the entire lock bypass.
  */
 class UnlockActivity : AppCompatActivity() {
     private lateinit var pinField: EditText
@@ -43,6 +39,7 @@ class UnlockActivity : AppCompatActivity() {
         setContentView(R.layout.activity_unlock)
         applyThemeToActivity(this)
         window.applySecureFlag()
+        window.applyOverlayProtection()
 
         appLockManager = SecurityRuntime.graph(this).appLockManager
 
@@ -74,12 +71,14 @@ class UnlockActivity : AppCompatActivity() {
     }
 
     private fun attemptUnlock() {
-        val pin = pinField.text.toString()
+        // consumePin, not text.toString(): the PIN never becomes an unzeroable String, and the
+        // field is emptied as it is read. See [consumePin].
+        val pin = pinField.consumePin()
         // attemptPin runs PBKDF2 and commit()-backed Keystore writes; the button stays disabled
         // for the duration so a double-tap can't burn two attempts against the wipe counter.
         submitButton.isEnabled = false
         lifecycleScope.launch {
-            when (val result = appLockManager.attemptPin(pin)) {
+            when (val result = pin.usePin { appLockManager.attemptPin(it) }) {
                 is UnlockAttemptResult.Success -> completeUnlock()
                 is UnlockAttemptResult.Wiped -> restartToFirstRun()
                 is UnlockAttemptResult.WipeFailed -> {
@@ -91,7 +90,6 @@ class UnlockActivity : AppCompatActivity() {
                     restartToFirstRun()
                 }
                 is UnlockAttemptResult.Rejected -> {
-                    pinField.text.clear()
                     errorText.visibility = View.VISIBLE
                     errorText.text = getString(R.string.unlock_wrong_pin)
                     submitButton.isEnabled = true
@@ -102,7 +100,6 @@ class UnlockActivity : AppCompatActivity() {
                     // again. Saying "wrong PIN" would send the user round the loop until the wipe
                     // threshold — which this outcome deliberately does not advance — so name the
                     // real problem and the only real remedy.
-                    pinField.text.clear()
                     errorText.visibility = View.VISIBLE
                     errorText.text = getString(R.string.security_verifier_unavailable)
                     submitButton.isEnabled = true

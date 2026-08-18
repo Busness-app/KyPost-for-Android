@@ -86,11 +86,21 @@ class QuotedHtmlSanitizerTest {
         assertTrue(out.contains("<blockquote>"))
     }
 
+    /**
+     * Images are dropped entirely, not merely stripped of their handlers.
+     *
+     * `Safelist.relaxed()` permits `<img src="http://…">`, and the composer is a WebView with
+     * network access and JavaScript enabled — so quoting a sender's message into a reply fired
+     * their tracking beacon while the reply was being written. The reader blocks remote content
+     * unconditionally until the user opts in per message; the composer, which has no such opt-in,
+     * has to be at least as strict.
+     */
     @Test
-    fun keepsInlineImagesButNotTheirHandlers() {
+    fun dropsInlineImagesAndTheirHandlers() {
         val out = sanitized("""<img src="https://example.com/logo.png" alt="logo" onerror="x()">""")
 
-        assertTrue(out.contains("logo.png"))
+        assertFalse(out.contains("logo.png"))
+        assertFalse(out.contains("<img", ignoreCase = true))
         assertFalse(out.contains("onerror", ignoreCase = true))
     }
 

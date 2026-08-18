@@ -47,12 +47,6 @@ import kotlinx.coroutines.withContext
 
 /**
  * The context every security-critical background step in this screen runs on.
- *
- * `withContext(NonCancellable)` alone was the bug: [NonCancellable] is a [kotlinx.coroutines.Job],
- * and `withContext` replaces only the elements it is given — the `ContinuationInterceptor` is
- * inherited. `lifecycleScope` is `Dispatchers.Main.immediate`, so every block below was running
- * 150,000 rounds of PBKDF2, a Keystore round trip and a synchronous `commit()` on the UI thread,
- * under comments asserting the opposite.
  */
 private val SecurityWork = Dispatchers.Default + NonCancellable
 
@@ -92,6 +86,7 @@ class SecuritySettingsActivity : LockedActivity() {
     private lateinit var lockSwitch: SwitchCompat
     private lateinit var changePinButton: Button
     private lateinit var lockGraceButton: Button
+    private lateinit var wipeThresholdButton: Button
     private lateinit var biometricSwitch: SwitchCompat
     private lateinit var hostileLocationSwitch: SwitchCompat
     private lateinit var hostileLocationIntro: TextView
@@ -122,6 +117,7 @@ class SecuritySettingsActivity : LockedActivity() {
         val credentialGateEnabled: Boolean,
         val hostileLocationEnabled: Boolean,
         val graceMillis: Long,
+        val wipeAfterAttempts: Int?,
     )
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -141,6 +137,7 @@ class SecuritySettingsActivity : LockedActivity() {
                     credentialGateEnabled = appLockStore.isCredentialPinGateEnabled(),
                     hostileLocationEnabled = graph.hostileLocationSettings.isEnabled(),
                     graceMillis = graph.appLockSettings.graceMillis(),
+                    wipeAfterAttempts = graph.appLockStore.wipeAfterAttempts(),
                 )
             }
             if (isFinishing || isDestroyed) return@launch
@@ -211,7 +208,17 @@ class SecuritySettingsActivity : LockedActivity() {
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
         )
         lockCard.addViewSpaced(secondaryActions, bottomDp = 4)
-        lockCard.addViewSpaced(caption(getString(R.string.security_lock_grace_intro)), bottomDp = 0)
+        lockCard.addViewSpaced(caption(getString(R.string.security_lock_grace_intro)), bottomDp = 8)
+
+        // The wipe threshold is a user choice and has to be visible: it decides whether repeated
+        // wrong PINs destroy mail and contacts the app deliberately keeps no backup of.
+        wipeThresholdButton = Button(this).apply {
+            text = wipeThresholdButtonLabel(snapshot.wipeAfterAttempts)
+            isEnabled = snapshot.lockEnabled
+            setOnClickListener { promptWipeThreshold() }
+        }
+        lockCard.addViewSpaced(wipeThresholdButton, bottomDp = 4)
+        lockCard.addViewSpaced(caption(getString(R.string.security_wipe_threshold_intro)), bottomDp = 0)
 
         val locationCard = container.addSection(R.string.security_section_location)
         val hostileLocationSettings = SecurityRuntime.graph(this).hostileLocationSettings
@@ -250,7 +257,8 @@ class SecuritySettingsActivity : LockedActivity() {
                 }
                 .setNegativeButton(R.string.cancel) { _, _ -> revertHostileLocationSwitch(!checked) }
                 .setOnCancelListener { revertHostileLocationSwitch(!checked) }
-                .show()
+                .create()
+                .showSecurely()
         }
 
         val notificationsCard = container.addSection(R.string.security_section_notifications)
@@ -348,6 +356,7 @@ class SecuritySettingsActivity : LockedActivity() {
         //    everything is equally the thing to do next. Ghost is the style guide's answer.
         applyGhostButtonTheme(this, changePinButton)
         applyGhostButtonTheme(this, lockGraceButton)
+        applyGhostButtonTheme(this, wipeThresholdButton)
         refreshEncryptionRow()
     }
 
@@ -413,13 +422,6 @@ class SecuritySettingsActivity : LockedActivity() {
             // SecurityWork, like the reads above: check() calls pairingForAuthenticatedCall()
             // before its own withContext(Dispatchers.IO), and that pairing read is several
             // EncryptedSharedPreferences decrypts plus a CredentialCipher.unwrap AES operation —
-            // the same class of Keystore work SecurityWork's own KDoc exists to keep off the main
-            // thread, wrapping only the network fetch inside check() would have missed it.
-            //
-            // `status` is part of the guard, not just the three booleans: enrollmentRowFor decides
-            // on KEY_INVALIDATED and ENROLLED *before* it ever looks at `identity`, so on an
-            // already-enrolled device the request below was made on every visit to this screen and
-            // its answer thrown away.
             val statusDecides = status == EnrollmentStatus.KEY_INVALIDATED ||
                 status == EnrollmentStatus.ENROLLED
             val identity = if (paired && !hostileLocation && lockScreen && !statusDecides) {
@@ -665,6 +667,49 @@ class SecuritySettingsActivity : LockedActivity() {
         )
     }
 
+    private fun wipeThresholdButtonLabel(attempts: Int?): String = getString(
+        R.string.security_wipe_threshold_button,
+        if (attempts == null) {
+            getString(R.string.security_wipe_threshold_never)
+        } else {
+            resources.getQuantityString(R.plurals.security_wipe_threshold_attempts, attempts, attempts)
+        },
+    )
+
+    /**
+     * Offers the thresholds in [LockoutPolicy.WIPE_THRESHOLD_CHOICES] plus "never".
+     *
+     * The dialog states the consequence in the message rather than leaving the user to infer it
+     * from a number: the wipe deletes local mail, the synced OS contact rows and this device's
+     * pairing, and none of that is recoverable — `allowBackup` and the device-transfer rules are
+     * both closed, deliberately.
+     */
+    private fun promptWipeThreshold() {
+        val choices: List<Int?> = LockoutPolicy.WIPE_THRESHOLD_CHOICES + listOf<Int?>(null)
+        val labels = choices.map { attempts ->
+            if (attempts == null) {
+                getString(R.string.security_wipe_threshold_never)
+            } else {
+                resources.getQuantityString(R.plurals.security_wipe_threshold_attempts, attempts, attempts)
+            }
+        }.toTypedArray()
+        val current = choices.indexOf(appLockStore.wipeAfterAttempts()).takeIf { it >= 0 } ?: 0
+        AlertDialog.Builder(this)
+            .setTitle(R.string.security_wipe_threshold_dialog_title)
+            .setMessage(R.string.security_wipe_threshold_dialog_message)
+            .setSingleChoiceItems(labels, current) { dialog, which ->
+                val chosen = choices[which]
+                lifecycleScope.launch {
+                    withContext(SecurityWork) { appLockStore.setWipeAfterAttempts(chosen) }
+                    wipeThresholdButton.text = wipeThresholdButtonLabel(chosen)
+                }
+                dialog.dismiss()
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .create()
+            .showSecurely()
+    }
+
     private fun promptLockGrace(settings: AppLockSettings) {
         val options = AppLockSettings.OPTIONS_MILLIS
         val labels = options.map { lockGraceLabel(it) }.toTypedArray()
@@ -677,7 +722,8 @@ class SecuritySettingsActivity : LockedActivity() {
                 dialog.dismiss()
             }
             .setNegativeButton(R.string.cancel, null)
-            .show()
+            .create()
+            .showSecurely()
     }
 
     /**
@@ -724,12 +770,9 @@ class SecuritySettingsActivity : LockedActivity() {
      * Shows a two-field "enter PIN, then confirm it" dialog — a typo in the single-entry flow this
      * replaced would permanently lock the PIN in with no recovery except 10 deliberate wrong
      * attempts (which wipes) or a reinstall, so every *new* PIN goes through enter+confirm.
-     *
-     * A rejected PIN now always says why and reopens. It used to fall through to [onCancelled] for
-     * anything that wasn't exactly 6 digits, which silently flipped the toggle back with no
-     * message at all and read as the app being broken.
      */
-    private fun promptEnterAndConfirmPin(onConfirmed: (String) -> Unit, onCancelled: () -> Unit) {
+    /** [onConfirmed] takes ownership of the PIN array and must zero it — [usePin] does that. */
+    private fun promptEnterAndConfirmPin(onConfirmed: (CharArray) -> Unit, onCancelled: () -> Unit) {
         val pinField = android.widget.EditText(this).apply {
             inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD
             hint = getString(R.string.unlock_pin_hint)
@@ -747,18 +790,24 @@ class SecuritySettingsActivity : LockedActivity() {
             .setTitle(R.string.security_set_pin_title)
             .setView(fieldsContainer)
             .setPositiveButton(R.string.security_set_pin_confirm) { _, _ ->
-                val pin = pinField.text.toString()
-                val confirm = confirmField.text.toString()
+                // consumePin, not text.toString(): the PIN never becomes an unzeroable String.
+                val pin = pinField.consumePin()
+                val confirm = confirmField.consumePin()
                 val policyError = pinPolicyMessage(PinPolicy.validate(pin))
+                val matches = pin.contentEquals(confirm)
+                java.util.Arrays.fill(confirm, ' ')
                 when {
                     policyError != null -> {
+                        java.util.Arrays.fill(pin, ' ')
                         Toast.makeText(this, policyError, Toast.LENGTH_LONG).show()
                         promptEnterAndConfirmPin(onConfirmed, onCancelled)
                     }
-                    pin != confirm -> {
+                    !matches -> {
+                        java.util.Arrays.fill(pin, ' ')
                         Toast.makeText(this, R.string.security_pin_mismatch, Toast.LENGTH_SHORT).show()
                         promptEnterAndConfirmPin(onConfirmed, onCancelled)
                     }
+                    // onConfirmed owns the array from here and zeroes it when it is done.
                     else -> onConfirmed(pin)
                 }
             }
@@ -783,18 +832,23 @@ class SecuritySettingsActivity : LockedActivity() {
         promptEnterAndConfirmPin(
             onConfirmed = { pin ->
                 lifecycleScope.launch {
-                    // setPin runs PBKDF2 and two commit()-backed Keystore writes — see [SecurityWork]
-                    // for why NonCancellable on its own did not move any of it off the main thread.
-                    withContext(SecurityWork) {
-                        appLockStore.setPin(pin)
-                        appLockStore.setLockEnabled(true)
-                        // Seal now rather than at the first unlock, so turning the biometric switch
-                        // on below actually offers a fingerprint the first time the app locks.
-                        SecurityRuntime.graph(this@SecuritySettingsActivity)
-                            .appLockManager.resealForBiometric(pin)
+                    pin.usePin { entered ->
+                        // setPin runs PBKDF2 and two commit()-backed Keystore writes — see
+                        // [SecurityWork] for why NonCancellable on its own did not move any of it
+                        // off the main thread.
+                        withContext(SecurityWork) {
+                            appLockStore.setPin(entered)
+                            appLockStore.setLockEnabled(true)
+                            // Seal now rather than at the first unlock, so turning the biometric
+                            // switch on below actually offers a fingerprint the first time the app
+                            // locks.
+                            SecurityRuntime.graph(this@SecuritySettingsActivity)
+                                .appLockManager.resealForBiometric(entered)
+                        }
                     }
                     changePinButton.visibility = View.VISIBLE
                     lockGraceButton.isEnabled = true
+                    wipeThresholdButton.isEnabled = true
                     biometricSwitch.isEnabled = true
                     hostileLocationSwitch.isEnabled = true
                     hostileLocationIntro.text = getString(R.string.security_hostile_location_intro)
@@ -819,7 +873,13 @@ class SecuritySettingsActivity : LockedActivity() {
                     promptEnterAndConfirmPin(
                         onConfirmed = { newPin ->
                             lifecycleScope.launch {
-                                if (!changePin(oldPin = entered, newPin = newPin)) {
+                                // Both arrays are zeroed here: `entered` has been held across the
+                                // second dialog because changePin needs the OLD PIN to unwrap
+                                // `deviceSecret` before the verifier is overwritten.
+                                val changed = entered.usePin { old ->
+                                    newPin.usePin { fresh -> changePin(oldPin = old, newPin = fresh) }
+                                }
+                                if (!changed) {
                                     Toast.makeText(
                                         this@SecuritySettingsActivity,
                                         R.string.security_change_pin_secret_unreadable,
@@ -828,9 +888,10 @@ class SecuritySettingsActivity : LockedActivity() {
                                 }
                             }
                         },
-                        onCancelled = {},
+                        onCancelled = { java.util.Arrays.fill(entered, ' ') },
                     )
                 } else {
+                    java.util.Arrays.fill(entered, ' ')
                     Toast.makeText(this@SecuritySettingsActivity, R.string.security_pin_incorrect, Toast.LENGTH_SHORT).show()
                 }
             }
@@ -839,16 +900,8 @@ class SecuritySettingsActivity : LockedActivity() {
 
     /**
      * Rotates the PIN, re-wrapping `deviceSecret` in the same step when the credential gate is on.
-     *
-     * The wrapping key is derived from the PIN and a salt that deliberately does not rotate, so
-     * writing the new PIN hash alone silently orphaned the secret: the new PIN derives a different
-     * key, the GCM tag then fails, and every authenticated call 401s while the UI still says
-     * "Paired". `needsCredentialRewrap()` cannot see it either — the ciphertext is present and at
-     * the current version, it just no longer opens — so nothing repaired it, and the obvious
-     * recovery (turning the gate off) destroyed the ciphertext outright. Unwrap with the old key
-     * before overwriting the hash, then re-wrap with the new one, all under NonCancellable.
      */
-    private suspend fun changePin(oldPin: String, newPin: String): Boolean = withContext(SecurityWork) {
+    private suspend fun changePin(oldPin: CharArray, newPin: CharArray): Boolean = withContext(SecurityWork) {
         val appLockManager = SecurityRuntime.graph(this@SecuritySettingsActivity).appLockManager
         val securePairingStore = PushRuntime.graph(this@SecuritySettingsActivity).securePairingStore
         val gateEnabled = appLockStore.isCredentialPinGateEnabled()
@@ -895,6 +948,15 @@ class SecuritySettingsActivity : LockedActivity() {
         true
     }
 
+    /**
+     * `deriveAndCacheCredentialKeys`, not `verifyPinThrottled`.
+     *
+     * Both run the identical throttled verification; only the former keeps the PIN-derived key. The
+     * key is what [disableLock] needs to unwrap `deviceSecret` before the PIN goes away — and
+     * verifying without it is precisely how this path ended up destroying the user's mailbox
+     * instead: the PIN was checked, the keys were discarded a line later, and the code then
+     * concluded the wrapped secret was unrecoverable and ran a full [SecurityWipe].
+     */
     private fun promptDisableLock() {
         promptForPin(
             titleRes = R.string.security_confirm_disable_title,
@@ -902,18 +964,27 @@ class SecuritySettingsActivity : LockedActivity() {
         ) { entered ->
             lifecycleScope.launch {
                 val appLockManager = SecurityRuntime.graph(this@SecuritySettingsActivity).appLockManager
-                val ok = resolvePinAttempt(appLockManager.verifyPinThrottled(entered))
+                val ok = resolvePinAttempt(entered.usePin { appLockManager.deriveAndCacheCredentialKeys(it) })
                 if (ok) disableLock() else revertLockSwitch(true)
             }
         }
     }
 
     /**
-     * Runs once the disabling user has re-verified their current PIN. A full [SecurityWipe] is
-     * only necessary when the credential gate was on: that's what leaves a PIN-wrapped
-     * `deviceSecret` behind with no way to ever unwrap it once the PIN is gone. When the gate
-     * wasn't on, clearing the app-lock state is enough — destroying a working pairing on a routine
-     * settings change buys no security that toggle 1 alone ever promised.
+     * Runs once the disabling user has re-verified their current PIN.
+     *
+     * **Nothing here wipes anything.** This used to run a full [SecurityWipe] whenever the
+     * credential gate was on — deleting `kypost_mail.db`, the user's rows in the OS contacts
+     * provider, the sealed OpenPGP key and the pairing — behind a dialog whose entire text was
+     * "Enter your PIN to turn this off". The stated justification was that a PIN-wrapped
+     * `deviceSecret` becomes unrecoverable once the PIN is gone, which is true and irrelevant: the
+     * user has *just typed the PIN*, [promptDisableLock] now keeps the key it derives, and
+     * [unwrapCurrentPairing] rewrites the secret in the clear before the verifier is cleared. That
+     * is the same sequence [promptCredentialGatePin] has always used for the gate's own off-switch.
+     *
+     * If the unwrap cannot be done, the toggle is refused and nothing is destroyed. Losing access
+     * to a credential is the user's problem to solve by re-pairing; it is never a reason for this
+     * app to delete their mail.
      */
     private suspend fun disableLock() {
         val settings = SecurityRuntime.graph(this).hostileLocationSettings
@@ -930,18 +1001,24 @@ class SecuritySettingsActivity : LockedActivity() {
             ).also { settings.setEnabled(false) }
         }
 
-        // Both branches below pair a destructive step with the relaunch that completes it, and both
-        // had the same split as the hostile-location toggle: the destruction runs NonCancellable
-        // inside SecurityWipe, the relaunch after it does not. See [runSecurityChangeThenReset].
+        val appLockManager = SecurityRuntime.graph(this).appLockManager
+
         if (prior.credentialGate) {
-            runSecurityChangeThenReset(
-                workContext = SecurityWork,
-                change = { SecurityWipe.wipeAndResetApp(this@SecuritySettingsActivity) },
-                reset = {
-                    withContext(Dispatchers.Main) { AppRestart.relaunch(this@SecuritySettingsActivity) }
-                },
-            )
-            return
+            // Unwrap BEFORE the verifier is cleared, using the key promptDisableLock just derived
+            // from the PIN the user typed. Order matters for the same reason it does in
+            // promptCredentialGatePin: reversed, an interruption leaves a wrapped secret that
+            // nothing can ever unwrap again.
+            val unwrapped = withContext(SecurityWork) { unwrapCurrentPairing() }
+            if (!unwrapped) {
+                // Refuse the toggle and leave every setting as it was. The state reaching here is
+                // "we could not read a credential", which is never a reason to delete the user's
+                // mail and contacts — which is what this branch used to do.
+                withContext(SecurityWork) { settings.setEnabled(prior.hostileLocation) }
+                revertLockSwitch(true)
+                Toast.makeText(this, R.string.security_disable_lock_unwrap_failed, Toast.LENGTH_LONG).show()
+                return
+            }
+            withContext(SecurityWork) { appLockStore.setCredentialPinGateEnabled(false) }
         }
 
         withContext(SecurityWork) {
@@ -949,6 +1026,9 @@ class SecuritySettingsActivity : LockedActivity() {
             // The sealed keys belong to the PIN that was just discarded. Leaving them would keep a
             // biometric-openable copy of a credential the user has asked the app to forget.
             SecurityRuntime.graph(this@SecuritySettingsActivity).biometricUnlockVault.destroy()
+            // Nothing may still hold a PIN-derived key once the PIN is gone: a pairing saved later
+            // in this session would otherwise be re-wrapped behind a gate that is now off.
+            appLockManager.dropCredentialKeys()
         }
 
         if (prior.hostileLocation) {
@@ -964,6 +1044,7 @@ class SecuritySettingsActivity : LockedActivity() {
 
         changePinButton.visibility = View.GONE
         lockGraceButton.isEnabled = false
+        wipeThresholdButton.isEnabled = false
         biometricSwitch.isChecked = false
         biometricSwitch.isEnabled = false
         hostileLocationSwitch.isEnabled = false
@@ -978,7 +1059,8 @@ class SecuritySettingsActivity : LockedActivity() {
             .setPositiveButton(R.string.security_credential_gate_warning_confirm) { _, _ -> promptCredentialGatePin(enabling = true) }
             .setNegativeButton(android.R.string.cancel) { _, _ -> revertCredentialGateSwitch(false) }
             .setCancelable(false)
-            .show()
+            .create()
+            .showSecurely()
     }
 
     private fun confirmDisableCredentialGate() {
@@ -989,12 +1071,6 @@ class SecuritySettingsActivity : LockedActivity() {
      * Both directions need the PIN re-entered here (not just "the app happens to be unlocked right
      * now") to guarantee a fresh PIN-derived key is available to actually re-wrap or unwrap the
      * current pairing's `deviceSecret` in the same step.
-     *
-     * The whole sequence runs under [NonCancellable]. It used to run on a bare
-     * `CoroutineScope(Dispatchers.IO)` created on the spot, with a comment arguing that outliving
-     * the Activity was safer than `lifecycleScope` — which correctly identified the risk (a
-     * half-applied disable strands `deviceSecret` wrapped with no unwrap path, permanently breaking
-     * auth) and then picked a fix that only moved the failure somewhere untracked.
      */
     private fun promptCredentialGatePin(enabling: Boolean) {
         promptForPin(
@@ -1003,7 +1079,7 @@ class SecuritySettingsActivity : LockedActivity() {
         ) { entered ->
             lifecycleScope.launch {
                 val appLockManager = SecurityRuntime.graph(this@SecuritySettingsActivity).appLockManager
-                if (!resolvePinAttempt(appLockManager.deriveAndCacheCredentialKeys(entered))) {
+                if (!resolvePinAttempt(entered.usePin { appLockManager.deriveAndCacheCredentialKeys(it) })) {
                     revertCredentialGateSwitch(!enabling)
                     return@launch
                 }
@@ -1016,7 +1092,17 @@ class SecuritySettingsActivity : LockedActivity() {
                     } else {
                         // Unwrap first, flag second: reversed, an interruption between the two
                         // leaves a wrapped secret that nothing will ever unwrap again.
-                        unwrapCurrentPairing()
+                        if (!unwrapCurrentPairing()) {
+                            withContext(Dispatchers.Main) {
+                                revertCredentialGateSwitch(true)
+                                Toast.makeText(
+                                    this@SecuritySettingsActivity,
+                                    R.string.security_disable_lock_unwrap_failed,
+                                    Toast.LENGTH_LONG,
+                                ).show()
+                            }
+                            return@withContext
+                        }
                         appLockStore.setCredentialPinGateEnabled(false)
                         // Drop the keys we just derived. Leaving them cached meant a pairing saved
                         // later in this same session got re-wrapped behind a gate that is now off,
@@ -1028,17 +1114,26 @@ class SecuritySettingsActivity : LockedActivity() {
         }
     }
 
-    /** The inverse of [rewrapPairingIfNeeded] — without this, turning the gate back off would
-     *  leave `deviceSecret` stored wrapped with no code path that ever unwraps it. */
-    private suspend fun unwrapCurrentPairing() {
+    /**
+     * The inverse of [rewrapPairingIfNeeded] — without this, turning the gate back off would leave
+     * `deviceSecret` stored wrapped with no code path that ever unwraps it.
+     *
+     * "No pairing at all" counts as success: there is no secret to strand, so the gate can be
+     * turned off freely.
+     */
+    private suspend fun unwrapCurrentPairing(): Boolean {
         val store = PushRuntime.graph(this).securePairingStore
-        val credentialKeys = SecurityRuntime.graph(this).appLockManager.cachedCredentialKeys() ?: return
-        val currentPairing = store.pairingSnapshot(credentialKeys) ?: return
+        if (!store.hasStoredPairing()) return true
+        val credentialKeys = SecurityRuntime.graph(this).appLockManager.cachedCredentialKeys()
+            ?: return false
+        val currentPairing = store.pairingSnapshot(credentialKeys) ?: return false
+        if (currentPairing.deviceSecret.isNullOrBlank()) return false
         store.savePairing(currentPairing)
+        return true
     }
 
     /** Single-field PIN prompt shared by the change-PIN, disable-lock and credential-gate flows. */
-    private fun promptForPin(titleRes: Int, onCancelled: () -> Unit = {}, onEntered: (String) -> Unit) {
+    private fun promptForPin(titleRes: Int, onCancelled: () -> Unit = {}, onEntered: (CharArray) -> Unit) {
         val pinField = android.widget.EditText(this).apply {
             inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD
             hint = getString(R.string.unlock_pin_hint)
@@ -1046,7 +1141,7 @@ class SecuritySettingsActivity : LockedActivity() {
         AlertDialog.Builder(this)
             .setTitle(titleRes)
             .setView(pinField)
-            .setPositiveButton(R.string.security_set_pin_confirm) { _, _ -> onEntered(pinField.text.toString()) }
+            .setPositiveButton(R.string.security_set_pin_confirm) { _, _ -> onEntered(pinField.consumePin()) }
             .setNegativeButton(android.R.string.cancel) { _, _ -> onCancelled() }
             .setCancelable(false)
             // See [promptEnterAndConfirmPin] and [showSecurely].

@@ -11,17 +11,6 @@ import kotlinx.coroutines.launch
 
 /**
  * Base class for every screen that must not be reachable while the app lock is engaged.
- *
- * The lock used to be enforced by a single `startActivity(UnlockActivity)` in
- * [org.kysecurity.mail.KyPostApp.onStart], which put the PIN screen *on top of* a live, fully
- * populated app — one Back press revealed the inbox, and any other entry point (a notification
- * tap, a `kypost://` deep link, the MFA screen) never passed through it at all. Enforcing it per
- * Activity in [onStart], and finishing rather than layering, is what makes it an actual gate:
- * there is no Activity left underneath to fall back to.
- *
- * [secureWindow] additionally sets `FLAG_SECURE` on every subclass. This was previously applied
- * ad hoc and had been missed on the contacts screens and the pairing screen, which display email
- * addresses, phone numbers, PGP keys, the server URL and the device ID.
  */
 abstract class LockedActivity : AppCompatActivity() {
 
@@ -38,13 +27,6 @@ abstract class LockedActivity : AppCompatActivity() {
      * True once this Activity has been redirected to the unlock screen. Subclasses whose `onCreate`
      * does real work — network calls, database reads, executor dispatch — must check this
      * immediately after `super.onCreate(...)` and return.
-     *
-     * `onCreate` always runs to completion before `onStart`, so gating only in `onStart` (as this
-     * class originally did) meant every subclass's entire `onCreate` body executed *while the app
-     * was locked*. `EmailDetailActivity` fired an authenticated `markRead` mutation at the server
-     * from there, so a notification tap on a locked app silently marked mail read — destroying the
-     * "was this opened?" signal the real user would otherwise have had — before the PIN screen
-     * appeared.
      */
     protected var redirectedToUnlock: Boolean = false
         private set
@@ -58,6 +40,9 @@ abstract class LockedActivity : AppCompatActivity() {
         enableEdgeToEdge()
         if (secureWindow) {
             window.applySecureFlag()
+            // FLAG_SECURE stops capture; this stops another app drawing over the window and
+            // harvesting taps meant for us. See [applyOverlayProtection].
+            window.applyOverlayProtection()
         }
         if (!passesStartupTripwire()) return
         redirectToUnlockIfLocked()
@@ -66,23 +51,6 @@ abstract class LockedActivity : AppCompatActivity() {
     /**
      * Blocks this screen until [SecurityWipe.enforceTripwire] has ruled on whether the local
      * database is about to be destroyed. Returns false when the caller must do nothing at all.
-     *
-     * The tripwire decides whether the encrypted app-lock state vanished under a configured lock —
-     * i.e. whether someone deleted the keyset to disable the lock. It runs on a background
-     * coroutine started from `Application.onCreate`, which returns before this Activity is created,
-     * so it used to race the first screen: an attacker got a fully populated inbox rendered from
-     * the cache for as long as the Keystore round trip took, and the wipe landed afterwards,
-     * tearing the database out from under a live screen. `Application.onCreate` cannot make the
-     * "runs before anything reads cached data" promise its comment used to make, so the gate has to
-     * be here.
-     *
-     * While the verdict is pending this sets [redirectedToUnlock] and returns false, which is
-     * exactly the contract every subclass already honours (`if (redirectedToUnlock) return`
-     * immediately after `super.onCreate`) — so no subclass runs its database reads, network calls
-     * or executor dispatch in the meantime. Blanking the window alone would have hidden the render
-     * while letting all of that happen anyway. When the verdict lands clean the Activity is simply
-     * recreated, and the check below is synchronous from then on: the deferred is process-scoped,
-     * so this costs at most one recreate on the first screen of a cold start.
      */
     // getCompleted() below is guarded by the isCompleted check that opens this function.
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -140,8 +108,25 @@ abstract class LockedActivity : AppCompatActivity() {
             return false
         }
 
+        reportCredentialResets()
         window.decorView.visibility = View.VISIBLE
         return true
+    }
+
+    /**
+     * Tells the user, once, that an encrypted store had to be reset out from under them.
+     */
+    private fun reportCredentialResets() {
+        val reset = credentialResetsPending(this)
+        if (reset.isEmpty() || !credentialResetReported.compareAndSet(false, true)) return
+        android.util.Log.e("LockedActivity", "Encrypted stores were reset: $reset")
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle(org.kysecurity.mail.R.string.security_credential_reset_title)
+            .setMessage(org.kysecurity.mail.R.string.security_credential_reset_message)
+            .setPositiveButton(android.R.string.ok) { _, _ -> acknowledgeCredentialResets(this) }
+            .setCancelable(false)
+            .create()
+            .showSecurely()
     }
 
     /**
@@ -163,7 +148,8 @@ abstract class LockedActivity : AppCompatActivity() {
                 .setPositiveButton(org.kysecurity.mail.R.string.security_wipe_blocked_close) { _, _ ->
                     finishAffinity()
                 }
-                .show()
+                .create()
+                .showSecurely()
         }
     }
 
@@ -189,5 +175,8 @@ abstract class LockedActivity : AppCompatActivity() {
          *  graphs and relaunches, and the screens that come up afterwards must not bounce the task
          *  again on the same verdict. */
         val startupWipeHandled = java.util.concurrent.atomic.AtomicBoolean(false)
+
+        /** Likewise for the credential-reset notice — one dialog per process, not one per screen. */
+        val credentialResetReported = java.util.concurrent.atomic.AtomicBoolean(false)
     }
 }

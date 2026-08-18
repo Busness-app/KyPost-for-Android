@@ -17,14 +17,6 @@ import android.net.Uri
  * Deliberately a plain preference file rather than a Room table: it has to be readable and writable
  * *after* [SecurityWipe] has closed and deleted the database, and it is a set of opaque URI strings
  * with no message metadata in it.
- *
- * Its file is **retained** by the wipe's `sharedPrefs` sweep and removed by [deleteAll] itself, and
- * only once every recorded row is actually gone. It used to be swept like any other preference file,
- * eleven steps after the deletion step — so a wipe that failed this step, promised a retry, and then
- * deleted the ledger left the resumed wipe with an empty set to iterate, which it reported as
- * success. The user was told their local data had been erased over attachment plaintext still in
- * shared Downloads. The ledger is what makes the retry meaningful, so it outlives the sweep and dies
- * with the work.
  */
 object DownloadedAttachmentLedger {
     private const val TAG = "DownloadedAttachments"

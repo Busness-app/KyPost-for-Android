@@ -36,7 +36,9 @@ internal class AndroidVaultOpener(private val activity: FragmentActivity) : Vaul
      * side needs next; [Blocked] carries the outcome straight through.
      */
     private sealed class VaultUnlock {
-        data class Ready(val cipher: Cipher, val ciphertext: ByteArray) : VaultUnlock()
+        /** Not a `data class`: `ciphertext` would be compared by identity behind a structural-looking
+         *  `equals`. Nothing compares these. */
+        class Ready(val cipher: Cipher, val ciphertext: ByteArray) : VaultUnlock()
         data class Blocked(val outcome: OpenOutcome) : VaultUnlock()
     }
 
@@ -139,14 +141,10 @@ internal class AndroidVaultOpener(private val activity: FragmentActivity) : Vaul
                                 // to this key — that is a real Failed, not a crash, and not something
                                 // a retry fixes: the caller is told to re-enrol.
                                 val plaintext = authenticated.doFinal(ciphertext)
-                                // String(plaintext, ...) on the line below is itself a permanent,
-                                // unwipeable copy of the private key — Kotlin/JVM Strings cannot be
-                                // zeroed. EnrollmentSession.put() only wipes the CharArray it copies
-                                // that String into; the String created here is not cleaned up by
-                                // anything. Zeroing plaintext below only removes the ByteArray that
-                                // is ours to clean up, not that String — this reduces the residue by
-                                // one copy, it does not remove it.
-                                EnrollmentSession.put(String(plaintext, Charsets.UTF_8))
+                                // putUtf8, not put(String(...)): a String copy of the private key
+                                // cannot be zeroed. Decoding straight into the holder's CharArray
+                                // leaves nothing behind that the holder cannot wipe.
+                                EnrollmentSession.putUtf8(plaintext)
                                 plaintext.fill(0)
                                 OpenOutcome.Opened
                             }.getOrElse {

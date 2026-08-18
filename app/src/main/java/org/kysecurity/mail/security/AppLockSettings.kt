@@ -11,10 +11,6 @@ private const val KEY_GRACE_MILLIS = "lock_grace_millis"
  *
  * A plain, unencrypted preference rather than part of [AppLockStore]: it is not a secret, and it is
  * read from `Application.onStop`, which must not touch the Keystore on the main thread.
- *
- * The lock used to engage the instant the process lost the foreground, which made the app unable to
- * complete its own primary workflow — see [org.kysecurity.mail.KyPostApp.onStop]. Zero is still offered
- * for anyone who genuinely wants that, but it is not the default.
  */
 class AppLockSettings(context: Context) {
     private val prefs: SharedPreferences =
