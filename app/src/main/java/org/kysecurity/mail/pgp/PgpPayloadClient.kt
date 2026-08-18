@@ -2,7 +2,6 @@ package org.kysecurity.mail.pgp
 
 import org.kysecurity.mail.executeSync
 import org.kysecurity.mail.pairingAuthHeaders
-import org.kysecurity.mail.pairingHttpClient
 import org.kysecurity.mail.push.pairingEndpoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -83,7 +82,7 @@ internal class PgpPayloadClient(
     // network call or a MockWebServer dependency; OkHttpClient itself satisfies this interface.
     // Every real caller builds this on the pinned pairing call factory, like every other
     // credentialed request in this app — this default exists for tests only.
-    private val callFactory: Call.Factory = pairingHttpClient(),
+    private val callFactory: Call.Factory,
 ) {
     suspend fun fetch(
         serverUrl: String,

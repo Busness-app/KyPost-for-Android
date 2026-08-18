@@ -2,7 +2,6 @@ package org.kysecurity.mail.pgp
 
 import org.kysecurity.mail.executeSync
 import org.kysecurity.mail.pairingAuthHeaders
-import org.kysecurity.mail.pairingHttpClient
 import org.kysecurity.mail.push.pairingEndpoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -71,7 +70,7 @@ class RecipientKeyClient(
     private val json: Json = Json { ignoreUnknownKeys = true },
     // Call.Factory (not the concrete OkHttpClient) so tests can inject a fake without a real
     // network call or a MockWebServer dependency; OkHttpClient itself satisfies this interface.
-    private val callFactory: Call.Factory = pairingHttpClient(),
+    private val callFactory: Call.Factory,
 ) {
     suspend fun check(
         serverUrl: String,

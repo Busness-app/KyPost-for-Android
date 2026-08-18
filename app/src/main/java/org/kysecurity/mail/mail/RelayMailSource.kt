@@ -3,7 +3,6 @@ package org.kysecurity.mail.mail
 import org.kysecurity.mail.Email
 import org.kysecurity.mail.executeSync
 import org.kysecurity.mail.pairingAuthHeaders
-import org.kysecurity.mail.pairingHttpClient
 import org.kysecurity.mail.pgp.OUTER_PLACEHOLDER_SUBJECT
 import org.kysecurity.mail.push.PairingData
 import org.kysecurity.mail.push.pairingUrlHost
@@ -66,7 +65,7 @@ class RelayMailSource(
      * could not be read, silently and permanently. There is one factory now and it owns that
      * decision; see [org.kysecurity.mail.push.TlsPinState].
      */
-    private val callFactory: Call.Factory = pairingHttpClient(),
+    private val callFactory: Call.Factory,
 ) : MailSource {
 
     private fun effectiveCallFactory(): Call.Factory = callFactory

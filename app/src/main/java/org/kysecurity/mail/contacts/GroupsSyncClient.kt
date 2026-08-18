@@ -2,7 +2,6 @@ package org.kysecurity.mail.contacts
 
 import org.kysecurity.mail.executeSync
 import org.kysecurity.mail.pairingAuthHeaders
-import org.kysecurity.mail.pairingHttpClient
 import org.kysecurity.mail.push.pairingEndpoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -27,7 +26,7 @@ sealed class GroupsSyncResult {
  */
 class GroupsSyncClient(
     private val json: Json = Json { ignoreUnknownKeys = true },
-    private val callFactory: Call.Factory = pairingHttpClient(),
+    private val callFactory: Call.Factory,
 ) {
     suspend fun pull(serverUrl: String, deviceId: String, deviceSecret: String): GroupsSyncResult {
         val base = groupsUrl(serverUrl) ?: return GroupsSyncResult.BadRequest("Server URL is not valid")

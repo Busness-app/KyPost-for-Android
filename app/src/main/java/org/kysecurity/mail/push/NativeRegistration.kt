@@ -4,7 +4,6 @@ import android.os.Build
 import org.kysecurity.mail.APP_VERSION
 import org.kysecurity.mail.executeSync
 import org.kysecurity.mail.pairingAuthHeaders
-import org.kysecurity.mail.pairingHttpClient
 import org.kysecurity.mail.security.SpkiPinner
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -124,7 +123,7 @@ class NativeRegistrationClient(
     // PushGraph, finding C2 of the 2026-07-22 security-hardening spec's final-review fix round)
     // can be injected here the same way every other pairing client accepts one; OkHttpClient
     // itself still satisfies this interface, so the default below is unchanged behavior.
-    private val callFactory: Call.Factory = pairingHttpClient(),
+    private val callFactory: Call.Factory,
 ) {
     suspend fun register(
         pairing: PairingData,

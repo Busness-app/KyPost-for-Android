@@ -2,7 +2,6 @@ package org.kysecurity.mail.push
 
 import org.kysecurity.mail.executeSync
 import org.kysecurity.mail.pairingAuthHeaders
-import org.kysecurity.mail.pairingHttpClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -38,7 +37,7 @@ class PullNotificationClient(
     // Call.Factory (not the concrete OkHttpClient) so tests can inject a fake without a real
     // network call or a MockWebServer dependency; OkHttpClient itself satisfies this interface.
     // Mirrors RelayMailSource/ContactSyncClient/GroupsSyncClient/PgpQrClient's callFactory pattern.
-    private val callFactory: Call.Factory = pairingHttpClient(),
+    private val callFactory: Call.Factory,
 ) {
     suspend fun pull(
         pullEndpoint: String,
