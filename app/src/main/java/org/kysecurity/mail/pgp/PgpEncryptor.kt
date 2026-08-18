@@ -165,7 +165,12 @@ internal object PgpEncryptor {
         ).keyRings.asSequence()
             .flatMap { ring -> ring.publicKeys.asSequence() }
             .filter { it.isEncryptionKey && !it.hasRevocation() && !it.hasExpired() }
-            .lastOrNull()
+            // Newest, not "last in the serialisation". `lastOrNull()` happened to be right for the
+            // ed25519/cv25519 pairs this product generates, where exactly one subkey encrypts — and
+            // silently picked whichever subkey a third-party key happened to serialise last when
+            // there were two, which is how a recipient gets a message under a subkey they have
+            // rotated away from.
+            .maxByOrNull { it.creationTime.time }
     }.getOrNull()
 
     /**
