@@ -191,30 +191,33 @@ jobs:
       matrix:
         # 31 is minSdk, 34 is what this job used to run alone, and 36 is targetSdk.
         #
-        # 36 is ADVISORY — see `continue-on-error` below — because on the API 36 image every test
-        # that calls Activity.recreate() fails with
+        # 36 WAS advisory, because on that image every UI test failed with
         #   Activity never becomes requested state "[RESUMED]" (last lifecycle transition = "STOPPED")
-        # — FoldLockBehaviourTest, ContactEditDraftTest, ContactsListStateRestoreTest,
-        # InboxStateRestoreTest. Reproduced on unmodified main (run 32171765211), so it is not a
-        # regression from any branch.
+        # and it was not known whether the cause was the emulator or the app. It was the emulator --
+        # specifically, this job's own keyguard handling. It is now REQUIRED like the other two.
         #
-        # It was previously ABSENT rather than advisory, with that paragraph as the whole record.
-        # That is the wrong shape for a gap this size: the app declares targetSdk 36, so if the
-        # cause is the app rather than the headless emulator then activity recreation is broken for
-        # every user on Android 16 — and a comment cannot tell you whether it still is, whether the
-        # failure set grew, or whether a change fixed it. Running it advisory does: every run now
-        # produces the current evidence, at the cost of a leg that is allowed to be red.
+        # The cause, since it cost four runs to find and the wrong answer was reached twice on the
+        # way: this job arms a keyguard on purpose (`locksettings set-pin`, so EnrollmentVault sees
+        # a secure lock screen) and then dismissed it with three unverified `input` events. On API
+        # 36 they never landed -- dumpsys reported mKeyguardShowing=true with
+        # DismissalRequested=false -- so the PIN went into the lock screen wallpaper and nothing
+        # could resume. A modern lock screen needs a swipe to raise the PIN bouncer; keyevent 82
+        # did that job on 31 and 34 and does not on 36. See the dismissal block below.
         #
-        # STILL OPEN: reproduce on a physical Android 16 device. If it passes there, the emulator
-        # image is the cause and this leg can be promoted to required. If it fails there, this is a
-        # user-facing data-loss bug in the default configuration and it outranks everything else in
-        # this file. Do not promote it to required, and do not delete it, until one of those two is
-        # established.
+        # Two things the old note here got wrong, recorded so they are not re-derived:
+        #   - It is NOT "every test that calls Activity.recreate()".
+        #     FoldLockBehaviourTest.aLiveResizeDoesNotEngageTheAppLock failed at a plain launch,
+        #     before recreating anything, and InboxRailTest launches the same Activity and passed
+        #     throughout. The common factor was the keyguard, not recreate.
+        #   - It is NOT a stale androidx.test. core 1.7.0 / ext:junit 1.3.0 / espresso 3.7.0 fail
+        #     identically with the keyguard up.
+        #
+        # The app was never implicated: no FATAL EXCEPTION, no ANR, nothing in logcat but normal
+        # operation. Activity recreation is not broken for Android 16 users.
         api-level: [31, 34, 36]
-    # Only 36 is allowed to fail. A leg marked continue-on-error does not contribute failure to the
-    # job's result, while 31 and 34 still do — so `instrumented-gate`'s existing aggregate check
-    # keeps meaning "the required legs passed" with no change needed there.
-    continue-on-error: ${{ matrix.api-level == 36 }}
+    # No leg is allowed to fail any more. 36 was `continue-on-error` while its failure was
+    # unexplained; it is explained and fixed, so it gates like the other two and
+    # `instrumented-gate` now means all three passed.
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -278,11 +281,65 @@ jobs:
             if ! grep -qi "verified successfully" /tmp/lockcheck.txt; then echo "The emulator has no secure lock screen; the vault suites cannot pass." >&2; exit 1; fi
 
             # Dismiss the keyguard the PIN just armed, so the test run is not typing into it.
-            adb shell input keyevent 82
-            adb shell input text 1234
-            adb shell input keyevent 66
+            #
+            # The step above proves the PIN took, with a comment about how a silent failure there
+            # reads downstream as a Keystore bug. This step was three blind `input` events asserted
+            # by nothing -- and on API 36 they do not land, so the keyguard stays up. An Activity
+            # cannot reach RESUMED behind a keyguard, which is the whole of the "every recreate test
+            # fails on 36" mystery: FoldLockBehaviourTest fails at a plain launch, before it
+            # recreates anything.
+            #
+            # WAKEUP first (the -no-window AVD can have the screen off, and keyevent 82 on a dark
+            # screen only wakes it), then ask the window manager to dismiss rather than relying on
+            # MENU to raise the bouncer.
+            # Keep the screen on for the whole run: a -no-window AVD lets it fall asleep, and a
+            # sleeping screen re-arms the keyguard behind every dismissal below.
+            adb shell svc power stayon true
+            adb shell input keyevent 224
+            adb shell wm dismiss-keyguard
 
-            ./gradlew connectedDebugAndroidTest
+            # THE SWIPE IS THE PART THAT WAS MISSING. On API 36 the five commands that preceded this
+            # left `mKeyguardShowing=true` and `DismissalRequested=false` -- so MENU never raised
+            # the bouncer and the PIN was typed into the lock screen wallpaper. A modern lock
+            # screen needs a swipe up to reveal the PIN entry; keyevent 82 did that job on 31/34
+            # and does not on 36. Retried, because the first swipe can land before the window is
+            # ready, and each attempt is harmless once the keyguard is already gone.
+            #
+            # The loop waits for TWO things, and the second one matters as much as the first.
+            # A dismissed keyguard is not the same as a system that will resume activities: the run
+            # that first went green did so because an unrelated `adb logcat -c` happened to add a
+            # few hundred milliseconds after the dismissal, and the run before it -- same
+            # dismissal, no delay -- failed with the keyguard already down. Waiting for a resumed
+            # activity to exist makes that settling explicit instead of incidental, because a fix
+            # that works by accident is one refactor away from silently reverting.
+            for i in 1 2 3 4 5 6 7 8 9 10; do adb shell dumpsys activity activities > /tmp/kg.txt 2>/dev/null; grep -q "mKeyguardShowing=false" /tmp/kg.txt && grep -qE "ResumedActivity: ActivityRecord" /tmp/kg.txt && break; adb shell input keyevent 224; adb shell input swipe 540 1600 540 400; adb shell input text 1234; adb shell input keyevent 66; sleep 3; done
+
+            # Prove it took, exactly like the PIN check above -- this is the step whose silent
+            # failure cost the "every recreate test fails on API 36" investigation. Fails only on a
+            # POSITIVE reading of mKeyguardShowing=true, so an API level that names the field
+            # differently cannot fail the required 31/34 legs over a diagnostic.
+            adb shell dumpsys activity activities > /tmp/acts.txt 2>/dev/null || true
+            grep -iE "mKeyguardShowing|KeyguardController|isKeyguardShowing" /tmp/acts.txt | head -10 || true
+            if grep -q "mKeyguardShowing=true" /tmp/acts.txt; then echo "The keyguard is still up; no Activity can reach RESUMED and every UI test would fail for that reason alone." >&2; exit 1; fi
+            if ! grep -qE "ResumedActivity: ActivityRecord" /tmp/acts.txt; then echo "WARNING: nothing is resumed on this device; UI tests may fail for reasons that are not this app." >&2; fi
+
+            # Clear the buffer so the dump below is this run's work, not the emulator's boot.
+            adb logcat -c || true
+
+            # `|| echo` rather than letting gradle fail the line: each line here is its own sh -c,
+            # so a bare non-zero exit ends the script and the dump never runs. The marker file
+            # re-raises the failure at the end, so nothing is silenced.
+            ./gradlew connectedDebugAndroidTest || echo failed > /tmp/testfail.txt
+
+            adb logcat -d > /tmp/logcat.txt 2>/dev/null || true
+            echo "===== crashes and ANRs ====="
+            grep -nE "FATAL EXCEPTION|AndroidRuntime|ANR in|Process .* has died" /tmp/logcat.txt | head -40 || true
+            echo "===== this app's own logging ====="
+            grep -nE "LockedActivity|SecurityWipe|AppLockManager|AppLockStore|EnrollmentVault|DatabaseKey|EphemeralAttachment|DeviceContact" /tmp/logcat.txt | head -80 || true
+            echo "===== activity lifecycle ====="
+            grep -nE "ActivityTaskManager|Displayed org.kysecurity|Killing|Scheduling restart|relaunch" /tmp/logcat.txt | head -60 || true
+
+            if [ -f /tmp/testfail.txt ]; then echo "instrumented tests failed; see the logcat excerpts above" >&2; exit 1; fi
 
       - name: dependency verification metadata is unchanged
         run: git diff --exit-code -- gradle/verification-metadata.xml
@@ -306,10 +363,10 @@ jobs:
     needs: instrumented
     if: always()
     steps:
-      # "Every REQUIRED leg" — API 36 is advisory and cannot fail this, by `continue-on-error` on
-      # the matrix rather than by anything here. Read the 36 leg's log when it is red; it is the
-      # open question recorded in that matrix comment, not noise to be silenced.
+      # Every leg, including 36, which is no longer advisory — see the matrix comment. If this
+      # goes red on 36 again, read the keyguard dump the emulator step prints before assuming the
+      # app; that is the failure mode it was silent about for four runs.
       - name: require every required emulator leg
         run: |
-          echo "ci-emulator matrix result (API 36 excluded, advisory): ${{ needs.instrumented.result }}"
+          echo "ci-emulator matrix result (all of 31, 34, 36 required): ${{ needs.instrumented.result }}"
           test "${{ needs.instrumented.result }}" = "success"
