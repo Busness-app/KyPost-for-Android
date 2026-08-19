@@ -20,11 +20,7 @@ class ContactAdapter(
     private val onContactClick: (ContactEntity) -> Unit,
 ) : RecyclerView.Adapter<ContactAdapter.ContactViewHolder>() {
 
-    /** Whether the paired account has a PGP identity on the server (see [org.kysecurity.mail.pgp.hasPgpIdentity]),
-     *  `null` while unknown/unchecked. The self-contact's own `pgpKey` field is a normal,
-     *  independently-editable contact field with no connection to the account's real PGP identity
-     *  (see that function's doc comment) — this is the account-level signal set from outside,
-     *  since computing it needs a network call this per-row [bind] has no coroutine scope for. */
+    /** The account's PGP identity; unrelated to the self-contact's own editable `pgpKey` field. */
     var selfHasPgpIdentity: Boolean? = null
         set(value) {
             field = value
@@ -84,13 +80,6 @@ class ContactAdapter(
     }
 }
 
-/** Whether a contact's "PGP" status badge should read as linked: either it has its own [pgpKey]
- *  field set (true for any contact, including self, whose key was actually attached — e.g. via the
- *  PGP QR scan flow), or — for the self-contact specifically ([isSelf]) — the account has a
- *  confirmed server PGP identity per [selfHasPgpIdentity]. `null` (unknown/unchecked) is treated as
- *  "no" here, same as a confirmed false — it only ever adds a second way to show "linked", never a
- *  way to hide the [pgpKey]-based one. Takes primitives rather than a [ContactEntity]/`ContactDto`
- *  directly so both (and [org.kysecurity.mail.contacts.ContactDetailActivity]'s own read model) can share
- *  it without a shared base type. */
+/** A null [selfHasPgpIdentity] reads as "no"; it can only ever add a way to show "linked". */
 internal fun contactHasLinkedPgpKey(pgpKey: String?, isSelf: Boolean, selfHasPgpIdentity: Boolean?): Boolean =
     !pgpKey.isNullOrBlank() || (isSelf && selfHasPgpIdentity == true)

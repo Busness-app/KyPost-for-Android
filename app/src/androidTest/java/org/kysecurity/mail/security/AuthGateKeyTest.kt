@@ -19,13 +19,7 @@ import java.security.KeyStore
 import javax.crypto.SecretKey
 import javax.crypto.SecretKeyFactory
 
-/**
- * The gate the MFA approval screen falls back to when nothing is sealed.
- *
- * The success path needs a live prompt and no automated test can produce one, so what is pinned
- * here is the property the gate rests on: without the user, the key does not work. If that ever
- * stops being true the screen is back to trusting a callback.
- */
+/** The success path needs a live prompt; what is pinned here is that the key fails without one. */
 @RunWith(AndroidJUnit4::class)
 class AuthGateKeyTest {
 
@@ -49,13 +43,7 @@ class AuthGateKeyTest {
         val info = SecretKeyFactory.getInstance(key.algorithm, "AndroidKeyStore")
             .getKeySpec(key, KeyInfo::class.java) as KeyInfo
         assertTrue("must require user authentication", info.isUserAuthenticationRequired)
-        // What matters is that there is no time window in which one earlier unlock keeps paying for
-        // later operations. The two Keystore APIs spell "authenticate for every use" differently:
-        // the legacy setUserAuthenticationValidityDurationSeconds uses -1, while
-        // setUserAuthenticationParameters — the only one this codebase calls, and the only one
-        // available at minSdk 31 — uses 0, which is what KeyInfo then reports back. Pinning -1 here
-        // pinned the sentinel of an API AuthGateKey never uses. Any POSITIVE value is the real
-        // regression, so that is what this rules out.
+        // Per-use reports 0 here, not the legacy -1 sentinel; any positive value is the regression.
         assertTrue(
             "a per-use key must have no validity window, got ${info.userAuthenticationValidityDurationSeconds}s",
             info.userAuthenticationValidityDurationSeconds <= 0,

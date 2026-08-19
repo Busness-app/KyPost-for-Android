@@ -3,18 +3,7 @@ package org.kysecurity.mail.contacts
 import org.kysecurity.mail.ProcessScopedState
 import org.kysecurity.mail.ProcessState
 
-/**
- * The in-progress contact edit, held for the life of the process so a fold cannot destroy it.
- *
- * Unfolding a device is a configuration change, which destroys and recreates the Activity. This
- * screen carries the user's contact PII across roughly thirty fields, and discarding it because
- * someone opened their phone is data loss on a casual gesture.
- *
- * A saved-state Bundle is the wrong home for it: that is system-managed storage written outside
- * this app's control, and [ComposeDraftCache][org.kysecurity.mail.ComposeDraftCache] already
- * documents why message plaintext stays out of it. This holds the same line for contact plaintext —
- * in memory, process-scoped, and registered with [ProcessState] so a security wipe clears it.
- */
+// Deliberately not a saved-state Bundle: contact PII stays in-process and a wipe clears it.
 object ContactEditDraftCache : ProcessScopedState {
 
     @Volatile
@@ -44,20 +33,7 @@ object ContactEditDraftCache : ProcessScopedState {
         this.draftUid = if (worthKeeping == null) "" else uid
     }
 
-    /**
-     * Returns the draft only if it belongs to [uid]; a mismatch drops it rather than holding it for
-     * a later asker.
-     *
-     * The editor is finished outright by the app lock, and the unlock returns the user to the inbox
-     * rather than to the contact they were editing. An identity-blind cache therefore had a live
-     * path where the next contact opened inherited the previous one's name, emails and addresses —
-     * and saved them over itself, locally and on the server. Dropping on mismatch keeps that to a
-     * single missed restore instead of a draft that keeps hunting for a victim.
-     *
-     * Two successive *new* contacts share the empty uid and so can still restore into one another.
-     * That duplicates the user's own unsaved typing rather than destroying a stored contact, and is
-     * the likelier intent after being locked out mid-entry.
-     */
+    /** Returns the draft only if it belongs to [uid]; a mismatch drops it rather than re-offering it. */
     fun take(uid: String): ContactDto? {
         val matching = draft?.takeIf { draftUid == uid }
         draft = null
@@ -75,15 +51,7 @@ object ContactEditDraftCache : ProcessScopedState {
     override fun resetForNewSession() = clear()
 }
 
-/**
- * Whether the form behind this draft holds anything the user would miss.
- *
- * Gating on `fn` alone lost a new contact's phone, email and address if the name had not been typed
- * yet — data loss on a casual gesture, which is the harm this cache exists to prevent. Mirrors
- * [CachedDraft.hasContent][org.kysecurity.mail.CachedDraft.hasContent] by OR-ing across every field
- * the editor exposes; the repeatable lists are already blank-filtered by `RepeatableFieldList.items`,
- * so an untouched form still reads as empty.
- */
+// Gating on `fn` alone lost a new contact's phone, email and address before the name was typed.
 private fun ContactDto.hasFormContent(): Boolean =
     fn.isNotBlank() || givenName != null || familyName != null || middleName != null ||
         prefix != null || suffix != null || nickname != null || org != null || title != null ||

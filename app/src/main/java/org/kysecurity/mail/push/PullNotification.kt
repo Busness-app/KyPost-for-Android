@@ -3,12 +3,7 @@ package org.kysecurity.mail.push
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
-/**
- * Delivery mode for a subscriber, mirrored from the server. "push" is the existing
- * FCM-relay path; "pull" means FCM sends nothing and the app must poll the server
- * directly via the pull endpoint. The server value is authoritative — see the
- * `deliveryMode` field on both the register response and the pull response.
- */
+/** Delivery mode mirrored from the server; the server value is authoritative. */
 enum class DeliveryMode(val wire: String) {
     PUSH("push"),
     PULL("pull");
@@ -20,19 +15,14 @@ enum class DeliveryMode(val wire: String) {
     }
 }
 
-/**
- * How the server reaches this device — the transport it confirmed on the last successful
- * registration.
- */
+/** The transport the server confirmed on the last successful registration. */
 enum class PushTransport(val wire: String) {
     FCM("fcm"),
     APNS("apns"),
     UNIFIED_PUSH("unifiedpush");
 
     companion object {
-        /** Null for absent or unrecognised values — older servers do not echo the field back at
-         *  all, and "the server said something we do not understand" must not read as any
-         *  particular transport. */
+        /** Null for absent or unrecognised values — older servers do not echo the field back. */
         fun fromWire(value: String?): PushTransport? {
             val normalized = value?.trim()?.lowercase() ?: return null
             return entries.firstOrNull { it.wire == normalized }
@@ -63,12 +53,7 @@ data class PullNotificationsResponse(
     val mode: DeliveryMode get() = DeliveryMode.fromWire(deliveryMode)
 }
 
-/**
- * Maps a pulled notification onto the same [PushPayload] the FCM data-message path
- * produces, so pull and push notifications render identically and share the tap
- * handler. When the pull `data` object omits `messageId`, we synthesize a stable id
- * from the strictly-increasing `seq` so de-duplication (by notification id) still holds.
- */
+/** Maps a pulled notification onto [PushPayload]; synthesizes an id from `seq` when absent. */
 fun PullNotification.toPushPayload(nowEpochMs: Long = System.currentTimeMillis()): PushPayload {
     val fields = data ?: emptyMap()
     val messageId = fields["messageId"]?.takeIf { it.isNotBlank() } ?: "pull-$seq"
@@ -89,10 +74,7 @@ private fun parseRfc3339Millis(value: String?): Long? {
     return runCatching { java.time.Instant.parse(raw).toEpochMilli() }.getOrNull()
 }
 
-/**
- * Pure logic for turning a pull response into the notifications to show and the next
- * cursor. Kept side-effect free so cursor/de-duplication behavior is unit testable.
- */
+/** Side-effect free so cursor/de-duplication behavior is unit testable. */
 object PullNotificationProcessor {
     data class Prepared(
         val payloads: List<PushPayload>,

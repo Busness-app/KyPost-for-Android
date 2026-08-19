@@ -22,10 +22,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/**
- * Full-screen PIN gate shown whenever [AppLockManager.locked] is true. Biometric unlock layers on
- * top of this; the PIN field here is always present as the fallback.
- */
 class UnlockActivity : AppCompatActivity() {
     private lateinit var pinField: EditText
     private lateinit var errorText: TextView
@@ -52,9 +48,6 @@ class UnlockActivity : AppCompatActivity() {
         submitButton = findViewById(R.id.unlockSubmitButton)
         submitButton.setOnClickListener { attemptUnlock() }
 
-        // The credential gate is no longer a reason to refuse a fingerprint: biometric unlock now
-        // opens the same PIN-derived keys the gate wants, so it is a complete unlock rather than a
-        // partial one that has to be topped up with a PIN.
         if (SecurityRuntime.graph(this).appLockStore.isBiometricEnabled()) {
             showBiometricPromptIfAvailable()
         }
@@ -82,10 +75,7 @@ class UnlockActivity : AppCompatActivity() {
                 is UnlockAttemptResult.Success -> completeUnlock()
                 is UnlockAttemptResult.Wiped -> restartToFirstRun()
                 is UnlockAttemptResult.WipeFailed -> {
-                    // The wipe ran but did not finish, so local data may still be on disk. Say so
-                    // rather than showing the same clean first-run screen as a successful wipe —
-                    // and still relaunch, since SecurityWipe has left its in-progress marker set
-                    // and KyPostApp will retry the whole wipe on the next start.
+                    // The wipe left its in-progress marker set, so KyPostApp retries it at start.
                     android.util.Log.e("UnlockActivity", "Wipe incomplete: ${result.failedSteps}")
                     restartToFirstRun()
                 }
@@ -96,10 +86,7 @@ class UnlockActivity : AppCompatActivity() {
                     if (result.delayMillis > 0) applyRemainingLockout()
                 }
                 is UnlockAttemptResult.VerifierUnavailable -> {
-                    // The Keystore key behind the stored verifier is gone, so no PIN can ever match
-                    // again. Saying "wrong PIN" would send the user round the loop until the wipe
-                    // threshold — which this outcome deliberately does not advance — so name the
-                    // real problem and the only real remedy.
+                    // No PIN can match again, and this does not advance the wipe threshold.
                     errorText.visibility = View.VISIBLE
                     errorText.text = getString(R.string.security_verifier_unavailable)
                     submitButton.isEnabled = true
@@ -108,29 +95,13 @@ class UnlockActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * What a completed unlock owes the rest of the app, whichever credential produced it.
-     *
-     * Shared by the PIN and biometric paths deliberately. Both now yield the same credential keys,
-     * so both can close the gap where a background FCM token rotation saved the pairing unwrapped
-     * with nothing cached in this process, and both can migrate a pre-pepper wrap (see
-     * [rewrapPairingIfNeeded]). While biometric derived nothing, this work hung off the PIN alone
-     * and a user who only ever used the fingerprint reader never ran any of it.
-     *
-     * [org.kysecurity.mail.pgp.EnrollmentStateWorker] is unique work, so re-enqueueing is idempotent
-     * and costs nothing when there is no report owed.
-     */
+    /** Shared by both unlock paths so each runs the rewrap and the enrollment report. */
     private suspend fun completeUnlock() {
         rewrapPairingIfNeeded(this, appLockManager)
         org.kysecurity.mail.pgp.EnrollmentStateWorker.enqueue(this)
         proceedIntoApp()
     }
 
-    /**
-     * Every locked screen finishes itself when it redirects here, so on success there is nothing
-     * left in the task to return to. Route through [MainActivity], which already decides between
-     * the inbox and the pairing screen.
-     */
     private fun proceedIntoApp() {
         startActivity(
             Intent(this, MainActivity::class.java)
@@ -163,16 +134,7 @@ class UnlockActivity : AppCompatActivity() {
         }.start()
     }
 
-    /**
-     * Offers the fingerprint only when there is something for it to open.
-     *
-     * [BiometricUnlockVault.prepareUnlock] returns null on a device that has never completed a PIN
-     * unlock since this feature landed, and on one whose key the OS destroyed because a biometric
-     * was enrolled. Both leave the always-visible PIN field as the only route, and the next PIN
-     * unlock re-seals — so the fallback repairs itself and needs no user-facing recovery step.
-     *
-     * The vault call is Keystore and disk work, hence the hop off the main thread.
-     */
+    /** prepareUnlock() is Keystore and disk work, hence the hop off the main thread. */
     private fun showBiometricPromptIfAvailable() {
         if (BiometricManager.from(this).canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG) !=
             BiometricManager.BIOMETRIC_SUCCESS
@@ -206,12 +168,6 @@ class UnlockActivity : AppCompatActivity() {
             this,
             ContextCompat.getMainExecutor(this),
             object : BiometricPrompt.AuthenticationCallback() {
-                /**
-                 * The authentication is *used*, not merely observed. The cipher handed back here is
-                 * the one the Keystore refused to operate until the user authenticated, and the keys
-                 * it opens are the same ones a PIN unlock derives — so there is no longer a version
-                 * of this callback that grants access without producing a secret.
-                 */
                 override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
                     val cipher = result.cryptoObject?.cipher
                     val keys = cipher?.let { CredentialEnvelope.open(unlock.sealed, it) }
@@ -223,9 +179,7 @@ class UnlockActivity : AppCompatActivity() {
                         pinField.requestFocus()
                         return
                     }
-                    // Rejected means a lockout from earlier wrong PINs is still running; the
-                    // fingerprint does not skip it. Rendered exactly like the PIN path's rejection
-                    // so the two cannot say different things about the same ladder.
+                    // Rejected means an earlier lockout is still running; biometrics skip nothing.
                     if (appLockManager.unlockWithBiometric(keys) !is UnlockAttemptResult.Success) {
                         errorText.visibility = View.VISIBLE
                         errorText.text = getString(R.string.unlock_wrong_pin)
@@ -234,19 +188,14 @@ class UnlockActivity : AppCompatActivity() {
                     }
                     lifecycleScope.launch { completeUnlock() }
                 }
-                // onAuthenticationError (includes the user tapping "Use PIN") and
-                // onAuthenticationFailed both just leave the always-visible PIN field as the
-                // fallback — no separate handling needed.
+                // Errors and failures need no handling: the PIN field is always the fallback.
             },
         )
         prompt.authenticate(promptInfo, BiometricPrompt.CryptoObject(unlock.cipher))
     }
 
     private fun restartToFirstRun() {
-        // SecurityWipe already ran (inside AppLockManager.attemptPin's onWipe callback) by the
-        // time UnlockAttemptResult.Wiped is returned — this just rebuilds the graphs and
-        // relaunches so the app picks up the now-cleared state. Launched rather than called: the
-        // rebuild blocks, and this is reached from a click listener.
+        // SecurityWipe already ran; this only rebuilds the graphs, and the rebuild blocks.
         lifecycleScope.launch { AppRestart.relaunch(this@UnlockActivity) }
     }
 }

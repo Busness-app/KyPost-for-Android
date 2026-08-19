@@ -6,17 +6,9 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 import org.kysecurity.mail.mail.OutgoingAttachment
 
-/**
- * Mirrors ContactEditDraftCacheTest's contract for the sibling cache: a draft survives Activity
- * destruction via save()/take(), take() hands ownership to the caller, clear() seals the cache
- * against a late write, and take() unseals for the next session. Plus the compose-specific rule
- * that an attachment alone — no text anywhere — is still worth keeping.
- */
 class ComposeDraftCacheTest {
 
-    /** clear() deliberately seals, and this cache is a process-wide object shared by every test in
-     *  the JVM. A bare clear() would leak that seal into the next test and silently no-op its
-     *  save(); take() drops the draft *and* unseals, which is the pristine state. */
+    /** The cache is process-wide: clear() seals it, and only take() unseals for the next test. */
     @After
     fun tearDown() {
         ComposeDraftCache.clear()
@@ -45,8 +37,6 @@ class ComposeDraftCacheTest {
         assertEquals("<p>hi</p>", ComposeDraftCache.take()?.bodyHtml)
     }
 
-    /** No recipients, no subject, no body — an attachment alone is still real work the user picked
-     *  and would lose. "attachments included" is the spec's own phrase for this case. */
     @Test
     fun anAttachmentAloneIsWorthKeeping() {
         ComposeDraftCache.save(

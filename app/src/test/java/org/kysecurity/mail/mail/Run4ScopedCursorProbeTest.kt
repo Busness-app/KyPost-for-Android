@@ -13,17 +13,6 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 import java.io.File
 
-/**
- * Regression test for [MailCursorStore]'s scope-key separation.
- *
- * `cursorValue(folder)` and `resyncValue(folder)` are two [ScopedValue]s over the same DataStore.
- * They used to share one scopeKey, and [ScopedValue.set] writes the scope alongside its own value —
- * so writing the resync stamp re-stamped the scope over a *stale cursor* and re-authorised it for a
- * new subscriber, which is exactly the opposite of ScopedValue's stated contract. After re-pairing,
- * a relay that answered the first `/api/inbox` with a blank cursor (a supported case
- * `RelayMailSourceTest.nonDeltaLegacyResponse_stillParsesAsFullSnapshot` exercises) made the client
- * put the *previous* relay's cursor token on the wire to the new one.
- */
 class Run4ScopedCursorProbeTest {
 
     private fun store(dir: File) = PreferenceDataStoreFactory.create(

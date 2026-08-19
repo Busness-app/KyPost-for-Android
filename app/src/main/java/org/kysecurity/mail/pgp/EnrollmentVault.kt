@@ -21,29 +21,13 @@ private const val ANDROID_KEYSTORE = "AndroidKeyStore"
 private const val KEY_IV = "envelope_iv"
 private const val KEY_CT = "envelope_ct"
 
-/**
- * The durable half: an AES-256-GCM Keystore key that requires the device lock screen, and the
- * envelope re-sealed under it.
- *
- * The allowed authenticators include `DEVICE_CREDENTIAL` on purpose, so the key **survives a
- * biometric enrollment change**. Biometric-only would invalidate it whenever a fingerprint is
- * added, costing every ordinary user a full re-enrollment ceremony; and enrolling a biometric
- * already requires the device credential, so the attacker it would exclude already holds what this
- * key accepts. It also keeps `encryptionEnrolled` from flapping false for benign reasons — a marker
- * that cries wolf is one users learn to dismiss.
- *
- * The strict posture is not a switch here. It is Hostile Location Protection, under which there is
- * no envelope at all.
- */
+/** AES-256-GCM Keystore key. DEVICE_CREDENTIAL is allowed so it survives a biometric change. */
 internal class EnrollmentVault(context: Context) {
 
     private val appContext = context.applicationContext
     private val prefs: SharedPreferences by lazy { buildPrefs() }
 
-    /**
-     * False when the device has no secure lock screen. That is the honest outcome: the envelope's
-     * protection *is* the lock screen, so a device without one cannot hold a meaningful one.
-     */
+    /** False when the device has no secure lock screen — the envelope's protection *is* that screen. */
     fun ensureKey(): Boolean {
         if (existingKeyMatchesSpec()) return true
         return generate(strongBox = true) || generate(strongBox = false)
@@ -72,21 +56,7 @@ internal class EnrollmentVault(context: Context) {
         false
     }
 
-    /**
-     * Generates the vault key, and **clears any stored blob in the same breath**.
-     *
-     * A newly minted key can never open an envelope sealed under a previous one, so retaining the
-     * blob across a regeneration is never correct — and it is actively harmful, because
-     * [probeEnrollment] establishes only that *a* key exists and that *a* blob exists. `Cipher.init`
-     * on GCM touches no ciphertext, so it succeeds against the wrong key, and the probe then reports
-     * ENROLLED for a blob nothing in the world can decrypt. The server renders that to the user as
-     * "this device can read your encrypted mail", which is the exact lie the marker exists to
-     * prevent, and it is the unsafe direction: a user may decommission the device that actually
-     * holds a working copy.
-     *
-     * Reachable whenever the OS destroys the key without any of our code running — the user removing
-     * and re-adding the device lock screen is enough.
-     */
+    /** Generates the vault key and **clears any stored blob**: a stale blob makes the probe lie. */
     private fun generate(strongBox: Boolean): Boolean = runCatching {
         val spec = KeyGenParameterSpec.Builder(
             ALIAS,
@@ -101,10 +71,7 @@ internal class EnrollmentVault(context: Context) {
             .setUserAuthenticationParameters(0, EXPECTED_AUTHENTICATORS)
             .apply { if (strongBox) setIsStrongBoxBacked(true) }
             .build()
-        // Before anything else: a blob sealed under a previous key is unopenable by the key we are
-        // about to mint, and keeping it makes probeEnrollment report ENROLLED for a device that can
-        // decrypt nothing. Clear it first so an interruption between here and generateKey leaves
-        // "no key, no blob" rather than "new key, stale blob".
+        // Clear first so an interruption leaves "no key, no blob" rather than "new key, stale blob".
         prefs.edit().clear().commit()
         KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
             .apply { init(spec) }
@@ -143,13 +110,7 @@ internal class EnrollmentVault(context: Context) {
 
     fun hasBlob(): Boolean = runCatching { prefs.contains(KEY_CT) }.getOrDefault(false)
 
-    /**
-     * Destroys the sealed blob and the vault key, and **reports what it could not destroy**.
-     *
-     * Its own prefs file, not `SecurePairingStore`'s, so this is a file delete plus one alias
-     * removal — with no risk of clearing pairing state that Hostile Location Protection explicitly
-     * preserves.
-     */
+    /** Destroys the sealed blob and the vault key, and **reports what it could not destroy**. */
     fun destroy(): List<String> {
         val failed = mutableListOf<String>()
         runCatching { prefs.edit().clear().commit() }
@@ -170,19 +131,7 @@ internal class EnrollmentVault(context: Context) {
 
     private fun keyStore(): KeyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
 
-    /**
-     * Builds the encrypted store, resetting it if the Tink keyset can no longer be decrypted.
-     *
-     * `androidx.security-crypto` is deprecated precisely because `EncryptedSharedPreferences.create`
-     * throws on an unreadable keyset — an OS-level key invalidation, a restored backup. Both siblings
-     * in this codebase already handle it this way and say why: `SecurePairingStore.buildEncryptedPrefs`
-     * and `AppLockStore.buildEncryptedPrefs`, the latter noting "an uncaught failure here crashes the
-     * app on every launch". This store had none of it, so the one event the enrollment marker is
-     * probed rather than cached *for* — the key going away without our code running — made the probe
-     * throw instead of reporting.
-     *
-     * Failing closed is right here: a lost blob reads as "not enrolled", which is the safe direction.
-     */
+    /** Resets the store if the Tink keyset is undecryptable; failing closed reads as "not enrolled". */
     private fun buildPrefs(): SharedPreferences =
         org.kysecurity.mail.security.openEncryptedPrefs(appContext, PREFS_FILE) {
             Log.e("EnrollmentVault", "Envelope store keyset is undecryptable", it)

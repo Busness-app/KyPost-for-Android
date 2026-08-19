@@ -4,7 +4,6 @@ import androidx.room.Dao
 import androidx.room.Query
 import androidx.room.Upsert
 
-/** Mirrors [DeviceContactLinkDao]'s shape for the group remote-ID <-> Android-row-ID bridge. */
 @Dao
 interface GroupLinkDao {
     @Query("SELECT * FROM group_links")

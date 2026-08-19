@@ -11,13 +11,7 @@ import java.time.ZoneOffset
 /** Discovery found a key whose fingerprint does not match the one pinned to that contact. */
 private const val TIER_KEY_CHANGED = "key_changed"
 
-/**
- * Every way a client-encrypted send can end. One per row of the compose screen's exit table.
- *
- * Separate objects rather than one error string because the UI shows a different sentence — and
- * sometimes a different button — for each. [Cancelled] in particular is not an error: the user
- * dismissed a prompt they raised, and the screen simply goes back to offering Send.
- */
+/** Every way a client-encrypted send can end. One per row of the compose screen's exit table. */
 internal sealed class ClientSendOutcome {
     data class Sent(val sentSaved: Boolean, val warning: String) : ClientSendOutcome()
 
@@ -54,15 +48,7 @@ internal fun interface ClientEncryptedTransport {
     fun send(message: ClientEncryptedMessage): MailOutcome<MailSendOutcome>
 }
 
-/**
- * Encrypts and signs one message on this device, then hands the ciphertext to the relay.
- *
- * **No Android imports**, following [EncryptedMessageReader] — which is what lets the whole exit
- * table be a JVM test with fakes instead of an instrumented one.
- *
- * Nothing here decides whether the account *may* use this path; [pgpComposeStateOf] does that. This
- * runs only once that decision is made.
- */
+/** Encrypts and signs one message on-device, then relays it. No Android imports, by contract. */
 internal class ClientEncryptedSender(
     private val opener: VaultOpener,
     private val resolver: RecipientKeyResolver,
@@ -82,9 +68,7 @@ internal class ClientEncryptedSender(
         val fields = splitRecipientFields(draft.to, draft.cc, draft.bcc)
         val addresses = fields.to + fields.cc + fields.bcc
 
-        // Resolve BEFORE unlocking. A send that was going to be refused anyway must not interrupt
-        // the user for a biometric they gain nothing from. (The web client prompts first; this is a
-        // deliberate divergence, not an oversight.)
+        // Resolve BEFORE unlocking: a send that will be refused anyway must not cost a biometric prompt.
         val resolved = when (val result = resolver.resolve(addresses)) {
             is ResolveResult.Success -> result.results
             is ResolveResult.NotClientProtected -> return ClientSendOutcome.NotClientProtected
@@ -93,10 +77,7 @@ internal class ClientEncryptedSender(
         }
         val byAddress = resolved.associateBy { it.address.lowercase() }
 
-        // A broken pin outranks a missing key, and is checked first. `key_changed` means discovery
-        // found a key whose fingerprint does not match the pinned one — which is what a rotation
-        // looks like and also what interception looks like. Folding it into "no key on file" tells
-        // the user nothing changed at the exact moment the one thing worth telling them did.
+        // A broken pin outranks a missing key: key_changed can mean interception, so check it first.
         val changed = addresses.filter { byAddress[it.lowercase()]?.tier == TIER_KEY_CHANGED }
         if (changed.isNotEmpty()) return ClientSendOutcome.KeyChanged(changed)
 
@@ -139,10 +120,7 @@ internal class ClientEncryptedSender(
             fields.bcc.forEach { add(listOf(it)) }
         }
 
-        // Every use of the private key is inside this one scope, so it stays the holder's wipeable
-        // CharArray rather than an immortal String copy — see [EnrollmentSession.withKey]. Null
-        // means the app locked between the unseal above and here, which lockNow() does by clearing
-        // the holder.
+        // Scoped to withKey so the key stays a wipeable CharArray; null means the app locked meanwhile.
         val ciphertexts = EnrollmentSession.withKey { privateKey ->
             encryptAll(privateKey, sign, protectedContent, groups, byAddress, fields, from, date, boundaryToken)
         } ?: return ClientSendOutcome.NotEnrolled
@@ -172,8 +150,6 @@ internal class ClientEncryptedSender(
         }
     }
 
-    /** Everything the private key is needed for, so [EnrollmentSession.withKey] can scope it to a
-     *  single call rather than the whole send — the network round trip below needs no key. */
     private sealed class EncryptedBundle {
         data class Ok(val deliveries: List<ClientEncryptedDelivery>, val sentCopy: String) : EncryptedBundle()
         data class Failed(val message: String) : EncryptedBundle()

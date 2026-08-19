@@ -9,14 +9,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/**
- * [EmailDao.clearServerDecryptedBodies] against a real database.
- *
- * The JVM fake in `MailRepositoryTest` mirrors the predicate in Kotlin, which cannot catch the ways
- * the SQL itself can be wrong: a boolean compared against the wrong literal, or `body != ''` silently
- * excluding every row because SQL comparison with NULL yields NULL rather than true. A query that
- * matches nothing would leave the plaintext in place and every JVM test would still pass.
- */
+/** clearServerDecryptedBodies against real SQL; the JVM fake only mirrors the predicate. */
 @RunWith(AndroidJUnit4::class)
 class EmailDaoClearDecryptedTest {
 

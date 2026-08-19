@@ -116,8 +116,6 @@ class MfaResponseClientTest {
         assertTrue(sentBody.contains("\"matchDigits\":\"\""))
     }
 
-    /** 400 is "wrong number, challenge still live" — distinct from 401, and the old `else` branch
-     *  reported it as the opaque "Failed to respond (400)". */
     @Test
     fun respond_400_reportsTheServerMismatchMessage() = runBlocking {
         val callFactory = MfaFakeCallFactory { request ->
@@ -131,7 +129,6 @@ class MfaResponseClientTest {
         assertEquals("that is not the number shown in the browser", (result as MfaRespondResult.Error).message)
     }
 
-    /** 429 means the attempt budget is spent and the challenge is dead even with the right number. */
     @Test
     fun respond_429_reportsAttemptsExhausted() = runBlocking {
         val callFactory = MfaFakeCallFactory { request ->

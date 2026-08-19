@@ -3,24 +3,11 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
-    <!--
-      Required by Window.setHideOverlayWindows(), which every gated window and every consent dialog
-      calls (see security/SecureWindow.kt). It is an install-time permission with no user prompt and
-      no capability of its own: it only lets this app ask the system to hide OTHER apps' overlays
-      while its own window is showing. Without it setHideOverlayWindows throws SecurityException —
-      caught by ContactEditDraftTest, not by anything that reads like a permissions test.
-    -->
+    <!-- Required by Window.setHideOverlayWindows(), which throws SecurityException without it. -->
     <uses-permission android:name="android.permission.HIDE_OVERLAY_WINDOWS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.WRITE_CONTACTS" />
-
-    <!--
-      No <queries> block. The Custom Tabs service query that used to be here existed solely for
-      CustomTabsClient.getPackageName, and the Custom Tab handoff is gone — see WebmailTab.kt for
-      why. Nothing this app does now needs to see which packages are installed: both remaining
-      webmail launch modes ask the system to resolve an intent rather than asking what is there.
-    -->
 
     <application
         android:name=".KyPostApp"
@@ -33,18 +20,7 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.KyPost" >
 
-        <!-- Which channel a system-tray notification lands on, for any FCM message that still
-             arrives carrying a `notification` payload. Without this, Play Services invents its own
-             fallback channel: not kypost_push, not kypost_mfa, so neither the IMPORTANCE_HIGH the
-             MFA channel is created with nor any per-channel choice the user has made applies to it,
-             and it can sit silenced while the relay reports every send as delivered.
-
-             Belt to the braces of the relay now sending data-only for Android (see
-             sendFcmMessage in kypost-server/worker/src/fcm.ts). Data-only messages route through
-             onMessageReceived, where the app picks the channel itself and this is never consulted;
-             the value only matters if that ever regresses. Literal rather than a reference to
-             PushNotificationDispatcher.CHANNEL_ID because the manifest cannot read Kotlin — keep
-             the two in step. -->
+        <!-- Mirrors PushNotificationDispatcher.CHANNEL_ID; keep the two in step. -->
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_channel_id"
             android:value="kypost_push" />
@@ -163,11 +139,7 @@
             </intent-filter>
         </service>
 
-        <!-- taskAffinity="" keeps this in its own task, separate from MainActivity's. Without
-             it, tapping the notification after the app process has died resolves to the app's
-             existing (dead) task by affinity, which recreates MainActivity as the task root
-             instead of reliably launching this activity on top — landing the user on the inbox
-             instead of the approve/deny screen. -->
+        <!-- taskAffinity="" isolates the task; without it a notification tap hits the inbox. -->
         <!-- excludeFromRecents matches UnlockActivity: an authenticated approval prompt must not
              be resumable from the Recents list by whoever next picks the device up. -->
         <activity

@@ -15,14 +15,7 @@ object DeviceContactMatcher {
         return if (digits.length == 11 && digits.startsWith("1")) digits.substring(1) else digits
     }
 
-    /**
-     * Every normalized email and phone in [existing], mapped to the uid that owns it.
-     *
-     * Each value carries its owner's position in [existing], and [Index.findMatch] returns the
-     * lowest-positioned match. That reproduces the old scan exactly — "the first contact in list
-     * order that matches on either an email or a phone" — rather than quietly preferring whichever
-     * field happens to be checked first.
-     */
+    /** Values carry their owner's position, so [findMatch] returns the lowest-positioned match. */
     class Index private constructor(private val byValue: Map<String, Match>) {
         private data class Match(val uid: String, val ordinal: Int)
 
@@ -50,10 +43,7 @@ object DeviceContactMatcher {
         }
     }
 
-    /**
-     * Emails and phones share one map, so they are namespaced to keep a phone-shaped email from
-     * matching a phone.
-     */
+    // Emails and phones share one map, so keys are namespaced to keep a phone-shaped email apart.
     private fun emailKey(value: String): String? =
         normalizeEmail(value).takeIf { it.isNotBlank() }?.let { "e:$it" }
 

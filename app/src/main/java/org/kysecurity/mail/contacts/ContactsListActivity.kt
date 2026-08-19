@@ -130,9 +130,7 @@ class ContactsListActivity : LockedActivity() {
         }
 
         if (!pickMode) {
-            // Refreshed every time this screen becomes visible (not just once) so setting up a PGP
-            // identity on the web app and coming back here picks it up without needing a full
-            // contacts re-sync.
+            // On every resume, so a PGP identity set up on the web app shows without a re-sync.
             lifecycleScope.launch {
                 adapter.selfHasPgpIdentity = hasPgpIdentity(this@ContactsListActivity)
             }
@@ -273,6 +271,10 @@ class ContactsListActivity : LockedActivity() {
                     Toast.LENGTH_SHORT,
                 ).show()
                 invalidateOptionsMenu()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // The activity went away mid-disable. Rethrow rather than reporting it as a failure
+                // and touching the UI of a destroyed activity — same rule as the collect above.
+                throw e
             } catch (e: Exception) {
                 Toast.makeText(
                     this@ContactsListActivity,
@@ -288,9 +290,7 @@ class ContactsListActivity : LockedActivity() {
         private const val MENU_DEVICE_SYNC = 1
         private const val MENU_DEDUPE = 2
 
-        /** When set true on launch, tapping a contact returns its uid via [EXTRA_RESULT_UID]
-         *  instead of opening [ContactEditActivity] — used by flows (e.g. PGP QR key exchange)
-         *  that need the caller to pick an existing contact. */
+        /** When true, a tap returns the uid via [EXTRA_RESULT_UID] instead of opening the editor. */
         const val EXTRA_PICK_MODE = "pick_mode"
         const val EXTRA_RESULT_UID = "result_uid"
 

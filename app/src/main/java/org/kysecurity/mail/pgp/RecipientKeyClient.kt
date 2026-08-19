@@ -15,18 +15,9 @@ import okhttp3.RequestBody.Companion.toRequestBody
 
 private val JSON_MEDIA_TYPE = "application/json".toMediaType()
 
-/**
- * Outcome of the recipient-key preflight.
- *
- * [Failed] is deliberately distinct from `Success(emptyList())`: a failed lookup must never read
- * as "everyone has a key", which would let the compose screen imply an encrypted send it knows
- * nothing about.
- */
+/** [Failed] never means "everyone has a key" — a failed lookup is not `Success(emptyList())`. */
 sealed class RecipientKeyResult {
-    /** [keyless] holds the addresses with no usable key **in the user's contacts**. This is a
-     *  lower bound, not a prediction: the send path additionally runs WKD and keyserver discovery,
-     *  so an address listed here may still be encrypted to successfully. Use it to warn, never to
-     *  promise — the server's 409 is the real gate. */
+    /** A lower bound from contacts only — the send path also runs WKD/keyserver. Never promise. */
     data class Success(val keyless: List<String>) : RecipientKeyResult()
 
     data class Failed(val message: String) : RecipientKeyResult()
@@ -35,9 +26,7 @@ sealed class RecipientKeyResult {
 @Serializable
 private data class RecipientCheckRequestDto(val addresses: List<String>)
 
-/** `revoked`, `expired` and `tier` are parsed but unused: the server already folds revoked and
- *  expired into [hasKey], and `tier` drives the web UI's per-recipient badges. They are declared
- *  only to document the shape — do not re-derive keyless from them. */
+/** `revoked`/`expired`/`tier` are parsed but unused — do not re-derive keyless from them. */
 @Serializable
 private data class RecipientKeyStatusDto(
     val address: String = "",
@@ -50,22 +39,7 @@ private data class RecipientKeyStatusDto(
 @Serializable
 private data class RecipientCheckResponseDto(val results: List<RecipientKeyStatusDto> = emptyList())
 
-/**
- * Asks which recipients have a usable PGP key, via `POST /api/pgp/recipients/check`.
- *
- * **Not a replacement for [RecipientResolveClient], and not replaced by it.** This endpoint is the
- * cheap, contacts-only, no-network preflight behind the inline "no key on file" warning, and it
- * serves *both* send paths. `/api/pgp/recipients/resolve` hands back actual key material and runs
- * the full WKD and keyserver ladder; it is only meaningful when this device does the encrypting.
- *
- * An earlier revision of this comment said `/resolve` "refuses with 409 for any account that is not
- * client-protected — which is every account that can send encrypted from this app". The first half
- * is still true; the second stopped being true when the device enrollment ceremony gave this app the
- * account's private key, so a client-custody account can now encrypt here and `/resolve` is exactly
- * the right call for it.
- *
- * Kept parallel to [PgpQrClient]: same device-header auth, same injectable [Call.Factory].
- */
+/** Cheap contacts-only preflight; [RecipientResolveClient] returns actual key material. */
 class RecipientKeyClient(
     private val json: Json = Json { ignoreUnknownKeys = true },
     // Injected Call.Factory; see PairingAuthHeaders.kt for why every credentialed client takes one.

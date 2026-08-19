@@ -44,15 +44,7 @@ class DeviceEnvelopeTest {
         assertArrayEquals(expected, aad)
     }
 
-    /**
-     * The reason the fields are length-prefixed rather than pipe-joined.
-     *
-     * With `info|deviceId|fingerprint`, an envelope sealed under (deviceId "dev|BADC0FFEE",
-     * fingerprint "0123456789ABCDEF") produced byte-identical AAD to one sealed under (deviceId
-     * "dev", fingerprint "BADC0FFEE|0123456789ABCDEF"), so each opened under the other. Length
-     * prefixes make the framing unambiguous, which removes the class instead of arguing about
-     * whether today's inputs can reach it.
-     */
+    /** Why the fields are length-prefixed: `info|deviceId|fingerprint` lets a boundary shift collide. */
     @Test
     fun aad_isUnambiguousAcrossAFieldBoundary() {
         val shifted = deviceEnvelopeAad("dev", "BADC0FFEE0123456789ABCDEF")
@@ -64,12 +56,6 @@ class DeviceEnvelopeTest {
         )
     }
 
-    /**
-     * The positive case, which did not exist before. Its absence is what let every other parse test
-     * pass vacuously: under `org.json` from the stubbed `android.jar` the function returned null for
-     * *every* input, so three assertions of `null` held against an implementation that validated
-     * nothing. Replacing the whole body with `= null` left the suite green.
-     */
     @Test
     fun parse_acceptsAWellFormedEnvelope() {
         val fields = parseDeviceEnvelope(envelopeJson())
@@ -117,13 +103,7 @@ class DeviceEnvelopeTest {
         assertNull(parseDeviceEnvelope(envelopeJson(epk = b64(ByteArray(200).also { it[0] = 0x04 }))))
     }
 
-    /**
-     * The repository's only fingerprint producer, [PgpFingerprint.compute], returns space-grouped
-     * hex, while the browser strips whitespace before building its AAD. Normalising here is what
-     * stops the natural implementation of the caller from producing an AAD that can never
-     * authenticate — a failure the design classifies as hostile, and the browser reports to the user
-     * as a substituted key.
-     */
+    /** [PgpFingerprint.compute] returns space-grouped hex; the browser strips whitespace for its AAD. */
     @Test
     fun aad_normalisesASpaceGroupedFingerprint() {
         assertArrayEquals(

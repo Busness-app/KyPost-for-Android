@@ -4,16 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 import java.math.BigInteger
 
-/**
- * Covers the SEC1 encoding of a P-256 public key — a bit-for-bit contract shared with a Go server
- * and a TypeScript browser client. A deviation does not fail loudly: it fails as "the codes never
- * match" on every honest enrollment, which the browser reports to the user as an active attack.
- *
- * These live as JVM tests on purpose. The instrumented test can only assert the overall length of a
- * *randomly generated* key, and the interesting branch — a coordinate whose big-endian form is
- * shorter than 32 bytes, so it must be left-padded rather than truncated — occurs in roughly one
- * random key in 128. It was effectively never covered.
- */
+/** SEC1 P-256 encoding: a bit-for-bit contract with the Go server and the browser client. */
 class Sec1PointTest {
 
     @Test
@@ -29,11 +20,7 @@ class Sec1PointTest {
         assertEquals("22".repeat(32), point.copyOfRange(33, 65).hex())
     }
 
-    /**
-     * A coordinate whose top bit is set: `BigInteger.toByteArray()` prepends a 0x00 sign byte and
-     * returns 33 bytes. The sign byte must be stripped, not carried into the encoding. Happens for
-     * roughly half of all real keys.
-     */
+    /** `BigInteger.toByteArray()` prepends a 0x00 sign byte; it must be stripped, not carried. */
     @Test
     fun coordinateWithASignByteIsStripped() {
         val raw = ByteArray(32) { 0xFF.toByte() }
@@ -46,11 +33,7 @@ class Sec1PointTest {
         assertEquals("ff".repeat(32), point.copyOfRange(1, 33).hex())
     }
 
-    /**
-     * The branch the instrumented test almost never reaches: a small coordinate must be LEFT-padded
-     * with zeros to 32 bytes. Getting this wrong right-aligns the value or shortens the point, and
-     * every code derived from it disagrees with the browser's.
-     */
+    /** The branch the instrumented test almost never reaches: roughly one random key in 128. */
     @Test
     fun shortCoordinateIsLeftPaddedNotTruncated() {
         val point = sec1UncompressedPoint(BigInteger.ONE, BigInteger.valueOf(0x0203))

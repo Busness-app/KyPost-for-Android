@@ -8,13 +8,6 @@ import org.junit.Assert.fail
 import org.junit.Test
 import java.util.Base64
 
-/**
- * The tail of the ceremony, and the exit table.
- *
- * A real envelope is built here rather than mocked, because the seam being tested is exactly the one
- * between the state machine and the pure crypto in `DeviceEnvelope.kt`: a ceremony that assembled the
- * AAD or the HKDF salt wrongly would still "work" against a stubbed opener.
- */
 class EnrollmentCeremonyExitTest {
 
     private val fingerprint = FAKE_FINGERPRINT
@@ -40,8 +33,6 @@ class EnrollmentCeremonyExitTest {
         assertEquals("no durable fallback was needed", 0, ports.transport.durableReports)
     }
 
-    /** The sealer receives what the browser sealed, byte for byte. Anything else means the AAD, the
-     *  HKDF salt or the parse is wrong, and the user would see the substituted-key alarm. */
     @Test
     fun theSealerReceivesTheOpenedPlaintext() = runBlocking {
         val ports = portsWithEnvelope()
@@ -51,11 +42,6 @@ class EnrollmentCeremonyExitTest {
         assertArrayEquals(PLAINTEXT.toByteArray(Charsets.UTF_8), ports.sealer.received.single())
     }
 
-    /**
-     * The plaintext is the account's PGP private key. Its lifetime is the real exposure, and it does
-     * NOT go into `EnrollmentSession` — that holder has no consumer until the deferred decryption
-     * work lands, and populating it for zero readers is exposure bought for nothing.
-     */
     @Test
     fun thePlaintextIsZeroedInPlaceAfterSealing() = runBlocking {
         val ports = portsWithEnvelope()
@@ -66,11 +52,6 @@ class EnrollmentCeremonyExitTest {
         assertTrue("every byte must be zero", handed.all { it == 0.toByte() })
     }
 
-    /**
-     * **A failed report still means enrolled.** The local seal is real; only the server's marker is
-     * stale, and the durable worker already exists to correct it. Reporting this as a failure would
-     * make the user re-run a ceremony whose expensive half already succeeded.
-     */
     @Test
     fun aFailedReportStillMeansEnrolledAndEnqueuesTheWorker() = runBlocking {
         val probe = FakeEnrollmentKeys()
@@ -86,11 +67,6 @@ class EnrollmentCeremonyExitTest {
         assertEquals(1, ports.keys.deleteCalls)
     }
 
-    /**
-     * **A failed GCM open is never a retry.** The AAD binds device and identity, so a failure means
-     * the envelope was sealed for another device or under an identity the account no longer
-     * advertises. Here the envelope was sealed for a different device id.
-     */
     @Test
     fun anEnvelopeSealedForAnotherDeviceIsCouldNotOpen() = runBlocking {
         val ports = portsWithEnvelope(sealFor = "some-other-device")
@@ -105,9 +81,6 @@ class EnrollmentCeremonyExitTest {
         assertEquals("no second attempt", 1, ports.transport.fetchCalls)
     }
 
-    /** The other half of the AAD binding: an envelope minted under a fingerprint this account no
-     *  longer advertises. Same verdict, same copy — the phone cannot tell the two apart, and the
-     *  copy must not claim it can. */
     @Test
     fun anEnvelopeSealedUnderAnotherIdentityIsCouldNotOpen() = runBlocking {
         val ports = portsWithEnvelope(aadFingerprint = "AAAABBBBCCCCDDDD")
@@ -120,9 +93,6 @@ class EnrollmentCeremonyExitTest {
         )
     }
 
-    /** The ECDH itself can fail — a malformed peer point that got past the parse, or a key the
-     *  Keystore will no longer agree with. Indistinguishable from a hostile envelope from here, and
-     *  treated the same: no retry. */
     @Test
     fun anEcdhFailureIsCouldNotOpenAndDestroysTheKeypairWithNoSecondAttempt() = runBlocking {
         val ports = portsWithEnvelope()
@@ -153,8 +123,6 @@ class EnrollmentCeremonyExitTest {
         assertEquals(1, ports.keys.deleteCalls)
     }
 
-    /** The lock screen can be removed between the gate and the seal. `EnrollmentVault.ensureKey()`
-     *  reports it, and the ceremony must not present it as a mysterious failure. */
     @Test
     fun losingTheLockScreenBeforeTheSealIsItsOwnReason() = runBlocking {
         val ports = portsWithEnvelope()
@@ -180,18 +148,6 @@ class EnrollmentCeremonyExitTest {
         assertEquals(1, ports.keys.deleteCalls)
     }
 
-    /**
-     * A cancel is not a failure. The envelope is still on the relay, so the user gets the code back
-     * and a way to try again — and the plaintext does not survive the round trip.
-     *
-     * The window ends rather than re-prompting three seconds later; see deviation 8 in this plan.
-     *
-     * Also binds [EnrollmentCeremony.isIdle] to the window rather than to the state alone: `run()`'s
-     * `finally` sets it back to `true` on every path including a throw, so asserting it only after
-     * `run()` returns is true by construction and cannot fail. Reading it from *inside* `onState` —
-     * the moment the window's `ShowingCode` is emitted, before the cancel — is what actually exercises
-     * the `isIdle = false` at the top of `run()`.
-     */
     @Test
     fun aCancelledBiometricReturnsToTheCodeWithThePlaintextZeroed() = runBlocking {
         val ports = portsWithEnvelope()
@@ -230,7 +186,6 @@ class EnrollmentCeremonyExitTest {
         assertTrue("the user must be able to try again", ceremony.isIdle)
     }
 
-    /** Leaving the screen is the restart path, and it must take the key with it. */
     @Test
     fun teardownDestroysALiveKeypairAndIsIdempotent() = runBlocking {
         val ports = FakePorts()
@@ -243,8 +198,7 @@ class EnrollmentCeremonyExitTest {
         assertEquals(1, ports.keys.deleteCalls)
     }
 
-    /** A ceremony blocked at the gate never minted anything, so teardown must not claim a deletion
-     *  it did not perform — `EnrollmentTeardown` feeds that boolean to a `SecurityWipe.step`. */
+    /** `EnrollmentTeardown` feeds this boolean to a `SecurityWipe.step`. */
     @Test
     fun teardownAfterABlockedGateDestroysNothing() = runBlocking {
         val ports = FakePorts(identityResult = IdentityCheck.NoIdentity)
@@ -256,13 +210,7 @@ class EnrollmentCeremonyExitTest {
         assertEquals(0, ports.keys.deleteCalls)
     }
 
-    /**
-     * **The exit table, made structural.**
-     *
-     * The `when` below is exhaustive over [EnrollmentUiState] with no `else`, so adding a state
-     * without deciding its cleanup is a **compile error**, not a silently untested path. That is the
-     * point: an exit added later without cleanup is exactly the defect this ceremony cannot afford.
-     */
+    /** Exhaustive with no `else`: a new state without a cleanup row is a compile error. */
     private enum class Cleanup {
         DESTROYS_THE_KEYPAIR,
         KEEPS_THE_KEYPAIR,
@@ -349,13 +297,7 @@ class EnrollmentCeremonyExitTest {
         }
     }
 
-    /**
-     * Enrolling is the moment this device stops depending on the server being able to read the
-     * account's mail. Anything cached before it that the server decrypted is plaintext the new threat
-     * model does not account for: the server can no longer produce it, and nothing else on the device
-     * removes it until the next full snapshot up to 24 hours later — the delta path deliberately
-     * preserves bodies, so deltas never clear it.
-     */
+    /** Nothing else drops server-decrypted bodies; the delta sync deliberately preserves them. */
     @Test
     fun successDropsThePlaintextTheServerHadDecrypted() = runBlocking {
         val ports = portsWithEnvelope()
@@ -366,10 +308,6 @@ class EnrollmentCeremonyExitTest {
         assertEquals("the old server-decrypted plaintext must not outlive enrollment", 1, ports.mailCache.clearCalls)
     }
 
-    /**
-     * Cleared before [EnrollmentTransport.reportEnrolled], which is a network round trip that can run
-     * to a full timeout or fail outright. A local privacy action must not be queued behind it.
-     */
     @Test
     fun thePlaintextIsDroppedEvenWhenTheServerCannotBeTold() = runBlocking {
         val probe = FakeEnrollmentKeys()
@@ -383,8 +321,6 @@ class EnrollmentCeremonyExitTest {
         assertEquals(1, ports.mailCache.clearCalls)
     }
 
-    /** A ceremony that never sealed has not changed where the account's key lives, so there is no
-     *  reason to drop mail the user can still read. */
     @Test
     fun aFailedCeremonyLeavesTheCacheAlone() = runBlocking {
         val ports = portsWithEnvelope(sealFor = "some-other-device")
@@ -398,17 +334,6 @@ class EnrollmentCeremonyExitTest {
         assertEquals(0, ports.mailCache.clearCalls)
     }
 
-    /**
-     * [FailureReason.NO_DEVICE_KEY] has four production call sites and, until these, no test at any
-     * of them — it was unreachable because [FakePorts] hardcoded a minting keystore with no way to
-     * make an accessor fail. An untested failure branch on the path that mints and publishes a key is
-     * the branch most likely to be silently rewired, so each site gets its own case.
-     *
-     * Every one of them must also destroy the keypair. `keyPairLive` is set *before* the mint is
-     * checked precisely because a failed `newKeyPair()` can still leave a half-generated key behind,
-     * and a key that outlives a ceremony is a standing unauthenticated path to every envelope the
-     * relay retains.
-     */
     @Test
     fun aKeystoreThatCannotMintFailsWithNoDeviceKey() = runBlocking {
         val ports = FakePorts(minting = false)
@@ -420,7 +345,6 @@ class EnrollmentCeremonyExitTest {
         assertEquals("nothing may be published", 0, ports.transport.publishedKeys.size)
     }
 
-    /** The key minted, but its public half cannot be read back — so there is nothing to publish. */
     @Test
     fun aKeyWhosePublicHalfCannotBeReadFailsWithNoDeviceKey() = runBlocking {
         val ports = FakePorts()
@@ -433,11 +357,7 @@ class EnrollmentCeremonyExitTest {
         assertEquals("nothing may be published", 0, ports.transport.publishedKeys.size)
     }
 
-    /**
-     * The key is destroyed under a running window — `SecurityWipe` and Hostile Location Protection
-     * both do exactly this to a live screen. The next bucket boundary must fail the ceremony rather
-     * than derive a code from a key that no longer exists.
-     */
+    /** `SecurityWipe` and Hostile Location Protection both destroy the key under a live window. */
     @Test
     fun aKeyDestroyedMidWindowFailsWithNoDeviceKey() = runBlocking {
         val ports = FakePorts()
@@ -468,10 +388,6 @@ class EnrollmentCeremonyExitTest {
         )
     }
 
-    /**
-     * The key survives long enough to receive an envelope and then goes. The open needs the keystore
-     * point as the HKDF salt, so this must fail rather than derive a key from a substitute.
-     */
     @Test
     fun aKeyDestroyedBeforeTheOpenFailsWithNoDeviceKey() = runBlocking {
         val ports = portsWithEnvelope()

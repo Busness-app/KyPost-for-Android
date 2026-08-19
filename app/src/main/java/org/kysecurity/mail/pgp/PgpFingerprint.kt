@@ -5,38 +5,16 @@ import org.bouncycastle.openpgp.PGPUtil
 import org.bouncycastle.openpgp.jcajce.JcaPGPObjectFactory
 import java.io.ByteArrayInputStream
 
-/**
- * Computes an OpenPGP key's fingerprint from the key's own bytes, rather than trusting whatever
- * fingerprint string a server response claims alongside it. A compromised/malicious server (or a
- * MITM on an http fallback) could otherwise send an armored key paired with an unrelated
- * fingerprint string, and the app would have no way to notice the two don't match — the user's
- * out-of-band "does this fingerprint match?" check would be verifying a label with no
- * cryptographic relationship to what actually gets saved. Parsing the key locally and hashing what
- * it actually contains closes that gap.
- */
+/** Hashes the key's own bytes; a server-supplied fingerprint string has no tie to the key. */
 object PgpFingerprint {
 
-    /** Returns the primary key's fingerprint as space-grouped uppercase hex (comparable to what
-     *  `gpg --fingerprint` or any other PGP client shows), or null if [armoredPublicKey] isn't a
-     *  parseable OpenPGP public key. Callers must treat null as "reject this key" — never fall back
-     *  to displaying a server-supplied fingerprint string instead. */
+    /** Space-grouped uppercase hex, or null — callers must treat null as "reject this key". */
     fun compute(armoredPublicKey: String): String? = runCatching {
         val decoder = PGPUtil.getDecoderStream(ByteArrayInputStream(armoredPublicKey.toByteArray(Charsets.UTF_8)))
         val factory = JcaPGPObjectFactory(decoder)
         val ring = factory.nextObject() as? PGPPublicKeyRing ?: return@runCatching null
 
-        // Verify the whole artifact, not just its first object. Callers persist the ENTIRE armored
-        // blob, so anything this function does not look at is key material the user's out-of-band
-        // fingerprint check never covered:
-        //
-        //  - BouncyCastle's PGPPublicKeyRing stream constructor stops its subkey loop at a second
-        //    PUBLIC_KEY packet, so an appended second key ring becomes an object nextObject() never
-        //    returns — invisible here, still saved and uploaded.
-        //  - That same constructor stores subkeys without ever verifying their binding signatures,
-        //    so a subkey bound by a foreign signature, or by none at all, survives intact.
-        //
-        // Both are rejected rather than tolerated: a blob whose fingerprint does not describe all
-        // of it cannot be meaningfully confirmed by a human comparing one string.
+        // Reject anything past the first object: an appended second key ring is otherwise invisible.
         if (factory.nextObject() != null) return@runCatching null
 
         val primary = ring.publicKey
@@ -52,25 +30,7 @@ object PgpFingerprint {
         bytes.joinToString("") { "%02X".format(it) }.chunked(4).joinToString(" ")
 }
 
-/**
- * Whether [subkey] carries a subkey-binding signature that verifies under [primary].
- *
- * File-level and `internal` rather than private to [PgpFingerprint], because two call sites need
- * it and only one had it. [org.kysecurity.mail.pgp.signerKeyIdsOf] was accepting every subkey in a
- * ring without asking this question at all — see its KDoc for what that let through.
- *
- * The **Bc** verifier, not the Jca one, matching [PgpDecryptor]'s identical `signature.init`.
- *
- * The Jca operator converts the primary key to a JCE `PublicKey` first, which needs an EdDSA
- * `KeyFactory` from the platform JCA. Android ships no such provider — its "BC" is stripped and
- * the only Ed25519 signer is `AndroidKeyStoreBCWorkaround`, for Keystore-resident keys — so
- * every ed25519 key threw "exception constructing public key" here, the subkey read as unbound,
- * and the whole key was rejected as unparseable. That surfaced as "couldn't check whether your
- * account uses encrypted mail" on the Security page, with no way to enroll. The JVM tests
- * passed throughout: desktop JDKs *do* have EdDSA, and every fixture was a bare primary key
- * with no subkey, so this function never ran. Bc uses BouncyCastle's own lightweight math and
- * asks the platform for nothing.
- */
+/** Bc verifier, not Jca: Android has no EdDSA KeyFactory and every ed25519 subkey read unbound. */
 internal fun hasValidBindingSignature(
     primary: org.bouncycastle.openpgp.PGPPublicKey,
     subkey: org.bouncycastle.openpgp.PGPPublicKey,

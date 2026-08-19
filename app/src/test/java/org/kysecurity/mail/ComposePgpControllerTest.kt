@@ -28,8 +28,6 @@ class ComposePgpControllerTest {
     @Before
     fun clearCache() = ComposePgpController.resetSessionCache()
 
-    // ---- splitAddresses ----
-
     @Test
     fun splitAddresses_flattensTheThreeCommaJoinedFields() {
         assertEquals(
@@ -38,8 +36,6 @@ class ComposePgpControllerTest {
         )
     }
 
-    /** The same address in To and CC is one recipient to check, and duplicate names in the
-     *  confirmation dialog would read as two different people. */
     @Test
     fun splitAddresses_deduplicatesCaseInsensitively() {
         assertEquals(
@@ -53,8 +49,6 @@ class ComposePgpControllerTest {
         assertEquals(listOf("a@example.com"), splitAddresses(" a@example.com , , ", "", ""))
     }
 
-    // ---- composeState ----
-
     @Test
     fun composeState_mapsBootstrapThroughPgpComposeStateOf() = runBlocking {
         val controller = controllerWith(bootstrapBody = """{"hasIdentity":true,"protection":"server"}""")
@@ -65,7 +59,6 @@ class ComposePgpControllerTest {
         )
     }
 
-    /** Not paired is not "no identity": there is no account to ask about, so nothing is offered. */
     @Test
     fun composeState_withoutPairing_hidesEverything() = runBlocking {
         val controller = ComposePgpController(
@@ -80,12 +73,6 @@ class ComposePgpControllerTest {
         )
     }
 
-    /** The cache is `companion object`-scoped (process-wide), not per-instance — a controller
-     *  created fresh for a second compose screen still must not re-hit the network. Calling
-     *  composeState() twice on the *same* instance would pass even against a per-instance cache,
-     *  so this exercises two separate instances sharing one call factory to actually pin the
-     *  process-wide scoping the design (and [PushRepository.purgeAccountScopedData]'s explicit
-     *  invalidation of it on unpair) depends on. */
     @Test
     fun composeState_cachesASuccessForTheProcess() = runBlocking {
         var calls = 0
@@ -110,8 +97,6 @@ class ComposePgpControllerTest {
         assertEquals(1, calls)
     }
 
-    /** A failure must not be cached: one flaky request would otherwise disable encryption for the
-     *  rest of the session. */
     @Test
     fun composeState_doesNotCacheAFailure() = runBlocking {
         var calls = 0
@@ -131,14 +116,6 @@ class ComposePgpControllerTest {
         assertEquals(2, calls)
     }
 
-    /**
-     * Custody mode is fixed at key creation and safe to cache; **enrollment is not**.
-     *
-     * The user can enrol part-way through a session, and the OS can invalidate the Keystore key
-     * underneath us. Caching the composed state would freeze whichever answer came first — leaving
-     * a freshly enrolled device stuck on the webmail handoff for the rest of the process, or
-     * offering a Send whose key no longer opens.
-     */
     @Test
     fun composeState_cachesBootstrapButReprobesEnrollment() = runBlocking {
         var calls = 0
@@ -166,7 +143,6 @@ class ComposePgpControllerTest {
         assertEquals(1, calls, "bootstrap itself is still cached")
     }
 
-    /** The address every delivery's From must carry, read off the cached bootstrap. */
     @Test
     fun accountAddress_comesFromSuggestedUserIds() = runBlocking {
         val controller = controllerWith(
@@ -189,8 +165,6 @@ class ComposePgpControllerTest {
         assertEquals("", controller.accountAddress())
     }
 
-    // ---- keylessRecipients ----
-
     @Test
     fun keylessRecipients_returnsTheAddressesWithNoKeyOnFile() = runBlocking {
         val body = """{"results":[
@@ -205,8 +179,7 @@ class ComposePgpControllerTest {
         )
     }
 
-    /** A failed preflight yields no warning rather than a false one. The 409 is the real gate, so
-     *  a failed lookup can never be the reason the fallback gets used. */
+    /** The server's 409 is the real gate, so a failed lookup must never force the fallback. */
     @Test
     fun keylessRecipients_isEmptyOnFailure() = runBlocking {
         val controller = controllerWith(recipientStatus = 500, recipientBody = "boom")

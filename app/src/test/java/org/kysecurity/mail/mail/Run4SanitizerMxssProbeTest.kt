@@ -3,20 +3,6 @@ package org.kysecurity.mail.mail
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * mXSS battery for [QuotedHtmlSanitizer].
- *
- * The composer is a JavaScript-enabled WebView with a bound `@JavascriptInterface` whose
- * `exportHtml` feeds draft save and send, and its `setHtml` assigns straight to `innerHTML`. This
- * sanitizer is the only control between a sender's HTML and that assignment, so the question that
- * matters is not "does jsoup strip handlers" but "does jsoup's *serialized output* re-parse into
- * something executable in Blink" — the classic mutation-XSS shape.
- *
- * Two properties are asserted per payload: nothing executable survives, and the output is stable
- * under re-sanitization. Instability is the mXSS signature: a sanitizer whose output differs from
- * its input's fixed point disagrees with itself about the parse, which is exactly the disagreement
- * an attacker exploits against a second parser.
- */
 class Run4SanitizerMxssProbeTest {
 
     private val payloads = listOf(
@@ -75,14 +61,7 @@ class Run4SanitizerMxssProbeTest {
         "style", "link", "meta", "base", "noscript", "template", "xmp", "plaintext", "textarea",
     )
 
-    /**
-     * Re-parses the sanitized output the way a browser would and reports anything executable.
-     *
-     * Structural, not a regex over the serialized string. A regex cannot tell `onerror=` inside a
-     * quoted `title` attribute (inert) or inside escaped text (inert) from a real event-handler
-     * attribute, and both shapes occur throughout this battery — so a string-level detector reports
-     * false positives on exactly the payloads it exists to judge.
-     */
+    /** Re-parses the output as a browser would: a regex cannot tell inert markup from live. */
     private fun executableConstructsIn(sanitized: String): List<String> {
         val doc = org.jsoup.Jsoup.parseBodyFragment(sanitized)
         val problems = mutableListOf<String>()
@@ -123,13 +102,6 @@ class Run4SanitizerMxssProbeTest {
         assertTrue("sanitizer output is not a fixed point (mXSS signature): $unstable", unstable.isEmpty())
     }
 
-    /**
-     * Already-escaped markup must survive as escaped markup, not be unwrapped into live tags.
-     *
-     * This shape also exercises the catch-all fallback in [QuotedHtmlSanitizer], which unescapes
-     * entities and re-escapes them; getting the order wrong there would turn quoted text back into
-     * parsed elements on the way into a JavaScript-enabled WebView.
-     */
     @Test
     fun escapedMarkupStaysEscaped() {
         listOf(

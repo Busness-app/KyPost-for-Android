@@ -13,9 +13,7 @@ class MailGraph(context: Context) {
     private val relaySource: MailSource = RelayMailSource(
         pairingProvider = pairingProvider,
         cursorProvider = mailCursorStore,
-        // The one shared pinned-or-refuse factory, the same one the contacts graph uses. Building
-        // a private PinnedCallFactoryProvider here and null-coalescing it against an unpinned
-        // client is what let the mail endpoints downgrade silently.
+        // The one shared pinned-or-refuse factory; a private provider here let mail downgrade.
         callFactory = pinnedPairingCallFactory(appContext),
     )
 
@@ -30,7 +28,5 @@ object MailRuntime {
 
     fun graph(context: Context): MailGraph = holder.get(context)
 
-    /** See [org.kysecurity.mail.SingletonGraph.invalidate] — used by
-     *  [org.kysecurity.mail.security.AppRestart]. */
     fun invalidate() = holder.invalidate()
 }

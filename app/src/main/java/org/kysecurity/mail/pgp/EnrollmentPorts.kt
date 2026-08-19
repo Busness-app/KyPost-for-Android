@@ -1,10 +1,6 @@
 package org.kysecurity.mail.pgp
 
-/**
- * What the account's PGP identity is, as far as this device can tell.
- *
- * [CouldNotCheck] is a distinct case from [NoIdentity] on purpose — see [UnavailableReason].
- */
+/** [CouldNotCheck] is deliberately distinct from [NoIdentity] — see [UnavailableReason]. */
 internal sealed class IdentityCheck {
     /** The only case enrollment may proceed from. [fingerprint] is what the envelope's AAD binds;
      *  it is hashed from the key bytes by [ownFingerprintFromBootstrap], never read off a server
@@ -20,13 +16,7 @@ internal interface IdentitySource {
     suspend fun check(): IdentityCheck
 }
 
-/**
- * The three device-authenticated enrollment calls plus the durable fallback, with the pairing
- * resolved inside rather than threaded through the state machine.
- *
- * The real implementation **must** be built on `pinnedPairingCallFactory`. Every call here carries
- * the device bearer credential.
- */
+/** The enrollment calls. The real implementation **must** use `pinnedPairingCallFactory`. */
 internal interface EnrollmentTransport {
     /** This device's paired id — hashed into the code and bound into the envelope's AAD. Null when
      *  there is no usable pairing, which the ceremony reports as [UnavailableReason.NOT_PAIRED]. */
@@ -43,13 +33,7 @@ internal interface EnrollmentTransport {
     fun enqueueDurableReport()
 }
 
-/**
- * The device's enrollment agreement keypair.
- *
- * A port rather than a direct call into [EnrollmentKeyStore] because "`deleteKeyPair()` on every
- * exit" is the property this design most needs a test for, and a Keystore object cannot be observed
- * from a JVM test.
- */
+/** A port rather than a direct [EnrollmentKeyStore] call so "delete on every exit" is testable. */
 internal interface EnrollmentKeys {
     /** Mints a fresh keypair for one ceremony, destroying any previous one. */
     fun newKeyPair(): Boolean
@@ -80,43 +64,18 @@ internal sealed class SealOutcome {
     data class Failed(val message: String) : SealOutcome()
 }
 
-/**
- * The re-seal, requested through an interface because the orchestrator cannot call `BiometricPrompt`
- * — it is Activity-bound. This is the seam that keeps the state machine testable: "biometric
- * cancelled" is a JVM test with a fake rather than an instrumented one.
- */
+/** The re-seal, behind an interface because `BiometricPrompt` is Activity-bound. */
 internal interface VaultSealer {
     suspend fun seal(plaintext: ByteArray): SealOutcome
 }
 
-/**
- * The locally cached plaintext of mail the server decrypted.
- *
- * A port rather than a direct DAO call because [EnrollmentCeremony] has no Android imports and must
- * keep none — see its KDoc. This is the seam that makes "enrolling clears the old plaintext" a JVM
- * test instead of an instrumented one.
- *
- * **Why the ceremony owns this.** Enrolling is the moment this device stops depending on the server
- * being able to read the account's mail. Everything cached before it that the server decrypted is
- * plaintext the new threat model does not account for, and nothing else would remove it until the
- * next full snapshot — up to 24 hours later, because the delta path deliberately preserves bodies
- * (`reconcileFetchResult` merges "updated" entries over the existing body).
- */
+/** The locally cached plaintext of mail the server decrypted; enrolling is what drops it. */
 internal interface DecryptedMailCache {
     /** @return the number of cached messages whose plaintext was dropped. */
     suspend fun clearServerDecryptedBodies(): Int
 }
 
-/**
- * Time, and waiting.
- *
- * Two clocks because the two uses need different guarantees. [epochSeconds] is wall clock: the
- * 120-second bucket must agree with the browser's, so it has to be the same timebase. It is
- * therefore subject to the user changing the date, which costs a code mismatch and nothing worse.
- * [elapsedRealtimeMs] is monotonic, for the poll deadline, following the `elapsedRealtime` precedent
- * in `AppLockManager` and `AppLockStore` — a wall-clock deadline can be skipped past or never
- * reached at all.
- */
+/** Wall clock for the bucket (it must match the browser's), monotonic for the poll deadline. */
 internal interface EnrollmentClock {
     fun epochSeconds(): Long
     fun elapsedRealtimeMs(): Long

@@ -45,26 +45,9 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/**
- * The context every security-critical background step in this screen runs on.
- */
 private val SecurityWork = Dispatchers.Default + NonCancellable
 
-/**
- * Destroys this device's enrollment and enqueues the correction, for the Hostile Location
- * Protection toggle.
- *
- * Top-level rather than a private method so the instrumented test drives the same code the toggle
- * does. A test that re-implemented the sequence would stay green after the toggle stopped calling
- * it — which is the failure mode this whole path exists to prevent.
- *
- * Unlike [SecurityWipe], this leaves the pairing alone: protection keeps push and sync working, and
- * only the ability to open the envelope goes away.
- *
- * A teardown that could not fully complete is logged rather than surfaced. The enqueued report is
- * the honest half — it probes live state, so if the envelope did survive, the server is told this
- * device is still enrolled rather than being told a comforting lie.
- */
+/** Top-level so the instrumented test drives the same code the toggle does. */
 internal fun tearDownEnrollmentForHostileLocation(context: android.content.Context) {
     val leftBehind = org.kysecurity.mail.pgp.EnrollmentTeardown.destroy(context)
     if (leftBehind.isNotEmpty()) {
@@ -76,10 +59,7 @@ internal fun tearDownEnrollmentForHostileLocation(context: android.content.Conte
     org.kysecurity.mail.pgp.EnrollmentStateWorker.enqueue(context)
 }
 
-/**
- * "Security" settings: Require Unlock to Open, Hostile Location Protection, and the credential
- * PIN-gate. Toggles 2 and 3 are disabled unless toggle 1 is on; enforced here, not just documented.
- */
+/** Toggles 2 and 3 are disabled unless toggle 1 is on; enforced here, not just documented. */
 class SecuritySettingsActivity : LockedActivity() {
 
     private lateinit var appLockStore: AppLockStore
@@ -103,14 +83,7 @@ class SecuritySettingsActivity : LockedActivity() {
     private var suppressCredentialGateListener = false
     private var suppressHostileLocationListener = false
 
-    /**
-     * Every persisted value this screen renders, read in one pass.
-     *
-     * Read once, off the main thread, because seven of these come out of a Keystore-backed
-     * `EncryptedSharedPreferences` — the store whose own KDoc says "[AppLockManager] keeps every
-     * caller off the main thread so the durability can be afforded", while this screen read it
-     * seven times from `onCreate` and wrote it with `commit()` from a click listener.
-     */
+    /** Read once, off the main thread: most of these come from the Keystore-backed store. */
     private data class SettingsSnapshot(
         val lockEnabled: Boolean,
         val biometricEnabled: Boolean,
@@ -152,8 +125,6 @@ class SecuritySettingsActivity : LockedActivity() {
         val scrollView = ScrollView(this)
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            // 16, not the previous 20: the cards carry their own 16dp inset now, and 20 + 16 put
-            // content 36dp off the screen edge on a page that is mostly text.
             setPadding(dpToPx(16), dpToPx(12), dpToPx(16), dpToPx(20))
         }
         applyTopInsetWithHeader(this, scrollView)
@@ -179,19 +150,12 @@ class SecuritySettingsActivity : LockedActivity() {
         }
         lockCard.addViewSpaced(biometricSwitch, bottomDp = 10)
 
-        // How long backgrounding is tolerated before the lock re-engages. This existed only as a
-        // hardcoded "immediately", which meant the attachment picker, the QR scanner and the
-        // webmail handoff each destroyed the screen that launched them — see KyPostApp.onStop.
         val lockGraceSettings = SecurityRuntime.graph(this).appLockSettings
         lockGraceButton = Button(this).apply {
             text = lockGraceButtonLabel(snapshot.graceMillis)
             isEnabled = snapshot.lockEnabled
             setOnClickListener { promptLockGrace(lockGraceSettings) }
         }
-        // The two secondary actions share a row. They are peers — both open a picker, neither is the
-        // thing you came here to do — and stacking them cost a full button height on a page that does
-        // not fit a screen. 0dp width plus weight means "Lock after" simply takes the whole row when
-        // "Change PIN" is GONE, which is its state whenever the lock is off.
         val secondaryActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         secondaryActions.addView(
             changePinButton,
@@ -205,8 +169,6 @@ class SecuritySettingsActivity : LockedActivity() {
         lockCard.addViewSpaced(secondaryActions, bottomDp = 4)
         lockCard.addViewSpaced(caption(getString(R.string.security_lock_grace_intro)), bottomDp = 8)
 
-        // The wipe threshold is a user choice and has to be visible: it decides whether repeated
-        // wrong PINs destroy mail and contacts the app deliberately keeps no backup of.
         wipeThresholdButton = Button(this).apply {
             text = wipeThresholdButtonLabel(snapshot.wipeAfterAttempts)
             isEnabled = snapshot.lockEnabled
@@ -233,11 +195,7 @@ class SecuritySettingsActivity : LockedActivity() {
         locationCard.addViewSpaced(hostileLocationIntro, bottomDp = 0)
         hostileLocationSwitch.setOnCheckedChangeListener { _, checked ->
             if (suppressHostileLocationListener) return@setOnCheckedChangeListener
-            // Confirmed, because this is the most destructive control on the screen and was the
-            // only one without a prompt: it deletes every cached message, purges the contacts this
-            // app wrote into the OS provider, removes the sync account and relaunches — on one
-            // stray tap. Unpairing and pairing, both strictly less destructive, have confirmed for
-            // some time.
+            // Confirmed: the most destructive control on the screen, and it relaunches the app.
             AlertDialog.Builder(this)
                 .setTitle(
                     if (checked) R.string.security_hostile_location_confirm_enable_title
@@ -267,9 +225,7 @@ class SecuritySettingsActivity : LockedActivity() {
             caption(getString(R.string.security_credential_gate_intro)),
             bottomDp = 10,
         )
-        // Always visible regardless of credentialGateSwitch's state: the push-relay exposure this
-        // describes exists on every push delivery, on or off — this toggle only ever controlled
-        // whether content is withheld while locked, not whether the relay sees it.
+        // Always visible: the relay exposure exists whether or not this toggle is on.
         notificationsCard.addViewSpaced(
             TextView(this).apply {
                 text = getString(R.string.security_credential_gate_leak_warning)
@@ -288,16 +244,12 @@ class SecuritySettingsActivity : LockedActivity() {
             if (suppressLockToggleListener) return@setOnCheckedChangeListener
             onLockToggle(checked)
         }
-        // commit()-backed write into the Keystore-backed store — an fsync plus AES-GCM, which is
-        // not something a click listener may do on the main thread. Every other write on this
-        // screen already goes through SecurityWork; this one had been missed.
+        // commit()-backed Keystore write; a click listener may not do that on the main thread.
         biometricSwitch.setOnCheckedChangeListener { _, checked ->
             lifecycleScope.launch {
                 withContext(SecurityWork) {
                     appLockStore.setBiometricEnabled(checked)
-                    // Switching it off destroys the sealed keys, rather than leaving a
-                    // biometric-openable copy of the credential behind a disabled setting. The next
-                    // PIN unlock re-seals if it is switched back on.
+                    // Switching it off destroys the sealed keys, not just the setting.
                     if (!checked) {
                         SecurityRuntime.graph(this@SecuritySettingsActivity).biometricUnlockVault.destroy()
                     }
@@ -305,13 +257,7 @@ class SecuritySettingsActivity : LockedActivity() {
             }
         }
 
-        // Encrypted mail. Built hidden and filled in asynchronously: deciding the row needs a
-        // Keystore probe and (usually) one authenticated request, neither of which may run on the
-        // main thread or block the rest of this screen from appearing.
-        //
-        // The eyebrow and the card are hidden together. A titled empty card on a screen that is
-        // otherwise fully populated reads as something failing to load, which is exactly the wrong
-        // impression for the one section whose absence is normal (unpaired devices never get it).
+        // Built hidden and filled asynchronously: the row needs Keystore and network work.
         encryptionSectionLabel = TextView(this).apply {
             text = getString(R.string.security_encryption_section)
             applySectionEyebrowLabel(this@SecuritySettingsActivity, this)
@@ -334,38 +280,20 @@ class SecuritySettingsActivity : LockedActivity() {
         setContentView(scrollView)
         applyThemeToActivity(this)
 
-        // Everything below runs AFTER applyThemeToActivity, which walks the tree and overwrites
-        // both of the things this screen's layout depends on. ComposeActivity solved the same
-        // problem the same way; this is that precedent, not a new trick.
-        //
-        // 1. Every ViewGroup, root included, is repainted flat `panel`. Cards left at `panel` on a
-        //    `panel` background are invisible, so the scroll surface is repainted `bg` and the cards
-        //    keep the rounded `panel` fill — the contrast IS the card.
+        // Runs AFTER applyThemeToActivity, which repaints every ViewGroup flat `panel`.
         val bg = Color.parseColor(getStoredThemePalette(this).bg)
         scrollView.setBackgroundColor(bg)
         container.setBackgroundColor(bg)
         panelCards.forEach { applyPanelBackground(this, it) }
 
-        // 2. Every Button is repainted with the accent-filled primary background. These two are
-        //    secondary actions, and three solid accent buttons stacked down a settings page say
-        //    everything is equally the thing to do next. Ghost is the style guide's answer.
+        // Ghost, not the accent-filled primary: these two are secondary actions.
         applyGhostButtonTheme(this, changePinButton)
         applyGhostButtonTheme(this, lockGraceButton)
         applyGhostButtonTheme(this, wipeThresholdButton)
         refreshEncryptionRow()
     }
 
-    /**
-     * A section: an eyebrow label, then a panel card holding the controls.
-     *
-     * The page was a single flat column of switches, captions and accent buttons — every element at
-     * the same visual weight, so nothing said which controls belong together or which one the others
-     * depend on. Cards are what the rest of this app already uses for exactly that (Compose's
-     * details/message cards, the inbox's keyword bar), and STYLE_GUIDE.md §3 fixes the radius at
-     * 14dp across all four KyPost clients.
-     *
-     * The eyebrow sits OUTSIDE the card, matching web's `.sidebar-section-label` placement.
-     */
+    /** An eyebrow label outside a panel card; radius fixed at 14dp by STYLE_GUIDE.md §3. */
     private fun LinearLayout.addSection(titleRes: Int, bottomDp: Int = 10): LinearLayout {
         addViewSpaced(
             TextView(this@SecuritySettingsActivity).apply {
@@ -385,20 +313,12 @@ class SecuritySettingsActivity : LockedActivity() {
         return card
     }
 
-    /** A control's explanatory line: one step down from the switch it belongs to, never the same
-     *  weight. 13sp matches the caption size the rest of this screen already used. */
     private fun caption(text: CharSequence): TextView = TextView(this).apply {
         this.text = text
         textSize = 13f
     }
 
-    /**
-     * Recomputes the encrypted-mail row.
-     *
-     * The identity request is skipped whenever a local fact already decides the row. That is not
-     * only an optimisation: under Hostile Location Protection the user has just declared this
-     * network hostile, and this screen must not answer that by making a request over it.
-     */
+    /** Skips the identity request when a local fact decides the row; the network may be hostile. */
     private fun refreshEncryptionRow() {
         lifecycleScope.launch {
             val activity = this@SecuritySettingsActivity
@@ -414,9 +334,7 @@ class SecuritySettingsActivity : LockedActivity() {
             val status = withContext(SecurityWork) {
                 probeEnrollment(EnrollmentVault(activity))
             }
-            // SecurityWork, like the reads above: check() calls pairingForAuthenticatedCall()
-            // before its own withContext(Dispatchers.IO), and that pairing read is several
-            // EncryptedSharedPreferences decrypts plus a CredentialCipher.unwrap AES operation —
+            // SecurityWork, like the reads above: this pairing read is several decrypts plus AES.
             val statusDecides = status == EnrollmentStatus.KEY_INVALIDATED ||
                 status == EnrollmentStatus.ENROLLED
             val identity = if (paired && !hostileLocation && lockScreen && !statusDecides) {
@@ -526,50 +444,21 @@ class SecuritySettingsActivity : LockedActivity() {
         }
     }
 
-    /**
-     * Confirmed, because it is destructive and not obviously reversible from the user's side: the
-     * envelope goes, and getting it back means another two-device ceremony.
-     */
+    /** Confirmed: destructive, and only reversible by another two-device ceremony. */
     private fun confirmRemoveEnrollment() {
         AlertDialog.Builder(this)
             .setTitle(R.string.security_encryption_remove_title)
             .setMessage(R.string.security_encryption_remove_body)
             .setPositiveButton(R.string.security_encryption_remove_confirm) { _, _ ->
                 lifecycleScope.launch {
-                    // SecurityWork, like every other destructive step on this screen: this is a
-                    // Keystore deletion plus a commit()-backed prefs clear.
-                    //
-                    // EnrollmentSession.clear() lives INSIDE this block rather than as a statement
-                    // after it, for the exact reason [runSecurityChangeThenReset]'s KDoc calls out
-                    // (SecuritySessionReset.kt): NonCancellable protects the block's body, but a
-                    // statement placed after `withContext` returns resumes through an ordinary
-                    // cancellable continuation. If the Activity is destroyed while destroyAndReport
-                    // is in flight, that resume throws CancellationException before ever reaching a
-                    // clear() sitting out here — the teardown completes, the clear never runs, and
-                    // the account's plaintext PGP private key survives on the heap in a process that
-                    // finishing the Activity does not kill.
-                    //
-                    // try/finally, not a trailing statement, because destroyAndReport itself can
-                    // throw: EnrollmentStateWorker.enqueue (reached via destroyAndReport) calls
-                    // WorkManager.enqueueUniqueWork with no runCatching, unlike the two steps ahead
-                    // of it in the chain. A throw there would otherwise skip the clear the same way
-                    // a cancellation would — finally runs it (and lets leftBehind's exception
-                    // propagate) unconditionally.
+                    // clear() must be inside the block; code after withContext resumes cancellably.
                     val leftBehind = withContext(SecurityWork) {
                         try {
                             EnrollmentTeardown.destroyAndReport(
                                 this@SecuritySettingsActivity,
                             )
                         } finally {
-                            // The vault and the server-side record are gone, but this process may
-                            // still be holding the account's plaintext private key from an earlier
-                            // read (EnrollmentSession has exactly one production writer,
-                            // VaultOpenerAndroid, and nothing before this cleared it on the unenroll
-                            // path). Cleared directly rather than via ProcessState.resetAll():
-                            // unenroll is not an account or session boundary — the same account
-                            // stays paired — so it must not also discard an in-progress compose
-                            // draft or ephemeral attachment plaintext the way a wipe, relaunch or
-                            // unpair legitimately does.
+                            // Not ProcessState.resetAll(): unenroll is not a session boundary.
                             EnrollmentSession.clear()
                         }
                     }
@@ -603,12 +492,7 @@ class SecuritySettingsActivity : LockedActivity() {
 
     private fun applyHostileLocationProtection(settings: HostileLocationSettings, enable: Boolean) {
         lifecycleScope.launch {
-            // The relaunch is part of the non-cancellable unit, not a statement after it. It used
-            // to sit outside, which made it an ordinary cancellable continuation: a Back press or a
-            // rotation during the multi-second teardown killed lifecycleScope, the flag still
-            // committed under NonCancellable, and the process reset was silently skipped — leaving
-            // the previous session's decrypted attachments and draft resident under a switch
-            // reading ON. See [runSecurityChangeThenReset].
+            // The relaunch is inside the non-cancellable unit; outside it, cancellation skips it.
             runSecurityChangeThenReset(
                 workContext = SecurityWork,
                 reset = {
@@ -616,20 +500,12 @@ class SecuritySettingsActivity : LockedActivity() {
                 },
                 change = {
                 if (enable) disableAndPurgeDeviceContactSync()
-                // Both directions need a fresh on-disk kypost_mail.db afterward: enabling must
-                // not leave the pre-toggle disk cache behind, and this is a harmless no-op on
-                // the disable path.
+                // Both directions need a fresh on-disk kypost_mail.db afterward.
                 SecurityWipe.closeAndDeleteDatabase(this@SecuritySettingsActivity)
                 if (enable) {
-                    // "Nothing from before the toggle survives" has to include the plaintext
-                    // metadata stores, not just the database — push_state alone held sender and
-                    // subject for the last 30 messages.
+                    // Also the metadata stores: push_state held 30 senders and subjects.
                     SecurityWipe.deletePlaintextMetadataStores(this@SecuritySettingsActivity)
-                    // ...and the attachments the user tapped while protection was off, which are
-                    // written to shared Downloads with no prompt and sit OUTSIDE the sandbox. The
-                    // confirmation the user just read says "No mail, contacts, or attachments are
-                    // cached on this device... Turning this on immediately wipes what's cached now".
-                    // The full wipe learned to clear these; this sibling path had not.
+                    // ...and attachments in shared Downloads, which sit OUTSIDE the sandbox.
                     runCatching { DownloadedAttachmentLedger.deleteAll(this@SecuritySettingsActivity) }
                         .onFailure {
                             android.util.Log.e(
@@ -638,10 +514,7 @@ class SecuritySettingsActivity : LockedActivity() {
                                 it,
                             )
                         }
-                    // Before the flag flips, so every interruption point is safe: a process death
-                    // after this leaves the flag off with the envelope already gone — honestly
-                    // un-enrolled — rather than protection on with a readable envelope, which is
-                    // the state this mode exists to prevent.
+                    // Before the flag flips: an interruption must not leave a readable envelope.
                     tearDownEnrollmentForHostileLocation(this@SecuritySettingsActivity)
                 }
                 settings.setEnabled(enable)
@@ -671,14 +544,7 @@ class SecuritySettingsActivity : LockedActivity() {
         },
     )
 
-    /**
-     * Offers the thresholds in [LockoutPolicy.WIPE_THRESHOLD_CHOICES] plus "never".
-     *
-     * The dialog states the consequence in the message rather than leaving the user to infer it
-     * from a number: the wipe deletes local mail, the synced OS contact rows and this device's
-     * pairing, and none of that is recoverable — `allowBackup` and the device-transfer rules are
-     * both closed, deliberately.
-     */
+    /** Offers [LockoutPolicy.WIPE_THRESHOLD_CHOICES] plus "never"; the dialog states the cost. */
     private fun promptWipeThreshold() {
         val choices: List<Int?> = LockoutPolicy.WIPE_THRESHOLD_CHOICES + listOf<Int?>(null)
         val labels = choices.map { attempts ->
@@ -721,11 +587,7 @@ class SecuritySettingsActivity : LockedActivity() {
             .showSecurely()
     }
 
-    /**
-     * Turning Hostile Location Protection on has to undo any contact sync that already happened:
-     * those rows live in the OS contacts provider, which protection's in-memory database does not
-     * cover, so leaving them would keep publishing exactly what the feature promises to withhold.
-     */
+    /** The synced rows live in the OS provider, which the in-memory database does not cover. */
     private suspend fun disableAndPurgeDeviceContactSync() {
         val graph = DeviceContactsRuntime.graph(this)
         runCatching {
@@ -744,10 +606,6 @@ class SecuritySettingsActivity : LockedActivity() {
         }
     }
 
-    /**
-     * Reverts [lockSwitch] to [checked] without re-firing its listener. Used whenever we undo the
-     * user's toggle because the set-PIN or disable-lock flow was cancelled or failed.
-     */
     private fun revertLockSwitch(checked: Boolean) {
         suppressLockToggleListener = true
         lockSwitch.isChecked = checked
@@ -761,11 +619,6 @@ class SecuritySettingsActivity : LockedActivity() {
         suppressCredentialGateListener = false
     }
 
-    /**
-     * Shows a two-field "enter PIN, then confirm it" dialog — a typo in the single-entry flow this
-     * replaced would permanently lock the PIN in with no recovery except 10 deliberate wrong
-     * attempts (which wipes) or a reinstall, so every *new* PIN goes through enter+confirm.
-     */
     /** [onConfirmed] takes ownership of the PIN array and must zero it — [usePin] does that. */
     private fun promptEnterAndConfirmPin(onConfirmed: (CharArray) -> Unit, onCancelled: () -> Unit) {
         val pinField = android.widget.EditText(this).apply {
@@ -808,9 +661,7 @@ class SecuritySettingsActivity : LockedActivity() {
             }
             .setNegativeButton(android.R.string.cancel) { _, _ -> onCancelled() }
             .setCancelable(false)
-            // FLAG_SECURE lives on the Activity window and a Dialog has its own, so this PIN was
-            // screenshot- and screen-recordable while the identical field on UnlockActivity was
-            // not. See [showSecurely].
+            // FLAG_SECURE is per-window and a Dialog has its own. See [showSecurely].
             .create()
             .showSecurely()
     }
@@ -828,15 +679,11 @@ class SecuritySettingsActivity : LockedActivity() {
             onConfirmed = { pin ->
                 lifecycleScope.launch {
                     pin.usePin { entered ->
-                        // setPin runs PBKDF2 and two commit()-backed Keystore writes — see
-                        // [SecurityWork] for why NonCancellable on its own did not move any of it
-                        // off the main thread.
+                        // setPin runs PBKDF2 and two commit()-backed Keystore writes.
                         withContext(SecurityWork) {
                             appLockStore.setPin(entered)
                             appLockStore.enableLock()
-                            // Seal now rather than at the first unlock, so turning the biometric
-                            // switch on below actually offers a fingerprint the first time the app
-                            // locks.
+                            // Seal now, so the biometric switch below has something to offer.
                             SecurityRuntime.graph(this@SecuritySettingsActivity)
                                 .appLockManager.resealForBiometric(entered)
                         }
@@ -860,17 +707,13 @@ class SecuritySettingsActivity : LockedActivity() {
         promptForPin(R.string.security_change_pin_title) { entered ->
             lifecycleScope.launch {
                 val appLockManager = SecurityRuntime.graph(this@SecuritySettingsActivity).appLockManager
-                // resolvePinAttempt, not `is Success`: this check runs the same wipe threshold as
-                // the unlock screen, and collapsing Wiped into "wrong PIN" left the user in a
-                // settings screen for an app whose data had just been destroyed. See [PinGate].
+                // resolvePinAttempt, not `is Success`: this runs the same wipe threshold.
                 val ok = resolvePinAttempt(appLockManager.verifyPinThrottled(entered))
                 if (ok) {
                     promptEnterAndConfirmPin(
                         onConfirmed = { newPin ->
                             lifecycleScope.launch {
-                                // Both arrays are zeroed here: `entered` has been held across the
-                                // second dialog because changePin needs the OLD PIN to unwrap
-                                // `deviceSecret` before the verifier is overwritten.
+                                // changePin needs the OLD PIN, so `entered` is held across dialogs.
                                 val changed = entered.usePin { old ->
                                     newPin.usePin { fresh -> changePin(oldPin = old, newPin = fresh) }
                                 }
@@ -893,9 +736,6 @@ class SecuritySettingsActivity : LockedActivity() {
         }
     }
 
-    /**
-     * Rotates the PIN, re-wrapping `deviceSecret` in the same step when the credential gate is on.
-     */
     private suspend fun changePin(oldPin: CharArray, newPin: CharArray): Boolean = withContext(SecurityWork) {
         val appLockManager = SecurityRuntime.graph(this@SecuritySettingsActivity).appLockManager
         val securePairingStore = PushRuntime.graph(this@SecuritySettingsActivity).securePairingStore
@@ -909,16 +749,7 @@ class SecuritySettingsActivity : LockedActivity() {
             null
         }
 
-        // ABORT BEFORE THE DESTRUCTIVE WRITE, not after it.
-        //
-        // The re-wrap below is skipped whenever `deviceSecret` comes back null — and the fix that
-        // introduced this function only ever considered the case where there is no secret to
-        // re-wrap. There is a second way to get null: the unwrap *failed* (the Keystore wrapping
-        // key rotated, the ciphertext was damaged). Overwriting the PIN hash in that state leaves
-        // ciphertext that nothing can ever open, `needsCredentialRewrap()` reports false because it
-        // is present and current-versioned, so no repair path ever runs — and every authenticated
-        // call 401s behind a UI still reading "Paired". Refuse instead, and leave the old PIN
-        // working so the user still has a device they can use.
+        // ABORT BEFORE THE DESTRUCTIVE WRITE: a failed unwrap must not overwrite the PIN hash.
         val hasPairingToProtect = gateEnabled && salt != null && securePairingStore.needsCredentialRewrap().not() &&
             securePairingStore.pairingSnapshot(null) != null
         if (hasPairingToProtect && pairing?.deviceSecret.isNullOrBlank()) {
@@ -943,15 +774,7 @@ class SecuritySettingsActivity : LockedActivity() {
         true
     }
 
-    /**
-     * `deriveAndCacheCredentialKeys`, not `verifyPinThrottled`.
-     *
-     * Both run the identical throttled verification; only the former keeps the PIN-derived key. The
-     * key is what [disableLock] needs to unwrap `deviceSecret` before the PIN goes away — and
-     * verifying without it is precisely how this path ended up destroying the user's mailbox
-     * instead: the PIN was checked, the keys were discarded a line later, and the code then
-     * concluded the wrapped secret was unrecoverable and ran a full [SecurityWipe].
-     */
+    /** `deriveAndCacheCredentialKeys`, not `verifyPinThrottled`: [disableLock] needs the key. */
     private fun promptDisableLock() {
         promptForPin(
             titleRes = R.string.security_confirm_disable_title,
@@ -965,30 +788,12 @@ class SecuritySettingsActivity : LockedActivity() {
         }
     }
 
-    /**
-     * Runs once the disabling user has re-verified their current PIN.
-     *
-     * **Nothing here wipes anything.** This used to run a full [SecurityWipe] whenever the
-     * credential gate was on — deleting `kypost_mail.db`, the user's rows in the OS contacts
-     * provider, the sealed OpenPGP key and the pairing — behind a dialog whose entire text was
-     * "Enter your PIN to turn this off". The stated justification was that a PIN-wrapped
-     * `deviceSecret` becomes unrecoverable once the PIN is gone, which is true and irrelevant: the
-     * user has *just typed the PIN*, [promptDisableLock] now keeps the key it derives, and
-     * [unwrapCurrentPairing] rewrites the secret in the clear before the verifier is cleared. That
-     * is the same sequence [promptCredentialGatePin] has always used for the gate's own off-switch.
-     *
-     * If the unwrap cannot be done, the toggle is refused and nothing is destroyed. Losing access
-     * to a credential is the user's problem to solve by re-pairing; it is never a reason for this
-     * app to delete their mail.
-     */
+    /** Nothing here wipes anything: a failed unwrap refuses the toggle instead. */
     private suspend fun disableLock() {
         val settings = SecurityRuntime.graph(this).hostileLocationSettings
-        // Named, not a Pair: these two flags select different teardown paths below, and `.first` /
-        // `.second` at the branch points would say nothing about which is which.
         data class PriorState(val hostileLocation: Boolean, val credentialGate: Boolean)
 
-        // Both reads and the write are commit()-backed, and one of them opens the Keystore-backed
-        // store, so they belong on [SecurityWork] like every other write in this screen.
+        // commit()-backed and Keystore-opening, so they belong on [SecurityWork].
         val prior = withContext(SecurityWork) {
             PriorState(
                 hostileLocation = settings.isEnabled(),
@@ -999,15 +804,10 @@ class SecuritySettingsActivity : LockedActivity() {
         val appLockManager = SecurityRuntime.graph(this).appLockManager
 
         if (prior.credentialGate) {
-            // Unwrap BEFORE the verifier is cleared, using the key promptDisableLock just derived
-            // from the PIN the user typed. Order matters for the same reason it does in
-            // promptCredentialGatePin: reversed, an interruption leaves a wrapped secret that
-            // nothing can ever unwrap again.
+            // Unwrap BEFORE the verifier is cleared, or an interruption strands the secret.
             val unwrapped = withContext(SecurityWork) { unwrapCurrentPairing() }
             if (!unwrapped) {
-                // Refuse the toggle and leave every setting as it was. The state reaching here is
-                // "we could not read a credential", which is never a reason to delete the user's
-                // mail and contacts — which is what this branch used to do.
+                // Refuse the toggle; a credential we cannot read is no reason to delete mail.
                 withContext(SecurityWork) { settings.setEnabled(prior.hostileLocation) }
                 revertLockSwitch(true)
                 Toast.makeText(this, R.string.security_disable_lock_unwrap_failed, Toast.LENGTH_LONG).show()
@@ -1062,11 +862,7 @@ class SecuritySettingsActivity : LockedActivity() {
         promptCredentialGatePin(enabling = false)
     }
 
-    /**
-     * Both directions need the PIN re-entered here (not just "the app happens to be unlocked right
-     * now") to guarantee a fresh PIN-derived key is available to actually re-wrap or unwrap the
-     * current pairing's `deviceSecret` in the same step.
-     */
+    /** The PIN is re-entered so a fresh key is available to re-wrap or unwrap in the same step. */
     private fun promptCredentialGatePin(enabling: Boolean) {
         promptForPin(
             titleRes = R.string.security_credential_gate_pin_title,
@@ -1099,9 +895,7 @@ class SecuritySettingsActivity : LockedActivity() {
                             return@withContext
                         }
                         appLockStore.setCredentialPinGateEnabled(false)
-                        // Drop the keys we just derived. Leaving them cached meant a pairing saved
-                        // later in this same session got re-wrapped behind a gate that is now off,
-                        // so no future unlock would ever cache a key to open it again.
+                        // Drop the keys: a later save would re-wrap behind a gate that is now off.
                         appLockManager.dropCredentialKeys()
                     }
                 }
@@ -1109,13 +903,7 @@ class SecuritySettingsActivity : LockedActivity() {
         }
     }
 
-    /**
-     * The inverse of [rewrapPairingIfNeeded] — without this, turning the gate back off would leave
-     * `deviceSecret` stored wrapped with no code path that ever unwraps it.
-     *
-     * "No pairing at all" counts as success: there is no secret to strand, so the gate can be
-     * turned off freely.
-     */
+    /** The inverse of [rewrapPairingIfNeeded]; "no pairing at all" counts as success. */
     private suspend fun unwrapCurrentPairing(): Boolean {
         val store = PushRuntime.graph(this).securePairingStore
         if (!store.hasStoredPairing()) return true

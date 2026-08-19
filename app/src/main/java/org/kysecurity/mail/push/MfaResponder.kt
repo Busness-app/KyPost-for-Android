@@ -6,24 +6,8 @@ import org.kysecurity.mail.R
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/**
- * Sends the user's approve/deny decision for an MFA challenge.
- */
 object MfaResponder {
-    /**
-     * Returns true when the decision actually reached the server.
-     *
-     * Cancel-on-success still preserves the replay property that ordering was there for: a
-     * decision that reached the server cannot be re-opened.
-     */
-    /**
-     * [decisionKeys] are the credential keys the calling screen derived when it verified the PIN for
-     * *this* decision, or null when the credential gate is off (in which case the stored secret needs
-     * no key). They are passed in rather than read back through
-     * [org.kysecurity.mail.security.AppLockManager.cachedCredentialKeys] because this runs while the app
-     * is still locked — a notification tap does not unlock the app — and that accessor deliberately
-     * returns null in exactly that state, which made every gated approve and deny unsendable.
-     */
+    /** [decisionKeys] come from the caller's PIN check: this runs while the app is still locked. */
     suspend fun respond(
         context: Context,
         payload: MfaChallengePayload,
@@ -63,11 +47,7 @@ object MfaResponder {
                 true
             }
             is MfaRespondResult.Error -> {
-                // Leave the challenge answerable AND put the notification back, which this comment
-                // used to claim while the code only showed a toast. `setAutoCancel(true)` removed
-                // the row when the user tapped it, so without the repost their only route back is
-                // the Activity they are standing on — walk away and a still-open sign-in is
-                // stranded for the rest of the tracker's freshness window with no UI anywhere.
+                // Leave it answerable and put the notification back: autoCancel removed the row on tap.
                 showResultToast(
                     appContext,
                     appContext.getString(R.string.mfa_respond_failed, result.message),

@@ -5,7 +5,6 @@ import androidx.room.Query
 import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
 
-/** suspend/Flow-based, matching the coroutine convention already used by push/PushRepository. */
 @Dao
 interface ContactDao {
     @Query("SELECT * FROM contacts ORDER BY isSelf DESC, fn COLLATE NOCASE")
@@ -14,9 +13,7 @@ interface ContactDao {
     @Query("SELECT * FROM contacts WHERE uid = :uid")
     suspend fun getByUid(uid: String): ContactEntity?
 
-    // Deliberately no getSelf(): the account's own PGP identity is NOT in this table — the
-    // self-contact's pgpKey is an ordinary contact field — so a "fetch my own row" helper only ever
-    // served an answer this database cannot give. See pgp.ownFingerprintFromBootstrap.
+    // No getSelf(): the account's own PGP identity lives in pgp.ownFingerprintFromBootstrap.
 
     @Upsert
     suspend fun upsertAll(contacts: List<ContactEntity>)
@@ -27,14 +24,7 @@ interface ContactDao {
     @Query("DELETE FROM contacts")
     suspend fun clearAll()
 
-    /** Name-or-email substring match for the contact-autocomplete feature (spec:
-     *  ContactAutocomplete.md). LIKE is case-insensitive for ASCII in SQLite by default, so no
-     *  explicit COLLATE NOCASE is needed on the LIKE itself. Matches against the raw
-     *  [ContactEntity.emailsJson] string rather than decoding it — the email address appears
-     *  verbatim inside the encoded JSON, so a substring match is correct without a JOIN/decode;
-     *  see RecipientMatching.kt for why only the *primary* email is ever displayed even though
-     *  this query can match on a secondary one. Contacts with no email at all
-     *  (`emailsJson = '[]'`) are excluded — nothing to autocomplete to. */
+    // Substring match on raw emailsJson works: the address appears verbatim in the encoded JSON.
     suspend fun search(query: String): List<ContactEntity> = searchEscaped(query.escapeLikePattern())
 
     @Query(

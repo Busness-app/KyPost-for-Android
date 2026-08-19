@@ -40,9 +40,7 @@
 
             </HorizontalScrollView>
 
-            <!-- The weight moves to the refresh layout: it is now the child filling the column, and
-                 the RecyclerView fills it. Leaving layout_weight on the RecyclerView would give it a
-                 zero-height parent and an empty inbox. -->
+            <!-- Weight lives here; on the RecyclerView it would get a zero-height parent. -->
             <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
                 android:id="@+id/inboxSwipeRefresh"
                 android:layout_width="match_parent"

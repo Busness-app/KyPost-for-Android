@@ -4,11 +4,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Test
 import org.kysecurity.mail.BuildConfig
 
-/**
- * `-PallowScreenshots=true` strips `FLAG_SECURE` from every window in the app. It is meant to be
- * passed for one local build and never again, so this fails any build — CI included — that carries
- * it, rather than letting a screenshot build become the default one somebody ships from.
- */
+/** `-PallowScreenshots=true` strips `FLAG_SECURE` app-wide; no shipped build may carry it. */
 class ScreenshotFlagDefaultTest {
 
     @Test

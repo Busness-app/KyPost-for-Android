@@ -124,27 +124,15 @@ class EncryptedMessageReaderTest {
 
         val outcome = read(r, unlockIfNeeded = false) as ReadOutcome.Decrypted
 
-        // The message signs itself with a key we hold no binding for. That is SIGNER_UNKNOWN,
-        // never VERIFIED_* — a message that vouches for itself proves only that whoever wrote
-        // it owned a key.
         assertEquals(PgpSignatureState.SIGNER_UNKNOWN, outcome.signature)
     }
 
     @Test
     fun aBoundKeyMakesAGenuineSignatureVerifyRatherThanAccusingTheSender() {
-        // The regression this exists for: if the reader does not hand the bound keys to
-        // PgpDecryptor, `valid` stays false, and signatureStateFor maps signed + bound + invalid
-        // to INVALID — telling the user that every legitimately signed message from a
-        // correspondent they DO hold a key for is an impersonation.
         EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
         val bound = SignerKey(
             addresses = listOf("bob@example.com"),
-            // NOT ARMORED_PRIVATE: PGPPublicKeyRingCollection (what both PgpDecryptor's one-pass
-            // verification and signerKeyIdsOf parse the offered key with) rejects a secret-key
-            // block outright — "PGPSecretKeyRing found where PGPPublicKeyRing expected" — so an
-            // armored private key can never stand in for a published public key here. ARMORED_PUBLIC
-            // is the same key pair's public half, exported separately by gpg, exactly the shape a
-            // real caller holds (see PgpDecryptorTest and TestPgpPrivateKey's own KDoc).
+            // NOT ARMORED_PRIVATE: a secret-key block is rejected where a PGPPublicKeyRing is expected.
             publicKey = TestPgpPrivateKey.ARMORED_PUBLIC,
             verified = false,
             source = "autocrypt",
@@ -159,19 +147,7 @@ class EncryptedMessageReaderTest {
 
     @Test
     fun aKeyBoundToADifferentSenderIsNeverOfferedToTheSignatureCheck() {
-        // The forgery case, at the reader level. An ordinary contact signs a message and forges
-        // the From header to name someone else. If the reader offered the whole address book, the
-        // signature would verify against the forger's own key and be attributed to the person
-        // named in From. Only keys the SERVER actually bound to the resolved sender may appear in
-        // payload.signerKeys at all — the reader itself does no address matching (see
-        // SignerBinding.signatureStateFor's KDoc and SignerBindingTest.theClientHoldsNoSenderParserOfItsOwn:
-        // `.addresses` is carried straight through and never read past the server's own narrowing).
-        // So the fixture that proves "never offered" has to use physically different key material
-        // from the one that actually produced ARMORED_MESSAGE's signature — TestPgpKey.ARMORED,
-        // a real, parseable, but unrelated key — rather than reusing ARMORED_PUBLIC, which IS the
-        // signer's key regardless of which address a SignerKey entry claims it is bound to. Offering
-        // it would spuriously verify no matter what `.addresses` says, which is exactly the false
-        // positive this test exists to catch.
+        // Unrelated key material on purpose: ARMORED_PUBLIC would verify whatever .addresses claims.
         EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
         val otherContact = SignerKey(
             addresses = listOf("eve@evil.example"),
@@ -192,13 +168,6 @@ class EncryptedMessageReaderTest {
 
     @Test
     fun aConflictedKeyYieldsKeyChanged() {
-        // Named for what this actually proves, not for the offeredKeys filter in
-        // EncryptedMessageReader: signatureStateFor returns KEY_CHANGED the moment ANY entry in
-        // signerKeys has conflict = true, before it ever looks at which key was offered to
-        // PgpDecryptor or whether the signature matched. That precedence means this test cannot
-        // observe — and must not claim to prove — that the conflicted key's material was kept out
-        // of the crypto layer. See the KDoc on the `offeredKeys` filter in
-        // EncryptedMessageReader.kt for why the filter still stays despite being unobservable here.
         EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
         val conflicted = SignerKey(
             addresses = listOf("bob@example.com"),
@@ -217,19 +186,11 @@ class EncryptedMessageReaderTest {
         assertEquals(PgpSignatureState.KEY_CHANGED, outcome.signature)
     }
 
-    // --- The detached-signature branch (payload.encryptedPayload.isBlank()): a signed-but-not-
-    // encrypted message. successPayload() always sets a non-blank encryptedPayload, so without
-    // these this whole branch — and PgpDecryptor.verifyDetached — never runs in CI. ---
+    // The detached-signature branch: successPayload() always sets a non-blank encryptedPayload.
 
     @Test
     fun aDetachedSignatureFromAnUnboundKeyIsUnknownNotUnsigned() {
-        // Pins `present = true`. With no bound keys, offeredKeys is empty, so the code falls back
-        // to `verifyDetached(armoredPublicKey = "", ...)`. That relies on
-        // PGPPublicKeyRingCollection returning an EMPTY collection for an empty input rather than
-        // throwing — if it threw instead, verifyDetached's catch-all would report `present = false`
-        // and this would come back NONE ("not signed") for a message that plainly is signed, and a
-        // conflicted-key case (below) would silently lose its KEY_CHANGED warning behind the same
-        // NONE. Nothing else in this suite reaches this fallback.
+        // Relies on PGPPublicKeyRingCollection returning empty for empty input rather than throwing.
         EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
         val (r, _) = reader(payloads = FakePayloadSource(detachedSignedPayload(signerKeys = emptyList())))
 
@@ -276,8 +237,6 @@ class EncryptedMessageReaderTest {
         assertEquals(PgpSignatureState.KEY_CHANGED, outcome.signature)
     }
 
-    // --- Exit-table rows the brief's fixtures never reached. ---
-
     @Test
     fun aClientUnprotectedAccountSaysSo() {
         val (r, _) = reader(payloads = FakePayloadSource(PgpPayloadResult.NotClientProtected))
@@ -288,9 +247,6 @@ class EncryptedMessageReaderTest {
 
     @Test
     fun aMessageWithNoOpenPgpPayloadIsTerminalNotRetryable() {
-        // Spec defect fix: NoPayload (404) used to collapse into FetchFailed, which the UI renders
-        // with a Retry button. Retry cannot help a terminal 404 — the message simply carries no
-        // OpenPGP payload — so it gets its own outcome instead.
         val (r, _) = reader(payloads = FakePayloadSource(PgpPayloadResult.NoPayload))
         EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
 
@@ -299,10 +255,7 @@ class EncryptedMessageReaderTest {
 
     @Test
     fun aKeyThatVanishesBetweenUnsealAndFetchAsksForAnUnlockAgain() {
-        // FakeVaultOpener.keyToHold exists as exactly this seam: open() reports Opened without
-        // actually leaving a key in EnrollmentSession, simulating the app locking (lockNow() clears
-        // the session) in the gap between the unseal returning and the post-unseal re-read a few
-        // lines later in EncryptedMessageReader.read.
+        // keyToHold = null: open() reports Opened without leaving a key, as a lock in the gap would.
         val opener = FakeVaultOpener(keyToHold = null)
         val (r, payloads) = reader(opener)
 
@@ -313,13 +266,8 @@ class EncryptedMessageReaderTest {
         assertEquals("must not spend a fetch when there is no key to decrypt with", 0, payloads.fetched)
     }
 
-    // --- The relay is not the source of truth about who signed a message. ---
-
     @Test
     fun aRelaySuppliedVerifiedFlagCannotConfirmASigner() {
-        // End to end through the reader, not just the verdict function: the relay hands over a key
-        // for the resolved sender AND marks it verified, which is the whole of what it takes to
-        // have rendered "✅ signature confirmed" before this device held an opinion of its own.
         EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
         val relayKey = SignerKey(
             addresses = listOf("bob@example.com"),
@@ -360,9 +308,6 @@ class EncryptedMessageReaderTest {
 
     @Test
     fun aLocalKeyThatDidNotSignOutranksAnyRelayClaim() {
-        // This device holds a key for bob@example.com. The message decrypts, but it was signed by
-        // some other key — and the relay is vouching for that other key as verified. The local
-        // opinion wins and the user is told the key changed, rather than being shown a badge.
         EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
         val relayKey = SignerKey(
             addresses = listOf("bob@example.com"),
@@ -388,9 +333,7 @@ class EncryptedMessageReaderTest {
 
     @Test
     fun aLookupFailureDegradesToTheRelayRatherThanFailingTheRead() {
-        // Room can throw — a wipe closed the database out from under this call, protection is on
-        // and the in-memory graph is being rebuilt. Reading a message must not become impossible
-        // because the trust lookup did; it degrades to the capped server-key path.
+        // Room can throw when a wipe closes the database out from under the lookup.
         EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
         val r = EncryptedMessageReader(
             FakeVaultOpener(),

@@ -11,31 +11,12 @@ import org.kysecurity.mail.data.DataRuntime
 import org.kysecurity.mail.mail.MailRuntime
 import org.kysecurity.mail.push.PushRuntime
 
-/**
- * Rebuilds every process-scoped graph and returns the user to a fresh [MainActivity].
- *
- * Needed whenever a setting requires a new [org.kysecurity.mail.data.DataGraph] — Room decides
- * disk-backed vs in-memory once, at construction time — or after [SecurityWipe] has closed the
- * database out from under the live graph.
- */
 object AppRestart {
 
-    /**
-     * **Suspending, because the teardown blocks.** [invalidateGraphs] waits up to
-     * `MailBackgroundExecutor.QUIESCE_TIMEOUT_MS` on `awaitTermination`, and `ProcessState.resetAll`
-     * zeroes up to 64 MB of held attachment plaintext. Every caller of this reached it on the main
-     * thread — two of them via an explicit `withContext(Dispatchers.Main)` — so the security-
-     * critical path was also a guaranteed multi-hundred-millisecond frozen frame, and an ANR on a
-     * slow device.
-     */
+    /** Suspending: teardown awaits executor termination and zeroes held attachment plaintext. */
     suspend fun relaunch(activity: Activity) {
         withContext(Dispatchers.IO) {
-            // Statics do not die with the task. Invalidating the graph holders rebuilds everything
-            // *they* own, but every process-scoped `object` — the draft cache, the forward handoff,
-            // the ephemeral attachment plaintext, the PGP custody cache — survives untouched,
-            // because this no longer kills the process. Enumerating them by hand at each call site
-            // is what let EphemeralAttachmentBytes hold 64 MB of decrypted mail across a security
-            // wipe; the registry is the fix. See [org.kysecurity.mail.ProcessScopedState].
+            // The process survives, so process-scoped state needs an explicit reset.
             org.kysecurity.mail.ProcessState.resetAll()
             invalidateGraphs()
         }

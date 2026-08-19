@@ -1,33 +1,10 @@
 package org.kysecurity.mail.push
 
-/**
- * The number-matching choice set for one MFA challenge.
- *
- * A bare Approve button asks for a tap, and a tap is exactly what an MFA-fatigue attack harvests.
- * Number matching replaces it with a discrimination the user can only make if they are looking at
- * the screen that started the sign-in.
- *
- * **Every value comes from the server.** The client used to invent decoys from a linear congruential
- * generator seeded on the challenge id when the server sent too few, which made the wrong answers
- * derivable by anyone who knew the id. The server mints the correct value and both decoys from
- * `crypto/rand` (kypost-server `mfa.newNumberMatch`), and it verifies the answer itself
- * (`Store.ResolvePushWithMatch`) — so a challenge that does not carry all three is one this client
- * cannot offer an approval for at all. [optionsFor] returns null there, and the caller must leave
- * only Deny available rather than falling back to a button the server will refuse.
- *
- * Pure and Context-free so the selection logic is unit-testable on the JVM.
- */
+/** Server-minted number-match choices; null from [optionsFor] means approval is impossible. */
 internal object MfaNumberMatch {
     const val CHOICE_COUNT = 3
 
-    /**
-     * The tiles to render, in the order to render them, or null when [correct] and [serverDecoys]
-     * do not describe a complete [CHOICE_COUNT]-way choice.
-     *
-     * Order is randomised per call. [shuffle] is injectable only so tests can pin it; callers must
-     * shuffle **once** and keep the result for the life of the challenge, or a recreate would
-     * reorder the tiles under the user's finger — see [MfaApprovalActivity].
-     */
+    /** Null when the choice is incomplete. Callers must shuffle once and keep the order. */
     fun optionsFor(
         correct: String,
         serverDecoys: List<String>,

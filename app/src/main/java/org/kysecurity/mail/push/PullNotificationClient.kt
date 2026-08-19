@@ -11,7 +11,6 @@ import okhttp3.Request
 
 /** Outcome of a single GET against the pull endpoint. */
 sealed class PullResult {
-    /** 200 with a parsed body. */
     data class Success(val response: PullNotificationsResponse) : PullResult()
 
     /** 401: bad secret / unknown device. Credentials are wrong — stop hammering. */
@@ -20,18 +19,11 @@ sealed class PullResult {
     /** 400: missing pairing credentials. A client bug; don't tight-loop. */
     data class BadRequest(val message: String) : PullResult()
 
-    /**
-     * Transient: 5xx (incl. 503 "server pairing not configured") or a network error.
-     * [retryAfterSeconds] carries the Retry-After header when present.
-     */
+    /** Transient: 5xx or network error; [retryAfterSeconds] carries the Retry-After header. */
     data class Retryable(val message: String, val retryAfterSeconds: Long? = null) : PullResult()
 }
 
-/**
- * Talks to `GET <pullEndpoint>?after=`. Auth is sent as X-Kypost-Device-Id/
- * X-Kypost-Device-Secret headers, never query params. Kept parallel to
- * [NativeRegistrationClient] — same okhttp/serialization stack, no session/bearer.
- */
+/** `GET <pullEndpoint>?after=`; auth goes in X-Kypost-Device-* headers, never query params. */
 class PullNotificationClient(
     private val json: Json = Json { ignoreUnknownKeys = true },
     // Injected Call.Factory; see PairingAuthHeaders.kt for why every credentialed client takes one.

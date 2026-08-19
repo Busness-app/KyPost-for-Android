@@ -33,21 +33,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.kysecurity.mail.security.LockedActivity
 import org.kysecurity.mail.security.showSecurely
 
-/**
- * "PGP Key Signing": a single screen that shows the user's own PGP QR code (minted via
- * [PgpQrClient.mintToken], re-minted every time the screen resumes so it's never stale) for
- * someone else to scan, plus a "Scan QR Code" button that scans someone else's code directly —
- * no intermediate navigation screen.
- *
- * On a successful scan, fetches the key via [PgpQrClient.fetchKey] (unauthenticated — the token
- * is the credential), shows the fingerprint for out-of-band confirmation, then either creates a new
- * contact from the included card (if present) or lets the user pick an existing contact (via
- * [ContactsListActivity] in pick mode) to save the key onto.
- *
- * Saving does NOT go through a per-contact REST endpoint — this app never calls those. It follows
- * [org.kysecurity.mail.contacts.ContactEditActivity.save]'s exact pattern instead: `queueUpdate` on the
- * existing [org.kysecurity.mail.contacts.ContactDto] with `pgpKey` set, then `syncNowAsync()`.
- */
+/** Saves via `queueUpdate` + `syncNowAsync()`; this app never calls per-contact REST endpoints. */
 class PgpKeyActivity : LockedActivity() {
 
     private lateinit var qrImage: ImageView
@@ -61,10 +47,7 @@ class PgpKeyActivity : LockedActivity() {
     private lateinit var confirmButton: Button
     private lateinit var scanButton: Button
 
-    // lazy: pinnedPairingCallFactory(this) needs a valid Context, which isn't available yet at
-    // property-initializer time (before attachBaseContext) — deferring to first use (both call
-    // sites are well after onCreate) avoids a NullPointerException here. See finding C2 of the
-    // 2026-07-22 security-hardening spec's final-review fix round.
+    // lazy: pinnedPairingCallFactory needs a Context that does not exist at property-init time.
     private val client by lazy { PgpQrClient(callFactory = pinnedPairingCallFactory(this)) }
     private val bootstrapClient by lazy { PgpBootstrapClient(callFactory = pinnedPairingCallFactory(this)) }
     private var pendingKey: PgpQrKeyDto? = null
@@ -136,10 +119,7 @@ class PgpKeyActivity : LockedActivity() {
     }
 
     private fun renderQr(token: PgpQrTokenDto, serverUrl: String, deviceId: String, deviceSecret: String) {
-        // Build the URL locally against the paired origin rather than encoding the server-supplied
-        // `token.url`. That field was rendered verbatim, so a tampered token response could point
-        // the counterparty's unauthenticated fetch at any host — outside the TLS pin — and have
-        // them save an attacker's key as ours. The token is the only part we need from the server.
+        // Built from the paired origin: the server's `token.url` could point outside the TLS pin.
         val ownUrl = ownQrUrl(serverUrl, token.token)
         val bitmap = ownUrl?.let { runCatching { renderQrBitmap(it, QR_SIZE_PX) }.getOrNull() }
         if (bitmap == null) {
@@ -153,10 +133,7 @@ class PgpKeyActivity : LockedActivity() {
         renderOwnFingerprint(serverUrl, deviceId, deviceSecret)
     }
 
-    /**
-     * Shows the user their own fingerprint beside the QR, so that when the other device asks them
-     * to "confirm this fingerprint matches", they have something on screen to compare it to.
-     */
+    /** Shows the user their own fingerprint, to answer the other device's "does this match?". */
     private fun renderOwnFingerprint(serverUrl: String, deviceId: String, deviceSecret: String) {
         lifecycleScope.launch {
             val fingerprint = ownFingerprintFromBootstrap(
@@ -230,10 +207,7 @@ class PgpKeyActivity : LockedActivity() {
     }
 
     private fun showFetchedKey(key: PgpQrKeyDto) {
-        // The server's `fingerprint` field is never used for the confirmation prompt below — it's
-        // just another claim in the same response as `publicKey`, with no cryptographic tie to it.
-        // Computing the fingerprint locally from the key bytes themselves is what makes "confirm
-        // this fingerprint matches" an actual verification instead of a rubber stamp.
+        // Never the server's `fingerprint` field: it has no cryptographic tie to `publicKey`.
         val localFingerprint = PgpFingerprint.compute(key.publicKey)
         if (localFingerprint == null) {
             resetConfirmationState()
@@ -247,10 +221,7 @@ class PgpKeyActivity : LockedActivity() {
         scanNameText.visibility = View.VISIBLE
         scanFingerprintText.text = getString(R.string.pgp_qr_scan_fingerprint_label, localFingerprint)
         scanFingerprintText.visibility = View.VISIBLE
-        // Verifying the fingerprint proves which KEY this is; it says nothing about which
-        // addresses the key gets bound to. Those travel beside the key in `contactCard`, are
-        // chosen by whoever served the QR, and are what the server's resolver later matches on —
-        // so mail to any of them would be encrypted to this key. Show them before accepting.
+        // The fingerprint proves the KEY only; these addresses are the QR server's claim.
         val addresses = scannedAddresses(key)
         scanAddressesText.text = if (addresses.isEmpty()) {
             getString(R.string.pgp_qr_scan_addresses_none)
@@ -301,14 +272,7 @@ class PgpKeyActivity : LockedActivity() {
             .showSecurely()
     }
 
-    /**
-     * Last gate before a key is bound to an existing contact: shows the addresses that contact
-     * currently holds and waits for the user to accept them.
-     *
-     * The scan confirmation earlier in this flow lists the addresses from the *scanned card*, which
-     * on this branch are not the addresses the key ends up bound to — the DTO is built from the Room
-     * row. Those two can differ, and a third-party `WRITE_CONTACTS` write is exactly how.
-     */
+    /** Last gate: bound addresses come from the Room row, editable by any WRITE_CONTACTS app. */
     private suspend fun confirmBinding(name: String, addresses: List<String>): Boolean =
         kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
             val body = if (addresses.isEmpty()) {
@@ -361,23 +325,13 @@ class PgpKeyActivity : LockedActivity() {
                 Toast.makeText(this@PgpKeyActivity, R.string.pgp_qr_scan_invalid, Toast.LENGTH_SHORT).show()
                 return@launch
             }
-            // The addresses the key is about to be bound to are the ones already on THIS contact —
-            // not the ones on the scanned card, which is what the confirmation screen showed. Any
-            // app holding WRITE_CONTACTS can have rewritten them, so they are restated here, at the
-            // point of commitment, before the binding is made.
+            // Restated at commitment: these are THIS contact's addresses, not the scanned card's.
             val boundAddresses = entity.toDto().emails.map { it.value }.filter { it.isNotBlank() }
             if (!confirmBinding(entity.fn, boundAddresses)) return@launch
             val dto = entity.toDto().copy(pgpKey = key.publicKey)
 
             val graph = ContactsRuntime.graph(this@PgpKeyActivity)
-            // The user just compared this fingerprint out-of-band against the other person's
-            // device, so this is a verified rotation, not a suspicious one. Without the flag the
-            // mapper raised "Key changed" on the one path where reverification is provably
-            // unnecessary, which trains users to dismiss the app's only TOFU alarm.
-            // identityChanged = false: this save changes only the key, never the addresses — the
-            // DTO is the existing row with pgpKey swapped. It is deliberately not a claim that the
-            // addresses are trustworthy; toEntity no longer lets verifiedInPerson clear an
-            // identity-rebind alarm, so one raised earlier survives this ceremony.
+            // Verified rotation: the user just compared this fingerprint out of band.
             graph.repository.queueUpdate(dto, identityChanged = false, verifiedInPerson = true)
             graph.coordinator.syncNowAsync()
 
@@ -391,9 +345,7 @@ class PgpKeyActivity : LockedActivity() {
     companion object {
         private const val QR_SIZE_PX = 720
 
-        /** The inverse of [parsePgpQrKeyUrl]: builds the URL our own QR encodes, from the paired
-         *  server URL plus the minted token. Deliberately does not use the server's `url` field —
-         *  see [renderQr]. Returns null if [serverUrl] or [token] can't form a valid URL. */
+        /** Never the server's `url` field — see [renderQr]. Null if no valid URL can be built. */
         internal fun ownQrUrl(serverUrl: String, token: String): String? {
             if (token.isBlank()) return null
             val base = serverUrl.trimEnd('/').toHttpUrlOrNull() ?: return null
@@ -420,11 +372,7 @@ class PgpKeyActivity : LockedActivity() {
             return ParsedPgpQrKeyUrl(serverUrl = serverUrl, token = token)
         }
 
-        /** Maps a scanned [PgpQrContactCardDto] to a creatable [ContactDto], for the "Create New
-         *  Contact" path in [showSaveChoiceDialog]. [fallbackName] (the scan's top-level `name`)
-         *  fills in `fn` when the card itself carries no name — `ContactDto.fn` must be non-blank
-         *  per Mobile_Contact_Sync.md, and a card's `fn` is `omitempty` server-side so it can be
-         *  legitimately absent. */
+        /** `ContactDto.fn` must be non-blank; a card's `fn` is `omitempty`, hence the fallback. */
         internal fun contactDtoFromCard(card: PgpQrContactCardDto, fallbackName: String, pgpKey: String): ContactDto =
             ContactDto(
                 fn = card.fn?.takeIf { it.isNotBlank() } ?: fallbackName.ifBlank { "Unknown" },

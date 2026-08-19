@@ -5,17 +5,7 @@ import java.time.OffsetDateTime
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 
-/**
- * Outbound PGP/MIME construction, with **no Android imports** — the writing counterpart to
- * [PgpMimeReader].
- *
- * Hand-assembled strings rather than `jakarta.mail`'s `MimeMessage`, deliberately. The requirement
- * is not "emit valid MIME", it is "emit the exact byte shape the relay's own validator accepts and
- * the browser client already produces". A string builder is directly reviewable against that
- * validator; a `MimeMessage` is not, and `saveChanges()` would synthesize and rewrite headers
- * underneath us. `PgpMimeReader` stays `angus.mail`'s only use — which is what lets it serve as an
- * independent oracle for these tests instead of validating the writer with the writer's own library.
- */
+/** Hand-assembled, not `jakarta.mail`: the goal is the exact bytes the relay's validator takes. */
 
 /** One outgoing attachment, already base64-encoded — the form `OutgoingAttachment` already holds. */
 internal data class OutgoingMimeAttachment(
@@ -24,12 +14,7 @@ internal data class OutgoingMimeAttachment(
     val dataBase64: String,
 )
 
-/**
- * The outer, cleartext envelope of a delivery. There is deliberately **no `bcc` field**: a `Bcc`
- * header is refused outright by the relay, and each BCC recipient gets their own delivery so they
- * never appear in one another's headers. Making it unrepresentable is stronger than remembering not
- * to write it.
- */
+/** No `bcc` field on purpose: the relay refuses a `Bcc` header and each BCC gets its own send. */
 internal data class OutgoingEnvelope(
     val from: String,
     val to: List<String>,
@@ -40,16 +25,7 @@ internal data class OutgoingEnvelope(
 /** Matches `pgpmail.OuterPlaceholderSubject` so both send paths look identical on the wire. */
 internal const val OUTER_PLACEHOLDER_SUBJECT = "[Encrypted] Email Sent by KyPost"
 
-/**
- * Wraps an armored PGP message as a complete RFC 5322 message with an RFC 3156
- * `multipart/encrypted` body.
- *
- * Emits the **full** envelope, not just the Content-Type: `/api/mail/send-pgp` relays these bytes
- * verbatim, so anything omitted here is simply absent from the delivered mail.
- *
- * The header set is fixed and closed — there is no caller-supplied header path at all, which is what
- * structurally guarantees the relay's forbidden headers can never appear.
- */
+/** `/api/mail/send-pgp` relays these bytes verbatim, so the header set is fixed and closed. */
 internal fun wrapAsPgpMime(
     envelope: OutgoingEnvelope,
     armoredMessage: String,
@@ -94,13 +70,7 @@ private fun joinAddresses(addresses: List<String>): String =
 internal fun sanitizeHeaderValue(value: String): String =
     value.replace(CR_OR_LF, " ").trim()
 
-/**
- * Wraps the real content in a protected-headers part carrying the true Subject.
- *
- * The outer envelope's Subject is a fixed placeholder, so this is the only place the real one
- * travels — inside the ciphertext. [PgpMimeReader] lifts it back out as
- * [DecryptedBody.protectedSubject].
- */
+/** The outer Subject is a placeholder, so this is the only place the real one travels. */
 internal fun buildProtectedContent(
     contentType: String,
     body: String,
@@ -114,9 +84,7 @@ internal fun buildProtectedContent(
     if (clean.isNotEmpty()) lines += "Subject: $clean"
     lines += "Content-Type: multipart/mixed; boundary=\"$boundary\"; protected-headers=\"v1\""
     lines += ""
-    // The memoryhole convention. KyPost's own reader takes the subject off the top-level header
-    // above, but Thunderbird, Mutt and K-9 look for it here — without this part they show the outer
-    // placeholder instead of the real subject.
+    // The memoryhole convention: Thunderbird, Mutt and K-9 read the subject from this part.
     if (clean.isNotEmpty()) {
         lines += "--$boundary"
         lines += "Content-Type: text/rfc822-headers; protected-headers=\"v1\""
@@ -152,16 +120,7 @@ private fun wrapBase64(data: String): String =
         .chunked(BASE64_LINE_LENGTH)
         .joinToString(CRLF)
 
-/**
- * The `Date` header, which the relay requires and does not synthesize.
- *
- * `RFC_1123_DATE_TIME` needs no `withLocale`: RFC 1123 mandates fixed English day and month
- * abbreviations, so the constant hardcodes them and emits ASCII even when its own `getLocale()`
- * reports `tr_TR` (verified, not assumed). **Do not replace it with
- * `ofPattern("EEE, dd MMM yyyy HH:mm:ss Z")`** — that renders through the default locale and yields
- * "Sal, 11 Ağu 2026" on a Turkish device, i.e. non-ASCII in an RFC 5322 header.
- * `dateIsAsciiUnderANonEnglishDefaultLocale` is the guard against exactly that edit.
- */
+/** Do NOT swap for `ofPattern(...)`: it renders through the default locale, e.g. "Ağu" on tr_TR. */
 internal fun rfc5322Date(at: OffsetDateTime): String =
     DateTimeFormatter.RFC_1123_DATE_TIME.format(at.withOffsetSameInstant(ZoneOffset.UTC))
 

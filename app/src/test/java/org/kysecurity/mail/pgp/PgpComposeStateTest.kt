@@ -32,13 +32,7 @@ class PgpComposeStateTest {
         )
     }
 
-    /**
-     * An enrolled device holds the account's private key, so it can encrypt and sign locally.
-     *
-     * [PgpComposeState.clientSide] is what routes the send to `/api/mail/send-pgp` instead of
-     * `/api/mail/send`; without it the compose screen would offer toggles and then post them to the
-     * endpoint that answers 409 for exactly this account type.
-     */
+    /** [PgpComposeState.clientSide] routes the send to `/api/mail/send-pgp`, not `/api/mail/send`. */
     @Test
     fun clientCustodyEnrolled_offersBothAndEncryptsOnThisDevice() {
         assertEquals(
@@ -57,11 +51,7 @@ class PgpComposeStateTest {
         )
     }
 
-    /**
-     * Enrolled but no account address: every delivery's `From` must equal the authorized address,
-     * and there is none to write. Offering Send here would build ciphertext the relay 403s, so this
-     * degrades to the handoff instead.
-     */
+    /** Every delivery's `From` must equal the authorized address, and there is none to write. */
     @Test
     fun clientCustodyEnrolledWithoutAnAccountAddress_handsOffInstead() {
         assertEquals(

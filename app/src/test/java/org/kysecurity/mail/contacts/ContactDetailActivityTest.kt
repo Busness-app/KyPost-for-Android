@@ -3,13 +3,7 @@ package org.kysecurity.mail.contacts
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
-/** Covers the pure formatting helpers [ContactDetailActivity] uses to render a contact read-only:
- *  [contactSubtitle], [formatAddress], [urlWithScheme]. Pulled out of the Activity for the same
- *  reason as [mergedContactDto] in `ContactEditActivity` — unit-testable without a Context-backed
- *  Activity. */
 class ContactDetailActivityTest {
-
-    // ---- contactSubtitle ----
 
     @Test
     fun contactSubtitle_titleAndOrg_joinedWithDot() {
@@ -41,8 +35,6 @@ class ContactDetailActivityTest {
         assertEquals("", contactSubtitle(dto))
     }
 
-    // ---- formatAddress ----
-
     @Test
     fun formatAddress_allFields() {
         val address = ContactAddressDto(
@@ -71,8 +63,6 @@ class ContactDetailActivityTest {
     fun formatAddress_empty_isBlank() {
         assertEquals("", formatAddress(ContactAddressDto()))
     }
-
-    // ---- urlWithScheme ----
 
     @Test
     fun urlWithScheme_bareHost_getsHttpsPrefix() {

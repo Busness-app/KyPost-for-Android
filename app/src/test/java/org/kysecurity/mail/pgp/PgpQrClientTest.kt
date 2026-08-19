@@ -14,8 +14,6 @@ import java.io.IOException
 
 class PgpQrClientTest {
 
-    // ---- mintToken ----
-
     @Test
     fun mintToken_200_decodesTokenAndSendsExpectedRequest() = runBlocking {
         val callFactory = FakeCallFactory { request ->
@@ -108,8 +106,6 @@ class PgpQrClientTest {
 
         assertTrue(result is PgpQrTokenResult.Retryable)
     }
-
-    // ---- fetchKey ----
 
     @Test
     fun fetchKey_200_decodesKeyAndSendsExpectedRequest_noAuthParams() = runBlocking {

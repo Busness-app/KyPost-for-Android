@@ -1,5 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- app/src/main/res/layout/activity_contact_detail.xml -->
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/contactDetailRoot"
     android:layout_width="match_parent"
@@ -65,9 +64,7 @@
 
         </LinearLayout>
 
-        <!-- Populated programmatically in ContactDetailActivity.render() — one section header
-             (row_contact_detail_header) plus one row (row_contact_detail_row) per populated field,
-             skipping any field/section the contact has nothing in. -->
+        <!-- Populated programmatically in ContactDetailActivity.render(). -->
         <LinearLayout
             android:id="@+id/contactDetailFieldsContainer"
             android:layout_width="match_parent"

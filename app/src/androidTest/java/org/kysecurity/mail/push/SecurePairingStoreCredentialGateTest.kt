@@ -29,11 +29,7 @@ class SecurePairingStoreCredentialGateTest {
 
     @Before
     fun clearAnyExistingState() {
-        // CredentialCipher.deriveKeys reads the pepper and never creates it — the split that stopped
-        // a lost verifier key from reading every correct PIN as wrong and wiping the device on the
-        // tenth try. Production creates it on the establish path (AppLockManager, PinHasher); these
-        // tests derive keys directly, so on a device that has never set a PIN there is no pepper to
-        // read. Without this they pass only where an earlier test happened to establish one.
+        // deriveKeys only reads the pepper — nothing here would create it, so establish it first.
         org.kysecurity.mail.security.KeystoreCredentialPepper.ensureExists()
         runBlocking { SecurePairingStore(context).clearPairing() }
     }
@@ -93,16 +89,7 @@ class SecurePairingStoreCredentialGateTest {
         assertFalse(store.needsCredentialRewrap())
     }
 
-    /**
-     * The regression that made a background token rotation unrecoverable.
-     *
-     * `PushRepository.savePairing` reaches this when the credential gate is on and no PIN-derived
-     * key is cached. It passes `deviceSecret = null` to mean "I may not persist this one", and the
-     * store used to read that as "there is no secret" and erase the stored one — while the server
-     * had just minted a replacement and revoked the old. The device was left with no credential at
-     * all and no repair path: a rewrap has nothing to rewrap, and turning the gate off unwraps a
-     * value that is no longer there.
-     */
+    /** deviceSecret = null used to erase the stored secret, leaving a rotated device with none. */
     @Test
     fun savePairing_withSecretWritePreserve_leavesAWrappedSecretIntact() = runBlocking {
         val salt = CredentialCipher.randomSalt()

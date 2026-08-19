@@ -9,48 +9,17 @@ import javax.crypto.spec.PBEKeySpec
 private const val KEY_LENGTH_BITS = 256
 private const val SALT_LENGTH_BYTES = 16
 
-/**
- * [hash] is never the raw PIN — only this derived, salted value is ever persisted.
- *
- * **Not a `data class`.** Kotlin would generate identity `equals`/`hashCode` for the two
- * [ByteArray] fields while advertising structural equality, and this is a stored PIN verifier: an
- * `==` that silently means "same object" is the worst possible shape for it. Comparison goes
- * through [PinHasher.matches], which uses [java.security.MessageDigest.isEqual] and is constant
- * time; nothing else may compare these.
- */
+/** Not a data class: compare only via [PinHasher.matches], which is constant time. */
 class PinHash(val salt: ByteArray, val hash: ByteArray)
 
-/**
- * PBKDF2-based PIN hashing for the app-lock PIN (see "Require Unlock to Open" in the
- * 2026-07-22 security-hardening spec). [matches] uses [MessageDigest.isEqual], which is
- * documented as timing-attack-resistant, rather than `ByteArray.contentEquals` — a PIN
- * comparison is exactly the kind of check where short-circuiting on the first differing byte
- * would leak information to a timing attacker.
- *
- * The stored verifier is peppered with a non-exportable Keystore key, for the same reason
- * [CredentialCipher] peppers the wrapping key: PBKDF2 iterations cannot defend a 10^6..10^12
- * keyspace on their own, so an attacker who reads this file must be forced to brute-force *on the
- * device*, through the Keystore, rather than offline on a GPU. Leaving the verifier unpeppered
- * defeated the wrapping key's pepper too — both live in the same sandbox behind the same master
- * key, so whoever can read one can read the other, and recovering the PIN from the cheaper of the
- * two yields the wrapping key as well. A distinct pepper alias from [CredentialCipher]'s keeps the
- * two derivations non-interchangeable.
- */
+/** The verifier is Keystore-peppered under its own alias, forcing brute force on-device. */
 object PinHasher {
     /** Bumped when the derivation changes, so existing installs can be migrated rather than locked
      *  out. v1 = bare PBKDF2, v2 = PBKDF2 then Keystore-HMAC pepper. */
     const val VERSION_LEGACY_UNPEPPERED = 1
     const val VERSION_PEPPERED = 2
 
-    /**
-     * Derives a storable verifier, creating the Keystore pepper if this is the first one.
-     *
-     * The creation is here and **not** in [matches], because "no pepper key" means opposite things
-     * on the two paths: setting a PIN legitimately establishes one, while verifying against a
-     * missing one means the stored verifier can no longer be evaluated at all. Minting a key on the
-     * verify path made every subsequent correct PIN read as wrong, and ten of those wipe the
-     * device. See [PepperUnavailableException].
-     */
+    /** Mints the pepper if missing; [matches] must not, or a correct PIN reads as wrong. */
     fun hash(
         pin: CharArray,
         salt: ByteArray = randomSalt(),
@@ -68,13 +37,7 @@ object PinHasher {
     /** v1 verifier, retained only so a pre-pepper hash can be checked once and upgraded. */
     fun hashLegacy(pin: CharArray, salt: ByteArray): PinHash = PinHash(salt, pbkdf2(pin, salt))
 
-    /**
-     * Verifies [pin] against a stored verifier. Never creates a pepper key — see [hash].
-     *
-     * Throws [PepperUnavailableException] rather than returning false when the pepper is gone: a
-     * `false` here is indistinguishable from a wrong PIN, and wrong PINs are counted toward
-     * [AppLockState.wipeAfterAttempts].
-     */
+    /** Throws rather than returning false: a false here would count toward the wipe threshold. */
     fun matches(
         pin: CharArray,
         salt: ByteArray,

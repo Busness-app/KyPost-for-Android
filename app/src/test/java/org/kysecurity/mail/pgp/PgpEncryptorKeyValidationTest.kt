@@ -26,19 +26,7 @@ import java.math.BigInteger
 import java.security.SecureRandom
 import java.util.Date
 
-/**
- * Recipient key material arrives from the relay and is attacker-influenceable, so
- * [PgpEncryptor.encrypt] must validate it locally rather than trusting the server's `usable` verdict.
- *
- * These cover the shapes a run-8 audit reproduced against the unvalidated selector: it filtered only
- * on `isEncryptionKey` — which ignores revocation — and took `lastOrNull()` across every ring in the
- * blob, with no check that the blob held exactly one ring.
- *
- * The expected outcome is [EncryptResult.Failed] rather than a skipped recipient, matching the
- * contract `encrypt` already documents: a recipient whose key carries no usable encryption key is a
- * hard failure, because skipping means that person silently cannot read their own mail while the
- * sender is told the message went out.
- */
+/** Recipient key material comes from the relay, so `encrypt` must validate it locally. */
 class PgpEncryptorKeyValidationTest {
 
     @Test

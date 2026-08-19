@@ -27,12 +27,6 @@ import org.kysecurity.mail.pgp.hasPgpIdentity
 import kotlinx.coroutines.launch
 import org.kysecurity.mail.security.LockedActivity
 
-/** Read-only contact screen: what tapping a contact in [ContactsListActivity] opens (replacing the
- *  old direct-to-[ContactEditActivity] jump). Renders every field [ContactEditActivity] lets the
- *  user edit, minus none of them, as plain formatted text — plus tap-to-act rows for the field
- *  types that have an obvious action (email → compose, phone → dial, address → map, website →
- *  browser). An "Edit" action-bar item opens the real editor ([ContactEditActivity]) on the same
- *  contact; returning here re-loads and re-renders (see [onResume]) so edits show immediately. */
 class ContactDetailActivity : LockedActivity() {
 
     private lateinit var avatarView: TextView
@@ -109,9 +103,7 @@ class ContactDetailActivity : LockedActivity() {
                 return@launch
             }
             val dto = entity.toDto()
-            // Only the self-contact needs the extra (network) identity check — every other
-            // contact's badge is fully determined by its own pgpKey field. See ContactAdapter's
-            // contactHasLinkedPgpKey doc for why pgpKey alone isn't enough for the self-contact.
+            // Only the self-contact needs the network identity check; every other badge is pgpKey.
             val selfHasPgpIdentity = if (dto.isSelf) hasPgpIdentity(this@ContactDetailActivity) else null
             render(dto, selfHasPgpIdentity, entity.pgpKeyNeedsReverification, entity.identityNeedsReview)
         }
@@ -143,9 +135,7 @@ class ContactDetailActivity : LockedActivity() {
         val hasKey = contactHasLinkedPgpKey(dto.pgpKey, dto.isSelf, selfHasPgpIdentity)
         pgpBadge.visibility = if (hasKey) View.VISIBLE else View.GONE
         if (hasKey) {
-            // "Key changed" must not be shown for an identity rebind: it sends the user to a QR
-            // fingerprint comparison, which attests to the key and says nothing about the addresses
-            // that actually changed.
+            // Not for an identity rebind: a QR check attests to the key, not to the addresses.
             pgpBadge.text = when {
                 pgpKeyNeedsReverification -> getString(R.string.contact_status_key_changed)
                 identityNeedsReview -> getString(R.string.contact_status_identity_changed)
@@ -266,16 +256,7 @@ class ContactDetailActivity : LockedActivity() {
         fieldsContainer.addView(row)
     }
 
-    /**
-     * Contact field values are not trustworthy input: they arrive from the paired relay and from any
-     * app holding WRITE_CONTACTS. Restrict the scheme, since a website field is free text that ends
-     * up in an implicit ACTION_VIEW — a `file://` value crashes the app with
-     * `FileUriExposedException` (which is not an `ActivityNotFoundException`, so the old catch missed
-     * it), and any other scheme reaches whichever installed app claims it.
-     *
-     * The catch is widened to `RuntimeException` for the same reason: a tap on a contact row must not
-     * be able to kill the process whatever the stored value is.
-     */
+    // Contact fields are untrusted: restrict the scheme, and catch RuntimeException (file:// throws).
     private fun openUri(uri: String) {
         val parsed = Uri.parse(uri)
         if (parsed.scheme?.lowercase() !in ALLOWED_FIELD_SCHEMES) {
@@ -303,15 +284,10 @@ class ContactDetailActivity : LockedActivity() {
     }
 }
 
-/** "Job title · Organization" — [ContactEditActivity]'s edit form keeps these as separate fields;
- *  the detail screen's subtitle line under the name joins whichever are present. */
 internal fun contactSubtitle(dto: ContactDto): String =
     listOfNotNull(dto.title?.takeIf { it.isNotBlank() }, dto.org?.takeIf { it.isNotBlank() }).joinToString(" · ")
 
-/** Multi-line "street, city, region postalCode, country" — blank components are dropped, not
- *  rendered as empty commas. Used both for on-screen display and as the query text for the
- *  tap-to-open-in-maps `geo:` intent, so it deliberately stays a single human-readable line rather
- *  than literal newlines a `geo:` query wouldn't understand anyway. */
+/** Blank components are dropped, and it stays one line because it doubles as the `geo:` query. */
 internal fun formatAddress(address: ContactAddressDto): String {
     val cityLine = listOfNotNull(
         address.city?.takeIf { it.isNotBlank() },
@@ -325,11 +301,7 @@ internal fun formatAddress(address: ContactAddressDto): String {
     ).joinToString(", ")
 }
 
-/** Prefixes `https://` onto a bare `example.com`-style website value so [Uri.parse] + `ACTION_VIEW`
- *  resolves to a browser instead of failing to match any activity — contacts commonly store
- *  websites without a scheme (that's also all [ContactEditActivity]'s hint text asks for). Leaves
- *  an already-schemed value (`http://`, `https://`, or anything else with its own `scheme:`)
- *  untouched. */
+/** Prefixes `https://` onto a bare `example.com`; an already-schemed value is left untouched. */
 internal fun urlWithScheme(value: String): String {
     val trimmed = value.trim()
     return if (trimmed.contains("://")) trimmed else "https://$trimmed"

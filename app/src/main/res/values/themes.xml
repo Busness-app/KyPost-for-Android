@@ -1,26 +1,13 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <!--
-      This app renders its own 13 custom color palettes at runtime (see AppTheme.kt) rather than
-      switching Android theme resources, so the base theme intentionally does NOT follow
-      DayNight / system light-dark mode: doing so made system-level chrome we don't repaint
-      ourselves (popup menus, dialogs, ripples, elevation overlays) flip to a stock light Material
-      look that clashed with whichever custom palette was active. Keeping this theme fixed-dark
-      and neutral keeps that chrome coherent no matter which in-app palette or system mode is set.
-    -->
+    <!-- Deliberately not DayNight; AppTheme.kt paints palettes at runtime. -->
     <style name="Theme.KyPost" parent="Theme.MaterialComponents">
-        <!-- Primary brand color. Also drives AlertDialog button text color (MaterialComponents'
-             borderless button style reads colorPrimary directly) since dialogs are the one piece
-             of chrome this app doesn't repaint itself — see the note above. Must stay legible
-             against colorSurface; the stock Android Studio purple_500 read as low-contrast on the
-             dark surface, so this uses the app's existing teal accent instead. -->
+        <!-- Also drives AlertDialog button text; must stay legible against colorSurface. -->
         <item name="colorPrimary">@color/teal_200</item>
         <item name="colorPrimaryVariant">@color/teal_700</item>
         <item name="colorOnPrimary">@color/white</item>
-        <!-- Secondary brand color. -->
         <item name="colorSecondary">@color/teal_200</item>
         <item name="colorSecondaryVariant">@color/teal_700</item>
         <item name="colorOnSecondary">@color/black</item>
-        <!-- Surfaces behind popup menus, dialogs, and elevation overlays. -->
         <item name="colorSurface">@color/app_chrome_surface</item>
         <item name="colorOnSurface">@color/app_chrome_on_surface</item>
         <item name="android:colorBackground">@color/app_chrome_surface</item>
@@ -39,10 +26,7 @@
         <item name="android:textStyle">bold</item>
     </style>
 
-    <!-- Chip's default padding budgets space for a text label after the icon (iconEndPadding +
-         textStartPadding + textEndPadding), which pushes the icon left of center on an icon-only
-         chip once that label is empty (Compose's formatting toolbar buttons). Zero out the
-         text-side gutters and give the icon symmetric start/end padding instead. -->
+    <!-- Chip's default padding budgets room for a label, off-centering an icon-only chip. -->
     <style name="Widget.KyPost.IconOnlyChip" parent="Widget.MaterialComponents.Chip.Action">
         <item name="android:layout_width">wrap_content</item>
         <item name="android:layout_height">wrap_content</item>

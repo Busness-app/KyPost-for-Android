@@ -15,27 +15,9 @@ private const val ANDROID_KEYSTORE = "AndroidKeyStore"
 private const val PREFS_FILE = "app_lock_biometric"
 private const val KEY_SEALED = "sealed_credential_keys"
 
-/**
- * What a biometric prompt needs to turn a fingerprint into [CredentialKeys]: the cipher to hand to
- * `BiometricPrompt.CryptoObject`, and the blob that cipher will open once the user has authenticated.
- */
 class BiometricUnlock(val cipher: Cipher, val sealed: ByteArray)
 
-/**
- * Makes a fingerprint produce the app's real key material instead of setting a boolean.
- *
- * **Biometric only, and invalidated by enrollment.** Including `AUTH_DEVICE_CREDENTIAL` — as
- * [org.kysecurity.mail.pgp.EnrollmentVault] does — would make the device lock-screen PIN a way past
- * this app's own PIN, which it is not today. The cost is that adding a fingerprint destroys the key:
- * biometric unlock then falls back to the PIN until the next PIN unlock re-seals, which is the right
- * direction to fail in, since the attacker that exclusion targets is precisely someone who knows the
- * device credential and enrolls their own finger.
- *
- * The blob is stored in plain `SharedPreferences`. It is already RSA-OAEP ciphertext under a
- * hardware-backed key that will not decrypt without the user, so a second layer of
- * `EncryptedSharedPreferences` would buy nothing and inherit that library's unreadable-keyset
- * failure mode.
- */
+/** Biometric only: device credential would make the lock-screen PIN a way past the app PIN. */
 class BiometricUnlockVault(context: Context) : BiometricKeySealer {
 
     private val appContext = context.applicationContext
@@ -43,17 +25,7 @@ class BiometricUnlockVault(context: Context) : BiometricKeySealer {
         appContext.getSharedPreferences(PREFS_FILE, Context.MODE_PRIVATE)
     }
 
-    /**
-     * Seals [keys] for the next biometric unlock, replacing whatever was there.
-     *
-     * Re-sealing on every PIN unlock rather than only when nothing is stored: it costs one RSA
-     * encryption, and it is what makes recovery from an enrollment-invalidated key automatic — the
-     * open path destroys the dead key, and the next PIN unlock mints a new one here with no state to
-     * track and no repair path to get wrong.
-     *
-     * A device with no enrolled biometric cannot hold this key at all, so nothing is stored and any
-     * previous blob is dropped. That is not an error: it is the normal state of a PIN-only user.
-     */
+    /** Re-sealing on every PIN unlock is the automatic recovery from an invalidated key. */
     override fun seal(keys: CredentialKeys) {
         val publicKey = ensureKey()
         if (publicKey == null) {
@@ -69,16 +41,7 @@ class BiometricUnlockVault(context: Context) : BiometricKeySealer {
         }
     }
 
-    /**
-     * The prompt material, or null when biometric unlock is simply not on offer — nothing sealed, no
-     * key, or a key the OS has invalidated because a biometric was enrolled since.
-     *
-     * Blocking: Keystore and disk. Call it off the main thread.
-     *
-     * An invalidated key is destroyed here rather than reported. Leaving it would mean every
-     * subsequent PIN unlock sealed a fresh blob under a private key that can never open it, and the
-     * unlock screen offering a fingerprint that always fails.
-     */
+    /** Null when biometric unlock is not on offer; drops an invalidated key. Blocking: Keystore. */
     fun prepareUnlock(): BiometricUnlock? {
         val sealed = storedBlob() ?: return null
         val privateKey = runCatching {

@@ -1,15 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!--
-  Cleartext is refused explicitly rather than relying on targetSdk 28+'s default.
-
-  The default is a property of the merged manifest: any dependency whose own manifest declares
-  android:usesCleartextTraffic="true" flips it for the whole app, silently. Pairing deep links are
-  already https-only (NativePairingDeepLinkParser), and every request from this app carries the
-  device secret as a header, so there is no request it would be acceptable to send in the clear.
-
-  cleartextTrafficPermitted="false" also disables non-TLS WebView loads, which matters for the
-  email renderer once the user opts into remote content for a message.
--->
+<!-- Explicit, not the targetSdk default: any dependency's manifest can flip that app-wide. -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="false">
         <trust-anchors>

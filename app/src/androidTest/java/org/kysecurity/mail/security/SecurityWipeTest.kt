@@ -24,12 +24,7 @@ class SecurityWipeTest {
         deviceId = "device", deviceSecret = "secret", pairedAtEpochMs = 1L,
     )
 
-    /**
-     * The resume-attempt counter is deliberately sticky in production — clearing it along with the
-     * in-progress flag is what made MAX_WIPE_RESUMES a rolling window that bounded nothing — so it
-     * survives between tests in this class and has to be reset explicitly. Without this, whichever
-     * test ran fourth would hit the ceiling and see the marker cleared.
-     */
+    /** The resume counter is deliberately sticky in production, so reset it between tests. */
     @org.junit.Before
     fun resetWipeState() {
         context.getSharedPreferences("org.kysecurity.mail.wipe_state", android.content.Context.MODE_PRIVATE)
@@ -59,12 +54,7 @@ class SecurityWipeTest {
         assertFalse(dbFile.exists())
     }
 
-    /**
-     * The wipe used to stop at the database, the pairing prefs and the app lock — leaving the last
-     * 30 push payloads, i.e. sender names and email subjects, sitting in the unencrypted
-     * `push_state` DataStore. A wipe that runs *because* the device is presumed hostile cannot
-     * leave the message metadata behind.
-     */
+    /** push_state holds sender names and subjects in the clear; a wipe cannot leave it behind. */
     @Test
     fun wipeAndResetApp_removesPushHistoryFromDisk() = runBlocking {
         val repository = PushRuntime.graph(context).repository
@@ -128,20 +118,7 @@ class SecurityWipeTest {
         assertTrue("DataRuntime should hand out a fresh, open database", rebuilt.openHelper.writableDatabase.isOpen)
     }
 
-    /**
-     * The wipe must not claim Complete when a step really failed.
-     *
-     * `SecurityWipe`'s own KDoc says it "must never report [WipeResult.Complete] unless every step
-     * really ran", and three steps could not fail at all: `deviceContacts`, `deregister` and
-     * `clearPairingState` each delegated to helpers whose every statement sat in its own
-     * `runCatching { }.onFailure { Log }`. The one that mattered most deletes the user's contacts
-     * out of the OS provider — outside this app's sandbox — and a failure there was reported as a
-     * clean wipe.
-     *
-     * Provoked through the shared-prefs enumeration, which is the step whose precondition a test
-     * can actually remove: with `shared_prefs` made unreadable there is no way to enumerate what
-     * needs deleting, and "I cannot see what to delete" must not read as "there was nothing".
-     */
+    /** Provoked through shared_prefs: "cannot enumerate what to delete" must not read as Complete. */
     @Test
     fun wipeAndResetApp_reportsIncomplete_whenAStepFails() = runBlocking {
         val sharedPrefsDir = File(context.dataDir, "shared_prefs")
@@ -161,19 +138,7 @@ class SecurityWipeTest {
         }
     }
 
-    /**
-     * An incomplete wipe must stop resuming eventually.
-     *
-     * The marker used to be cleared only on a fully clean run, with no ceiling — so a permanently
-     * failing step meant the app wiped itself at every launch, forever, with no way for the user to
-     * get past it. `clearWebViewState` recursively deleted `cacheDir` in a live process where
-     * OkHttp, WebView and ART were still creating files inside it; losing that race is routine.
-     *
-     * The first fix overcorrected in the other direction: it expressed "stop resuming" by clearing
-     * the marker, which threw away the record that data was still on disk. Stopping the retries and
-     * forgetting the failure are separate things, and this asserts both halves — no resume, and no
-     * forgetting. See [WipeResurrectionTest.pastTheCeiling_theIncompleteStateIsPermanentAndNotForgotten].
-     */
+    /** Stopping the retries and forgetting the failure are separate; both halves are asserted. */
     @Test
     fun anIncompleteWipe_stopsResumingAfterTheCeiling_butStaysOnRecord() = runBlocking {
         val sharedPrefsDir = File(context.dataDir, "shared_prefs")
@@ -199,15 +164,7 @@ class SecurityWipeTest {
         }
     }
 
-    /**
-     * Local push teardown must not sit behind the network call.
-     *
-     * The connector's SQLite database holds the WebPush ECDH private key and auth secret. It used
-     * to be deleted *after* the server deregister, inside a `withTimeoutOrNull(3s)` whose bound was
-     * set to exactly the deregister client's own 3s `callTimeout` — so the two raced, and an
-     * unreachable server (airplane mode: one swipe, before burning ten PINs) reliably cancelled the
-     * coroutine before any of it ran. This test has no server at all, which is the failing case.
-     */
+    /** The connector DB holds the WebPush private key; its deletion must not sit behind the network. */
     @Test
     fun wipeAndResetApp_removesTheUnifiedPushConnectorStore_evenWithNoReachableServer() = runBlocking {
         // Stand in for the connector's own database, which lives in this app's sandbox.

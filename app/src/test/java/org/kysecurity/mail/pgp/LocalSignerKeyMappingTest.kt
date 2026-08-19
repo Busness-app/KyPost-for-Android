@@ -7,12 +7,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.kysecurity.mail.data.ContactEntity
 
-/**
- * The two decisions that turn a contact row into a trust input.
- *
- * Both feed [signatureStateFor]'s local branch, which is the only branch that can produce
- * `VERIFIED_CONFIRMED`. Getting either wrong hands the strongest claim in the app to the wrong row.
- */
+/** Both feed [signatureStateFor]'s local branch, the only source of VERIFIED_CONFIRMED. */
 class LocalSignerKeyMappingTest {
 
     private fun contact(
@@ -31,8 +26,6 @@ class LocalSignerKeyMappingTest {
         pgpKeyNeedsReverification = needsReverification,
         identityNeedsReview = identityNeedsReview,
     )
-
-    // --- address matching ---
 
     @Test
     fun anExactAddressMatches() {
@@ -63,8 +56,6 @@ class LocalSignerKeyMappingTest {
     fun anUndecodableEmailsColumnMatchesNothing() {
         assertFalse(contact(emails = "{not json").hasEmail("bob@example.com"))
     }
-
-    // --- what may be offered, and what may be confirmed ---
 
     @Test
     fun aRowWithNoKeyOffersNothing() {

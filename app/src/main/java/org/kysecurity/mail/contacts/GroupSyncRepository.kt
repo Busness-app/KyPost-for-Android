@@ -13,12 +13,7 @@ sealed class GroupSyncOutcome {
     data class Retry(val message: String) : GroupSyncOutcome()
 }
 
-/**
- * Full-refreshes the local [GroupEntity] cache from `GET /api/groups` on each sync cycle — no
- * delta cursor, mirroring [ContactSyncRepository]'s pairing/auth plumbing but simplified since
- * the groups list is small and has no offline-edit queue to reconcile (device never creates
- * groups; see `Client_Contact_Update.md` Part 2 point 3).
- */
+// Full refresh, no delta cursor and no offline queue: the device never creates groups.
 class GroupSyncRepository(
     private val db: AppDatabase,
     private val client: GroupsSyncClient,

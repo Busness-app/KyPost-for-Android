@@ -7,29 +7,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.Base64
 
-/**
- * The published key, the displayed code, and the polling window.
- *
- * Every assertion here distinguishes a correct implementation from a plausible wrong one. Audit
- * run-6 found the previous plan's Task 7 asserting `WorkInfo.progress`, which is empty for every
- * worker ever enqueued — it would have passed against a credential leak.
- */
 class EnrollmentCeremonyCodeTest {
 
     private fun bucketOf(ports: FakePorts): Long = ports.clock.epochSeconds() / 120L
 
-    /**
-     * **The one security property the device half owns.**
-     *
-     * The browser derives its code from the key the *server* handed it and refuses to seal unless
-     * the two match. If this device ever derived from a server-supplied value — or from a cached
-     * copy of what it published — the comparison would compare the server against itself and the
-     * whole control would be decoration.
-     *
-     * [FakeEnrollmentKeys] returns a different point from `rawPublicKey()` than the one
-     * `encodedPublicKey()` base64s, so "derived from the keystore" and "derived from what was
-     * published" are different strings. That is what makes this test able to fail.
-     */
+    /** [FakeEnrollmentKeys] returns different points from `rawPublicKey()` and `encodedPublicKey()`. */
     @Test
     fun theCodeDerivesFromTheKeystoreKeyAndNotFromWhatWasPublished() = runBlocking {
         val ports = FakePorts()
@@ -50,11 +32,7 @@ class EnrollmentCeremonyCodeTest {
         )
     }
 
-    /**
-     * Any write to the account's PGP identity clears the stored key server-side, so a device that
-     * published only at pairing fails silently after a rotation — the user sees a code, types it,
-     * and nothing ever arrives.
-     */
+    /** Any write to the account's PGP identity clears the stored key server-side. */
     @Test
     fun theKeyIsPublishedOnEveryCeremonyNotOnce() = runBlocking {
         val ports = FakePorts()
@@ -66,11 +44,7 @@ class EnrollmentCeremonyCodeTest {
         assertEquals("each ceremony mints a fresh keypair", 2, ports.keys.newKeyPairCalls)
     }
 
-    /**
-     * Three buckets are crossed in a five-minute window (0s, 120s, 240s), so exactly three codes are
-     * shown. Fewer means the code went stale on screen while the browser had moved on; more means it
-     * is being recomputed off the boundary, and the user is re-reading a code for no reason.
-     */
+    /** Three buckets are crossed in a five-minute window (0s, 120s, 240s). */
     @Test
     fun theCodeRecomputesOnTheBucketBoundaryAndNotBefore() = runBlocking {
         val ports = FakePorts()
@@ -94,14 +68,7 @@ class EnrollmentCeremonyCodeTest {
         assertEquals((bucket + 1) * 120L * 1_000L, shown.expiresAtEpochMs)
     }
 
-    /**
-     * The window is bounded, and the bound is not cosmetic: the screen holds a published enrollment
-     * key and a code the user is reading aloud, and spec 1 requires `deleteKeyPair()` on the exits of
-     * a ceremony — so there has to *be* a defined exit rather than a loop that runs until the process
-     * dies.
-     *
-     * 300 seconds at 3-second intervals is exactly 100 attempts.
-     */
+    /** 300 seconds at 3-second intervals is exactly 100 attempts. */
     @Test
     fun pollingStopsAtTheDeadline() = runBlocking {
         val ports = FakePorts()
@@ -113,25 +80,6 @@ class EnrollmentCeremonyCodeTest {
         assertTrue("every wait is the 3-second interval", ports.clock.sleeps.all { it == 3_000L })
     }
 
-    /**
-     * A resumed window must put a code back on screen **before it does anything else.**
-     *
-     * `shownBucket` is instance state that survives the loop, so a window reopened in the same bucket
-     * it closed in finds it unchanged and emits nothing. The screen then stays on `WaitingTimedOut` —
-     * "Nothing has arrived in the last five minutes" — while a window runs silently behind it, and
-     * the state that says the ceremony is *waiting on the browser* never appears. `poll()` resets
-     * `shownBucket` on entry to prevent it.
-     *
-     * The two existing tests cannot catch a missing reset and both pass without it:
-     * `theCodeRecomputesOnTheBucketBoundaryAndNotBefore` sees the same emissions either way because
-     * the first window already starts at `Long.MIN_VALUE`, and
-     * `checkAgainOpensAFreshWindowAgainstTheSameKeypair` derives its expected bucket *from the
-     * emission it receives*, so it cannot notice one that never arrived.
-     *
-     * The envelope is made to arrive on the resumed window's FIRST fetch. That is what makes this
-     * decisive rather than merely slow: with the reset the next state is `ShowingCode`, without it
-     * the ceremony goes straight to `Opening` and no code is ever re-shown.
-     */
     @Test
     fun aResumedWindowShowsACodeBeforeItPolls() = runBlocking {
         val ports = FakePorts()
@@ -140,9 +88,7 @@ class EnrollmentCeremonyCodeTest {
         ceremony.run()
         assertTrue(ports.states.last() is EnrollmentUiState.WaitingTimedOut)
 
-        // Same bucket the window closed in: the clock is not advanced here on purpose. A test that
-        // advanced it would cross a boundary, the bucket would differ, and the emission would happen
-        // with or without the reset — which is exactly how this fix came to have no test.
+        // Same bucket the window closed in: the clock is not advanced here on purpose.
         val probe = FakeEnrollmentKeys()
         ports.transport.fetchWhenExhausted =
             EnrollmentCallResult.Envelope(sealEnvelope(probe))
@@ -157,13 +103,7 @@ class EnrollmentCeremonyCodeTest {
         )
     }
 
-    /**
-     * **"Check again" resumes; it does not restart.**
-     *
-     * A restart would rotate the key, which would invalidate the code the user may have already
-     * typed into the browser. Leaving the screen and re-entering is the restart, and that path does
-     * rotate.
-     */
+    /** A restart would rotate the key and invalidate a code the user may have already typed. */
     @Test
     fun checkAgainOpensAFreshWindowAgainstTheSameKeypair() = runBlocking {
         val ports = FakePorts()
@@ -178,9 +118,7 @@ class EnrollmentCeremonyCodeTest {
         assertEquals("the key must not be re-minted", 1, ports.keys.newKeyPairCalls)
         assertEquals("the key must not be republished", 1, ports.transport.publishedKeys.size)
 
-        // The code itself still rotates with the 120-second bucket — that is not a restart, and
-        // the browser accepts the current bucket. What must not change is the key BEHIND it, so
-        // the assertion is that the resumed code is still derivable from the same keystore point.
+        // The code rotates with the 120-second bucket; what must not change is the key behind it.
         val resumed = ports.states.drop(statesBeforeResume)
             .filterIsInstance<EnrollmentUiState.ShowingCode>()
             .first()
@@ -210,8 +148,6 @@ class EnrollmentCeremonyCodeTest {
         assertTrue(ports.states.any { it is EnrollmentUiState.Opening })
     }
 
-    /** A transient network failure or a 429 mid-window is not a reason to tear down a ceremony the
-     *  user is halfway through typing. */
     @Test
     fun aTransientFailureOrRateLimitKeepsWaiting() = runBlocking {
         val ports = FakePorts(
@@ -225,16 +161,12 @@ class EnrollmentCeremonyCodeTest {
         ports.ceremony().run()
 
         assertEquals(3, ports.transport.fetchCalls)
-        // Up to the point the envelope arrives. What happens to a `{}` envelope afterwards is
-        // Task 5's business, and this test must not start asserting it.
         assertTrue(
             ports.states.takeWhile { it !is EnrollmentUiState.Opening }
                 .none { it is EnrollmentUiState.Failed },
         )
     }
 
-    /** A credential the server refuses will not start working, and the ceremony holds a published
-     *  key that must not be left behind. */
     @Test
     fun a401WhilePollingFailsAndDestroysTheKeypair() = runBlocking {
         val ports = FakePorts(

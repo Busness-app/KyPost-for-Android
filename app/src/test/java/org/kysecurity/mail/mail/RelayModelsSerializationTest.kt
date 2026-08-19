@@ -50,10 +50,6 @@ class RelayModelsSerializationTest {
     }
 
     @Test
-    // The server sends the message's real IMAP keywords, including the $Phishing
-    // flag the anti-phishing warning bar reads. This DTO ignored the field
-    // entirely, so keywords were synthesised from `label` alone and a
-    // server-set keyword could never reach the UI.
     fun relayInboxResponseDto_decodesKeywordsArray() {
         val jsonText = """
             {

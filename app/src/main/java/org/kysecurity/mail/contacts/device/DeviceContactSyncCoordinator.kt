@@ -12,13 +12,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class DeviceContactSyncCoordinator(
     private val repository: DeviceContactRepository,
     private val settings: DeviceContactSyncSettings,
-    /**
-     * Hostile Location Protection makes Room in-memory so nothing reaches disk — but device
-     * contact sync writes names, email addresses, phone numbers and PGP keys into the OS contacts
-     * provider, which is not this app's storage and is not in-memory. Syncing while protection is
-     * on published exactly the data the feature exists to withhold, so it is refused outright
-     * rather than merely defaulted off.
-     */
+    // Device sync writes into the OS contacts provider, which the in-memory database does not cover.
     private val hostileLocationEnabled: () -> Boolean = { false },
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -29,15 +23,7 @@ class DeviceContactSyncCoordinator(
 
     fun syncNowAsync() {
         if (!syncAllowed() || isSyncing.getAndSet(true)) return
-        scope.launch {
-            try {
-                withTimeoutOrNull(30_000L) {
-                    runCatching { repository.syncAll() }
-                }
-            } finally {
-                isSyncing.set(false)
-            }
-        }
+        scope.launch { runBoundedSync("syncNow") }
     }
 
     fun syncWithDebounce() {
@@ -45,15 +31,36 @@ class DeviceContactSyncCoordinator(
         debounceJob?.cancel()
         debounceJob = scope.launch {
             delay(3000)
-            if (!isSyncing.getAndSet(true)) {
+            if (!isSyncing.getAndSet(true)) runBoundedSync("debounced")
+        }
+    }
+
+    // Not runCatching: it catches Throwable and would swallow the timeout's own cancellation.
+    private suspend fun runBoundedSync(trigger: String) {
+        try {
+            val failedStages = withTimeoutOrNull(SYNC_TIMEOUT_MS) {
                 try {
-                    withTimeoutOrNull(30_000L) {
-                        runCatching { repository.syncAll() }
-                    }
-                } finally {
-                    isSyncing.set(false)
+                    repository.syncAll()
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    android.util.Log.e(TAG, "Sync ($trigger) threw before any stage could report", e)
+                    listOf("syncAll")
                 }
             }
+            when {
+                failedStages == null ->
+                    android.util.Log.e(TAG, "Sync ($trigger) hit the ${SYNC_TIMEOUT_MS}ms ceiling and was abandoned")
+                failedStages.isNotEmpty() ->
+                    android.util.Log.e(TAG, "Sync ($trigger) stages failed: $failedStages")
+            }
+        } finally {
+            isSyncing.set(false)
         }
+    }
+
+    private companion object {
+        const val TAG = "DeviceContactSync"
+        const val SYNC_TIMEOUT_MS = 30_000L
     }
 }

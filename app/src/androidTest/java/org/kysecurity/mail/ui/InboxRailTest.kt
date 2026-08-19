@@ -11,12 +11,7 @@ import org.junit.runner.RunWith
 import org.kysecurity.mail.InboxActivity
 import org.kysecurity.mail.R
 
-/**
- * The bool resource and the layout resolve through the same qualifier, so they can never disagree.
- * This asserts exactly that pairing: wherever nav_is_rail is true a NavigationRailView was
- * inflated, and wherever it is false one was not. It therefore passes on a phone and on a tablet
- * without the test knowing which it is running on.
- */
+/** nav_is_rail and the layout share a qualifier, so this passes on both phone and tablet. */
 @RunWith(AndroidJUnit4::class)
 class InboxRailTest {
 
