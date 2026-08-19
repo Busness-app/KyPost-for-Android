@@ -228,15 +228,28 @@ object SecurityWipe {
 
         // Everything below touches the network; nothing below it destroys local data.
 
-        // Network, so it belongs below that line; withTimeoutOrNull does bound Task.await().
-        step("fcmToken") {
-            val settled = withTimeoutOrNull(FCM_TEARDOWN_TIMEOUT_MS) {
+        // NOT a `step`, for the same reason the downloads sweep above is not one and the deregister
+        // call below is not either: this needs a reachable Firebase, and nothing the user can do
+        // makes one appear. As a step it failed the wipe on every resume of an offline device until
+        // MAX_WIPE_RESUMES marked it abandoned, at which point LockedActivity blocks the app for
+        // good — bricking the client because the network was down during a wipe. The local half of
+        // the token is already gone with the sandbox; what survives is a server-side subscription,
+        // which is exactly what the deregister below reports rather than fails on.
+        // withTimeoutOrNull does bound Task.await().
+        val fcmTornDown = runCatching {
+            withTimeoutOrNull(FCM_TEARDOWN_TIMEOUT_MS) {
                 com.google.firebase.messaging.FirebaseMessaging.getInstance().deleteToken().await()
                 // The token is not the installation. Leaving the Fid behind keeps this device
                 // linkable across the wipe and a later re-pair.
                 com.google.firebase.installations.FirebaseInstallations.getInstance().delete().await()
-            }
-            if (settled == null) throw IOException("FCM teardown did not finish within ${FCM_TEARDOWN_TIMEOUT_MS}ms")
+            } != null
+        }.onFailure { android.util.Log.e(TAG, "FCM teardown threw", it) }.getOrDefault(false)
+        if (!fcmTornDown) {
+            android.util.Log.e(
+                TAG,
+                "Local wipe finished but FCM teardown did not complete within ${FCM_TEARDOWN_TIMEOUT_MS}ms; " +
+                    "this device may stay subscribed and linkable until it is removed server-side",
+            )
         }
 
         // Network LAST, bounded by the client's own callTimeout; not folded into `failed`.
