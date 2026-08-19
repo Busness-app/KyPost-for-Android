@@ -10,18 +10,12 @@ import androidx.lifecycle.lifecycleScope
 import org.kysecurity.mail.R
 import kotlinx.coroutines.launch
 
-/** Shared permission-check -> request -> enable sequence for device contact sync, used by both
- *  the Contacts screen's menu toggle and the pairing screen's first-scan intro popup so there's
- *  one canonical enable path instead of two copies of this logic. */
 class DeviceContactSyncEnabler(
     private val activity: AppCompatActivity,
     private val permissionLauncher: ActivityResultLauncher<Array<String>>,
     private val onEnabled: () -> Unit = {},
 ) {
-    /** Returns true if permissions had to be requested asynchronously — the caller must wait for
-     *  the permission launcher's own callback (which should call [enableAfterPermissionGrant] on
-     *  grant) before doing anything that assumes sync is now enabled. Returns false if it
-     *  resolved synchronously because permissions were already granted. */
+    /** True when permissions had to be requested; the caller must wait for the launcher callback. */
     fun checkAndEnable(): Boolean {
         // Refused, not just defaulted off: synced contacts land in the OS contacts provider, which
         // Hostile Location Protection's in-memory database does not cover.
@@ -61,13 +55,21 @@ class DeviceContactSyncEnabler(
         }
         activity.lifecycleScope.launch {
             try {
-                graph.accountManager.ensureAccount()
+                // Enabling over a failed account creation scheduled the periodic worker against an
+                // account that does not exist, and left teardown with no account to purge rows under.
+                if (!graph.accountManager.ensureAccount()) {
+                    Toast.makeText(activity, R.string.contacts_device_sync_account_failed, Toast.LENGTH_LONG).show()
+                    return@launch
+                }
                 graph.settings.setEnabled(true)
                 graph.observer.register()
                 DeviceContactSyncScheduler.ensurePeriodic(activity)
                 graph.coordinator.syncNowAsync()
                 Toast.makeText(activity, R.string.contacts_device_sync_enabled_toast, Toast.LENGTH_SHORT).show()
                 onEnabled()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // The activity went away mid-enable; swallowing it toasts a destroyed activity.
+                throw e
             } catch (e: Exception) {
                 Toast.makeText(activity, "Failed to enable device sync: ${e.message}", Toast.LENGTH_SHORT).show()
             }

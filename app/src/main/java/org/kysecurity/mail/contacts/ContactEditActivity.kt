@@ -25,10 +25,7 @@ import kotlinx.coroutines.launch
 import org.kysecurity.mail.security.LockedActivity
 import org.kysecurity.mail.security.showSecurely
 
-/** Create/edit form, organized into collapsible sections (Name, Work, Contact, Addresses, Online,
- *  Personal, Notes, Other). Only fn is required per Mobile_Contact_Sync.md's field table; everything
- *  else is optional. Covers every contact field except photoRef/groupIDs (no UI yet) and isSelf/
- *  pgpKey (read-only badges — set only via the web app / PGP QR exchange respectively). */
+/** Covers every contact field except photoRef/groupIDs (no UI) and isSelf/pgpKey (read-only). */
 class ContactEditActivity : LockedActivity() {
 
     private lateinit var avatarView: TextView
@@ -64,25 +61,13 @@ class ContactEditActivity : LockedActivity() {
     private var existingUid: String = ""
     private var existingRev: Long = 0
 
-    /** The full contact as loaded from Room, including every field this single-screen editor has
-     *  no UI for (structured name parts, addresses, ims, websites, relations, events, phonetic
-     *  names, department, customFields, pronouns, photoRef, groupIDs, pgpKey, isSelf, ...). [save]
-     *  must `.copy()` off this rather than building a fresh [ContactDto], or every field not shown
-     *  here gets silently wiped — locally immediately, and on the server too, since both the local
-     *  upsert and the server's PUT/push handlers fully replace the stored contact rather than
-     *  merging. Stays at [ContactDto]'s all-default value for new (not-yet-existing) contacts,
-     *  which is correct: there's nothing prior to preserve. */
+    /** [save] must `.copy()` off this — the local upsert and the server push both replace the row. */
     private var loadedDto: ContactDto = ContactDto()
 
     override fun onCreateUnlocked(savedInstanceState: Bundle?) {        setContentView(R.layout.activity_contact_edit)
         applyThemeToActivity(this)
         val formRoot = findViewById<View>(R.id.contactEditRoot)
-        // Keeps this form out of the saved-state Bundle. Every EditText below freezes its own text,
-        // so the framework's default view-hierarchy save writes the whole contact — names, numbers,
-        // addresses, notes, birthday — into `ActivityRecord.mIcicle` over Binder, where the app
-        // lock, SecurityWipe and ProcessState.resetAll() cannot reach it. A parent skips a child
-        // with this cleared and does not descend into it, so the entire subtree stays out.
-        // ContactEditDraftCache is what carries an in-progress edit across a recreate instead.
+        // Keeps this form out of the saved-state Bundle; with this cleared the subtree is skipped.
         formRoot.isSaveFromParentEnabled = false
         applyTopInsetWithHeader(this, formRoot)
         setTitle(R.string.contacts_edit_title)
@@ -121,10 +106,7 @@ class ContactEditActivity : LockedActivity() {
                 valueField.inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
                 labelField.setText(item.label.orEmpty())
                 valueField.setText(item.value)
-                // Both fields must read from each other's *live* text, not the bind-time item
-                // snapshot — two separate listeners each doing item.copy(singleField = ...) would
-                // silently drop whichever field was edited first the next time the other field
-                // fires (each closes over the same stale item).
+                // Read both fields' live text: a listener closing over the bind-time item drops edits.
                 val emit: () -> Unit = {
                     onItemChanged(
                         item.copy(
@@ -292,10 +274,7 @@ class ContactEditActivity : LockedActivity() {
                 dateField.hint = getString(R.string.contacts_event_date_hint)
                 labelField.setText(item.label.orEmpty())
                 dateField.setText(item.date)
-                // wireDatePicker's callback fires after field.setText(formatted) already ran (see
-                // wireDatePicker below), so dateField.text is current by the time emit() reads it —
-                // same live-read approach as every other multi-field row, avoiding the stale-item
-                // closure bug (editing the label then picking a date must not drop the label edit).
+                // wireDatePicker sets the text before this fires, so the live read below is current.
                 val emit: () -> Unit = {
                     onItemChanged(
                         item.copy(
@@ -386,10 +365,7 @@ class ContactEditActivity : LockedActivity() {
             deleteButton.visibility = View.GONE
         }
 
-        // A draft was .copy()-ed off the loaded contact, so it already carries every field the form
-        // does not show and there is nothing left to read. Restoring it *instead of* loading keeps
-        // the database read from landing afterwards and overwriting the user's edits: populateForm
-        // only suspends for the self-contact, so "the draft writes last" is not a race worth having.
+        // Restore instead of loading, so the database read cannot land afterwards over the edits.
         val draft = ContactEditDraftCache.take(existingUid)
         when {
             draft != null -> lifecycleScope.launch { populateForm(draft) }
@@ -405,10 +381,7 @@ class ContactEditActivity : LockedActivity() {
         // onCreate bailed before assigning any view: there is nothing to stash, and touching the
         // lateinit fields below would throw.
         if (redirectedToUnlock) return
-        // Leaving this screen for good is not the "came back to a destroyed form" case this cache
-        // exists for — a successful save already wrote to the database, and a back-out was
-        // deliberate. Clearing matches ComposeActivity, and stops an earlier stash from
-        // resurrecting one contact's PII into the next contact opened.
+        // A save already wrote to the database and a back-out was deliberate; clearing stops bleed.
         if (isFinishing) {
             ContactEditDraftCache.clear()
             return
@@ -537,9 +510,7 @@ class ContactEditActivity : LockedActivity() {
             if (existingUid.isBlank()) {
                 graph.repository.queueCreate(dto)
             } else {
-                // The user is editing this contact themselves, in this app, behind the app lock.
-                // Their own edit to an address is not the silent third-party rebind that
-                // pgpKeyNeedsReverification exists to catch.
+                // The user's own edit, behind the app lock, is not the third-party rebind this catches.
                 graph.repository.queueUpdate(dto, identityChanged = false)
             }
             graph.coordinator.syncNowAsync()
@@ -571,10 +542,7 @@ class ContactEditActivity : LockedActivity() {
         }
     }
 
-    /** Wires [field] to open a [android.app.DatePickerDialog] on tap, pre-filled from [field]'s
-     *  current `yyyy-MM-dd` text if present (else today), writing the picked date back as
-     *  `yyyy-MM-dd` and invoking [onPicked]. [field] must have `focusable="false"` (see the row/
-     *  section layouts) so tapping it opens the picker instead of the soft keyboard. */
+    /** [field] must have `focusable="false"` so a tap opens the picker, not the soft keyboard. */
     private fun wireDatePicker(field: EditText, onPicked: (String) -> Unit) {
         field.setOnClickListener {
             val calendar = java.util.Calendar.getInstance()
@@ -599,8 +567,6 @@ class ContactEditActivity : LockedActivity() {
         }
     }
 
-    /** [android.text.TextWatcher] that only cares about the end state, matching every row-field
-     *  use in this Activity (none need before/during-change info). */
     private class SimpleTextWatcher(private val onChanged: () -> Unit) : android.text.TextWatcher {
         override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
         override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
@@ -618,10 +584,7 @@ class ContactEditActivity : LockedActivity() {
     }
 }
 
-/** Pulled out of [ContactEditActivity.save] so it's unit-testable without a Context-backed Room/
- *  Activity. Applies real edits for every field the editor exposes UI for, while `.copy()`-ing off
- *  [loaded] so the handful of fields it doesn't (`photoRef`, `groupIDs`, `isSelf`, `pgpKey`) survive
- *  untouched instead of silently wiping on save (see [ContactEditActivity]'s `loadedDto` KDoc). */
+/** `.copy()`s off [loaded] so photoRef/groupIDs/isSelf/pgpKey survive instead of being wiped. */
 internal fun mergedContactDto(
     loaded: ContactDto,
     uid: String,

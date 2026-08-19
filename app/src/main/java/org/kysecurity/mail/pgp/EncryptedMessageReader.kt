@@ -1,20 +1,11 @@
 package org.kysecurity.mail.pgp
 
-/**
- * The ciphertext source, behind an interface so the orchestrator takes no dependency on OkHttp,
- * pairing credentials or a `Context`.
- */
+/** The ciphertext source, behind an interface so the orchestrator takes no Android dependency. */
 internal interface PayloadSource {
     suspend fun fetch(mailbox: String, messageId: String): PgpPayloadResult
 }
 
-/**
- * Every way reading an encrypted message can end. One per row of the design spec's exit table.
- *
- * They are separate objects rather than one error string because the UI shows a different sentence,
- * and sometimes a different button, for each. [Cancelled] in particular is not an error: the user
- * dismissed a sheet they raised, and the screen simply goes back to offering the Decrypt button.
- */
+/** Every way reading an encrypted message can end. One per row of the spec's exit table. */
 internal sealed class ReadOutcome {
     data class Decrypted(
         val body: DecryptedBody,
@@ -47,38 +38,18 @@ internal sealed class ReadOutcome {
     data class DecryptFailed(val message: String) : ReadOutcome()
 }
 
-/**
- * Reads one client-protected message: unseal if needed, fetch, decrypt, bind the signature, parse.
- *
- * **No Android imports**, following [EnrollmentCeremony] — which is what lets the whole exit table
- * be a JVM test with fakes instead of an instrumented one.
- *
- * The decrypted body is returned to the caller and never persisted. See the design spec's
- * non-negotiable rules: it must not reach Room, and must not reach `fetchedBodyHtml`.
- */
+/** Reads one client-protected message. No Android imports; the decrypted body is never stored. */
 internal class EncryptedMessageReader(
     private val opener: VaultOpener,
     private val payloads: PayloadSource,
-    /**
-     * This device's own answer to "whose key is this". Defaults to holding none, which is what a
-     * caller with no contact store (and every JVM fixture that does not care) gets: the verdict
-     * then falls back to the relay's keys, capped below `VERIFIED_CONFIRMED`.
-     */
+    /** This device's own answer to "whose key is this". Empty by default: the verdict caps lower. */
     private val localSignerKeys: LocalSignerKeyLookup = LocalSignerKeyLookup { emptyList() },
 ) {
 
     suspend fun read(
         mailbox: String,
         messageId: String,
-        /** The sender exactly as displayed. Display context only — deliberately unread by this
-         *  function. The signature binding is the SERVER's job: it narrows `payload.signerKeys` to
-         *  the resolved sender before this ever runs (see the `offeredKeys` comment below), so this
-         *  reader has no binding decision left to make with it. Do not "wire this up" to filter
-         *  `signerKeys` — that reintroduces the client-side From parser an earlier task deleted
-         *  after it diverged from the server's on 27 of 111 adversarial headers. Kept as a parameter
-         *  because callers already have it and a future caller may want it for a purpose that is
-         *  NOT the signature verdict (e.g. logging, or comparing against `resolvedSender` for
-         *  display). */
+        /** Display only, deliberately unread. Do not wire into the signature verdict; the server binds. */
         sender: String,
         /** False on an automatic attempt when the screen opens; true when the user tapped Decrypt.
          *  This is what keeps the biometric sheet tied to a deliberate action. */
@@ -96,7 +67,6 @@ internal class EncryptedMessageReader(
         }
         // Re-read rather than trusting the branch above: the app can lock between the unseal and
         // here, and lockNow() clears this holder.
-        //
         if (!EnrollmentSession.isHeld()) return ReadOutcome.NeedsUnlock
 
         val payload = when (val result = payloads.fetch(mailbox, messageId)) {
@@ -107,77 +77,15 @@ internal class EncryptedMessageReader(
             is PgpPayloadResult.Failed -> return ReadOutcome.FetchFailed(result.message)
         }
 
-        // The local answer, resolved before any verdict is computed. `resolvedSender` is still the
-        // server's parse of the From header — the client deliberately holds no parser of its own —
-        // but what that address is used for has changed: it is now a lookup key into this device's
-        // own contact store rather than a label to hang the server's own `verified` claim on. A
-        // relay that lies about the address gets a lookup that misses, which produces KEY_CHANGED
-        // or SIGNER_UNKNOWN, never a confirmation.
+        // The local answer, resolved first: a relay that lies about the address gets a lookup miss.
         val localKeys = runCatching { localSignerKeys.keysFor(payload.resolvedSender) }
             .getOrDefault(emptyList())
 
-        // `payload.signerKeys` arrives ALREADY narrowed to the displayed sender by the server (Task
-        // 14's `boundSignerKeysForSender`). Do not re-narrow here, and do not parse `sender` to do
-        // it: a second parser deciding the same binding is exactly the defect an earlier task
-        // removed — the client's own From parser diverged from the server's on 27 of 111
-        // adversarial headers, including RFC 5322 comments, which let any contact forge a verified
-        // badge for anyone.
-        //
-        // Conflicted keys are still dropped here: they carry no key material and must never be
-        // offered to a signature check. They stay in `payload.signerKeys` so `signatureStateFor`
-        // can report KEY_CHANGED.
-        //
-        // This filter cannot change today's ReadOutcome: signatureStateFor returns KEY_CHANGED for
-        // any SIGNED message the moment ANY entry in `payload.signerKeys` has `conflict = true` —
-        // checked after `!present -> NONE` and `signerKeys.isEmpty() -> SIGNER_UNKNOWN`, but still
-        // before it ever looks at what got offered here or whether the signature matched — so no
-        // test can observe this line doing anything (confirmed:
-        // EncryptedMessageReaderTest.aConflictedKeyYieldsKeyChanged still passes with this filter
-        // deliberately removed). It stays anyway, as defence-in-depth against exactly one plausible
-        // future edit: someone reordering signatureStateFor so conflict no longer short-circuits
-        // first. If that ever happens, offering a key that failed its TOFU pin would start to
-        // matter, and deleting this filter now would make that future edit silently unsafe. Do not
-        // delete this as "dead code" without re-checking signatureStateFor's precedence first.
-        //
-        // Locally-held keys go FIRST. PgpDecryptor resolves the verifying key by key id out of the
-        // first ring that contains it, so when this device and the relay both hold a key for the
-        // same id, the copy that was fingerprinted locally is the one the signature is checked
-        // against. The relay's copies stay in the list because they are what makes a first-contact
-        // message verifiable at all — and offering them is safe now that the verdict below will not
-        // promote anything they support past VERIFIED_SEEN_BEFORE.
+        // The server already narrowed signerKeys to the sender — do not re-narrow. Local keys go first.
         val offeredKeys =
             localKeys.map { it.publicKey } + payload.signerKeys.filter { !it.conflict }.map { it.publicKey }
 
-        // A signed-but-not-encrypted message arrives with a readable body and a detached
-        // signature; there is nothing to decrypt.
-        //
-        // UNREACHABLE IN PRODUCTION TODAY. This function, attemptDecrypt(), is only invoked from
-        // EmailDetailActivity's PgpMessageState.CLIENT_PROTECTED branch, and pgpMessageStateOf()
-        // only reaches CLIENT_PROTECTED when the server's own pgpEncrypted flag is true — a
-        // signed-only message never sets it, and the server keeps the two payloads mutually
-        // exclusive (see signedOnlyBody in pgp_client_read.go, which zeroes the body whenever
-        // encryptedPayload is non-empty and vice versa). So payload.encryptedPayload.isBlank() has
-        // no live caller that can make it true.
-        //
-        // Do not delete it and do not try to make it work — reviving it is a design decision for
-        // the owner, not a cleanup. If it IS revived: payload.body here is signedOnlyBody's
-        // enmime-extracted DISPLAY body, not the canonical octets that were actually signed —
-        // pgp_client_read.go's own comment on verifySignedOnlyMessageContent documents that a
-        // canonicalization mismatch there is routine and just leaves PGPVerified false rather than
-        // erroring. verifyDetached below has no such tolerance: a body that reads identically to a
-        // human but differs byte-for-byte from what was signed fails verification outright, and
-        // signatureStateFor maps a bound sender plus an unverifiable signature to INVALID — the
-        // strongest accusation this app renders. Reviving this path with payload.body as-is would
-        // therefore falsely accuse real correspondents of a bad signature on a routine, expected
-        // mismatch. It would need the canonical signed octets, not the display body, before it can
-        // safely run.
-        //
-        // The offered key is narrowed to the displayed sender here too. Taking "whichever
-        // non-conflicted contact sorts first" would fail verification for a genuine
-        // detached-signed message from anyone else — and signatureStateFor maps a bound sender
-        // plus an unverifiable signature to INVALID, which tells the user to treat a legitimate
-        // correspondent's message as untrusted. Same narrowing rule as the encrypted path above,
-        // for the same reason.
+        // Signed-but-not-encrypted. Unreachable today; do not revive without the canonical signed octets.
         if (payload.encryptedPayload.isBlank()) {
             val raw = offeredKeys.firstNotNullOfOrNull { armored ->
                 PgpDecryptor.verifyDetached(
@@ -186,14 +94,7 @@ internal class EncryptedMessageReader(
                     armoredSignature = payload.signaturePayload,
                 ).takeIf { it.valid }
             } ?: PgpDecryptor.verifyDetached(
-                // This IS "whichever non-conflicted contact sorts first" — it looks like the exact
-                // thing the comment above forbids, but it is not the binding decision: nothing
-                // that key id verified against feeds the verdict below. This fallback only exists
-                // to produce a non-null RawSignature (present = true, valid = false, some
-                // signerKeyId) when every real candidate above failed, so signatureStateFor can
-                // still run its own key-id re-match against payload.signerKeys and land on
-                // SIGNER_UNKNOWN or INVALID rather than crash on a null. The sender binding is
-                // enforced there, not by which key was armored here.
+                // Not the binding decision: this only yields a non-null RawSignature so the verdict can run.
                 armoredPublicKey = offeredKeys.firstOrNull().orEmpty(),
                 body = payload.body.toByteArray(Charsets.UTF_8),
                 armoredSignature = payload.signaturePayload,

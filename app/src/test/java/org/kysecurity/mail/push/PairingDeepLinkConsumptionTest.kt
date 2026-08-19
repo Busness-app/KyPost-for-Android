@@ -5,25 +5,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 
-/**
- * A pairing deep link must be consumed exactly once, on **every** path that consumes one.
- *
- * `onNewIntent` cleared `intent.data` after consuming it and carried a paragraph explaining why: an
- * attacker's cancelled "replace your pairing with evil.tld" prompt resurfacing later, with no link
- * tap to explain it, after the user has been trained by a legitimate one. `onCreate` did not — and
- * `onCreate` is the path that is actually reached first, because a browser or a co-installed app
- * delivers `kypost://native-pair` through `PushPairingLinkActivity` -> `startActivity`. `getIntent()`
- * then keeps returning that Intent with its data intact, so every rotation, dark-mode toggle and
- * restore-after-eviction re-raised the prompt. One call site had the guard and the other did not.
- *
- * **A source-level assertion, deliberately.** The first version of this was an instrumented test
- * that launched the Activity with a deep link and asserted the cleared Intent. It could not be made
- * to pass: the Activity never reached RESUMED under `ActivityScenario`, and the property is a
- * lifecycle detail that a harness has to reproduce exactly to say anything about. This says less —
- * it cannot prove the Intent is cleared at runtime — but what it does say, it says reliably, and it
- * is the thing that actually regressed: a second consumption site added without the guard beside
- * it. Same reasoning, and the same crude-reader technique, as `SourceRulesTest`.
- */
+/** A source-level check, not a runtime one: it reads PushPairingActivity.kt as text. */
 class PairingDeepLinkConsumptionTest {
 
     @Test

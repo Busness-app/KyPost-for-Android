@@ -7,21 +7,11 @@ import org.unifiedpush.android.connector.UnifiedPush
 import org.unifiedpush.android.connector.data.ResolvedDistributor
 import org.kysecurity.mail.security.showSecurely
 
-/**
- * Drives the UnifiedPush distributor selection + registration flow from an Activity.
- * Mirrors the flow used by the official UnifiedPush Android example: resolve first
- * to decide whether a confirmation prompt is needed, then let the library itself
- * show its own distributor picker when the choice is ambiguous (tryUseCurrentOrDefaultDistributor
- * launches that picker internally and reports the outcome via callback).
- */
+/** Drives UnifiedPush distributor selection; the library shows its own picker when ambiguous. */
 object UnifiedPushRegistrar {
     private const val DEFAULT_INSTANCE = "default"
 
-    /**
-     * Begins registration. [onResult] reports whether a distributor was selected
-     * and registration was requested — the endpoint itself arrives later,
-     * asynchronously, via KyPostUnifiedPushService.onNewEndpoint.
-     */
+    /** [onResult] reports selection only; the endpoint arrives later via onNewEndpoint. */
     fun beginRegistration(activity: Activity, onResult: (success: Boolean, error: String?) -> Unit) {
         when (UnifiedPush.resolveDefaultDistributor(activity)) {
             is ResolvedDistributor.Found -> confirmAndRegister(activity, onResult)

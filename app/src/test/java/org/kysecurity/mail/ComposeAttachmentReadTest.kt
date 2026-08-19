@@ -7,15 +7,6 @@ import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.InputStream
 
-/**
- * The outbound half of the attachment size bound.
- *
- * `ComposeActivity.addAttachment` used to call `readBytes()` and check the 25 MB cap against
- * `bytes.size` — i.e. after the whole document was already in the heap — while
- * `OpenableColumns.SIZE` was read and then never used. Picking a large file from a cloud provider
- * was an `OutOfMemoryError`, which `runCatching` does not catch, so it was a hard crash with an
- * unsent message in flight. [readAtMost] is what makes the refusal happen before the allocation.
- */
 class ComposeAttachmentReadTest {
 
     @Test
@@ -32,9 +23,6 @@ class ComposeAttachmentReadTest {
 
     @Test
     fun readAtMost_throwsRatherThanTruncating() {
-        // Returning the prefix is the failure mode this exists to prevent: almost every file format
-        // reads a truncated file without complaining, so the recipient gets a corrupt attachment and
-        // the sender is never told.
         val payload = ByteArray(4096)
         assertThrows(AttachmentTooLargeException::class.java) {
             readAtMost(ByteArrayInputStream(payload), 4095L)
@@ -43,9 +31,7 @@ class ComposeAttachmentReadTest {
 
     @Test
     fun readAtMost_refusesBeforeConsumingTheWholeSource() {
-        // The bound has to hold on a stream whose length is not known up front — a provider that
-        // under-reports or omits OpenableColumns.SIZE is exactly the case the declared-size
-        // pre-check cannot catch.
+        // A provider may under-report or omit OpenableColumns.SIZE, so length is unknown up front.
         val counting = CountingStream(totalBytes = 64 * 1024 * 1024)
         assertThrows(AttachmentTooLargeException::class.java) {
             readAtMost(counting, 1024L)
@@ -54,7 +40,6 @@ class ComposeAttachmentReadTest {
         assertEquals(true, counting.served < 1024 * 1024)
     }
 
-    /** An endless-ish source that reports how much of itself was actually read. */
     private class CountingStream(private val totalBytes: Long) : InputStream() {
         var served = 0L
             private set

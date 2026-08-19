@@ -4,16 +4,7 @@ import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 
-/**
- * Mirrors the `Contact` JSON shape in Mobile_Contact_Sync.md. [emailsJson]/[phonesJson]/
- * [addressesJson] hold pre-encoded kotlinx.serialization JSON for the field-entry lists — plain
- * String columns rather than a TypeConverter, since callers already have a Json instance handy
- * from decoding the sync response. The newer list columns ([groupIDsJson], [imsJson],
- * [websitesJson], [relationsJson], [eventsJson], [customFieldsJson]) carry an explicit
- * `@ColumnInfo(defaultValue = "[]")` — unlike the original three, they were added to an
- * already-populated table via [AppDatabase.MIGRATION_3_4], and SQLite requires a NOT NULL
- * column added by ALTER TABLE to declare a default so existing rows stay valid.
- */
+// The @ColumnInfo defaults exist because MIGRATION_3_4 added those NOT NULL columns by ALTER TABLE.
 @Entity(tableName = "contacts")
 data class ContactEntity(
     @PrimaryKey val uid: String,
@@ -47,14 +38,8 @@ data class ContactEntity(
     @ColumnInfo(defaultValue = "[]") val customFieldsJson: String = "[]",
     val pronouns: String? = null,
     @ColumnInfo(defaultValue = "0") val isSelf: Boolean = false,
-    // Locally-computed OpenPGP fingerprint of [pgpKey] (see PgpFingerprint.compute) — never
-    // trusts a server-supplied fingerprint string, same discipline as the QR key-exchange flow.
-    // Used only to detect when a sync-delivered pgpKey silently changes; not synced to the server.
+    // Computed locally (PgpFingerprint.compute); never server-supplied, never synced back.
     val pgpKeyFingerprint: String? = null,
     @ColumnInfo(defaultValue = "0") val pgpKeyNeedsReverification: Boolean = false,
-    /**
-     * The *identity* alarm, kept separate from [pgpKeyNeedsReverification] because they answer
-     * different questions and are cleared by different evidence.
-     */
     @ColumnInfo(defaultValue = "0") val identityNeedsReview: Boolean = false,
 )

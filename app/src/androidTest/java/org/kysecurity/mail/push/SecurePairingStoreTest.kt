@@ -42,11 +42,6 @@ class SecurePairingStoreTest {
         assertEquals(pairing, reloaded)
     }
 
-    /**
-     * The in-memory pin cache must stay in step with the file. This was a paragraph of KDoc
-     * asserting that [SecurePairingStore.saveTlsPin] and [SecurePairingStore.clearPairing] are the
-     * only writers and both update it; prose does not fail the build.
-     */
     @Test
     fun tlsPinCache_tracksEveryWriteAndSurvivesReload() = runBlocking {
         val store = SecurePairingStore(context)
@@ -88,16 +83,7 @@ class SecurePairingStoreTest {
         assertFalse(rawContents.contains(pairing.subscriberId))
     }
 
-    /**
-     * Regression test for a real production crash: the Keystore-backed key can stop being able to
-     * decrypt the on-disk Tink keyset (observed as `AEADBadTagException` from
-     * `EncryptedSharedPreferences.create`), which happens inside [SecurePairingStore]'s init path —
-     * uncaught, that crashed the app on every single launch. Simulates the same failure mode by
-     * corrupting the on-disk keyset directly (flipping its ciphertext/tag rather than waiting for a
-     * real Keystore invalidation event, which isn't triggerable on demand) and asserts the store
-     * recovers instead of throwing: it must report `pairing == null` and still be fully usable
-     * afterward, matching [buildEncryptedPrefs]'s wipe-and-recreate fallback.
-     */
+    /** A corrupt keyset makes EncryptedSharedPreferences.create throw in init; it must recover. */
     @Test
     fun corruptedKeyset_doesNotCrash_resetsToUnpairedAndStaysUsable() = runBlocking {
         SecurePairingStore(context).savePairing(pairing)

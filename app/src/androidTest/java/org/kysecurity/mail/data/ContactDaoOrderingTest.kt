@@ -11,8 +11,6 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** Mirrors [ContactDaoSearchTest]'s in-memory-DB setup; covers [ContactDao.observeAll]'s
- *  self-contact-first ordering rather than [ContactDao.search]'s substring matching. */
 @RunWith(AndroidJUnit4::class)
 class ContactDaoOrderingTest {
 

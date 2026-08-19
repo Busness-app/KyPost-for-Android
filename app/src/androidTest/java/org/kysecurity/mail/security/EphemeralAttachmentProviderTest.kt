@@ -18,16 +18,7 @@ class EphemeralAttachmentProviderTest {
         EphemeralAttachmentBytes.resetForNewSession()
     }
 
-    /**
-     * The wipe path, which this holder was invisible to.
-     *
-     * [EphemeralAttachmentBytes] parks up to [org.kysecurity.mail.MemoryBudget.PENDING_ATTACHMENT_BYTES]
-     * of decrypted attachment plaintext in a
-     * process-scoped object, and `AppRestart.relaunch` no longer kills the process — so a security
-     * wipe used to run to completion, relaunch into the same JVM and leave every registered
-     * attachment readable in the attacker's session. It was never added to `InMemoryPlaintext`,
-     * whose KDoc had explicitly invited exactly this kind of holder to register.
-     */
+    /** AppRestart.relaunch no longer kills the process, so held plaintext must be cleared. */
     @Test
     fun clearingProcessScopedState_dropsAndZeroesHeldPlaintext() {
         val secret = "decrypted attachment plaintext".toByteArray()
@@ -65,10 +56,7 @@ class EphemeralAttachmentProviderTest {
     @Test
     fun register_thenRead_roundTripsBytesAndMimeType() {
         val bytes = "hello attachment".toByteArray()
-        // Snapshot the expectation BEFORE registering. register() retains this exact array and the
-        // provider zeroes it once the pipe has been written, which is the whole point — plaintext
-        // must not linger in the heap. Comparing against the original reference was therefore a
-        // race: whether it passed depended on whether the writer thread's zeroing had run yet.
+        // Snapshot before registering: register() retains this array and the provider zeroes it.
         val expected = bytes.copyOf()
         val uri = requireNotNull(EphemeralAttachmentBytes.register(bytes, "text/plain", "note.txt"))
 
@@ -78,19 +66,10 @@ class EphemeralAttachmentProviderTest {
         assertArrayEquals(expected, readBytes)
     }
 
-    /**
-     * The held-plaintext ceiling. MAX_CONCURRENT_WRITES bounded writer *threads*; nothing bounded
-     * the map, so tapping attachments and backing out of each chooser — which never calls `take` —
-     * accumulated decrypted mail in the heap until the process died, on the one path whose premise
-     * is that this plaintext is short-lived.
-     */
+    /** Nothing bounded the map, so backing out of choosers accumulated decrypted mail in the heap. */
     @Test
     fun register_refusesOnceTheHeldPlaintextCeilingIsReached() {
-        // Sized FROM the ceiling, not against a literal. This read "two 40 MB registrations exceed
-        // the 64 MB ceiling" and broke the moment the ceiling moved to 32 MB — the first
-        // registration was refused and `requireNotNull` threw, reporting the ceiling working as a
-        // test failure. The property is "two that individually fit but together do not"; two-thirds
-        // each expresses that at any ceiling.
+        // Sized from the ceiling, not a literal: two that individually fit but together do not.
         val each = (org.kysecurity.mail.MemoryBudget.PENDING_ATTACHMENT_BYTES * 2 / 3).toInt()
 
         // The first must be kept and the second refused, rather than the first being silently

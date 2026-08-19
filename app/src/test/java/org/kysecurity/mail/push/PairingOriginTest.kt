@@ -4,15 +4,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * Regression tests for the cross-origin registration URL hole.
- *
- * A QR could name a legitimate server in `srv` — which is what the pairing confirmation dialog
- * shows the user — while pointing `reg` at an attacker. Only https was checked, and
- * `https://evil.example` passes that trivially. The registration endpoint is where the device
- * secret is minted, so this leaked the subscriber ID, pairing token and FCM token behind a
- * trusted-looking hostname, and poisoned the TOFU pin on the way out.
- */
 class PairingOriginTest {
 
     private fun link(srv: String, reg: String? = null): String {
@@ -75,8 +66,6 @@ class PairingOriginTest {
     fun parse_stillRejectsPlainHttp() {
         assertTrue(NativePairingDeepLinkParser.parse(link(srv = "http://mail.example.com")) is PairingParseResult.Error)
     }
-
-    // --- Second gate: the resolver, for pairings persisted by an older build -------------------
 
     @Test
     fun resolve_ignoresACrossOriginRegAndDerivesFromSrv() {

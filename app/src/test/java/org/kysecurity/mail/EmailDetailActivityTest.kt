@@ -9,21 +9,6 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * Covers [buildEmailBodyHtml] and [stripImportant] — the pure pieces pulled out of
- * [EmailDetailActivity]'s body-loading callback. Regression tests for two real bugs:
- *
- * 1. Emails that hardcode their own inline `color`/`background-color` (virtually all of them) were
- *    only partly overridden by the app's dark theme, since a plain `body { color; background-color }`
- *    rule loses to any more specific/inline declaration an email brings for its own descendants —
- *    producing black-on-dark-background for emails that only set text color, and black-on-white
- *    (ignoring the app's theme entirely) for emails that set both.
- * 2. After fixing (1) with a wildcard `!important` override, emails that mark their *own*
- *    background/text color `!important` too (common in templates defending against Gmail/Outlook/
- *    Apple Mail's automatic dark-mode recoloring) still won — an inline `style="...!important"`
- *    outranks any external stylesheet rule regardless of specificity once both sides are
- *    `!important`, producing white-on-white for emails with an `!important`-forced white background.
- */
 class EmailDetailActivityTest {
 
     @Test
@@ -114,8 +99,6 @@ class EmailDetailActivityTest {
         assertTrue(html.contains("color: ${darkPalette.inkStrong} !important;"))
         assertTrue(html.contains("background-color: transparent !important;"))
         assertTrue(html.contains("background-color: ${darkPalette.bg} !important;"))
-        // The email's own markup must survive untouched — overriding happens via CSS, not by
-        // stripping/rewriting the email's HTML.
         assertTrue(html.contains(emailWithOwnTextColorOnly))
     }
 
@@ -135,7 +118,6 @@ class EmailDetailActivityTest {
 
         assertFalse(html.contains("body * {"))
         assertFalse(html.contains("!important"))
-        // The plain (non-important) body rule from before this fix must still be present.
         assertTrue(html.contains("color: ${lightPalette.inkStrong};"))
         assertTrue(html.contains("background-color: ${lightPalette.bg};"))
     }
@@ -163,11 +145,6 @@ class EmailDetailActivityTest {
 
         val html = buildEmailBodyHtml(email, darkPalette, monoFontFace = "", isDark = true)
 
-        // The email's own !important must be gone (the property values it guarded, #ffffff/#000000,
-        // are left in place — harmless once stripped of their importance, since body * still forces
-        // transparent/inkStrong over them; it's specifically the token that let them out-rank our
-        // override that must go). Our own override rules' !important (in the <style> block, before
-        // <table>) is untouched and expected.
         val emailPortion = html.substringAfter("<table")
         assertFalse(emailPortion.contains("important", ignoreCase = true))
         assertTrue(emailPortion.contains("#ffffff"))
@@ -182,8 +159,6 @@ class EmailDetailActivityTest {
 
         assertTrue(html.contains(email))
     }
-
-    // ---- stripImportantFromCss: token removal within one declaration block ----
 
     @Test
     fun stripImportantFromCss_removesLowercaseImportant() {
@@ -219,10 +194,7 @@ class EmailDetailActivityTest {
 
     @Test
     fun stripImportantFromCss_survivesEscapesAboveTheUnicodeCodespace() {
-        // CSS_ESCAPE accepts six hex digits (up to 0xFFFFFF) while Character.toChars THROWS above
-        // 0x10FFFF. The sender picks this value, and it used to reach EmailDetailActivity's
-        // ioExecutor as an uncaught IllegalArgumentException — a process kill that repeated on
-        // every reopen, because the message stays in the mailbox.
+        // CSS_ESCAPE accepts six hex digits (0xFFFFFF); Character.toChars throws above 0x10FFFF.
         for (hex in listOf("110000", "ffffff", "FFFFFF", "7FFFFF")) {
             val input = """color:red !\$hex mportant"""
             assertEquals(input, stripImportantFromCss(input))
@@ -236,8 +208,6 @@ class EmailDetailActivityTest {
         assertEquals(input, stripImportantFromCss(input))
     }
 
-    // ---- stripImportant: which parts of the document the removal reaches ----
-
     @Test
     fun stripImportant_removesEveryOccurrenceInStyleAttributesAndStyleBlocks() {
         val input = """<div style="color:#000 !important; background:#fff !important"><style>.x{color:red!important}</style></div>"""
@@ -250,22 +220,12 @@ class EmailDetailActivityTest {
         assertEquals(input, stripImportant(input))
     }
 
-    /**
-     * The old version was a text sweep over the whole body, so it rewrote prose. `!important` in
-     * visible text is not a CSS declaration and removing it changes what the message says.
-     */
     @Test
     fun stripImportant_doesNotRewriteBodyText() {
         val input = "<p>Great job! Hope you're well. This is !important to me.</p>"
         assertEquals(input, stripImportant(input))
     }
 
-    /**
-     * Parsing means the token patterns only ever see one attribute or one `<style>` block, so the
-     * inputs that made the whole-body regex quadratic — an unclosed comment, a body of nothing but
-     * whitespace — are no longer reachable, and the 512KB "skip it entirely" cap is gone with them.
-     * Measured before: ~23s at 128KB, ~4 minutes at 512KB, from a body containing no `!` at all.
-     */
     @Test
     fun stripImportant_terminatesQuicklyOnHostileBodies() {
         val hostile = listOf(
@@ -280,15 +240,11 @@ class EmailDetailActivityTest {
         }
     }
 
-    /** No size cap any more: a large body is still cleaned, because the parse bounds the work
-     *  instead of the length check doing it. */
     @Test
     fun stripImportant_stillCleansLargeBodies() {
         val huge = """<div style="color:#000 !important">""" + "x".repeat(600_000) + "</div>"
         assertFalse(stripImportant(huge).contains("important", ignoreCase = true))
     }
-
-    // ---- attachment name and type sanitising ----
 
     @Test
     fun safeFileName_stripsPathsAndControlCharacters() {
@@ -300,20 +256,12 @@ class EmailDetailActivityTest {
         assertEquals(120, safeFileName("a".repeat(500)).length)
     }
 
-    /**
-     * The extension is derived from the type this app decided to declare, never from the sender's
-     * filename. Previously the name's own suffix survived sanitisation intact, so
-     * `invoice.pdf\u0000.apk` came out as `invoice.pdf.apk`: the MIME type handed to MediaStore
-     * was already downgraded to octet-stream, but the name a user sees in a file picker still read
-     * as an installer.
-     */
     @Test
     fun safeFileName_takesItsExtensionFromTheDeclaredTypeNotTheSenderName() {
         assertEquals("invoice.pdf", safeFileName("invoice.pdf", "application/pdf"))
         assertEquals("invoice.pdf", safeFileName("invoice.exe", "application/pdf"))
         assertEquals("invoice", safeFileName("invoice.pdf\u0000.apk", "application/octet-stream"))
         assertEquals("photo.jpg", safeFileName("photo.jpeg", "image/jpeg"))
-        // A type this app will not declare gets no extension at all rather than the sender's.
         assertEquals("payload", safeFileName("payload.apk", "application/vnd.android.package-archive"))
         // Ordinary dotted names keep their text: only short alphanumeric trailing segments count
         // as extensions.
@@ -329,18 +277,8 @@ class EmailDetailActivityTest {
         assertEquals("application/octet-stream", safeMimeType(""))
     }
 
-    // isDarkPalette() itself (the bg-luminance → dark/light classification) calls
-    // android.graphics.Color.parseColor, which isn't available in a plain JVM unit test (no
-    // Robolectric in this module — see every other test file's Android-framework-free style) —
-    // covered instead by buildEmailBodyHtml's own isDark parameter above, and by manual/instrumented
-    // verification that a dark theme's palette.bg does trigger the override branch in the real app.
+    // isDarkPalette() needs android.graphics.Color, so it is not covered here; isDark is passed in.
 
-    // ---- showsRetryButton: which ReadOutcome offers a Retry tap ----
-
-    /** Every non-FetchFailed row of the exit table, once each. The two easiest to confuse with a
-     *  transport failure are the actual target: [ReadOutcome.NoEncryptedContent] is terminal (the
-     *  server answered "no payload"; retrying cannot change that) and [ReadOutcome.DecryptFailed]
-     *  is a local decrypt failure, not a fetch failure — neither should offer Retry. */
     private val nonRetryableOutcomes = listOf(
         ReadOutcome.Decrypted(
             body = DecryptedBody(html = "<p>hi</p>", plain = null, protectedSubject = null),
@@ -370,15 +308,10 @@ class EmailDetailActivityTest {
         }
     }
 
-    /** [ReadOutcome.NoEncryptedContent] specifically: the server answered, so a Retry button here
-     *  would invite the user to tap it forever. Deliberate-break check inline, not just a shared
-     *  loop assertion, since this is the one row the brief calls out by name as never-Retry. */
     @Test
     fun showsRetryButton_isFalseForNoEncryptedContent() {
         assertFalse(showsRetryButton(ReadOutcome.NoEncryptedContent))
     }
-
-    // ---- displaySignatureVerdict: the verdict actually safe to display ----
 
     private val decryptedBody = DecryptedBody(html = "<p>hi</p>", plain = null, protectedSubject = null)
 
@@ -392,14 +325,6 @@ class EmailDetailActivityTest {
         assertEquals(PgpSignatureState.VERIFIED_CONFIRMED, displaySignatureVerdict(outcome))
     }
 
-    /**
-     * The security case this function exists for: PgpPayloadResult.resolvedSender's own KDoc says
-     * it is empty "e.g. [for] a multi-mailbox From" — exactly the attacker-separable shape ("Bob
-     * Smith (Eve <eve@evil.example>) <bob@example.com>" and its relatives) the resolved-vs-raw
-     * sender display rule exists for. A non-NONE signature with no resolved mailbox to pin it to
-     * must not reach the screen, where it would read as being about whatever raw sender text is
-     * still displayed.
-     */
     @Test
     fun displaySignatureVerdict_suppressesASignatureWithNoResolvedSender() {
         val outcome = ReadOutcome.Decrypted(
@@ -420,22 +345,11 @@ class EmailDetailActivityTest {
         assertEquals(PgpSignatureState.NONE, displaySignatureVerdict(outcome))
     }
 
-    // ---- mayReplyOrForward: which PgpMessageState blocks Reply/Reply-All/Forward ----
-
-    /** The one state Task 11 exists for: no safe destination for a quoted decrypted body, so this
-     *  must be false even once the message has been decrypted on screen — see
-     *  EmailDetailActivity.applyReplyForwardAvailability's KDoc for why that has to hold
-     *  unconditionally rather than just before decrypt succeeds. */
     @Test
     fun mayReplyOrForward_isFalseForClientProtected() {
         assertFalse(mayReplyOrForward(PgpMessageState.CLIENT_PROTECTED))
     }
 
-    /** Every other state must stay true, so a change that widens the block (e.g. mistakenly
-     *  gating on DECRYPT_FAILED too) fails a test rather than shipping silently disabled buttons
-     *  on messages with a perfectly good server-side body. Enumerated via [PgpMessageState.entries]
-     *  rather than hand-listed, so a future state added to the enum is covered automatically
-     *  instead of silently passing unchecked. */
     @Test
     fun mayReplyOrForward_isTrueForEveryOtherState() {
         PgpMessageState.entries.filter { it != PgpMessageState.CLIENT_PROTECTED }.forEach { state ->
@@ -443,12 +357,6 @@ class EmailDetailActivityTest {
         }
     }
 
-    // ---- initialReplyForwardState: the fail-closed default before renderBody's fetch answers ----
-
-    /** The case this function exists for: `renderBody`'s background fetch may take a network
-     *  round trip, or never complete at all if it throws, so an encrypted message must default to
-     *  blocked — not to allowed-until-proven-otherwise — or Reply is live for that whole window on
-     *  exactly the messages this task exists to protect. */
     @Test
     fun initialReplyForwardState_failsClosedWhenEncrypted() {
         val state = initialReplyForwardState(pgpEncrypted = true)
@@ -456,8 +364,6 @@ class EmailDetailActivityTest {
         assertFalse(mayReplyOrForward(state))
     }
 
-    /** An unencrypted message was never going to become CLIENT_PROTECTED, so it isn't held
-     *  hostage to the same wait. */
     @Test
     fun initialReplyForwardState_isNoneWhenNotEncrypted() {
         assertEquals(PgpMessageState.NONE, initialReplyForwardState(pgpEncrypted = false))

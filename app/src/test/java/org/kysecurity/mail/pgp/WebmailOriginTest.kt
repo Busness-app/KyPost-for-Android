@@ -5,13 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * Covers the guard on the webmail handoff, and the launch order it feeds.
- *
- * The handoff is the one place the app tells the user "this is your mail, sign in here", so
- * only URLs whose origin equals the paired server's are eligible; everything else is refused
- * outright rather than degraded to a browser launch.
- */
+/** Only URLs whose origin equals the paired server's are eligible; everything else is refused. */
 class WebmailOriginTest {
 
     private val server = "https://mail.example.com"
@@ -66,10 +60,7 @@ class WebmailOriginTest {
         assertFalse(isFirstPartyWebmailUrl("not a url", "https://mail.example.com/read"))
     }
 
-    /**
-     * The order is the whole contract: a PWA attempt cannot be predicted, only tried, so the list
-     * must lead with it and still hold a fallback for the (usual) case where it fails.
-     */
+    /** A PWA attempt cannot be predicted, only tried, so the list must lead with it. */
     @Test
     fun `tries the pwa first, then any browser`() {
         assertEquals(
@@ -78,13 +69,7 @@ class WebmailOriginTest {
         )
     }
 
-    /**
-     * A Custom Tab renders inside KyPost's own task, where this app's FLAG_SECURE does not reach
-     * the browser's window — so decrypted mail could appear in the KyPost Recents card. Every mode
-     * that survives here launches into some other app's task. This is the regression test for that;
-     * `WebmailLaunchMode` no longer has a CUSTOM_TAB entry to return, and re-adding one has to fail
-     * here before it can ship.
-     */
+    /** A Custom Tab runs in KyPost's task, where FLAG_SECURE does not reach the browser's window. */
     @Test
     fun `never launches webmail inside this app's own task`() {
         assertEquals(

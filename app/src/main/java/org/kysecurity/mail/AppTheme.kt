@@ -50,9 +50,7 @@ data class ThemePalette(
     val inkStrong: String,
     val accent: String,
     val line: String,
-    // Avatar gradient stops — mirrors web's ThemeVars newEmailStart/End/Border (used there for
-    // the "compose" button gradient, reused here since .users-avatar/.contacts-avatar on web
-    // draw from the same three fields).
+    // Avatar gradient stops - mirror web's ThemeVars newEmailStart/End/Border.
     val avatarGradientStart: String,
     val avatarGradientEnd: String,
     val avatarBorder: String,
@@ -112,9 +110,7 @@ fun applyThemeToActivity(activity: Activity) {
     val palette = getStoredThemePalette(activity)
     val bgColor = Color.parseColor(palette.bg)
 
-    // Every screen calls enableEdgeToEdge before setContentView, so the system bars are transparent
-    // on every API level: what shows behind the status bar is the window background, and behind the
-    // navigation bar the content background. Window.statusBarColor/navigationBarColor used to paint
+    // Bars are transparent under edge-to-edge: the window background shows behind the status bar.
     activity.window.decorView.setBackgroundColor(bgColor)
     WindowInsetsControllerCompat(activity.window, activity.window.decorView).run {
         isAppearanceLightStatusBars = readableOn(bgColor) == Color.BLACK
@@ -128,10 +124,7 @@ fun applyThemeToActivity(activity: Activity) {
         activity.supportActionBar?.title = styledTitle(activity.title?.toString().orEmpty(), readableOn(bgColor))
     }
 
-    // The overflow ("more options") icon isn't part of the content view tree, so it never gets
-    // painted by applyThemeToViewTree below. It defaults to a fixed light tint from the base
-    // theme, which disappears against light accent colors (Sun, Sky, White Cliffs, ...). The menu
-    // only exists once onCreateOptionsMenu has run, so defer the lookup by a frame.
+    // The overflow icon is outside the content tree and only exists after onCreateOptionsMenu.
     activity.window.decorView.post {
         tintOverflowIcon(activity, readableOn(bgColor))
     }
@@ -151,7 +144,6 @@ fun applyThemedTitle(activity: Activity, title: CharSequence) {
     }
 }
 
-/** Top app bar brand treatment: KyPost name + launcher mark, with the screen/folder as subtitle. */
 fun applyKyPostTopBar(activity: Activity, subtitle: CharSequence) {
     applyThemedTitle(activity, activity.getString(R.string.app_name))
     if (activity is AppCompatActivity) {
@@ -210,11 +202,7 @@ fun applyBottomInset(view: View) {
     ViewCompat.requestApplyInsets(view)
 }
 
-/**
- * The rail equivalent of [applyBottomInset]. A vertical rail spans the full height at the start
- * edge, so the bottom-only padding that suits a bottom bar leaves its top item under the status bar
- * and its first icon under the gesture handle.
- */
+/** Rail equivalent of [applyBottomInset]: a full-height rail also needs top and start insets. */
 fun applyRailInsets(activity: Activity, view: View) {
     val basePaddingStart = view.paddingStart
     val basePaddingTop = view.paddingTop
@@ -241,9 +229,7 @@ fun applyTopInsetWithHeader(activity: Activity, root: View) {
 
     ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
         val topInset = insets.getInsets(WindowInsetsCompat.Type.systemBars()).top
-        // Under the enforced edge-to-edge of targetSdk 36, windowSoftInputMode="adjustResize" no
-        // longer shrinks the window for the keyboard, so pad by the IME inset ourselves. It reads 0
-        // whenever the keyboard is hidden, so screens without text fields are unaffected.
+        // targetSdk 36 edge-to-edge: adjustResize no longer shrinks the window, so pad by the IME.
         val imeInset = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
         view.setPadding(
             basePaddingLeft,
@@ -314,10 +300,7 @@ fun applyDangerButtonTheme(context: Context, button: Button) {
     applyButtonPadding(button)
 }
 
-/** Stroke + 12%-fill warning panel for non-interactive informational callouts — same stroke+fill
- *  shape as [applyDangerButtonTheme] (STYLE_GUIDE.md §4's danger-button pattern), but with the
- *  fixed warning yellow (STYLE_GUIDE.md §1) and applied to a TextView since callouts aren't
- *  buttons. Caller sets its own padding/margins; this only sets background + text color. */
+/** Warning-tinted informational callout: the danger-button stroke+fill shape, on a TextView. */
 fun applyWarningCalloutTheme(context: Context, textView: TextView) {
     val (fill, border, text) = accentAffordanceColors(
         context,
@@ -328,14 +311,7 @@ fun applyWarningCalloutTheme(context: Context, textView: TextView) {
     textView.setTextColor(text)
 }
 
-/** Success/"added" state for the address-book picker's TO/CC/BCC action chips — mirrors
- *  [applyDangerButtonTheme]'s stroke+fill shape (STYLE_GUIDE.md §4's danger-button pattern is the
- *  closest documented precedent for a colored actionable state) using [COLOR_SUCCESS_BORDER]/
- *  [COLOR_SUCCESS_TEXT] (STYLE_GUIDE.md §1) instead of the danger palette.
- *
- *  [animate], when true, cross-fades from the chip's current colors instead of snapping
- *  (STYLE_GUIDE.md §5/§7 — 120ms). Only pass true from the actual tap that adds a recipient;
- *  per-bind calls (recycled rows) must stay instant, so the default is false. */
+/** Success chip state. Pass [animate] only from the tap; per-bind recycled rows stay instant. */
 fun applySuccessChipTheme(
     context: Context,
     chip: com.google.android.material.chip.Chip,
@@ -363,11 +339,7 @@ fun applySuccessChipTheme(
     }
 }
 
-/** 120ms `FastOutSlowIn` cross-fade of a Chip's background/stroke/text colors — the shared motion
- *  timing all four sibling apps converged on independently (STYLE_GUIDE.md §5). Used for the one
- *  real color "snap" §7 calls out (the address-book chip's pill→success transition on tap); not
- *  wired into [applyPillChipTheme]'s checked/unchecked toggle, since Chip's own state machine
- *  already transitions that one and its colors are stateful `ColorStateList`s, not single values. */
+/** 120ms cross-fade (STYLE_GUIDE.md §5); not used for Chip's own checked state machine. */
 fun animateChipColorTransition(
     chip: com.google.android.material.chip.Chip,
     fromBg: Int,
@@ -396,9 +368,7 @@ fun animateChipColorTransition(
     }
 }
 
-/** Small uppercase, letter-spaced, 72%-opacity `inkStrong` label — mirrors web's
- *  `.sidebar-section-label` / `.contact-details-section-title`. Group headers only, not body
- *  copy or per-field captions. */
+/** Small uppercase section label - group headers only, not body copy or per-field captions. */
 fun applySectionEyebrowLabel(context: Context, textView: TextView) {
     val palette = getStoredThemePalette(context)
     val inkStrong = Color.parseColor(palette.inkStrong)
@@ -408,18 +378,7 @@ fun applySectionEyebrowLabel(context: Context, textView: TextView) {
     textView.setTextColor(withAlpha(inkStrong, 0.72f))
 }
 
-/** Stadium pill chip per the style guide's filter-tab spec: inactive = transparent fill + `line`
- *  stroke; active/checked = `accent` fill + `readableOn(accent)` text. Shared by the inbox's
- *  keyword filter pills and the compose screen's formatting toolbar.
- *
- *  The inactive fill can't actually be [Color.TRANSPARENT]: Chip's underlying ChipDrawable paints
- *  a private `chipSurfaceColor` layer (sourced from the theme's `colorSurface`, which this app
- *  hardcodes dark for popup/dialog chrome — see themes.xml) *underneath* `chipBackgroundColor`,
- *  with no public setter to override it. A transparent fill let that dark layer show through,
- *  rendering near-black text on a near-black chip in light themes (invisible in dark themes purely
- *  by coincidence, since dark-on-dark still looked intentional there). Painting an opaque `panel`
- *  fill instead — matching the bar behind the pills — fully covers that layer and reads as "blank"
- *  against the matching bar. */
+/** Inactive fill must be an opaque `panel`: ChipDrawable paints colorSurface underneath it. */
 fun applyPillChipTheme(context: Context, chip: com.google.android.material.chip.Chip) {
     val palette = getStoredThemePalette(context)
     val panel = Color.parseColor(palette.panel)
@@ -440,19 +399,13 @@ fun applyPillChipTheme(context: Context, chip: com.google.android.material.chip.
     chip.chipStrokeWidth = 1f * density
     chip.rippleColor = ColorStateList.valueOf(withAlpha(accent, 0.22f))
     chip.checkedIcon = null
-    // Only tint, never clear: callers that pre-set `app:chipIcon` in XML (e.g. Compose's
-    // icon-only formatting chips) want it recolored on every theme pass, same as the text color
-    // above. Callers that never set one (the common case — keyword/attachment/plain-text pills)
-    // are unaffected since chip.chipIcon stays null either way.
+    // Only tint, never clear: callers that pre-set `app:chipIcon` in XML want it recolored.
     if (chip.chipIcon != null) {
         chip.chipIconTint = contentColors
     }
 }
 
-/** Small solid circle — a minor "has unread content" cue, reused for both inbox rows and keyword
- *  pills so the two surfaces read as the same signal. Defaults to `accent`, but callers placing
- *  it on an already-accent-filled surface (e.g. a checked pill) should pass a contrasting
- *  [color] instead, or the dot disappears into its own background. */
+/** Defaults to `accent`; pass a contrasting [color] when placing it on an accent-filled surface. */
 fun unreadDotDrawable(context: Context, sizeDp: Int = 8, color: Int? = null): GradientDrawable {
     val palette = getStoredThemePalette(context)
     val sizePx = (sizeDp * density).toInt()
@@ -463,12 +416,7 @@ fun unreadDotDrawable(context: Context, sizeDp: Int = 8, color: Int? = null): Gr
     }
 }
 
-/** Pill-outline status badge with a small leading dot — STYLE_GUIDE.md §4's "status badge + dot"
- *  component (iOS `StatusBadgeView.swift` / Linux `StatusBadge.qml`; previously missing on
- *  Android, §7 item 2). [active] = fixed success green ([COLOR_SUCCESS_BORDER]/[COLOR_SUCCESS_TEXT],
- *  §1); inactive = theme-derived `line`/`panel`/`ink`, never a fixed gray (§1: "inactive status
- *  uses line/panel/ink from the active palette, not a fixed color"). Non-interactive — this reports
- *  state, it doesn't toggle it. */
+/** Status badge + dot: [active] is fixed success green, inactive is theme line/panel/ink. */
 fun applyStatusBadgeTheme(context: Context, chip: com.google.android.material.chip.Chip, active: Boolean) {
     val palette = getStoredThemePalette(context)
     val border: Int
@@ -559,13 +507,7 @@ internal fun buildMonoFontFaceCss(fontBytes: ByteArray): String {
 private val monoFontFaceCssLock = Any()
 @Volatile private var cachedMonoFontFaceCss: String? = null
 
-/** Base64-inlined `@font-face` CSS for the bundled IBM Plex Mono Regular asset
- * (`assets/fonts/IBMPlexMono-Regular.ttf`), for injection into [EmailDetailActivity]'s WebView
- * HTML (STYLE_GUIDE.md §2/§7 item 1 — the email body previously rendered generic `monospace`).
- * Inlined rather than referenced via a `file:///android_asset/` base URL: that WebView renders
- * untrusted email HTML with JS enabled, and granting it `file://` origin access for a font is a
- * real security cost for a small convenience gain. Read once per process and cached — the ttf is
- * ~134KB, cheap to decode but no reason to repeat it on every email open.
+/** Inlined, not a `file:///android_asset/` URL: that grants the JS-enabled WebView file origin.
  * ponytail: Regular weight only — email body isn't bold/italic-styled. Upgrade path: add more
  * weights + font-weight variants here if the renderer ever needs them. */
 fun ibmPlexMonoFontFaceCss(context: Context): String {
@@ -608,9 +550,7 @@ private fun applyThemeToViewTree(view: View, palette: ThemePalette) {
             view.setTextColor(inkStrong)
             view.setHintTextColor(ink)
             view.background = fieldBackground(palette)
-            // A bare GradientDrawable carries no internal padding, so without this the text and
-            // hint sit flush against the rounded border. Preserve any larger top padding a
-            // multi-line field (e.g. the compose body) already declares.
+            // A bare GradientDrawable has no padding, so text would sit flush against the border.
             val padH = (14 * density).toInt()
             val padV = (12 * density).toInt()
             view.setPadding(padH, maxOf(padV, view.paddingTop), padH, maxOf(padV, view.paddingBottom))
@@ -625,9 +565,7 @@ private fun applyThemeToViewTree(view: View, palette: ThemePalette) {
             view.buttonTintList = ColorStateList.valueOf(accent)
         }
         is TextView -> {
-            // Hardcoded XML text colors in this app are always grayscale template leftovers
-            // (black/white/mid-gray placeholders), never intentional brand colors, so any
-            // grayscale color is safe to remap onto the active palette's ink tones.
+            // Hardcoded grayscale XML colors are template leftovers, safe to remap onto the palette.
             val current = view.currentTextColor
             if (isGrayscale(current)) {
                 view.setTextColor(if (isNearWhite(current) || isNearBlack(current)) inkStrong else ink)
@@ -636,16 +574,11 @@ private fun applyThemeToViewTree(view: View, palette: ThemePalette) {
     }
 
     if (view is ViewGroup) {
-        // The inbox list themes its own item views (rounded CardViews) in the adapter. Recursing
-        // into it here would overwrite each card's rounded background with a flat ColorDrawable,
-        // and since only already-bound rows get hit the rounding ends up inconsistent. Skip its
-        // whole subtree.
+        // The inbox list themes its own rounded CardViews in the adapter; recursing would flatten them.
         if (view is androidx.recyclerview.widget.RecyclerView) {
             return
         }
-        // Keep panel containers in sync with the active palette. Always repaint (not just when
-        // background == null) so switching themes without recreating the activity refreshes
-        // containers that were already painted on a previous pass, not just newly-touched ones.
+        // Always repaint, so a theme switch without a recreate refreshes already-painted containers.
         view.setBackgroundColor(panelColor)
         for (index in 0 until view.childCount) {
             applyThemeToViewTree(view.getChildAt(index), palette)
@@ -655,18 +588,14 @@ private fun applyThemeToViewTree(view: View, palette: ThemePalette) {
 
 private val density: Float get() = android.content.res.Resources.getSystem().displayMetrics.density
 
-/** Pure dp->px math, factored out of [dpToPx] so it's unit-testable without the Android
- *  framework (this project has no Robolectric setup) — [dpToPx] is the entry point every caller
- *  should use directly. */
+/** Pure dp->px math, split out of [dpToPx] to be unit-testable; callers should use [dpToPx]. */
 internal fun scalePxByDensity(value: Int, density: Float): Int = (value * density).toInt()
 
 /** Converts a dp value to raw device pixels using the system-wide [density] snapshot — for raw
  *  View APIs (setPadding, LayoutParams margins) that take pixels, not dp. */
 fun dpToPx(value: Int): Int = scalePxByDensity(value, density)
 
-/** Adds [view] with vertical breathing room ([topDp]/[bottomDp], converted via [dpToPx]) instead
- *  of the zero-margin default plain `addView(view)` produces — the Security/Keyword settings
- *  screens build their layout by hand and need real gaps between sibling controls. */
+/** Adds [view] with vertical margins, which the plain `addView(view)` default leaves at zero. */
 fun LinearLayout.addViewSpaced(view: View, topDp: Int = 0, bottomDp: Int = 0) {
     val params = LinearLayout.LayoutParams(
         LinearLayout.LayoutParams.MATCH_PARENT,
@@ -686,11 +615,7 @@ private fun panelBackground(context: Context, palette: ThemePalette): GradientDr
     }
 }
 
-/**
- * Paints [view]'s background as a rounded, theme-`panel`-colored panel using the shared
- * STYLE_GUIDE.md §3 Card/panel radius (`@dimen/card_corner_radius`). For containers that need a
- * *rounded* panel fill rather than the flat fill `applyThemeToViewTree` gives generic ViewGroups.
- */
+/** Rounded `panel` background at the shared card radius (STYLE_GUIDE.md §3). */
 fun applyPanelBackground(context: Context, view: View) {
     view.background = panelBackground(context, getStoredThemePalette(context))
 }
@@ -712,17 +637,7 @@ private fun buttonBackground(palette: ThemePalette): GradientDrawable {
     }
 }
 
-/**
- * Restores the inset a themed button loses.
- *
- * A `Button`'s default background is a nine-patch carrying its own padding, and that padding is where
- * the label's breathing room comes from. Replacing it with a [GradientDrawable] — which has none —
- * leaves the label flush against the rounded edge, and on a wide button with a long label it reads as
- * text running off the left side. Exactly the problem the [EditText] branch of [applyThemeToViewTree]
- * already documents and guards against; buttons had the same bug and no guard.
- *
- * `maxOf` so a view that declares larger padding in XML keeps it.
- */
+/** A Button's default nine-patch carries the label's padding; a GradientDrawable has none. */
 private fun applyButtonPadding(button: Button) {
     val padH = (16 * density).toInt()
     val padV = (10 * density).toInt()
@@ -752,22 +667,7 @@ private fun dangerButtonBackground(fill: Int, border: Int): GradientDrawable {
     }
 }
 
-/**
- * The stroke/fill/text triple for a danger or warning affordance, resolved against the active theme.
- *
- * The constants in STYLE_GUIDE.md §1 are stated as pale tints — `#ffd8d3`, `#fff0b8` — which are
- * chosen to read as *light text on a dark panel*. On the light themes ("Light Matter" and friends,
- * panel `#fff8ee`) that same pale text lands on near-white, and the measured WCAG contrast is
- * **1.08:1 for the warning text and 1.24:1 for the danger text** — indistinguishable from the
- * background. That is what made the "remove key from this device" button and the push-relay warning
- * illegible on light themes.
- *
- * Rather than introduce new named colors, this keeps each affordance's documented hue
- * ([COLOR_DANGER] / [COLOR_WARNING]) and drives it toward black for light themes, so the guide's
- * palette still decides *what colour* the thing is and only the shade tracks the background. The
- * derived shades measure 5.84:1 (warning) and 9.57:1 (danger) on `#fff8ee`, both past WCAG AA;
- * the dark-theme path is byte-for-byte what it was (13.28:1 and 11.56:1 on `#252530`).
- */
+/** §1's pale tints measure ~1.1:1 on light panels, so the hue is driven toward black there. */
 private fun accentAffordanceColors(context: Context, hue: Int, darkThemeText: Int): Triple<Int, Int, Int> {
     return if (isDarkPalette(getStoredThemePalette(context))) {
         Triple(withAlpha(hue, 0.12f), withAlpha(hue, 0.40f), darkThemeText)
@@ -799,13 +699,7 @@ internal fun readableOn(backgroundColor: Int): Int {
     return if (darkness >= 0.45) Color.WHITE else Color.BLACK
 }
 
-/** True when [palette]'s background is dark enough that white text reads better on it than black —
- *  i.e. this is one of the app's "dark" themes (Dark Matter, Tropic Night, Ocean, ...) rather than a
- *  light one. Used by [org.kysecurity.mail.EmailDetailActivity] to decide whether rendered email HTML
- *  needs its own colors forcibly overridden: a light theme's palette already looks like a typical
- *  email's default white-background/dark-text design, so nothing needs overriding there, but a dark
- *  theme's palette does not, and most email HTML hardcodes its own light-mode colors regardless of
- *  the reader's OS/app theme. */
+/** True for the app's dark themes; [EmailDetailActivity] uses it to override email HTML colors. */
 internal fun isDarkPalette(palette: ThemePalette): Boolean = readableOn(Color.parseColor(palette.bg)) == Color.WHITE
 
 private fun isNearWhite(color: Int): Boolean {

@@ -8,8 +8,6 @@ import kotlin.test.assertNull
 
 class DeviceContactFieldCodingTest {
 
-    // --- imCustomProtocolLabel ---
-
     @Test
     fun imCustomProtocolLabel_knownServices_mapToDisplayNames() {
         assertEquals("WhatsApp", DeviceContactFieldCoding.imCustomProtocolLabel("whatsapp", null))
@@ -42,8 +40,6 @@ class DeviceContactFieldCodingTest {
         assertEquals("Other", DeviceContactFieldCoding.imCustomProtocolLabel("icq", null))
     }
 
-    // --- imServiceFromCustomProtocolLabel (read-path inverse) ---
-
     @Test
     fun imServiceFromCustomProtocolLabel_knownDisplayNames_roundTripToServiceCodes() {
         val services = listOf(
@@ -67,8 +63,6 @@ class DeviceContactFieldCodingTest {
         assertEquals("", DeviceContactFieldCoding.imServiceFromCustomProtocolLabel(null))
         assertEquals("", DeviceContactFieldCoding.imServiceFromCustomProtocolLabel(""))
     }
-
-    // --- relationType / relationCustomLabel ---
 
     @Test
     fun relationType_knownLabels_mapToClosestConstant() {
@@ -96,8 +90,6 @@ class DeviceContactFieldCodingTest {
         assertEquals("colleague", DeviceContactFieldCoding.relationCustomLabel("colleague"))
     }
 
-    // --- eventType / eventCustomLabel ---
-
     @Test
     fun eventType_anniversary_mapsToAnniversaryConstant() {
         assertEquals(Event.TYPE_ANNIVERSARY, DeviceContactFieldCoding.eventType("anniversary"))
@@ -114,8 +106,6 @@ class DeviceContactFieldCodingTest {
         assertNull(DeviceContactFieldCoding.eventCustomLabel("anniversary"))
         assertEquals("work-start", DeviceContactFieldCoding.eventCustomLabel("work-start"))
     }
-
-    // --- relationLabelFromType (read-path inverse) ---
 
     @Test
     fun relationLabelFromType_knownConstants_mapBackToVocabulary() {
@@ -135,8 +125,6 @@ class DeviceContactFieldCodingTest {
         assertEquals("other", DeviceContactFieldCoding.relationLabelFromType(Relation.TYPE_BROTHER))
         assertEquals("other", DeviceContactFieldCoding.relationLabelFromType(null))
     }
-
-    // --- eventLabelFromType (read-path inverse) ---
 
     @Test
     fun eventLabelFromType_anniversaryConstant_mapsBackToAnniversary() {

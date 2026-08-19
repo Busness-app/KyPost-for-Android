@@ -8,11 +8,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/**
- * MainActivity is exported, so every extra on an inbound Intent is reachable by any co-installed
- * app with no permissions at all. This is what tells one of its own PendingIntents apart from a
- * forgery.
- */
+/** MainActivity is exported, so extras are forgeable; this token proves our own PendingIntent. */
 @RunWith(AndroidJUnit4::class)
 class NotificationIntentTokenTest {
 

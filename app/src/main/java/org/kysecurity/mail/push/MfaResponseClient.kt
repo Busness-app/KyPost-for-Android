@@ -19,14 +19,7 @@ private val JSON_MEDIA_TYPE = "application/json".toMediaType()
 data class MfaRespondRequest(
     @SerialName("challengeId") val challengeId: String,
     @SerialName("approve") val approve: Boolean,
-    /**
-     * The number the user picked off [MfaApprovalActivity]'s choice row.
-     *
-     * The server verifies this itself (kypost-server `Store.ResolvePushWithMatch`) and refuses an
-     * approval that does not carry it — this endpoint is reachable by anyone holding device
-     * credentials, so the on-device comparison in [MfaApprovalActivity.onMatchChosen] is UX, not
-     * the control. Always serialized, including as `""` on a deny, which the server ignores.
-     */
+    /** The server verifies this; the on-device comparison is UX, not the control. */
     @SerialName("matchDigits") val matchDigits: String,
 )
 
@@ -92,9 +85,7 @@ class MfaResponseClient(
                     MfaRespondResult.Error("Server did not confirm response")
                 }
             }
-            // The number was wrong, but the credentials were fine and the challenge is still live —
-            // so this is a re-prompt, not a re-pair. Prefer the server's own wording: it is the
-            // side that knows whether this was a mismatch or a spent attempt budget.
+            // Still live and credentials fine — a re-prompt, not a re-pair. Prefer the server's wording.
             400 -> MfaRespondResult.Error(serverError(rawBody) ?: "That is not the number shown in the browser")
             401 -> MfaRespondResult.Error("Pairing is no longer valid")
             403 -> MfaRespondResult.Error("This device cannot approve sign-in")

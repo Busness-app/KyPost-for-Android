@@ -1,6 +1,4 @@
-// androidx.security-crypto is deprecated in full with no replacement API; [AppLockSnapshot] below
-// has to speak the same at-rest format AppLockStore does, so it carries the same suppression the
-// production file carries.
+// androidx.security-crypto is deprecated with no replacement; AppLockSnapshot mirrors AppLockStore.
 @file:Suppress("DEPRECATION")
 
 package org.kysecurity.mail.security
@@ -33,35 +31,7 @@ import org.kysecurity.mail.contacts.ContactsRuntime
 import org.kysecurity.mail.contacts.device.DeviceContactsRuntime
 import org.kysecurity.mail.mail.MailRuntime
 
-/**
- * The three halves of the foldable lock contract. A live resize must not lock; a close-and-lock
- * must; and, unique to this feature, two embedded panes locking at once must still collapse into
- * one unlock prompt. None is assumed anywhere in this feature — all three are asserted here.
- *
- * **These tests only mean anything with the app lock enabled and a PIN configured**, which is not
- * the shipped default ([AppLockStore.isLockEnabled] returns false on a clean install). Without the
- * setup below, [AppLockManager.lockNow] does not set the locked flag at all: the two locking tests
- * fail, and the resize test passes vacuously because nothing could have locked it in the first
- * place.
- *
- * **No [androidx.test.core.app.ActivityScenario] anywhere in this class.** Every screen here is a
- * [LockedActivity], and a [LockedActivity] under a lock `finish()`es itself from `onCreate`
- * ([LockedActivity.redirectToUnlockIfLocked]) — which is precisely the property being asserted.
- * `ActivityScenario.recreate()` blocks until the recreated Activity reaches `RESUMED` and
- * `onActivity {}` requires a live instance, so both fail on the Activity they are meant to observe:
- * the gate that works reads as "Activity never becomes requested state [RESUMED]". An
- * [Instrumentation.ActivityMonitor] can observe an Activity that finishes itself during startup,
- * so the launches, the recreates and the redirect are all driven and observed through monitors and
- * a process-wide [Application.ActivityLifecycleCallbacks] instead.
- *
- * **This class must never be able to trigger [SecurityWipe].** A test that can wipe the app under
- * test destroys the mail cache, the pairing, the PGP key envelope and the app-lock config on
- * whatever device it runs on. Exactly one PIN attempt is made per test — in [enableTheAppLock],
- * with the PIN written on the line above it — so the failed-attempt count this class can contribute
- * is provably at most one against a [LockoutPolicy.WIPE_THRESHOLD] of ten, and
- * [restoreTheAppLockStateAsFound] puts the stored counter back where it found it either way.
- * Nothing here calls [AppLockStore.reset]: see [AppLockSnapshot].
- */
+/** Never let this class reach LockoutPolicy.WIPE_THRESHOLD: at most one PIN attempt per test. */
 @RunWith(AndroidJUnit4::class)
 class FoldLockBehaviourTest {
 
@@ -108,32 +78,7 @@ class FoldLockBehaviourTest {
         assertFalse(appLockManager.isLockedNow())
     }
 
-    /**
-     * Hands the process back exactly as it was found, on every exit path including an assertion
-     * failure — JUnit runs this whatever the test body did.
-     *
-     * Ordering is the point, and each step is here because leaving it out cascade-fails a later
-     * class rather than this one:
-     *
-     * 1. Every Activity this class started is finished first. A [UnlockActivity] left alive is
-     *    `singleInstance`, so the next test's first redirect would land on it as `onNewIntent` and
-     *    the "exactly one prompt" count would read zero.
-     * 2. The app-lock files are restored from [AppLockSnapshot] rather than cleared. `reset()`
-     *    would leave the next class with no PIN, no lock and — worse on a real device — no
-     *    credential salt, which makes an already-wrapped `deviceSecret` undecryptable.
-     * 3. The graphs that cache a DAO handle are dropped. This class is the first in the run to
-     *    launch [InboxActivity], so it is the first to build [org.kysecurity.mail.mail.MailGraph],
-     *    which captures `DataRuntime.graph(...).database.emailDao()` at construction. `SecurityWipeTest`
-     *    and `WipeResurrectionTest` run later in this same package and close that database
-     *    ([SecurityWipe.closeAndDeleteDatabase]) without the [AppRestart] relaunch production always
-     *    performs — so the handle cached here is what `InboxRailTest` later reads through, and
-     *    "connection is closed" on a background executor thread is an uncaught exception, i.e. a
-     *    process kill. [org.kysecurity.mail.data.DataRuntime] is deliberately NOT invalidated: it
-     *    owns the open database, and dropping it without closing it would orphan a second live
-     *    handle on `kypost_mail.db` and make the later wipes fail to delete the file.
-     * 4. [SecurityRuntime] goes too, so the next [AppLockManager] seeds `_locked` from the restored
-     *    state instead of carrying this class's in-memory unlock.
-     */
+    /** DataRuntime is deliberately NOT invalidated: it owns the open DB and would orphan a handle. */
     @After
     fun restoreTheAppLockStateAsFound() {
         try {
@@ -204,33 +149,7 @@ class FoldLockBehaviourTest {
         }
     }
 
-    /**
-     * Before Activity Embedding, two [LockedActivity] instances could never be visible at once —
-     * this test's whole premise is a code path that has never existed in this app until this
-     * feature. [InboxActivity] as the primary pane and [EmailDetailActivity] as the secondary
-     * stand in for a split; locking both, independently, each redirects to [UnlockActivity] and
-     * `finish()`es itself ([LockedActivity.redirectToUnlockIfLocked]). [UnlockActivity] is
-     * `android:launchMode="singleInstance"` (`AndroidManifest.xml`, around `:186`), so the second
-     * `startActivity` call is contractually required to resolve against the instance the first
-     * call created rather than starting a new one — that collapse, not merely "both panes gate",
-     * is the property this test exists for.
-     *
-     * [Application.ActivityLifecycleCallbacks] observes `onActivityCreated` process-wide, which is
-     * the one signal that distinguishes "the second call was routed to the existing singleInstance"
-     * from "the second call created a stacked second prompt": `singleInstance` delivery to an
-     * existing instance is [Activity.onNewIntent], not a fresh `onCreate`. This is a direct
-     * assertion of the launch-mode contract, not a proxy for it.
-     *
-     * The two panes are gated one at a time, and deliberately by different halves of the gate. A CI
-     * emulator has no real split, so only the top pane is ever `RESUMED` — and `Activity.recreate()`
-     * on a stopped Activity is documented to defer until it is next visited, which would make a
-     * "recreate both" version of this test assert nothing about the primary. So the secondary is
-     * driven through [Activity.recreate] (the configuration change a fold produces, gated in
-     * `onCreate`) and the primary by being started again (gated in `onStart`; see
-     * [LockedActivity.onStart], "the app can lock while this screen sits in the back stack"). Both
-     * are real, independent `startActivity(UnlockActivity)` calls from [LockedActivity], which is
-     * all the collapse assertion needs.
-     */
+    /** The emulator has no real split, so the primary is re-started (onStart gate), not recreated. */
     @Test
     fun lockingTwoEmbeddedPanesProducesExactlyOneUnlockPrompt() {
         val primary = startPane(InboxActivity::class.java)
@@ -277,8 +196,6 @@ class FoldLockBehaviourTest {
         )
     }
 
-    // ---- Activity plumbing -------------------------------------------------------------------
-
     /** Starts [cls] in its own task and waits for it to reach `RESUMED`. Only for the unlocked
      *  set-up launches: a gated screen never gets there, which is what [awaitCreated] is for. */
     private fun <T : Activity> startPane(cls: Class<T>, configure: Intent.() -> Unit = {}): T =
@@ -306,14 +223,7 @@ class FoldLockBehaviourTest {
         return activity
     }
 
-    /**
-     * Runs [trigger] with a monitor already registered for [cls] and returns the instance it
-     * created, or null if none was within [timeoutMs].
-     *
-     * The monitor goes up first because a gated screen redirects and finishes from inside
-     * `onCreate`; anything that looks for it afterwards is looking for an Activity that is
-     * already gone.
-     */
+    /** The monitor goes up first: a gated screen redirects and finishes from inside onCreate. */
     @Suppress("UNCHECKED_CAST")
     private fun <T : Activity> awaitCreated(
         cls: Class<T>,
@@ -350,13 +260,7 @@ class FoldLockBehaviourTest {
         }
     }
 
-    /**
-     * Leaves no Activity of this class's making behind, however the test exited.
-     *
-     * Loops rather than sweeping once: finishing a gated pane can itself start a [UnlockActivity]
-     * that was not in the first snapshot, and that is exactly the instance whose survival would
-     * absorb the next test's first redirect.
-     */
+    /** Loops rather than sweeping once: finishing a gated pane can start another UnlockActivity. */
     private fun finishEveryActivityStartedHere() {
         val deadline = SystemClock.uptimeMillis() + SETTLE_TIMEOUT_MS
         while (true) {
@@ -369,13 +273,7 @@ class FoldLockBehaviourTest {
         instrumentation.waitForIdleSync()
     }
 
-    /**
-     * Process-wide record of what this class started, and of every [UnlockActivity] `onCreate`.
-     *
-     * The creation count is the whole of the collapse assertion: `singleInstance` delivery to a
-     * live instance is [Activity.onNewIntent], so a second `onCreate` is exactly and only what "the
-     * system stacked a second prompt" looks like.
-     */
+    /** A second UnlockActivity onCreate is exactly "the system stacked a second prompt". */
     private class ActivityTracker : Application.ActivityLifecycleCallbacks {
         private val liveActivities = Collections.synchronizedList(mutableListOf<Activity>())
         private val resumedActivities = Collections.synchronizedList(mutableListOf<Activity>())
@@ -421,22 +319,7 @@ class FoldLockBehaviourTest {
     }
 }
 
-/**
- * A verbatim copy of both app-lock preference files, taken before this class overwrites them and
- * written back afterwards.
- *
- * [AppLockStore.reset] is not a restore. It clears the credential salt — which makes an already
- * wrapped `deviceSecret` undecryptable, so a device that ran this suite would silently need
- * re-pairing — and it leaves whatever ran next with no PIN and no lock, neither of which is
- * necessarily what was there before. The store exposes no way to read the PIN hash back, so the
- * only honest restore is at the file level.
- *
- * The tripwire file is written **after** the encrypted one on the way back, for the same reason
- * [AppLockStore.reset] clears it first: `tripwireBroken()` is "a lock was configured but the PIN
- * hash is gone", so the moment where the marker is set and the hash is not must not exist. Getting
- * that order wrong here would arm [SecurityWipe.enforceTripwire] to destroy the device's data on
- * its next launch, from a teardown.
- */
+/** Write the tripwire file AFTER the encrypted one, or the teardown arms SecurityWipe. */
 private class AppLockSnapshot(
     private val context: Context,
     private val secure: Map<String, Any?>,

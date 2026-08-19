@@ -4,7 +4,6 @@ import androidx.room.Dao
 import androidx.room.Query
 import androidx.room.Upsert
 
-/** Mirrors [ContactDao]'s suspend-based shape for the small, full-refreshed groups cache. */
 @Dao
 interface GroupDao {
     @Query("SELECT * FROM groups")

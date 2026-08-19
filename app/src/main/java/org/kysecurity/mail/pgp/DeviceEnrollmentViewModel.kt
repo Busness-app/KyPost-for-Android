@@ -9,14 +9,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-/**
- * Owns one ceremony for the lifetime of the screen, across rotations.
- *
- * No Activity in this app declares `configChanges`, so rotation destroys every screen. A ceremony
- * living in an Activity would, on rotation, mint and publish a *new* keypair and put a new code on
- * screen — invalidating the one the user had already started typing into their browser. The
- * ViewModel is what makes that survivable: it is created once and `run()` is started once.
- */
+/** Owns one ceremony across rotations: an Activity-owned one would remint the keypair on rotate. */
 internal class DeviceEnrollmentViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _state = MutableStateFlow<EnrollmentUiState>(EnrollmentUiState.CheckingIdentity)
@@ -27,12 +20,7 @@ internal class DeviceEnrollmentViewModel(application: Application) : AndroidView
     private val _idle = MutableStateFlow(false)
     val idle: StateFlow<Boolean> = _idle.asStateFlow()
 
-    /**
-     * The live Activity, or null between one being destroyed and the next installing itself.
-     *
-     * `@Volatile` because it is written from the main thread and read from whatever dispatcher the
-     * ceremony is suspended on.
-     */
+    /** The live Activity, or null between destroy and the next install. Volatile: cross-dispatcher. */
     @Volatile
     private var activitySealer: VaultSealer? = null
 
@@ -40,12 +28,7 @@ internal class DeviceEnrollmentViewModel(application: Application) : AndroidView
         identity = AndroidIdentitySource(application),
         transport = AndroidEnrollmentTransport(application),
         keys = AndroidEnrollmentKeys,
-        // A proxy, not the Activity itself: the ViewModel outlives the Activity, and a captured
-        // reference would keep a destroyed one alive and prompt on a dead window. With none
-        // installed, seal() resolves straight to Cancelled. On a configuration change, the
-        // outgoing Activity's own onDestroy cancels its live prompt and resumes this call as
-        // Cancelled itself — androidx.biometric resets its callback to a no-op on destroy, so the
-        // library will not report the rotation on its own.
+        // A proxy, not the Activity: the ViewModel outlives it. With none installed, seal() is Cancelled.
         sealer = object : VaultSealer {
             override suspend fun seal(plaintext: ByteArray): SealOutcome =
                 activitySealer?.seal(plaintext) ?: SealOutcome.Cancelled
@@ -87,18 +70,7 @@ internal class DeviceEnrollmentViewModel(application: Application) : AndroidView
         }
     }
 
-    /**
-     * The "user leaves" row of the exit table.
-     *
-     * `viewModelScope` has been cancelled by the time this runs, but cancellation is cooperative, not
-     * immediate: a suspended poll or a live `BiometricPrompt` may still be unwinding when `teardown()`
-     * executes. That is fine to proceed through regardless — the agreement key must not survive the
-     * screen either way, and deleting it cannot corrupt an in-flight seal, because the seal
-     * authenticates against the vault key, which `teardown()` never touches. It is idempotent and
-     * destroys nothing if the ceremony never minted anything, because `EnrollmentKeyStore.deleteKeyPair()`'s
-     * boolean feeds a `SecurityWipe.step` elsewhere and a deletion that never happened must not be
-     * reported.
-     */
+    /** Safe mid-flight: the seal uses the vault key, which `teardown()` never touches. */
     override fun onCleared() {
         ceremony.teardown()
         super.onCleared()

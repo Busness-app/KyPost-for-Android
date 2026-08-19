@@ -9,12 +9,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/**
- * Verifies MIGRATION_3_4 (Task 2 extended contact fields) applies cleanly against a real
- * version-3 `contacts` table, matching the instrumentation-test convention documented in
- * app/src/androidTest/AGENTS.md (MigrationTestHelper needs Android's real SQLite, which JVM
- * unit tests under app/src/test can't provide).
- */
+/** MigrationTestHelper needs Android's real SQLite, so migration coverage lives here. */
 @RunWith(AndroidJUnit4::class)
 class MigrationTest {
 
@@ -156,12 +151,6 @@ class MigrationTest {
         }
     }
 
-    /**
-     * Additive and defaulted, so existing rows keep their key alarm and start with no identity
-     * alarm. That is the safe direction: a missing identity alarm is re-raised by the next sync that
-     * observes a rebind, whereas migrating every existing key alarm into both columns would show
-     * users a review prompt they cannot action.
-     */
     @Test
     fun migrate9To10_addsTheIdentityAlarmColumnWithoutDisturbingTheKeyAlarm() {
         helper.createDatabase(TEST_DB, 9).use { db ->

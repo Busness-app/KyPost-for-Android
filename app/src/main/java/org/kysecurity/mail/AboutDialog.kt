@@ -23,12 +23,8 @@ import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import java.util.Calendar
 
-// -----------------------------------------------------------------------------
-// App version shown on the About overlay and reported to the server on every device
-// registration. Sourced from the build's versionName so there is one place to bump: the two used
 const val APP_VERSION = BuildConfig.VERSION_NAME
 
-/** Shows the "About" overlay: app credit line plus a scrollable copy of the GPL v2. */
 fun showAboutDialog(activity: Activity) {
     val palette = getStoredThemePalette(activity)
     val panel = Color.parseColor(palette.panel)
@@ -66,7 +62,7 @@ fun showAboutDialog(activity: Activity) {
         setPadding(dp(10), dp(3), dp(10), dp(3))
         background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
-            cornerRadius = dp(100).toFloat() // fully rounded pill
+            cornerRadius = dp(100).toFloat()
             setColor(accent)
         }
         layoutParams = LinearLayout.LayoutParams(
@@ -87,7 +83,6 @@ fun showAboutDialog(activity: Activity) {
     }
     container.addView(about)
 
-    // Accent hairline separating the credit line from the license.
     val divider = View(activity).apply {
         setBackgroundColor(accent)
         alpha = 0.5f
@@ -119,7 +114,6 @@ fun showAboutDialog(activity: Activity) {
         setLineSpacing(dp(3).toFloat(), 1f)
         setPadding(dp(16), dp(16), dp(16), dp(16))
     }
-    // Size the scroll box to a comfortable slice of the screen so it feels intentional on any device.
     val boxHeight = (activity.resources.displayMetrics.heightPixels * 0.42f).toInt()
     val licenseBox = ScrollView(activity).apply {
         addView(license)
@@ -179,16 +173,7 @@ private fun readLicenseText(context: Context): String {
         .use { it.readText() }
 }
 
-/**
- * The bundled GPL text is print-formatted: paragraphs hard-wrapped at ~70 columns, headings padded
- * with leading spaces to fake centering. Dropped into a narrow monospace box each line wraps a
- * second time and it reads as a ragged mess. This reflows it for the screen without altering any
- * wording (the license itself stays verbatim on disk):
- *  - blank-line-separated blocks become paragraphs;
- *  - centered headings (deep leading indent) are bolded and center-aligned;
- *  - sample/notice blocks (indented, whitespace-significant) stay monospace and verbatim;
- *  - ordinary prose is unwrapped so it flows to the box width in a proportional font.
- */
+/** Reflows the print-wrapped GPL text for the screen; the wording itself is never altered. */
 private fun formatLicenseText(raw: String): CharSequence {
     val builder = SpannableStringBuilder()
     val blocks = mutableListOf<List<String>>()

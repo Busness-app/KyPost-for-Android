@@ -6,12 +6,6 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The pairing confirmation dialog is a trust prompt, and it used to render the raw `srv` string
- * straight from the deep link. A URL with userinfo reads as the trusted host on a wrapped dialog
- * while every request goes somewhere else — and `kypost://native-pair` is BROWSABLE, so any web
- * page can fire it.
- */
 class PairingUrlHostTest {
 
     @Test
@@ -75,8 +69,6 @@ class PairingUrlHostTest {
         assertEquals("https://relay.example.com", (result as PairingParseResult.Success).pairing.serverUrl)
     }
 
-    /** sameOrigin is also reached for pairings persisted by an older build, which is exactly where
-     *  a userinfo URL saved before this check existed would still be sitting. */
     @Test
     fun sameOriginRefusesUserinfoOnEitherSide() {
         assertTrue(sameOrigin("https://relay.example.com/api", "https://relay.example.com"))
@@ -84,13 +76,6 @@ class PairingUrlHostTest {
         assertTrue(!sameOrigin("https://relay.example.com/api", "https://good@relay.example.com"))
     }
 
-    /**
-     * Validation and connection now use the *same* parser (OkHttp's `HttpUrl`).
-     *
-     * They used to differ: every check ran on `java.net.URI` while the request was built from
-     * `HttpUrl`. Two parsers either side of a trust decision is the classic shape of a
-     * parser-differential bypass, and there was no reason for it.
-     */
     @Test
     fun rejectsBaseUrlsCarryingAQueryOrFragment() {
         // Appending a path to either of these produces a request to somewhere other than the path

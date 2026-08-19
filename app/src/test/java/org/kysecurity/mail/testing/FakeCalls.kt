@@ -13,19 +13,7 @@ import okio.Timeout
 import okio.buffer
 import java.io.IOException
 
-/**
- * Shared hand-rolled fakes for OkHttp's [Call.Factory], so a client can be exercised without a real
- * network call. This repo has no mocking framework and no MockWebServer dependency, and injecting a
- * [Call.Factory] rather than a concrete `OkHttpClient` is the seam every client here is built around.
- *
- * These lived as `private` top-level copies in each test file, which worked only while no two files
- * in the same package needed them. Kotlin compiles a top-level `private` class to a package-level
- * JVM name — `private` restricts visibility, not the emitted class name — so the second test file in
- * `org.kysecurity.mail.pgp` to declare `FakeCallFactory` failed to compile as a duplicate class. That was
- * papered over with per-file name prefixes (`BootstrapFakeCallFactory`, `RecipientKeyFakeCall`, …),
- * which left four near-identical copies under three naming conventions. One `internal` copy here
- * removes both problems: `internal` is module-wide, so any test in this source set can use it.
- */
+/** Shared OkHttp [Call.Factory] fakes; `internal` because top-level `private` still clashes. */
 internal class FakeCallFactory(private val responder: (Request) -> Response) : Call.Factory {
     val requests = mutableListOf<Request>()
 
@@ -35,12 +23,7 @@ internal class FakeCallFactory(private val responder: (Request) -> Response) : C
     }
 }
 
-/**
- * [FakeCallFactory] that also captures each request body as a string.
- *
- * Separate from [FakeCallFactory] rather than folded into it because reading a body consumes it:
- * every GET-only test would pay for a capture it never inspects.
- */
+/** [FakeCallFactory] that also captures bodies; separate because reading a body consumes it. */
 internal class BodyRecordingCallFactory(private val responder: (Request) -> Response) : Call.Factory {
     val requests = mutableListOf<Request>()
     val bodies = mutableListOf<String>()
@@ -87,11 +70,7 @@ private class ThrowingCall(private val req: Request, private val exception: Exce
     override fun clone(): Call = ThrowingCall(req, exception)
 }
 
-/** Canned JSON response. Keeps the name the per-file copies used, so adopting this file is a
- *  deletion plus an import rather than a rewrite of every call site.
- *
- *  [headers] exists for the responses whose meaning is carried outside the body — `Retry-After` on a
- *  429 being the one this repo actually reads. */
+/** Canned JSON response; [headers] carries meaning outside the body, e.g. `Retry-After`. */
 internal fun response(
     request: Request,
     body: String,
@@ -108,20 +87,7 @@ internal fun response(
         .apply { headers.forEach { (name, value) -> header(name, value) } }
         .build()
 
-/**
- * A response whose body has the same read semantics as a real socket, for anything that reads bytes
- * rather than calling `.string()`.
- *
- * [response] above builds its body with `String.toResponseBody`, which is `Buffer`-backed — and
- * `Buffer.read(sink, byteCount)` copies `min(byteCount, size)` from itself in one call, with no
- * segment limit. A real network body is a `RealBufferedSource`, whose `read` fills at most one
- * 8 KiB segment per call and returns that. Code that calls `read` once and ignores the return value
- * therefore passes against [response] and silently truncates in production — which is exactly what
- * `RelayMailSource.readBounded` did to every attachment over 8 KiB.
- *
- * Wrapping a plain [okio.Source] in `okio.buffer` reproduces the real semantics, so a test written
- * against this fake fails when the loop is missing.
- */
+/** Body with real socket read semantics: one 8 KiB segment per read, unlike [response]'s Buffer. */
 internal fun streamingResponse(
     request: Request,
     bytes: ByteArray,

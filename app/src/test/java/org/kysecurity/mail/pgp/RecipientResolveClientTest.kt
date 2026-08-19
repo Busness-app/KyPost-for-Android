@@ -9,12 +9,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * `/api/pgp/recipients/resolve` differs from `/check` in more than its payload: it answers **JSON**
- * on 409 and 413 as well as 200, where `/check` is JSON only on 200. Getting that wrong means
- * running a decoder over a plain-text body and reporting "malformed response" for what is really a
- * categorical refusal.
- */
+/** `/resolve` answers JSON on 409 and 413 as well as 200, where `/check` is JSON only on 200. */
 class RecipientResolveClientTest {
 
     @Test

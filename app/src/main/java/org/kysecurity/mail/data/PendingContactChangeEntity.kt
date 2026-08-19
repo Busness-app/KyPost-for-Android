@@ -3,7 +3,6 @@ package org.kysecurity.mail.data
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 
-/** Offline queue of not-yet-synced local contact edits, flushed by ContactSyncRepository.sync(). */
 @Entity(tableName = "pending_contact_changes")
 data class PendingContactChangeEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,

@@ -4,21 +4,13 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-// The $Phishing IMAP keyword is how the server tells this client a message
-// impersonates KyPost (backend/internal/processor/phish_scan.go). The warning
-// bar in EmailDetailActivity reads it through this predicate.
-//
-// Advisory only: the links it warns about are already refused by
-// SAFE_LINK_SCHEMES, whether or not the server ever flagged the message.
+// The $Phishing keyword is set by the server (backend/internal/processor/phish_scan.go).
 class PhishingFlagTest {
     @Test
     fun recognizesTheServerKeyword() {
         assertTrue(isFlaggedPhishing(setOf("Primary", PHISHING_KEYWORD)))
     }
 
-    // IMAP keywords are case-insensitive, so a server may echo back a different
-    // case than the one the poller set. A case-sensitive check would silently
-    // drop the warning on exactly the mail it exists for.
     @Test
     fun matchingIsCaseInsensitive() {
         assertTrue(isFlaggedPhishing(setOf("\$phishing")))

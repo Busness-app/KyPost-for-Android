@@ -19,26 +19,7 @@ import javax.crypto.KeyAgreement
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-/**
- * The one thing no JVM test can do: a real ECDH against a non-extractable P-256 key in this device's
- * Keystore, opened with the same envelope format the browser produces.
- *
- * The JVM suite proves the state machine routes every branch correctly; this proves the branch it
- * routes to actually works. Without it, an AAD or HKDF-salt mistake would surface to a user as the
- * substituted-key alarm — this feature's one alarm — on every honest enrollment.
- *
- * **Requires a secure lock screen** for the vault half. See the `locksettings set-pin` step in
- * `.github/workflows/ci.yml`; on a bare emulator `ensureKey()` returns false by design.
- *
- * **`sealCipher()` is deliberately not exercised here.** The vault key is
- * `setUserAuthenticationRequired(true)` with per-use auth, so `Cipher.init(ENCRYPT_MODE, ...)`
- * cannot succeed outside a satisfied `BiometricPrompt` — it returns null, and a test asserting that
- * would be asserting the absence of authentication rather than the presence of encryption. The spec
- * lists `sealCipher` under instrumented coverage; it is not reachable, and that is stated rather
- * than papered over with a test that passes for the wrong reason. `openCipher` IS reachable
- * (`Cipher.init` on GCM needs no authentication) and is already covered by `EnrollmentStateTest`
- * through `probeEnrollment`.
- */
+/** sealCipher is unreachable here: its key needs per-use auth from a BiometricPrompt. */
 @RunWith(AndroidJUnit4::class)
 class EnrollmentEnvelopeRoundTripTest {
 
@@ -157,16 +138,7 @@ class EnrollmentEnvelopeRoundTripTest {
 
         assertTrue(EnrollmentTeardown.destroy(ApplicationProvider.getApplicationContext()).isEmpty())
 
-        // Asserting on `vault` here — the instance held across the teardown — would be pinning a
-        // contract nothing depends on. EnrollmentVault caches its EncryptedSharedPreferences in a
-        // `by lazy`, and EnrollmentTeardown destroys through a DIFFERENT instance of its own
-        // (EnrollmentTeardown.kt:26), so an instance held across a teardown reports stale state: it
-        // still sees the blob that instance itself wrote, even though the file backing it is gone.
-        // That is a real, latent bug (tracked, not fixed here), but no production caller hits it —
-        // every construction site builds a fresh EnrollmentVault at the point of use
-        // (EnrollmentStateWorker.kt:89, DeviceEnrollmentActivity.kt:128, EnrollmentTeardown.kt:26,
-        // SecuritySettingsActivity.kt:324). A fresh instance after a teardown seeing nothing is the
-        // contract every one of those callers actually relies on, so that is what this asserts.
+        // An instance held across teardown reports stale state; callers always build a fresh one.
         assertNull(EnrollmentVault(ApplicationProvider.getApplicationContext()).stored())
     }
 }

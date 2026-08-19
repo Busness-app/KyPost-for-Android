@@ -19,14 +19,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import java.security.KeyStore
 
-/**
- * Hostile Location Protection destroys the enrollment but deliberately keeps the device paired.
- *
- * Those two facts pull in opposite directions, which is why they are asserted together: an envelope
- * surviving the toggle leaves the account's private key openable by device unlock on a device whose
- * owner has just declared they are somewhere hostile, while unpairing would silently break push and
- * sync for a mode that is documented to keep both working.
- */
+/** HLP destroys the enrollment but must keep the device paired; both are asserted here. */
 @RunWith(AndroidJUnit4::class)
 class HostileLocationEnrollmentTeardownTest {
 

@@ -14,13 +14,6 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
 
-/**
- * Regression tests for [SecurityWipe]'s ordering and its resume bookkeeping.
- *
- * Each of these began as an audit probe asserting a defect; they now assert the contract the fixes
- * established. The wipe runs precisely when the device is presumed hostile, so "what is still on
- * disk afterwards" and "what the app then tells the user" are both security properties.
- */
 @RunWith(AndroidJUnit4::class)
 class WipeResurrectionTest {
     private val context = ApplicationProvider.getApplicationContext<android.content.Context>()
@@ -60,13 +53,7 @@ class WipeResurrectionTest {
         SecurityRuntime.invalidate()
     }
 
-    /**
-     * The wipe deletes `kypost_mail.db` early and must not rebuild it later.
-     *
-     * `clearPairingState` -> `purgeAccountScopedData` used to dereference `DataRuntime.graph(...)`,
-     * which constructs a Room database — fifteen steps after the one that deleted it. It now reads
-     * through `peekGraph()`, so an already-torn-down graph means nothing to purge.
-     */
+    /** purgeAccountScopedData must peek the graph, not construct one after the delete step. */
     @Test
     fun wipe_doesNotRecreateTheDatabaseFileItDeleted(): Unit = runBlocking {
         DataRuntime.graph(context).database.openHelper.writableDatabase
@@ -80,11 +67,7 @@ class WipeResurrectionTest {
         )
     }
 
-    /**
-     * The same rebuild under Hostile Location Protection was worse: the flag deciding disk-vs-memory
-     * had already been deleted by the `sharedPrefs` step, so the resurrected graph was DISK-backed —
-     * a KyPost mail schema materialising on disk in the one mode that promises none.
-     */
+    /** Under HLP the resurrected graph was disk-backed, since the flag file was already deleted. */
     @Test
     fun wipe_underHostileLocation_leavesNoDatabaseOnDisk(): Unit = runBlocking {
         HostileLocationSettings(context).setEnabled(true)
@@ -105,15 +88,7 @@ class WipeResurrectionTest {
         )
     }
 
-    /**
-     * A wipe force-stopped after `step("sharedPrefs")` leaves the protection flag file deleted and
-     * the resume marker set. The resumed run must still restore the posture.
-     *
-     * It used to re-read the flag from the file the interrupted run had already deleted, get
-     * `false`, and skip the restore permanently — so the user re-paired onto a disk-backed plaintext
-     * database on a device the app had just decided was hostile. The posture is now recorded in the
-     * retained `wipe_state` file at `markWipeInProgress` time.
-     */
+    /** The posture is recorded in wipe_state, since the resumed run cannot re-read the deleted file. */
     @Test
     fun resumedWipe_restoresHostileLocationProtection(): Unit = runBlocking {
         HostileLocationSettings(context).setEnabled(true)
@@ -140,22 +115,7 @@ class WipeResurrectionTest {
         )
     }
 
-    /**
-     * `MAX_WIPE_RESUMES` bounds ONE wipe's resumes. It is not a rolling window, and it is not a
-     * lifetime budget either.
-     *
-     * Two bugs have lived here. First, `clearWipeMarker()` used to `clear()` the whole file, dropping
-     * the attempt counter with the in-progress flag, so reaching the ceiling reset the budget and the
-     * counter cycled 1, 2, 0, 1, 2, 0 forever — the ceiling bounded nothing. The fix for that kept the
-     * counter across the marker, which overshot: nothing reset it *ever*, so it became a per-install
-     * lifetime budget. Wipes are reachable by ordinary user action — turning off "Require Unlock to
-     * Open" with the credential gate on runs a full wipe — so three of those exhausted the budget,
-     * and the wipe that actually matters (a thief burning PIN attempts) then got zero retries and
-     * abandoned itself on its first failed step.
-     *
-     * The counter is now scoped to a wipe *episode*: `markWipeInProgress` starts it at 1 when the
-     * marker was clear, and increments only when resuming a marker that is already set.
-     */
+    /** The counter is scoped to one wipe episode: not a rolling window, not a lifetime budget. */
     @Test
     fun wipeAttemptCeiling_climbsWhileResuming_thenResetsForTheNextWipe(): Unit = runBlocking {
         val prefs = context.getSharedPreferences(
@@ -179,10 +139,7 @@ class WipeResurrectionTest {
         }
     }
 
-    /**
-     * Past the ceiling the wipe stops resuming, and says so: `willRetry` is what stops the UI
-     * promising a retry on the one run that gave up.
-     */
+    /** willRetry is what stops the UI promising a retry on the run that gave up. */
     @Test
     fun pastTheCeiling_theResultReportsThatNoRetryIsComing(): Unit = runBlocking {
         val dir = File(context.dataDir, "shared_prefs")
@@ -203,19 +160,7 @@ class WipeResurrectionTest {
         }
     }
 
-    /**
-     * Giving up on the retries must not mean forgetting that deletion failed.
-     *
-     * The run that hit the ceiling used to call `clearWipeMarker()`, which is how "stop resuming"
-     * was expressed — and it discarded the only durable evidence that data may still be on disk.
-     * `wipeInterrupted` answered false from then on, the "some data may still be on this device"
-     * notice was shown exactly once and never again, and every later launch presented a clean
-     * first-run app over plaintext mail, contacts or attachments that were never deleted.
-     *
-     * Fail closed instead: the marker and the failed step names persist, and `enforceTripwire`
-     * returns the same terminal `Incomplete(willRetry = false)` on every launch — which
-     * [LockedActivity] blocks the whole app behind — without re-running the destructive pass.
-     */
+    /** Giving up on retries must not forget that deletion failed; the marker and steps persist. */
     @Test
     fun pastTheCeiling_theIncompleteStateIsPermanentAndNotForgotten(): Unit = runBlocking {
         val dir = File(context.dataDir, "shared_prefs")
@@ -248,20 +193,7 @@ class WipeResurrectionTest {
         )
     }
 
-    /**
-     * A wipe that promises a retry must leave the retry something to do.
-     *
-     * `step("downloadedAttachments")` keeps the URIs it could not delete and throws, producing
-     * `Incomplete(willRetry = true)` and the notice "it will be retried when the app next starts".
-     * But `step("sharedPrefs")` runs eleven steps later and used to delete the ledger file along
-     * with everything else, so the resumed wipe read an empty set, passed the step, and reported
-     * **Complete** — telling the user their local data was erased while the attachment plaintext
-     * was still sitting in shared Downloads.
-     *
-     * The undeletable entry is a `content://` URI with an authority no provider claims, so
-     * `ContentResolver.delete` throws. That is the same shape as the real case the ledger was
-     * hardened for: a MediaStore row this package created and can no longer touch.
-     */
+    /** The ledger must survive the sharedPrefs sweep, or a promised retry has nothing to retry. */
     @Test
     fun wipe_keepsTheAttachmentLedgerWhenItsStepFailed(): Unit = runBlocking {
         DownloadedAttachmentLedger.record(
@@ -306,15 +238,7 @@ class WipeResurrectionTest {
         assertFalse("a completed sweep must not leave its ledger behind", ledgerFile().exists())
     }
 
-    /**
-     * A wipe reached by ten wrong PINs must not leave behind the keys that open this device's
-     * envelope. Surviving them would outlive a wipe nobody chose, and the vault key is openable by
-     * nothing more than the device unlock.
-     *
-     * Asserted through the real `wipeAndResetApp`, not the teardown helper, because the ordering is
-     * the risk: the sharedPrefs sweep runs after this step and would recreate the vault's file if
-     * the step ran too late.
-     */
+    /** Through the real wipeAndResetApp: ordering is the risk, sharedPrefs sweeps after this step. */
     @Test
     fun wipe_destroysTheDeviceEnrollment(): Unit = runBlocking {
         val vault = org.kysecurity.mail.pgp.EnrollmentVault(context)

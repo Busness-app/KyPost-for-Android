@@ -17,13 +17,7 @@ sealed class GroupsSyncResult {
     data class Retryable(val message: String) : GroupsSyncResult()
 }
 
-/**
- * Talks to `GET /api/groups`. Pull-only (there is no delta cursor — the caller always fetches
- * the full list and full-refreshes its local cache), mirroring [ContactSyncClient]'s X-Kypost-Device-Id/X-Kypost-Device-Secret
- * header auth and HTTP-status-to-result mapping, minus the push/dedupe endpoints this
- * client has no need for. Two-way group *creation* sync (`POST /api/groups`) is out of scope for
- * this client — see `Client_Contact_Update.md` Part 2 point 3.
- */
+// Pull-only: group creation (POST /api/groups) is out of scope for this client.
 class GroupsSyncClient(
     private val json: Json = Json { ignoreUnknownKeys = true },
     private val callFactory: Call.Factory,

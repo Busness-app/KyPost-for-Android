@@ -8,11 +8,7 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
 import java.io.IOException
 
-/**
- * One subscriber-scoped value in a [Preferences] DataStore: [scopeKey] travels alongside
- * [valueKey] so a change of scope (e.g. re-pairing as a different subscriber) reads back null
- * instead of the previous scope's stale value.
- */
+/** [scopeKey] travels with [valueKey]: a scope change reads back null, not the old value. */
 class ScopedValue<T>(
     private val dataStore: DataStore<Preferences>,
     private val scopeKey: Preferences.Key<String>,

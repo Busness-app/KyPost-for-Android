@@ -9,13 +9,7 @@ import org.kysecurity.mail.security.LockedActivity
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
-/**
- * Launcher and router: decides between the inbox and the pairing screen.
- *
- * Routing moved out of `onCreate` and into [onStart] so it happens strictly after
- * [LockedActivity]'s lock check — otherwise this Activity would launch the inbox and *then*
- * redirect itself to the unlock screen, racing two Activities into the task.
- */
+/** Routes in [onStart], strictly after [LockedActivity]'s lock check, never in `onCreate`. */
 class MainActivity : LockedActivity() {
 
     private var routed = false
@@ -49,9 +43,6 @@ class MainActivity : LockedActivity() {
 
     private fun handleIntent(intent: Intent) {
         lifecycleScope.launch {
-            // No MFA routing here. This used to parse `type=mfa_challenge` out of its own extras and
-            // forward to the approval screen; nothing in this app ever built such an intent, because
-            // the MFA notification's PendingIntent targets MfaApprovalActivity directly.
             val configured = PushRuntime.graph(this@MainActivity).repository.state.first().pairing != null
 
             val targetIntent = if (configured) {
@@ -66,15 +57,7 @@ class MainActivity : LockedActivity() {
         }
     }
 
-    /**
-     * The "open this message" extras, but only from an Intent this app actually built.
-     *
-     * This Activity is exported — the LAUNCHER filter requires it — so every extra on [intent] is
-     * attacker-reachable by any co-installed app with no permissions at all. Forwarding them
-     * unchecked let such an app drive the inbox to a message id of its choosing and put arbitrary
-     * strings on screen in the position where a real sender and subject go. The token is the same
-     * shape of fix as splitting `PushPairingLinkActivity` out of `PushPairingActivity`.
-     */
+    /** Exported via LAUNCHER, so extras are attacker-reachable: accept only token-signed ones. */
     private fun notificationExtras(intent: Intent): Bundle? {
         val msgId = intent.getStringExtra(PushNotificationDispatcher.EXTRA_MESSAGE_ID) ?: return null
         if (!org.kysecurity.mail.push.NotificationIntentToken.matches(

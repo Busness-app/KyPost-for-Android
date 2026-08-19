@@ -15,14 +15,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
 
-/**
- * `kypost_mail.db` holds every cached message body, the whole contact book and contacts' PGP keys,
- * and it was a plain SQLite file — readable by anyone who could get the file off the device,
- * whatever the app lock said. These tests are the evidence that it no longer is.
- *
- * Instrumented rather than JVM because SQLCipher is a native library: a unit test would prove
- * nothing about what actually lands on disk.
- */
+/** Instrumented, not JVM: SQLCipher is a native library, so only on-device bytes prove anything. */
 @RunWith(AndroidJUnit4::class)
 class DatabaseEncryptionTest {
 
@@ -39,10 +32,7 @@ class DatabaseEncryptionTest {
 
     @Before
     fun setUp() {
-        // The tests below open Room directly rather than through DataGraph, so they have to do
-        // what DataGraph's factory does: load the native library, and make sure `databases/`
-        // exists. Both were real findings — the AAR loads nothing itself, and SQLCipher's helper
-        // does not create the directory the framework helper creates on demand.
+        // Room is opened directly here, so do what DataGraph does: load the lib, make databases/.
         assertTrue("libsqlcipher.so must load", sqlCipherLoaded)
         deleteAll()
         val dir = dbFile().parentFile!!
@@ -59,9 +49,7 @@ class DatabaseEncryptionTest {
 
     /** SQLite's magic header. Present in a plaintext file, absent once SQLCipher owns it. */
     private fun startsWithSqliteHeader(file: File): Boolean {
-        // Spelled out byte by byte rather than reused from production, so the test cannot agree
-        // with a bug in the code it is checking — which is exactly what happened: both said
-        // "SQLite format 3 " with a trailing space, where the real magic ends with a NUL.
+        // Spelled out byte by byte, not reused from production, so the test cannot share its bug.
         val expected = byteArrayOf(
             0x53, 0x51, 0x4c, 0x69, 0x74, 0x65, 0x20, 0x66,
             0x6f, 0x72, 0x6d, 0x61, 0x74, 0x20, 0x33, 0x00,
@@ -98,10 +86,6 @@ class DatabaseEncryptionTest {
         sourceMode = "relay",
     )
 
-    /**
-     * The claim in one test: a message body written through Room does not appear as plaintext in
-     * the file on disk, and the file is not a readable SQLite database at all.
-     */
     @Test
     fun messageBodiesAreNotReadableInTheDatabaseFile() {
         val secret = "the-quick-brown-fox-jumps-over-the-lazy-dog-SECRETMARKER"
@@ -117,9 +101,7 @@ class DatabaseEncryptionTest {
         )
     }
 
-    /** The control: without the openHelperFactory this test would pass vacuously, so prove that a
-     *  plaintext database really does leak the body. If this ever fails, the assertion above is
-     *  not testing what it claims. */
+    /** Control for [messageBodiesAreNotReadableInTheDatabaseFile] — proves it is not vacuous. */
     @Test
     fun aPlaintextDatabaseDoesLeakTheBody() {
         val secret = "the-quick-brown-fox-jumps-over-the-lazy-dog-SECRETMARKER"
@@ -145,11 +127,6 @@ class DatabaseEncryptionTest {
         }
     }
 
-    /**
-     * The upgrade path for every existing install: an unencrypted database is converted in place,
-     * every row survives, and Room's `user_version` is carried across so it does not try to re-run
-     * migrations against an already-migrated schema.
-     */
     @Test
     fun anExistingPlaintextDatabaseIsConvertedWithoutLosingRows() {
         openPlaintext().useDb { db ->
@@ -187,18 +164,6 @@ class DatabaseEncryptionTest {
         assertFalse(dbFile().exists())
     }
 
-    /**
-     * The crash window, asserted rather than claimed.
-     *
-     * The conversion used to `delete()` the plaintext file and then `renameTo()` the converted one.
-     * A process death between those two lines left no database and an orphaned `.encrypting` file
-     * holding the whole mailbox — which the old `if (!plain.exists()) return true` read as "nothing
-     * to convert", so Room created an empty database over the top and the user's mail was gone. The
-     * KDoc above the delete asserted this could not happen.
-     *
-     * Simulated exactly: run a real conversion, then put the file system into the state that window
-     * produced, and require the next call to recover.
-     */
     @Test
     fun aConversionInterruptedBeforeTheRenameIsRecovered() {
         openPlaintext().useDb { db ->
@@ -224,10 +189,6 @@ class DatabaseEncryptionTest {
         }
     }
 
-    /**
-     * An orphan this device cannot read must be discarded, not renamed into place: replacing a
-     * recoverable empty state with an unopenable database is strictly worse.
-     */
     @Test
     fun anOrphanUnderADifferentKeyIsDiscardedRatherThanAdopted() {
         openPlaintext().useDb { db -> db.emailDao().upsertAll(listOf(sampleEmail("e1", "body"))) }
@@ -242,11 +203,6 @@ class DatabaseEncryptionTest {
         assertFalse("and must not have been adopted", dbFile().exists())
     }
 
-    /**
-     * The header check reads sixteen bytes and used to discard `read()`'s count, so a short read
-     * zeroed the tail and reported a plaintext database as already encrypted — which hands a
-     * plaintext file to SQLCipher.
-     */
     @Test
     fun aFileTooShortToHoldTheHeaderIsNotTreatedAsPlaintext() {
         dbFile().parentFile!!.mkdirs()

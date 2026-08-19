@@ -10,9 +10,7 @@ class ContactsGraph(context: Context) {
     private val appContext = context.applicationContext
     private val database = DataRuntime.graph(appContext).database
 
-    // Shared with both clients below — see finding C2 of the 2026-07-22 security-hardening
-    // spec's final-review fix round: contact/group sync used to default to the plain unpinned
-    // pairingHttpClient() even though it sends the same deviceSecret bearer credential as mail.
+    // Shared by both clients: contact/group sync sends the same deviceSecret credential as mail.
     private val pinnedCallFactory = pinnedPairingCallFactory(appContext)
 
     val repository = ContactSyncRepository(
@@ -34,7 +32,5 @@ object ContactsRuntime {
 
     fun graph(context: Context): ContactsGraph = holder.get(context)
 
-    /** See [org.kysecurity.mail.SingletonGraph.invalidate] — used by
-     *  [org.kysecurity.mail.security.AppRestart]. */
     fun invalidate() = holder.invalidate()
 }

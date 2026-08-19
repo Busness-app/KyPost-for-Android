@@ -36,18 +36,7 @@ internal sealed class EnrollmentCallResult {
     data class Failed(val message: String) : EnrollmentCallResult()
 }
 
-/**
- * The three device-authenticated enrollment calls.
- *
- * Endpoints are built from the paired origin, never from a server-supplied URL — the same rule
- * `PgpKeyActivity.renderQr` follows, and for the same reason: a tampered response must not be able
- * to point an authenticated call at another host, outside the TLS pin.
- *
- * JSON goes through kotlinx.serialization, not `org.json`. Under this module's
- * `isReturnDefaultValues = true`, `org.json` resolves to the stubbed `android.jar` in unit tests and
- * every call returns a default — so a client built on it parses nothing, encodes nothing, and its
- * tests still pass. That trap already cost this plan one green-but-empty suite in `DeviceEnvelope`.
- */
+/** The three device-authenticated enrollment calls. Endpoints come from the paired origin only. */
 internal class EnrollmentClients(
     // Injected Call.Factory; see PairingAuthHeaders.kt for why every credentialed client takes one.
     private val callFactory: Call.Factory,

@@ -4,11 +4,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Covers [contactHasLinkedPgpKey] — regression test for the self-contact's "PGP" badge showing
- *  "not linked" even when the account has a real PGP identity on the server. The self-contact's own
- *  `pgpKey` field (see `contacts.go`/`pgp_qr_handlers.go` on the server) is a normal, independently
- *  editable contact field with no connection to the account's actual PGP identity, so the badge must
- *  also honor the account-level [hasPgpIdentity] signal for that one contact specifically. */
+/** The self-contact's own `pgpKey` field is unrelated to the account's real PGP identity. */
 class ContactAdapterTest {
 
     @Test

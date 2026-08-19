@@ -7,15 +7,6 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * Covers [contactDedupeOutcomeOf] and [resolveDedupeOutcome] — the pure, dependency-free pieces
- * pulled out of [ContactSyncRepository.dedupe] so they're unit-testable without a real
- * Context-backed `AppDatabase`/`ContactCursorStore` (mirrors
- * [org.kysecurity.mail.mail.reconcileFetchResult]'s extraction from `MailRepository` for the same
- * reason — see `MailRepositoryTest.kt`). `ContactSyncRepository` itself still has no direct unit
- * tests; that gap is pre-existing repo-wide infra (no Robolectric/mocking library) and unaffected
- * by this extraction.
- */
 class ContactSyncRepositoryTest {
 
     private val pairing = PairingData(
@@ -32,8 +23,6 @@ class ContactSyncRepositoryTest {
         mergedCount = 2,
         groups = listOf(ContactDedupeGroupDto(survivor = "uid-1", absorbed = listOf("uid-2"))),
     )
-
-    // --- contactDedupeOutcomeOf: pure ContactDedupeResult -> ContactDedupeOutcome mapping ---
 
     @Test
     fun contactDedupeOutcomeOf_success_mapsToSuccessWithReport() {
@@ -73,8 +62,6 @@ class ContactSyncRepositoryTest {
         assertTrue(outcome is ContactDedupeOutcome.Retry)
         assertEquals("network error", (outcome as ContactDedupeOutcome.Retry).message)
     }
-
-    // --- resolveDedupeOutcome: the pairing short-circuit that dedupe() decides before calling the client ---
 
     @Test
     fun resolveDedupeOutcome_noPairing_returnsNotPairedWithoutCallingClient() = runBlocking {

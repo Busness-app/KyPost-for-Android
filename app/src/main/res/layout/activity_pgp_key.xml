@@ -42,10 +42,7 @@
             android:textSize="13sp"
             android:layout_marginBottom="8dp" />
 
-        <!-- The scanning side is told to "confirm this fingerprint matches the other person's
-             device". The presenting side had no screen showing its own fingerprint, so on an
-             Android-to-Android exchange there was nothing to match against and the ceremony was
-             a rubber stamp. -->
+        <!-- Shows this side's own fingerprint; an Android-to-Android match needs one. -->
         <TextView
             android:id="@+id/pgpQrMyFingerprintText"
             android:layout_width="match_parent"
@@ -87,9 +84,7 @@
             android:visibility="gone"
             android:layout_marginBottom="8dp" />
 
-        <!-- The addresses are the binding: whoever holds this key can read mail sent to them.
-             Confirming a name and a fingerprint without them verifies the key but not who it
-             speaks for, so the card's addresses have to be on screen before the user accepts. -->
+        <!-- Addresses on screen before accept: the key says nothing about who it speaks for. -->
         <TextView
             android:id="@+id/pgpScanAddressesText"
             android:layout_width="match_parent"

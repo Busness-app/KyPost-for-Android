@@ -95,9 +95,6 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        // Defaults match a message with no OpenPGP content, which is what every
-        // already-cached row is as far as this app has ever known — so existing
-        // rows land in exactly the state they were already being rendered in.
         val MIGRATION_7_8 = object : Migration(7, 8) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE `emails` ADD COLUMN `pgpEncrypted` INTEGER NOT NULL DEFAULT 0")
@@ -118,13 +115,7 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        /**
-         * Splits the identity alarm out of `pgpKeyNeedsReverification`. Additive and defaulted, so
-         * existing rows keep their key alarm and start with no identity alarm — the safe direction:
-         * a missing identity alarm is re-raised by the next sync that observes a rebind, whereas
-         * migrating every existing key alarm into both columns would show every user a review prompt
-         * they cannot action.
-         */
+        // Not backfilled from pgpKeyNeedsReverification: the next sync re-raises a real alarm.
         val MIGRATION_9_10 = object : Migration(9, 10) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(

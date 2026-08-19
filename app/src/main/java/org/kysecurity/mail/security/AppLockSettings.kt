@@ -6,12 +6,7 @@ import android.content.SharedPreferences
 private const val PREFS_NAME = "org.kysecurity.mail.app_lock_settings"
 private const val KEY_GRACE_MILLIS = "lock_grace_millis"
 
-/**
- * How long the app may stay backgrounded before the app lock re-engages.
- *
- * A plain, unencrypted preference rather than part of [AppLockStore]: it is not a secret, and it is
- * read from `Application.onStop`, which must not touch the Keystore on the main thread.
- */
+/** Plain prefs, not [AppLockStore]: read from onStop, which must not touch the Keystore. */
 class AppLockSettings(context: Context) {
     private val prefs: SharedPreferences =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -25,12 +20,9 @@ class AppLockSettings(context: Context) {
     }
 
     companion object {
-        /** Long enough for a file-picker or chooser round trip, short enough that a pocketed
-         *  phone re-locks before anyone picks it up. */
         const val DEFAULT_GRACE_MILLIS = 30_000L
         const val MAX_GRACE_MILLIS = 300_000L
 
-        /** The choices offered in Security settings, longest-lived first in the UI. */
         val OPTIONS_MILLIS = longArrayOf(0L, 30_000L, 60_000L, 300_000L)
     }
 }

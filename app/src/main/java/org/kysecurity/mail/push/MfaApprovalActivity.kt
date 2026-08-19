@@ -32,13 +32,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/**
- * The only place an MFA challenge can be approved or denied.
- *
- * The [MfaChallengeTracker] check is enforced here too, not just in
- * [org.kysecurity.mail.MainActivity]: a challenge id that never arrived via a real push must not be
- * actionable, however this screen was reached.
- */
+/** The only place an MFA challenge can be approved or denied. Tracker check enforced here too. */
 class MfaApprovalActivity : AppCompatActivity() {
     private lateinit var denyButton: Button
     private lateinit var contextText: TextView
@@ -52,9 +46,7 @@ class MfaApprovalActivity : AppCompatActivity() {
     private var resolveJob: Job? = null
     private var authenticated = false
 
-    /** A prompt is on screen and has not answered yet. Without this, [onStart] fires immediately
-     *  after `onCreate` has already started one — `authenticated` is still false because the prompt
-     *  is asynchronous — and the user gets two stacked biometric dialogs on every cold start. */
+    /** A prompt is on screen and unanswered; without it [onStart] stacks a second one. */
     private var authInFlight = false
 
     /** The app-lock PIN dialog while it is showing. Held so [onStop] can dismiss it — see
@@ -69,21 +61,10 @@ class MfaApprovalActivity : AppCompatActivity() {
      *  usable number match — in which case it can only be denied. */
     private var matchDigits: String = ""
 
-    /** The tile order, shuffled once per challenge and kept across recreation. Reshuffling on a
-     *  configuration change or a return from the biometric prompt would move the tiles under the
-     *  user's finger mid-decision. */
+    /** Tile order, shuffled once per challenge and kept across recreation. */
     private var matchOptions: List<String> = emptyList()
 
-    /**
-     * The credential keys derived when the user verified their PIN for *this* decision, when the
-     * credential gate is on. Null when the gate is off, where the stored secret needs no key.
-     *
-     * Held here rather than re-read from [org.kysecurity.mail.security.AppLockManager.cachedCredentialKeys]
-     * at send time: this screen runs on a locked app (a notification tap does not unlock anything),
-     * and that accessor returns null while locked by design — so the response died locally with
-     * "Device is not registered yet" and neither approve nor deny ever reached the server. Cleared
-     * in [onStop] alongside `authenticated`, so it lives exactly as long as the consent does.
-     */
+    /** Keys from this decision's PIN check: this screen runs locked, where the cache returns null. */
     private var decisionKeys: org.kysecurity.mail.security.CredentialKeys? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -91,12 +72,7 @@ class MfaApprovalActivity : AppCompatActivity() {
         window.applySecureFlag()
         window.applyOverlayProtection()
 
-        // This screen is deliberately outside LockedActivity — see the class KDoc — so it does not
-        // get that class's terminal block on an abandoned wipe, and it has to carry its own.
-        // Approving a sign-in is the highest-value action in this app, and an abandoned wipe means
-        // the app tried to erase itself from this device and failed: the last thing it may do is
-        // let whoever is holding it approve an account login. Hand off to MainActivity, which
-        // renders the "manual recovery required" block rather than leaving a dead notification tap.
+        // Outside LockedActivity, so it must carry its own abandoned-wipe block.
         if (SecurityWipe.blockedByAbandonedWipe(applicationContext)) {
             android.util.Log.e("MfaApproval", "Refusing an MFA challenge: a previous wipe was abandoned")
             startActivity(
@@ -134,9 +110,7 @@ class MfaApprovalActivity : AppCompatActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
 
-        // A different challenge was tapped while this singleTop instance was already on top
-        // showing the previous one. Cancel any in-flight resolve() for the old challenge so it
-        // can't finish() this screen out from under the new one.
+        // Cancel any in-flight resolve() for the old challenge so it can't finish() this screen.
         resolveJob?.cancel()
         resolveJob = null
         // A different challenge means a different choice set and a fresh verdict; neither the
@@ -158,9 +132,7 @@ class MfaApprovalActivity : AppCompatActivity() {
     private fun adoptChallenge(source: Intent): Boolean {
         val adopted = PushNotificationDispatcher.payloadFrom(source)
         if (adopted == null || !PushRuntime.graph(this).mfaChallengeTracker.isPending(adopted.challengeId)) {
-            // Say why. A challenge can legitimately stop being pending — it expired, it was already
-            // answered, or a flood of new ones evicted it from the tracker's bounded set — and
-            // finishing in silence made a tapped notification look like a broken app.
+            // Say why: a challenge can legitimately expire or be evicted, and silence looks like a bug.
             Toast.makeText(this, R.string.mfa_challenge_unavailable, Toast.LENGTH_LONG).show()
             finish()
             return false
@@ -172,13 +144,7 @@ class MfaApprovalActivity : AppCompatActivity() {
         return true
     }
 
-    /**
-     * Shows where the sign-in came from.
-     *
-     * A user who cannot see the origin cannot tell their own login from an attacker's, which makes
-     * every other control on this screen ceremony. Where the server has not sent a field, say so
-     * explicitly — "Unknown" is information; a blank line reads as "nothing to worry about".
-     */
+    /** Shows where the sign-in came from; says "Unknown" explicitly rather than leaving a blank. */
     private fun renderContext(source: MfaChallengePayload) {
         val unknown = getString(R.string.mfa_context_unknown)
         val whenText = if (source.issuedAtEpochMs > 0L) {
@@ -194,21 +160,11 @@ class MfaApprovalActivity : AppCompatActivity() {
         org.kysecurity.mail.applyWarningCalloutTheme(this, contextText)
     }
 
-    /**
-     * Renders the number match, which is the only way to approve.
-     *
-     * There is no bare Approve button any more. The server always mints the value it displays in
-     * the browser plus two decoys and verifies the answer itself, so a challenge that does not
-     * carry a complete choice set is one this client cannot approve — offering a button that sends
-     * no number would spend the server's attempt budget and return a 400 telling the user they got
-     * a number wrong that they were never shown. Deny stays available unconditionally.
-     */
+    /** No bare Approve button: an incomplete choice set means this client cannot approve at all. */
     private fun setUpNumberMatching(source: MfaChallengePayload) {
         matchDigits = source.matchDigits
         val decoys = source.decoyDigits
-        // Shuffled once. A restored order is reused so a recreate cannot move the tiles — but only
-        // if it still contains this challenge's answer, or every tap would be wrong and the first
-        // one would burn a challenge the user answered correctly.
+        // Reuse a restored order only if it still contains this challenge's answer.
         val options = matchOptions.takeIf { it.isNotEmpty() && matchDigits in it }
             ?: MfaNumberMatch.optionsFor(matchDigits, decoys).orEmpty()
         matchOptions = options
@@ -229,9 +185,7 @@ class MfaApprovalActivity : AppCompatActivity() {
                 text = value
                 textSize = 20f
                 isEnabled = false
-                // Built at runtime, so the window-level flag set in onCreate never reached it. An
-                // overlay covering the wrong tile turns a three-way match into an attacker's
-                // one-in-one. See [applyOverlayProtection].
+                // Built at runtime, so onCreate's window-level flag never reached it.
                 filterTouchesWhenObscured = true
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                     .apply { marginEnd = (8 * resources.displayMetrics.density).toInt() }
@@ -241,17 +195,7 @@ class MfaApprovalActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * A wrong number burns the challenge. It is not a retry, and it is not merely a deny request.
-     *
-     * The server keeps a small attempt budget so a legitimate mis-tap is recoverable, but this
-     * client deliberately does not use it: letting the user guess again turns a three-way match
-     * into a one-in-three chance for an attacker whose victim is tapping blind. So the challenge is
-     * struck from the tracker and its notification cancelled *before* the deny is sent, which makes
-     * the burn hold even if the deny never reaches the server. Leaving it to the request alone
-     * meant that offline, a failed deny re-enabled the tiles and handed back exactly the retry this
-     * refuses to allow.
-     */
+    /** A wrong number burns the challenge before the deny is sent, so the burn holds offline. */
     private fun onMatchChosen(chosen: String) {
         if (!authenticated) return
         if (chosen == matchDigits) {
@@ -277,13 +221,7 @@ class MfaApprovalActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Deny is available; approve is not, and the screen says why.
-     *
-     * The one state where this app will act on an unauthenticated tap, because the action can only
-     * subtract access. [matchDigits] is cleared alongside so [onMatchChosen] cannot match even if a
-     * tile survives — the enabled flag is a UI affordance, not the gate.
-     */
+    /** Deny only: the one unauthenticated action allowed, because it can only subtract access. */
     private fun denyOnly() {
         matchDigits = ""
         matchChoices.removeAllViews()
@@ -294,16 +232,11 @@ class MfaApprovalActivity : AppCompatActivity() {
         denyButton.isEnabled = true
     }
 
-    /**
-     * Gates both buttons behind an authentication that **produces the key the decision needs**,
-     * falling back through weaker options only as far as the device forces.
-     */
+    /** Gates both buttons behind an authentication that produces the key the decision needs. */
     private fun requireAuthentication() {
         authInFlight = true
         lifecycleScope.launch {
-            // Keystore and disk, so never on Main. Null means this device has nothing sealed —
-            // no fingerprint enrolled, no PIN unlock since the feature landed, or a key the OS
-            // destroyed when a biometric was enrolled.
+            // Keystore and disk, so never on Main. Null means nothing is sealed on this device.
             val unlock = withContext(Dispatchers.IO) {
                 SecurityRuntime.graph(this@MfaApprovalActivity).biometricUnlockVault.prepareUnlock()
             }
@@ -317,9 +250,7 @@ class MfaApprovalActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * The good path: the fingerprint opens the app's own credential keys.
-     */
+    /** The good path: the fingerprint opens the app's own credential keys. */
     private fun authenticateWithSealedKeys(unlock: org.kysecurity.mail.security.BiometricUnlock) {
         val promptInfo = BiometricPrompt.PromptInfo.Builder()
             .setTitle(getString(R.string.mfa_auth_title))
@@ -364,19 +295,7 @@ class MfaApprovalActivity : AppCompatActivity() {
         ).authenticate(promptInfo, BiometricPrompt.CryptoObject(unlock.cipher))
     }
 
-    /**
-     * Nothing is sealed on this device, so there is no key a biometric could produce.
-     *
-     * **This app's own PIN comes first whenever a lock is configured**, ahead of the device
-     * credential: it is throttled by the same lockout ladder and wipe threshold as every other PIN
-     * check, it is specific to this app, and when the credential gate is on it is the only thing
-     * that makes the challenge answerable at all.
-     *
-     * The prompt has no app secret to produce, so it is bound to [AuthGateKey] instead: a Keystore
-     * key the OS releases only for a live authentication. It protects no data — there is none to
-     * protect on this path — but it is what makes the success callback evidence rather than a
-     * boolean an instrumented process can set.
-     */
+    /** App PIN first when a lock is configured; [AuthGateKey] makes the success callback evidence. */
     private fun authenticateWithoutSealedKeys() {
         if (SecurityRuntime.graph(this).appLockStore.isLockEnabled()) {
             promptAppLockPin()
@@ -386,9 +305,7 @@ class MfaApprovalActivity : AppCompatActivity() {
         val authenticators = BiometricManager.Authenticators.BIOMETRIC_STRONG or
             BiometricManager.Authenticators.DEVICE_CREDENTIAL
         if (mfaHasNoAuthenticator(BiometricManager.from(this).canAuthenticate(authenticators))) {
-            // Genuinely nothing to authenticate against: no sensor, no enrolled device credential,
-            // and no app-lock PIN configured either.
-            //
+            // Genuinely nothing to authenticate against: no sensor, no credential, no app-lock PIN.
             authInFlight = false
             authenticated = true
             denyOnly()
@@ -464,23 +381,7 @@ class MfaApprovalActivity : AppCompatActivity() {
         return graph.appLockManager.cachedCredentialKeys() == null
     }
 
-    /**
-     * The app-lock PIN, routed through [AppLockManager] so the lockout ladder and the wipe
-     * threshold apply here exactly as they do on the unlock screen — an approval prompt must not
-     * become an unthrottled PIN oracle.
-     *
-     * Uses [AppLockManager.deriveAndCacheCredentialKeys] rather than
-     * [AppLockManager.verifyPinThrottled] when the credential gate is on: both run the same
-     * throttled verification, but only the former caches the key that
-     * [MfaResponder] needs to unwrap `deviceSecret`. Verifying alone would authenticate the user
-     * and still leave the response unsendable.
-     *
-     * The dialog is **held and dismissed in [onStop]**. It is `setCancelable(false)` and survives
-     * backgrounding, while `onStop` clears `authInFlight` — so returning to the screen ran
-     * [requireAuthentication] again and stacked a second identical prompt on the first, leaking the
-     * first's window and letting two dismissals burn two attempts against the wipe threshold for
-     * what the user saw as one prompt.
-     */
+    /** Throttled through AppLockManager; the dialog is held and dismissed in [onStop]. */
     private fun promptAppLockPin() {
         pinDialog?.dismiss()
         val pinField = android.widget.EditText(this).apply {
@@ -499,14 +400,10 @@ class MfaApprovalActivity : AppCompatActivity() {
                     // consumePin + usePin: the PIN is a wipeable CharArray and is zeroed the
                     // moment the check returns, never an unzeroable String. See [consumePin].
                     val (attempt, token) = pinField.consumePin().usePin { pin ->
-                        // verifyPinForDecision runs the same throttled check and hands the keys
-                        // back only on Success, so this screen cannot hold a credential key it did
-                        // not earn. It does NOT unlock the app — see AppLockManager.DecisionToken.
+                        // verifyPinForDecision hands keys back only on Success, and does NOT unlock the app.
                         manager.verifyPinForDecision(pin, deriveKeys = gateNeedsPin)
                     }
-                    // resolvePinAttempt, not `is Success`: the wipe threshold applies here too, and
-                    // reporting a completed destructive wipe as "authentication required" told the
-                    // user nothing about what had just happened to their data. See [PinGate].
+                    // resolvePinAttempt, not `is Success`: the wipe threshold applies here too.
                     val ok = resolvePinAttempt(attempt)
                     authInFlight = false
                     pinDialog = null
@@ -532,9 +429,7 @@ class MfaApprovalActivity : AppCompatActivity() {
             .showSecurely()
     }
 
-    /**
-     * Authentication is consent for one decision, and it does not survive leaving the screen.
-     */
+    /** Authentication is consent for one decision and does not survive leaving the screen. */
     override fun onStop() {
         super.onStop()
         authenticated = false
@@ -549,23 +444,14 @@ class MfaApprovalActivity : AppCompatActivity() {
         setButtonsEnabled(false)
     }
 
-    /**
-     * Re-authenticates on the way back, because [onStop] de-authenticates on the way out.
-     *
-     * Skipped while a resolve is in flight — that decision is already made and submitted; prompting
-     * for a fingerprint on top of it would be asking consent for something already sent.
-     */
+    /** Re-authenticates on the way back; skipped while a resolve is in flight. */
     override fun onStart() {
         super.onStart()
         if (authenticated || authInFlight || payload == null || resolveJob?.isActive == true) return
         requireAuthentication()
     }
 
-    /**
-     * [chosenDigits] is the value the user tapped. The server is what actually checks it
-     * ([MfaResponseClient]); the local comparison in [onMatchChosen] only decides which request to
-     * send. Empty on a deny, which the server accepts without a number.
-     */
+    /** The server checks [chosenDigits]; the local comparison only decides which request to send. */
     private fun resolve(approve: Boolean, chosenDigits: String = "") {
         if (!authenticated) return
         val current = payload ?: return
@@ -579,14 +465,9 @@ class MfaApprovalActivity : AppCompatActivity() {
                 finish()
                 return@launch
             }
-            // An undelivered *approve* leaves the challenge genuinely open, and MfaResponder
-            // keeps the tracker entry and re-posts the notification for exactly this — let the
-            // user retry.
+            // An undelivered approve leaves the challenge open; MfaResponder re-posts for a retry.
             resolveJob = null
-            // Only if this screen is still authenticated. `lifecycleScope` cancels on DESTROY, not
-            // on STOP, so a slow request that fails after the user pressed Home used to re-enable
-            // every tile on a stopped screen — which then stayed enabled and inert on the way back,
-            // since onStop had already cleared `authenticated`. onStart re-prompts instead.
+            // lifecycleScope cancels on DESTROY, not STOP — don't re-enable tiles on a stopped screen.
             if (authenticated) setButtonsEnabled(true)
         }
     }
@@ -596,22 +477,7 @@ class MfaApprovalActivity : AppCompatActivity() {
     }
 }
 
-/**
- * Whether a [BiometricManager.canAuthenticate] status means there is genuinely **no authenticator
- * to use**, as opposed to one that could not be checked right now.
- *
- * - `BIOMETRIC_ERROR_HW_UNAVAILABLE` is *temporary* (sensor busy or powered down).
- * - `BIOMETRIC_STATUS_UNKNOWN` is documented as indeterminate, with the explicit advice to call
- *   `authenticate()` anyway.
- * - `BIOMETRIC_ERROR_SECURITY_UPDATE_REQUIRED` means the sensor is untrusted, not that the device
- *   credential is gone.
- *
- * All three occur on devices that *do* have a screen lock, so all three must show the prompt and
- * let its error callback fail the screen closed. Only the three below are terminal.
- *
- * Top-level and Context-free so the classification is unit-testable on the JVM — the same reason
- * [MfaNumberMatch] and [mfaChallengeIsFresh] live outside their callers.
- */
+/** True only for genuinely terminal statuses; HW_UNAVAILABLE/UNKNOWN/SECURITY_UPDATE are not. */
 internal fun mfaHasNoAuthenticator(canAuthenticateStatus: Int): Boolean = when (canAuthenticateStatus) {
     BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE,
     BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED,

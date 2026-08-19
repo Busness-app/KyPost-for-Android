@@ -23,7 +23,6 @@ private object FlexibleCursorSerializer : KSerializer<String> {
     }
 }
 
-/** DTOs matching Mobile_Mail_Relay.md's JSON exactly. */
 @Serializable
 data class RelayEmailDto(
     val messageId: String = "",
@@ -37,9 +36,7 @@ data class RelayEmailDto(
     val body: String? = null,
     val bodyMode: String = "",
     val label: String = "",
-    // The message's real IMAP keywords. `omitempty` server-side, so an absent
-    // key means none. Previously ignored entirely, which meant Email.keywords
-    // was synthesised from `label` alone and a keyword the server actually set
+    // `omitempty` server-side, so an absent key means the message has no keywords.
     val keywords: List<String> = emptyList(),
     val status: String = "unread",
     val atUtc: String? = null,
@@ -49,14 +46,7 @@ data class RelayEmailDto(
     // Only present when the parent response has "delta": true — "new" or "updated"
     // (Mobile_Mail_Relay.md Part 5, delta/cursor sync v2).
     val changeType: String? = null,
-    // PGP state, all `omitempty` server-side (backend inboxEmail), so the defaults
-    // below are the contract for a message with no OpenPGP content at all.
-    //
-    // pgpEncrypted with an EMPTY pgpDecryptError means the account is
-    // client-protected: the server deliberately did not decrypt, there is no body
-    // to render, and only the browser holds the key. A NON-empty pgpDecryptError
-    // means the server tried and failed — a different condition with a real error
-    // to show. See PgpMessageState.
+    // pgpEncrypted with an EMPTY pgpDecryptError means client-protected, not a decrypt failure.
     val pgpEncrypted: Boolean = false,
     val pgpSigned: Boolean = false,
     val pgpVerified: Boolean = false,
@@ -137,17 +127,7 @@ data class RelayClientEncryptedDeliveryDto(
     val ciphertext: String,
 )
 
-/**
- * POST /api/mail/send-pgp — a send whose PGP work already happened on this device.
- *
- * [subject] is accepted and deliberately IGNORED by the server: the real subject lives inside the
- * ciphertext as a protected header, so this carries the same fixed placeholder the server-side path
- * uses. Sending the real one here would hand the server the very thing this path exists to withhold.
- *
- * [sentCopyEncrypted] is an assertion *about the bytes* of [sentCopy]. A copy that does not claim it
- * is not stored at all, so this is hardcoded true at the call site rather than being a caller's
- * choice — see `RelayMailSource.sendClientEncrypted`.
- */
+/** POST /api/mail/send-pgp. [subject] is a fixed placeholder; the real one is inside the ciphertext. */
 @Serializable
 data class RelayClientEncryptedRequestDto(
     val from: String,

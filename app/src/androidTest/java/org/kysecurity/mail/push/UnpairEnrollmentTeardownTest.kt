@@ -10,14 +10,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import java.security.KeyStore
 
-/**
- * Leaving an account must destroy that account's sealed envelope.
- *
- * The security wipe and Hostile Location Protection both tear the enrollment down. The account
- * boundary — the one an exported `kypost://native-pair` deep link can drive behind a single
- * confirmation tap — did not, so one account's PGP private key persisted into the next account's
- * session on the same device, under a key that only needs the device lock screen to open.
- */
+/** Unpairing must destroy the envelope, or one account's key persists into the next session. */
 @RunWith(AndroidJUnit4::class)
 class UnpairEnrollmentTeardownTest {
 

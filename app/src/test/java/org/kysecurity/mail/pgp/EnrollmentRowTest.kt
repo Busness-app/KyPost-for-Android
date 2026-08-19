@@ -3,13 +3,7 @@ package org.kysecurity.mail.pgp
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
-/**
- * Which row the Security page shows.
- *
- * A pure function so all nine outcomes are asserted here rather than through a 706-line Activity.
- * The ordering is as load-bearing as the mapping: two of these rows are LOCAL facts that must
- * survive the network being down, and the spec's table has them last.
- */
+/** Which row the Security page shows. The ordering is as load-bearing as the mapping. */
 class EnrollmentRowTest {
 
     private fun row(
@@ -45,12 +39,7 @@ class EnrollmentRowTest {
         assertEquals(EnrollmentRow.Enrolled, row(status = EnrollmentStatus.ENROLLED))
     }
 
-    /**
-     * A real state spec 1 produces — a biometric enrollment change or a Keystore invalidation kills
-     * the vault key. It must be *said*, not silently read as un-enrolled: the server may still be
-     * telling the user this device can read their mail, and they may decommission the device that
-     * actually holds a working copy.
-     */
+    /** A biometric enrollment change or a Keystore invalidation kills the vault key. */
     @Test
     fun anInvalidatedKeyIsSaidRatherThanReadingAsUnEnrolled() {
         assertEquals(EnrollmentRow.KeyInvalidated, row(status = EnrollmentStatus.KEY_INVALIDATED))
@@ -74,11 +63,7 @@ class EnrollmentRowTest {
         assertEquals(EnrollmentRow.CouldNotCheck, row(identity = IdentityCheck.CouldNotCheck))
     }
 
-    /**
-     * **The ordering that matters most.** Both of these are local facts, and both are hidden by the
-     * spec's table ordering the moment the identity request fails — which is exactly when a user is
-     * most likely to be looking at this screen.
-     */
+    /** Both are local facts, and the spec's table hides them the moment the identity request fails. */
     @Test
     fun localFactsSurviveTheNetworkBeingDown() {
         assertEquals(
@@ -93,11 +78,7 @@ class EnrollmentRowTest {
         )
     }
 
-    /**
-     * Hostile Location Protection outranks everything except pairing. Its contract is that no
-     * envelope exists on this device, so an `ENROLLED` probe under it is a contradiction the row
-     * must not repeat back to the user as "this device holds a key".
-     */
+    /** Hostile Location Protection's contract is that no envelope exists on this device. */
     @Test
     fun hostileLocationOutranksALocalEnrollment() {
         assertEquals(
@@ -116,11 +97,6 @@ class EnrollmentRowTest {
         )
     }
 
-    /**
-     * The lock screen check must outrank the local status checks too, not just the identity branch.
-     * `ENROLLED` under no secure lock screen is the same contradiction as under Hostile Location
-     * Protection: without a lock screen the vault key cannot exist, so there is nothing to remove.
-     */
     @Test
     fun theLockScreenCheckOutranksAnEnrolledStatus() {
         assertEquals(
@@ -130,8 +106,6 @@ class EnrollmentRowTest {
         )
     }
 
-    /** Same contradiction for an invalidated key: without a lock screen there was never a vault key
-     *  to have been invalidated, so there is nothing to report invalidated. */
     @Test
     fun theLockScreenCheckOutranksAnInvalidatedStatus() {
         assertEquals(

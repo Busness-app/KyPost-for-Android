@@ -67,9 +67,7 @@ class InboxActivity : LockedActivity() {
         }
     }
 
-    // The backend can take a few seconds to make a just-pushed email available via the inbox
-    // fetch — a single refresh attempt right after the notification tap routinely misses it, so
-    // this keeps polling (bounded by pendingMessageDeadlineMs) instead of giving up immediately.
+    // The backend can take seconds to index a just-pushed email, so poll instead of a single try.
     private val pendingMessagePollRunnable = Runnable { refreshInbox() }
 
     private val emailDetailLauncher = registerForActivityResult(
@@ -186,9 +184,7 @@ class InboxActivity : LockedActivity() {
         // system-managed storage outside the app's control.
         outState.putString(STATE_FOLDER, currentFolder)
         outState.putString(STATE_TAB, selectedTab)
-        // A still-unconsumed pending target wins over the live list, matching
-        // ContactsListActivity: until the folder has loaded the RecyclerView is empty and
-        // findFirstVisibleItemPosition() reports -1, so two folds inside the data-load window
+        // A still-unconsumed pending target wins: the list is empty until the folder has loaded.
         val layoutManager = recyclerView.layoutManager as? LinearLayoutManager
         val visible = layoutManager?.findFirstVisibleItemPosition() ?: 0
         outState.putInt(STATE_SCROLL, if (pendingScrollPosition > 0) pendingScrollPosition else visible)
@@ -203,9 +199,7 @@ class InboxActivity : LockedActivity() {
         bottomNav = findViewById(R.id.bottomNavigation)
         loadingOverlay = findViewById(R.id.loadingOverlay)
         swipeRefresh = findViewById(R.id.inboxSwipeRefresh)
-        // forceFullResync = true: the 90-second cadence sends the cursor and gets a delta, which
-        // cannot repair a drifted cache. Someone pulling down is saying they think the list is
-        // wrong, so this re-reads the folder rather than asking what changed.
+        // forceFullResync: a delta cannot repair a drifted cache, so a pull re-reads the folder.
         swipeRefresh.setOnRefreshListener { refreshInbox(forceFullResync = true) }
         loadingStatus = findViewById<TextView>(R.id.loadingStatus)
         cancelLoading = findViewById(R.id.cancelLoading)
@@ -276,16 +270,11 @@ class InboxActivity : LockedActivity() {
         intent.putExtra("email_has_attachments", email.hasAttachments)
         intent.putExtra("email_pgp_encrypted", email.pgpEncrypted)
         intent.putExtra("email_pgp_decrypt_error", email.pgpDecryptError)
-        // Signature state is the only signal that separates an authentic signed message from an
-        // impersonation. The relay computes it and it was persisted to Room behind its own
-        // migration, but it stopped here — so a forged-signature message rendered with the
-        // reassuring "this message was encrypted" bar and nothing else.
+        // Signature state is what separates an authentic signed message from an impersonation.
         intent.putExtra("email_pgp_signed", email.pgpSigned)
         intent.putExtra("email_pgp_verified", email.pgpVerified)
         intent.putExtra("email_pgp_signer_fingerprint", email.pgpSignerFingerprint)
-        // The $Phishing IMAP keyword the server sets on mail that impersonates
-        // KyPost. See mail/PhishingFlag.kt for why the match is
-        // case-insensitive.
+        // The server's $Phishing IMAP keyword; see mail/PhishingFlag.kt for the case-insensitive match.
         intent.putExtra("email_suspicious", isFlaggedPhishing(email.keywords))
         emailDetailLauncher.launch(intent)
     }
@@ -293,12 +282,7 @@ class InboxActivity : LockedActivity() {
     private fun checkPendingMessage(emails: List<Email>, isFinal: Boolean = false) {
         val id = pendingMessageId ?: return
         
-        // Match by ID first, then fallback to fuzzy match by sender + subject if IDs don't match
-        // (common in IMAP where push messageId might be a server UUID but email.id is header Message-ID).
-        // The fallback requires a non-blank sender: `contains("")` is always true, so a push payload
-        // with an empty senderName silently reduced this to subject-only matching and let whoever
-        // composes the payload open — and mark read — an arbitrary other cached message whose
-        // subject they could guess.
+        // Fuzzy fallback for IMAP id mismatches. Needs a non-blank sender: contains("") matches anything.
         val email = emails.find { it.id == id }
             ?: pendingSender
                 ?.takeIf { it.isNotBlank() }
@@ -318,9 +302,7 @@ class InboxActivity : LockedActivity() {
         if (!isFinal) return
 
         if (System.currentTimeMillis() < pendingMessageDeadlineMs) {
-            // Not found on this attempt, but still within the deep-link wait window — the backend
-            // may not have indexed the just-arrived email yet. Poll again shortly instead of
-            // giving up after a single miss.
+            // Still inside the deep-link wait window: the backend may not have indexed it yet.
             mainHandler.removeCallbacks(pendingMessagePollRunnable)
             mainHandler.postDelayed(pendingMessagePollRunnable, PENDING_MESSAGE_POLL_INTERVAL_MS)
         } else {
@@ -349,25 +331,9 @@ class InboxActivity : LockedActivity() {
         mainHandler.postDelayed(refreshRunnable, REFRESH_INTERVAL_MS)
     }
 
-    /**
-     * [forceFullResync] is the difference between the 90-second cadence and a user pulling down.
-     *
-     * The automatic path sends the persisted cursor, so the relay answers with a delta — which is
-     * right for a background poll and wrong for someone who just told the app they think it is out of
-     * date. A delta cannot repair a cache that has drifted: `reconcileFetchResult` merges "updated"
-     * entries over the existing row and skips entries it has never seen, so the states a user
-     * actually pulls down about survive it. `since=0` re-reads the folder and prunes what is gone.
-     *
-     * There is already a daily forced resync for the same reason (`MailCursorStore`). A push tap
-     * also forces one: opening its cached match would freeze stale body/bodyMode in the detail view.
-     */
+    /** [forceFullResync] sends `since=0`: a delta cannot repair a cache that has drifted. */
     private fun refreshInbox(forceFullResync: Boolean = pendingMessageId != null) {
-        // No emails held in memory yet (cold open, or a just-switched-to folder) — render the
-        // Room cache immediately so the list isn't empty while the network round trip is in
-        // flight, then let the fetch below overwrite it with fresh data.
-        //
-        // Never on a pull: the gesture has its own spinner, and raising the full-screen overlay over
-        // it would replace the list the user is looking at.
+        // Render the Room cache first on a cold open; never on a pull, which has its own spinner.
         val showCacheFirst = (allEmails.isEmpty() || pendingMessageId != null) && !forceFullResync
         if (showCacheFirst) {
             loadingOverlay.visibility = android.view.View.VISIBLE
@@ -381,9 +347,7 @@ class InboxActivity : LockedActivity() {
             cancelLoading.visibility = if (pendingMessageId != null) View.VISIBLE else View.GONE
         }
         ioExecutor.execute {
-            // try/finally, not a call at the end of the happy path. cachedEmails and
-            // rememberKeywords both touch Room and can throw, and a spinner that never stops is a
-            // screen the user has to back out of to escape.
+            // try/finally: cachedEmails and rememberKeywords both touch Room and can throw.
             try {
                 refreshInboxOnIo(showCacheFirst, forceFullResync)
             } finally {
@@ -401,8 +365,6 @@ class InboxActivity : LockedActivity() {
                     rebuildTabs(cached)
                     renderFilteredEmails()
                     checkPendingMessage(cached, isFinal = false)
-                    // If we aren't waiting for a specific message (it was found in cache or 
-                    // this isn't a deep link), we can hide the overlay now.
                     if (pendingMessageId == null) {
                         loadingOverlay.visibility = android.view.View.GONE
                     }
@@ -427,9 +389,7 @@ class InboxActivity : LockedActivity() {
     }
 
     private fun rebuildTabs(emails: List<Email>) {
-        // Always show every allowed (visible-in-Keyword-Settings) keyword the app has ever seen,
-        // not just ones present in the current email batch — a keyword tab shouldn't disappear
-        // just because its last matching email got archived/deleted/filtered to another folder.
+        // Show every remembered keyword, not just this batch's: a tab must not vanish when mail moves.
         val discoveredThisBatch = KeywordTabs.buildTabs(emails).drop(1).toSet()
         keywordSettings.rememberKeywords(discoveredThisBatch)
         val allowedKeywords = keywordSettings.filterVisible(keywordSettings.getAllKeywords()).sortedBy { it.lowercase() }
@@ -456,10 +416,7 @@ class InboxActivity : LockedActivity() {
             }
         }
 
-        // Unread state (bold text + a small leading accent dot, matching the same cue used on
-        // inbox rows in EmailAdapter) tracks unread counts, which can change on a refresh even
-        // when the keyword set itself doesn't, so refresh it unconditionally rather than folding
-        // it into the rebuild check above.
+        // Unread counts change on a refresh even when the keyword set does not, so refresh always.
         val dotSizePx = (7 * resources.displayMetrics.density).toInt()
         for (index in 0 until keywordChips.childCount) {
             val chip = keywordChips.getChildAt(index) as? Chip ?: continue
@@ -472,13 +429,7 @@ class InboxActivity : LockedActivity() {
             if (hasUnread) {
                 chip.chipIconSize = dotSizePx.toFloat()
                 chip.chipIcon = unreadDotDrawable(this, sizeDp = 7)
-                // A checked chip is already accent-filled, so an accent-colored dot would
-                // disappear into it — use the chip's own (contrasting) text color instead. This
-                // has to be a ColorStateList (like chipBackgroundColor/chipStrokeColor already
-                // are), not a one-off flat color: tapping a chip only toggles its checked state,
-                // it doesn't re-run this loop, so a flat color baked in at whatever checked state
-                // happened to be current here goes stale the moment the user selects a different
-                // pill — which is exactly what showed as a dot stuck black in dark themes.
+                // ColorStateList, not a flat color: toggling checked never re-runs this loop.
                 val accent = Color.parseColor(getStoredThemePalette(this).accent)
                 val onAccent = readableOn(accent)
                 val checkedState = intArrayOf(android.R.attr.state_checked)
@@ -586,9 +537,7 @@ class InboxActivity : LockedActivity() {
         val deleteIcon = ContextCompat.getDrawable(this, R.drawable.ic_delete)?.mutate()?.apply {
             setTint(readableOn(SWIPE_DELETE_COLOR))
         }
-        // Rounded on the same side as the row's own corners (item_email.xml's 14dp
-        // cardCornerRadius) so the reveal doesn't show a sharp corner poking out from behind the
-        // rounded card as it slides away.
+        // Rounded on the row's own corners so no sharp corner pokes out from behind the card.
         val cardRadius = resources.getDimension(R.dimen.card_corner_radius)
         val deleteBackground = android.graphics.drawable.GradientDrawable().apply {
             setColor(SWIPE_DELETE_COLOR)

@@ -78,10 +78,7 @@ class AppLockStoreTest {
         store.enableLock()
         assertTrue(AppLockStore(context).wasLockEnabled())
 
-        // reset() is the disarm path — the one "Require Unlock to Open" actually calls, and now the
-        // only one. `setLockEnabled(false)` used to exist alongside it, had no production caller,
-        // and threw PepperUnavailableException on a device that had never armed the lock, because
-        // it wrote a marker authenticated by a key it then destroyed.
+        // reset() is the disarm path "Require Unlock to Open" calls, and now the only one.
         store.reset()
         assertFalse(AppLockStore(context).wasLockEnabled())
     }
@@ -134,14 +131,7 @@ class AppLockStoreTest {
         assertFalse("setting a new PIN clears the tripwire", AppLockStore(context).tripwireBroken())
     }
 
-    /**
-     * The bypass the plain-file tripwire did not close.
-     *
-     * As an unauthenticated `MODE_PRIVATE` file, the marker was defeated by deleting *two* files
-     * instead of one: with `app_lock_tripwire.xml` gone alongside `app_lock_secure.xml`,
-     * `wasLockEnabled()` read false and the lock was simply gone, with no wipe. The durable half of
-     * the marker is now a Keystore alias, which writing to the app sandbox cannot remove.
-     */
+    /** Deleting both prefs files used to erase the lock silently; a Keystore alias now survives it. */
     @Test
     fun tripwire_trips_whenBothPreferenceFilesAreDeleted() {
         val store = AppLockStore(context)
@@ -156,16 +146,7 @@ class AppLockStoreTest {
         assertTrue("deleting both files must still be detectable", recovered.tripwireBroken())
     }
 
-    /**
-     * The other direction, which the plain file made possible: anything that could write the app
-     * sandbox could forge `lock_was_enabled=true` on a device that never had a lock and make the
-     * next launch destroy the user's mail. The marker is now HMACed under a Keystore key, so a
-     * forged value does not authenticate.
-     *
-     * The assertion is deliberately about `tripwireBroken()`, not `wasLockEnabled()`: a forged
-     * marker reads as tampering either way, but on a store that never had a lock there is nothing
-     * to protect and nothing to destroy.
-     */
+    /** A forged marker on a store that never had a lock has nothing to protect, so no wipe. */
     @Test
     fun tripwire_doesNotFireOnAForgedMarkerWhenNoLockWasEverConfigured() {
         // Nothing configured: no PIN, no lock, and crucially no Keystore alias.
@@ -198,10 +179,7 @@ class AppLockStoreTest {
         assertFalse(recovered.tripwireBroken())
     }
 
-    /**
-     * The salt guard used to log and return, telling the caller a salt had been persisted when it
-     * had not — after which the device secret was wrapped under a key nothing would reproduce.
-     */
+    /** A silent salt overwrite left the device secret wrapped under a key nothing reproduces. */
     @Test(expected = IllegalStateException::class)
     fun credentialSalt_refusesToOverwrite_loudly() {
         val store = AppLockStore(context)

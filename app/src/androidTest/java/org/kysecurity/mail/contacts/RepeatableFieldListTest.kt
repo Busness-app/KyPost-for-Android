@@ -1,4 +1,3 @@
-// app/src/androidTest/java/org/kysecurity/mail/contacts/RepeatableFieldListTest.kt
 package org.kysecurity.mail.contacts
 
 import android.view.ContextThemeWrapper

@@ -30,7 +30,6 @@ sealed class ContactDedupeResult {
     data class Retryable(val message: String) : ContactDedupeResult()
 }
 
-/** Generic HTTP-status-to-result mapping shared by every `ContactSyncClient` endpoint. */
 private sealed class HttpMappedResult<out T> {
     data class Success<T>(val value: T) : HttpMappedResult<T>()
     data class Unauthorized(val message: String) : HttpMappedResult<Nothing>()
@@ -39,11 +38,7 @@ private sealed class HttpMappedResult<out T> {
     data class Retryable(val message: String) : HttpMappedResult<Nothing>()
 }
 
-/**
- * Talks to `/api/contacts/sync`. Auth is sent as X-Kypost-Device-Id/X-Kypost-Device-Secret
- * headers (never query params/cookies), kept parallel to
- * [org.kysecurity.mail.push.PullNotificationClient] — same okhttp/serialization stack.
- */
+// Auth goes in X-Kypost-Device-Id/X-Kypost-Device-Secret headers, never query params or cookies.
 class ContactSyncClient(
     private val json: Json = Json { ignoreUnknownKeys = true },
     // Injected Call.Factory; see PairingAuthHeaders.kt for why every credentialed client takes one.
@@ -121,8 +116,6 @@ class ContactSyncClient(
         }
     }
 
-    /** Centralized HTTP status -> result mapping: 200 decodes via [decode], 400/401/503 map to their
-     * respective variants, malformed bodies and anything else fall back to [HttpMappedResult.Retryable]. */
     private suspend fun <T> executeMapped(
         request: Request,
         decode: (String) -> T?,

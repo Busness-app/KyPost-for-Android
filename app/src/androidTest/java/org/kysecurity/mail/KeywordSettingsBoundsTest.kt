@@ -10,13 +10,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/**
- * Keywords are the relay's unvalidated per-message `label`, and the remembered set is rendered as
- * one un-recycled `Chip` per entry during `InboxActivity.onCreate`. Unbounded, a single inbox
- * response could brick the app permanently: ~50k labels threw `OutOfMemoryError` inside `onCreate`,
- * the Keyword Settings screen (the only in-app cleanup) died the same way, and this prefs file
- * survived unpairing — so re-pairing to a clean server did not recover.
- */
+/** Unbounded keywords could OOM InboxActivity.onCreate permanently, so the set is capped. */
 @RunWith(AndroidJUnit4::class)
 class KeywordSettingsBoundsTest {
 

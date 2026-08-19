@@ -18,27 +18,11 @@ internal object AndroidEnrollmentKeys : EnrollmentKeys {
     override fun deleteKeyPair(): Boolean = EnrollmentKeyStore.deleteKeyPair()
 }
 
-/**
- * The identity check, from **one** `GET /api/pgp/bootstrap`.
- *
- * Bootstrap answers all three questions this port is defined by — is there an identity, is it
- * client-protected, and what is its fingerprint — so `hasPgpIdentity` is not called as well. A second
- * request could only ever agree or disagree with the first, and a disagreement has no resolution.
- *
- * The fingerprint is **hashed from the key bytes** by [ownFingerprintFromBootstrap], never read off
- * the response's own `fingerprint` field: that field is a claim sitting beside `publicKey` with no
- * cryptographic tie to it, and this value is about to be bound into an envelope's AAD.
- */
+/** Identity from one bootstrap call. The fingerprint is hashed from the key bytes, not a field. */
 internal class AndroidIdentitySource(context: Context) : IdentitySource {
     private val appContext = context.applicationContext
 
-    // withContext(IO) covers the whole body, not just the fetch: pairingForAuthenticatedCall() is
-    // roughly eight EncryptedSharedPreferences decrypts plus a CredentialCipher.unwrap, and on the
-    // first call it also forces the lazy EncryptedSharedPreferences/Tink construction and a MasterKey
-    // Keystore round trip. The ceremony runs on viewModelScope's Dispatchers.Main.immediate, so
-    // without this that lands on the UI thread. PgpBootstrapClient.fetch nests its own
-    // withContext(IO), which costs nothing when we are already there. See SecuritySettingsActivity,
-    // where the same call was wrapped for the same reason.
+    // withContext(IO) covers the whole body: the ceremony runs on Dispatchers.Main.immediate.
     override suspend fun check(): IdentityCheck = withContext(Dispatchers.IO) {
         val pairing = PushRuntime.graph(appContext).repository.pairingForAuthenticatedCall()
         val deviceId = pairing?.deviceId
@@ -55,15 +39,7 @@ internal class AndroidIdentitySource(context: Context) : IdentitySource {
     }
 }
 
-/**
- * The pure "degrade, never guess" mapping from one bootstrap response to an [IdentityCheck].
- *
- * Pulled out of [AndroidIdentitySource.check] so the rule is testable on the JVM, without a network
- * fetch or a device — [pgpComposeStateOf] is a standalone pure function for exactly this reason, and
- * its own KDoc says why: "the rule is testable without instrumentation." A future edit that collapses
- * the `else` branch, or lets an unrecognised `protection` fall through to [IdentityCheck.ClientProtected],
- * must fail a test here rather than only being reachable through a real network round trip.
- */
+/** The pure "degrade, never guess" mapping from a bootstrap response to an [IdentityCheck]. */
 internal fun identityCheckFrom(result: PgpBootstrapResult): IdentityCheck = when (result) {
     is PgpBootstrapResult.Failed -> IdentityCheck.CouldNotCheck
     is PgpBootstrapResult.Success -> when {
@@ -83,32 +59,14 @@ internal fun identityCheckFrom(result: PgpBootstrapResult): IdentityCheck = when
     }
 }
 
-/**
- * The three enrollment calls, with the pairing resolved per call rather than captured.
- *
- * Read at call time and never cached: the credential gate can drop the cached key when the app locks
- * mid-ceremony, and a captured secret would keep working from a state the user has left.
- */
+/** The three enrollment calls, with the pairing read at call time rather than captured. */
 internal class AndroidEnrollmentTransport(context: Context) : EnrollmentTransport {
     private val appContext = context.applicationContext
 
-    // callFactory has no default on EnrollmentClients precisely so this cannot be forgotten; see
-    // d410827. The bare default was unpinned, on the one request carrying the device credential.
+    // callFactory has no default on EnrollmentClients precisely so pinning cannot be forgotten.
     private val clients = EnrollmentClients(callFactory = pinnedPairingCallFactory(appContext))
 
-    /**
-     * Blocking, and never to be called from the main thread: one call is roughly eight
-     * `EncryptedSharedPreferences` decrypts plus a `CredentialCipher.unwrap`, and the first one also
-     * forces the lazy `EncryptedSharedPreferences`/Tink construction and a MasterKey Keystore round
-     * trip. Every method below therefore opens with `withContext(Dispatchers.IO)` — the port is the
-     * Android edge, and it is where this belongs.
-     *
-     * Wrapping only the client call underneath would not have been enough: the client switches to IO
-     * *after* this has already run, so on the ceremony's `Dispatchers.Main.immediate` this landed on
-     * the UI thread — from [fetchEnvelope] roughly a hundred times per five-minute window, on a
-     * screen that also holds `FLAG_KEEP_SCREEN_ON` and runs a 1 Hz countdown. The clients' own
-     * nested `withContext(IO)` costs nothing once we are already on IO.
-     */
+    /** Blocking — never call from the main thread; every override below wraps it in Dispatchers.IO. */
     private fun pairing() = PushRuntime.graph(appContext).repository.pairingForAuthenticatedCall()
         ?.takeIf { !it.deviceId.isNullOrBlank() && !it.deviceSecret.isNullOrBlank() }
 
@@ -134,41 +92,18 @@ internal class AndroidEnrollmentTransport(context: Context) : EnrollmentTranspor
     override fun enqueueDurableReport() = EnrollmentStateWorker.enqueue(appContext)
 }
 
-/**
- * Whether this device has a PIN, pattern or password.
- *
- * `KeyguardManager.isDeviceSecure` and **not** `EnrollmentVault.ensureKey()`, even though the vault
- * is the authority. `ensureKey()` mutates: on a key that no longer matches the spec it regenerates,
- * and generation clears the stored blob in the same breath. Using it as a read-only probe would mean
- * opening the ceremony screen could destroy an existing enrollment. The vault still has the final
- * word at the seal, where a mutation is expected.
- */
+/** isDeviceSecure, not [EnrollmentVault.ensureKey]: that mutates and can destroy an enrollment. */
 internal fun hasSecureLockScreen(context: Context): Boolean =
     context.getSystemService(android.app.KeyguardManager::class.java)?.isDeviceSecure == true
 
-/**
- * Wall clock for the bucket, monotonic for the deadline.
- *
- * `elapsedRealtime` for the deadline follows `AppLockManager` and `AppLockStore`, whose own comments
- * explain the choice: a wall-clock deadline can be stepped over or never reached when the user or
- * the network changes the date.
- */
+/** Wall clock for the bucket (it must match the browser's), monotonic for the poll deadline. */
 internal object SystemEnrollmentClock : EnrollmentClock {
     override fun epochSeconds(): Long = System.currentTimeMillis() / 1_000
     override fun elapsedRealtimeMs(): Long = SystemClock.elapsedRealtime()
     override suspend fun sleep(millis: Long) = delay(millis)
 }
 
-/**
- * [DecryptedMailCache] over Room.
- *
- * `withContext(Dispatchers.IO)` for the same reason every method in [AndroidEnrollmentTransport]
- * opens with it: the ceremony runs on `viewModelScope`'s `Dispatchers.Main.immediate`, so an
- * unwrapped DAO write would land a disk write on the main thread. `DataRuntime.graph` is resolved
- * inside the same block rather than in the constructor — building the graph opens the database, and
- * during a wipe that would rebuild the very database being destroyed. See `PushRepository`, which
- * documents the same hazard.
- */
+/** `DataRuntime.graph` is resolved inside the block: building it opens the database mid-wipe. */
 internal class RoomDecryptedMailCache(private val appContext: Context) : DecryptedMailCache {
     override suspend fun clearServerDecryptedBodies(): Int = withContext(Dispatchers.IO) {
         DataRuntime.graph(appContext).database.emailDao().clearServerDecryptedBodies()

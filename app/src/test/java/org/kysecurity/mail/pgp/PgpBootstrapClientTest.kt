@@ -94,14 +94,7 @@ class PgpBootstrapClientTest {
         assertTrue("expected Failed, got $result", result is PgpBootstrapResult.Failed)
     }
 
-    /**
-     * The account address every client-encrypted delivery's `From` header must equal.
-     *
-     * `suggestedUserIDs[0]` is the server's own `strings.TrimSpace(payload.Username)` — the very
-     * expression `handleMailSendPGP` feeds to `resolveMailFrom` — so it is authoritative rather than
-     * a guess. Deriving it from the public key's User ID instead would diverge for an imported key,
-     * and the symptom is a 403 after the ciphertext has already been built.
-     */
+    /** `suggestedUserIDs[0]` is the server's own `resolveMailFrom` input, so it is authoritative. */
     @Test
     fun parsesTheAccountAddressFromSuggestedUserIds() = runBlocking {
         val body = """{"hasIdentity":true,"protection":"client","suggestedUserIDs":["me@example.invalid","alias@example.invalid"]}"""

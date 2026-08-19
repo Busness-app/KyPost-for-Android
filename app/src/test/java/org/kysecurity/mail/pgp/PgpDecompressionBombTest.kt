@@ -18,15 +18,7 @@ import java.io.ByteArrayOutputStream
 import java.io.OutputStream
 import java.security.SecureRandom
 
-/**
- * A sender-controlled decompression bomb must be a failed message, not a dead app.
- *
- * `readAllWithLimit` caps the *literal* data at 32 MB. Nothing capped how many nested compressed
- * packets were unwrapped on the way to it, and each layer allocates a fresh object factory over a
- * fresh inflater. Since the message stays in the mailbox, the failure repeats on every open — an
- * unopenable app rather than an unopenable message. Every input here is chosen by whoever sent the
- * mail, which is the entire threat model of a mail client.
- */
+/** `readAllWithLimit` caps the literal data only; nothing capped the nested compressed packets. */
 class PgpDecompressionBombTest {
 
     /** Comfortably past [MAX_COMPRESSION_DEPTH], cheap enough to build in a unit test. */

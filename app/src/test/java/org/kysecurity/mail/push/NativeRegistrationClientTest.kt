@@ -10,18 +10,6 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * Test 7, carried over from the original 2b handoff and finally placed.
- *
- * Rebinding an existing `deviceId` returns **409** unless the current device secret is sent, and the
- * reason the server requires it is not cosmetic: without it a stolen session could take over an
- * existing device row, keeping its `MFAApprover` status and redirecting that user's push. The
- * FCM-token-refresh flow re-registers, so this is the ordinary path, not an edge case.
- *
- * It also matters to enrollment specifically. The server carries `enrollmentPublicKey` and
- * `encryptionEnrolled` forward across re-registration on both branches — which is worth nothing if
- * re-registration itself 409s.
- */
 class NativeRegistrationClientTest {
 
     private val paired = PairingData(
@@ -48,10 +36,6 @@ class NativeRegistrationClientTest {
         assertEquals("secret-1", sent.header(HEADER_DEVICE_SECRET))
     }
 
-    /**
-     * A first pairing has no secret yet — it is what this call mints. Sending an empty or absent
-     * credential must not be confused with sending a wrong one.
-     */
     @Test
     fun aFirstPairingSendsNoDeviceCredential() = runBlocking {
         val factory = FakeCallFactory { req -> response(req, success, 200) }
@@ -64,9 +48,6 @@ class NativeRegistrationClientTest {
         assertNull(sent.header(HEADER_DEVICE_SECRET))
     }
 
-    /** A half-known pairing — an id with no readable secret, which the credential gate produces
-     *  while the app is locked — must not send a device id on its own. The server reads that as a
-     *  rebind attempt with no credential. */
     @Test
     fun anIdWithNoSecretSendsNeitherHeader() = runBlocking {
         val factory = FakeCallFactory { req -> response(req, success, 200) }
@@ -79,8 +60,6 @@ class NativeRegistrationClientTest {
         assertNull(sent.header(HEADER_DEVICE_SECRET))
     }
 
-    /** 409 is a distinct, actionable outcome — "this device row belongs to a credential you did not
-     *  send" — and must not read as a generic transport failure. */
     @Test
     fun aRebindRejectionIsReportedAsItsOwnError() = runBlocking {
         val factory = FakeCallFactory { req -> response(req, "", 409) }

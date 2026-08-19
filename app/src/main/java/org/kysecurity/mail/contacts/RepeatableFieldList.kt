@@ -1,4 +1,3 @@
-// app/src/main/java/org/kysecurity/mail/contacts/RepeatableFieldList.kt
 package org.kysecurity.mail.contacts
 
 import android.view.LayoutInflater
@@ -6,16 +5,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 
-/**
- * Manages the "rows + Add button" pattern for one list-typed contact field inside an
- * [ExpandableSectionView]'s body. Each row is inflated from [rowLayoutRes] and wired by [bind];
- * [isBlank] decides which rows [items] drops (e.g. an "+Add" tapped but left empty); [default] is
- * what a fresh row starts as. [onChanged] fires after every add/remove/edit so callers can keep an
- * item-count badge live. Removal and edits look up the row's *current* index via
- * `container.indexOfChild(rowView)` rather than capturing a fixed index at add-time, so earlier
- * rows being removed doesn't corrupt later rows' bookkeeping. Purely a layout primitive — knows
- * nothing about contact fields; every DTO-specific mapping lives in [bind]/[isBlank]/[default].
- */
+// Rows resolve their index via container.indexOfChild at event time, never captured at add-time.
 class RepeatableFieldList<T>(
     private val container: ViewGroup,
     addButton: Button,

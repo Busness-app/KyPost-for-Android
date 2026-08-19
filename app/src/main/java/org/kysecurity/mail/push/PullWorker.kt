@@ -11,27 +11,14 @@ import androidx.work.WorkerParameters
 import org.kysecurity.mail.security.SecurityWipe
 import java.util.concurrent.TimeUnit
 
-/**
- * Battery-friendly baseline poller for "App Pull" mode.
- *
- * Tradeoff: pull mode has no FCM push to wake us, so we can't get true real-time delivery
- * for free. We use WorkManager periodic work at the platform minimum (15 min) plus an
- * immediate pull on every app foreground ([KyPostApp]) and after (re)pairing. This keeps
- * background battery cost negligible at the price of up to ~15 min latency while backgrounded.
- * If near-real-time background delivery is ever required, the alternative is a foreground
- * service with a 30–60s poll loop and a persistent notification, gated behind a user setting —
- * deliberately NOT the default here.
- */
+/** Baseline poller for App Pull mode: WorkManager periodic at the platform minimum. */
 class PullWorker(
     appContext: Context,
     params: WorkerParameters,
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
-        // An abandoned wipe often leaves the pairing credential on disk, and this worker is what
-        // turns that into live mail metadata: it polls the relay and renders sender and subject as
-        // notifications. Cancel rather than merely skip — the work is already enqueued, and nothing
-        // in a blocked app will ever legitimately want it back before a reinstall.
+        // Cancel, not skip: an abandoned wipe leaves credentials this worker turns into metadata.
         if (SecurityWipe.blockedByAbandonedWipe(applicationContext)) {
             android.util.Log.e("PullWorker", "Cancelling pull: a previous wipe was abandoned")
             PullScheduler.cancelPeriodic(applicationContext)

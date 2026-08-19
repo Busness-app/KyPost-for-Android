@@ -10,26 +10,13 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * SCRATCH / AUDIT PROBE — run-4 security audit, safe to delete.
- *
- * Reproduces the exact expressions used by
- * `DeviceContactRepository.pullDeviceChangesForOwnAccount` (the `changed` predicate at :252-259
- * and the `identityChanged` predicate at :283) over the real `DeviceContactFieldMerge` /
- * `DeviceContactMatcher` / `ContactMappers` production functions, so the boundary claims are
- * demonstrated rather than argued.
- */
+/** SCRATCH / AUDIT PROBE — run-4 security audit, safe to delete. */
 class Run4ContactBoundaryProbeTest {
 
     // Room's contact was last written by the server an hour ago; the attacker's ContentProvider
     // write bumps CONTACT_LAST_UPDATED_TIMESTAMP to "now", which is what the device side reports.
     private val roomUpdatedAt = 1_000_000L
     private val deviceUpdatedAt = 2_000_000L
-
-    // ---------------------------------------------------------------------------------------
-    // A. identityChanged covers only `emails` and `fn`. Every other identity-bearing field can be
-    //    rewritten by a WRITE_CONTACTS app, uploaded to the relay, and leave the trust badge green.
-    // ---------------------------------------------------------------------------------------
 
     @Test
     fun devicePhoneRewrite_isUploaded_butDoesNotReArmReverification() {
@@ -143,12 +130,6 @@ class Run4ContactBoundaryProbeTest {
         )
     }
 
-    // ---------------------------------------------------------------------------------------
-    // B. The QR ceremony clears a reverification alarm that was raised about ADDRESSES, having
-    //    verified only the KEY. PgpKeyActivity.saveKeyToContact:333-340 builds the DTO from the
-    //    (already tampered) Room row and passes verifiedInPerson = true.
-    // ---------------------------------------------------------------------------------------
-
     @Test
     fun qrSaveToExistingContact_clearsAnAlarmRaisedAboutInjectedAddresses() {
         // State after a WRITE_CONTACTS app rewrote the address list: alarm armed.
@@ -182,16 +163,9 @@ class Run4ContactBoundaryProbeTest {
         )
     }
 
-    // ---------------------------------------------------------------------------------------
-    // C. DeviceContactMatcher.Index indexes empty normalized values, creating wildcard buckets.
-    // ---------------------------------------------------------------------------------------
-
     @Test
     fun matcherIndex_digitFreePhoneDoesNotCreateAWildcardBucket() {
-        // Regression: a single stored contact carrying a placeholder phone used to poison the whole
-        // index, because normalizePhone strips every non-digit and "n/a" collapses to "". Every
-        // later candidate whose phone had no digits then matched THAT contact and was silently
-        // skipped by importNewDeviceContacts — so unrelated contacts were never imported.
+        // normalizePhone strips every non-digit, so a placeholder like "n/a" collapses to "".
         val existing = listOf(
             ContactDto(uid = "uid-placeholder", fn = "Front Desk", phones = listOf(ContactFieldDto(value = "n/a"))),
             ContactDto(uid = "uid-real", fn = "Alice", emails = listOf(ContactFieldDto(value = "alice@corp.example"))),
@@ -223,12 +197,6 @@ class Run4ContactBoundaryProbeTest {
         val index = DeviceContactMatcher.Index.of(existing)
         assertNull(index.findMatch(candidateEmails = listOf("   "), candidatePhones = emptyList()))
     }
-
-    // ---------------------------------------------------------------------------------------
-    // D. Control: a device-side merge can never clear a stored key, so the ONLY way a
-    //    WRITE_CONTACTS app can destroy a pinned key is the DELETE branch — which drops the Room
-    //    row (key, fingerprint and alarm together) before any server round trip.
-    // ---------------------------------------------------------------------------------------
 
     @Test
     fun mergeNeverClearsAStoredKey_soDeletionIsTheOnlyDestructivePath() {

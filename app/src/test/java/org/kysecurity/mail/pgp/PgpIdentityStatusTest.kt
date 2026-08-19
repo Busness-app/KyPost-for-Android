@@ -38,14 +38,7 @@ class PgpIdentityStatusTest {
         assertEquals(null, pgpIdentityFromMintResult(result))
     }
 
-    /**
-     * The account's own fingerprint comes from the bootstrap response's `publicKey`, hashed
-     * locally. The self-contact's `pgpKey` column — what the QR screen used to read — is an
-     * ordinary, independently-editable contact field with no connection to the account's real PGP
-     * identity (see [org.kysecurity.mail.contacts.contactHasLinkedPgpKey]), so it is empty for every
-     * user who never manually attached a key to their own contact row, and the screen showed
-     * "your fingerprint is unavailable" to everyone.
-     */
+    /** The account's fingerprint comes from the bootstrap `publicKey`, not the self-contact column. */
     @Test
     fun bootstrapWithPublicKey_yieldsLocallyComputedFingerprint() {
         val result = PgpBootstrapResult.Success(

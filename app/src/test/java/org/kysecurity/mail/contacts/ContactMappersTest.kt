@@ -98,8 +98,6 @@ class ContactMappersTest {
         assertEquals(false, otherDto.toEntity().isSelf)
     }
 
-    // ---- pgpKey fingerprint verification / rotation detection ----
-
     @Test
     fun toEntity_firstTimeKey_storesFingerprint_notFlaggedAsRotated() {
         val dto = ContactDto(uid = "uid-4", fn = "Fresh Contact", pgpKey = TEST_KEY)
@@ -134,9 +132,7 @@ class ContactMappersTest {
 
     @Test
     fun toEntity_identityChangedOnKeyBearingContact_flaggedForReverification() {
-        // A device-side edit carries the key over untouched, so the fingerprint is unchanged and
-        // the rotation check cannot fire — but the key no longer vouches for the address it is
-        // displayed beside. Any app holding WRITE_CONTACTS can drive this.
+        // A device-side edit keeps the key, so only the address the key vouches for changed.
         val previous = ContactEntity(uid = "uid-8", rev = 1, fn = "Alice", pgpKeyFingerprint = TEST_KEY_FINGERPRINT)
         val dto = ContactDto(uid = "uid-8", rev = 2, fn = "Alice", pgpKey = TEST_KEY)
 
@@ -151,8 +147,6 @@ class ContactMappersTest {
 
     @Test
     fun toEntity_identityChangedOnContactWithNoKey_notFlagged() {
-        // Nothing is vouching for anything, so there is no alarm to raise. Flagging here would
-        // put a reverification badge on every ordinary contact edit.
         val previous = ContactEntity(uid = "uid-9", rev = 1, fn = "Bob")
         val dto = ContactDto(uid = "uid-9", rev = 2, fn = "Bob")
 
@@ -163,10 +157,6 @@ class ContactMappersTest {
 
     @Test
     fun toEntity_keyRotationVerifiedInPerson_isCleared() {
-        // The QR ceremony attests to the KEY: the user compared this fingerprint against the other
-        // person's device, so a rotation it confirms must clear rather than raise — otherwise the
-        // app's only TOFU alarm fires on the one path where reverification is provably unnecessary,
-        // and users learn to dismiss it.
         val previous = ContactEntity(uid = "uid-10", rev = 1, fn = "Carol", pgpKeyFingerprint = "AAAA BBBB")
         val dto = ContactDto(uid = "uid-10", rev = 2, fn = "Carol", pgpKey = TEST_KEY)
 
@@ -177,11 +167,7 @@ class ContactMappersTest {
 
     @Test
     fun toEntity_identityReboundSurvivesVerifiedInPerson() {
-        // ...but it attests to nothing about WHICH ADDRESSES that key is bound to. The QR save path
-        // builds its DTO from the current Room row, while the confirmation screen shows the
-        // addresses from the scanned card — so a WRITE_CONTACTS app could inject an address, and the
-        // user's own recommended remediation (scan the key again) would clear the alarm that
-        // injection raised. A rebind is a different claim from a rotation and outlives the ceremony.
+        // A rebind is a different claim from a rotation, so it outlives the QR ceremony.
         val previous = ContactEntity(uid = "uid-11", rev = 1, fn = "Carol", pgpKeyFingerprint = TEST_KEY_FINGERPRINT)
         val dto = ContactDto(uid = "uid-11", rev = 2, fn = "Carol", pgpKey = TEST_KEY)
 
@@ -190,19 +176,6 @@ class ContactMappersTest {
         assertTrue(entity.identityNeedsReview)
     }
 
-    /**
-     * The attack the split exists for, replaying the exact production call sequence.
-     *
-     * A WRITE_CONTACTS app rewrites Alice's phone number. The next sync raises the alarm. The user
-     * does the obvious thing for a contact-trust warning — meets Alice, scans her QR, compares the
-     * fingerprint — and `PgpKeyActivity` saves with `identityChanged = false, verifiedInPerson =
-     * true`. With one shared column that cleared the alarm, leaving the attacker's phone number
-     * beside a just-verified key with no warning anywhere, on the device and on the relay.
-     *
-     * Note the previous regression test passed `identityChanged = true` alongside
-     * `verifiedInPerson = true` — a combination no production call site ever produces — which is why
-     * the suite reported this property as covered when it was not.
-     */
     @Test
     fun toEntity_identityAlarmSurvivesTheQrCeremonyThatNeverExaminedIt() {
         val afterRebind = ContactEntity(
@@ -246,11 +219,7 @@ class ContactMappersTest {
         val entity = dto.toEntity(previous = null)
 
         assertNull(entity.pgpKeyFingerprint)
-        // PgpFingerprint.compute returns null for the shapes it refuses to vouch for — an appended
-        // second key ring, a subkey bound by a foreign signature — and its KDoc says callers must
-        // treat null as "reject this key". Reading it as "no information" let an attacker silence
-        // the only key alarm that does not depend on the relay's own verdict, simply by choosing an
-        // encoding the local parser rejects.
+        // PgpFingerprint.compute returns null for keys it refuses to vouch for; null means reject.
         assertTrue(entity.pgpKeyNeedsReverification)
     }
 
@@ -267,9 +236,6 @@ class ContactMappersTest {
 
         val entity = dto.toEntity(previous)
 
-        // stillNeedsReverification requires newFingerprint == previousFingerprint, which a null
-        // fingerprint can never satisfy — so an outstanding alarm was being cleared rather than
-        // carried forward.
         assertTrue(entity.pgpKeyNeedsReverification)
     }
 

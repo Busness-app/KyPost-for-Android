@@ -6,11 +6,6 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The security wipe and the account purge both have to destroy message plaintext that never
- * reaches disk. Neither can be unit-tested directly (one is Android-only, the other needs Room),
- * so the shared clear is a plain function and this is where it is pinned.
- */
 class InMemoryPlaintextTest {
 
     @After
