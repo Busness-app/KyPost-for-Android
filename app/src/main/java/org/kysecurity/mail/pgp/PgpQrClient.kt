@@ -13,9 +13,7 @@ import okhttp3.Request
 sealed class PgpQrTokenResult {
     data class Success(val token: PgpQrTokenDto) : PgpQrTokenResult()
 
-    /** 400: caller has no PGP identity configured yet. There is no in-app fix — generating a PGP
-     *  identity is a web-session-only action on the backend, so callers should point the user to
-     *  the web app rather than any in-app settings screen. */
+    /** 400: no PGP identity yet. Generating one is web-session-only — point at the web app. */
     data class NoIdentity(val message: String) : PgpQrTokenResult()
 
     /** 401: bad secret / unknown device. */
@@ -46,14 +44,6 @@ sealed class PgpQrKeyResult {
     data class Retryable(val message: String) : PgpQrKeyResult()
 }
 
-/**
- * Talks to the backend's PGP QR key-exchange endpoints. `mintToken` is pairing-authenticated
- * exactly like every other endpoint this app calls (X-Kypost-Device-Id/X-Kypost-Device-Secret
- * headers, never a session cookie — this app has no session-cookie concept). `fetchKey` is
- * unauthenticated; the token itself is the credential. Kept parallel to
- * [org.kysecurity.mail.contacts.ContactSyncClient] — same okhttp/serialization stack and
- * status-code-to-result mapping shape.
- */
 class PgpQrClient(
     private val json: Json = Json { ignoreUnknownKeys = true },
     // Injected Call.Factory; see PairingAuthHeaders.kt for why every credentialed client takes one.

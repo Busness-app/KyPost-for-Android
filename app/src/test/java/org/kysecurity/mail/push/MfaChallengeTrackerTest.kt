@@ -4,11 +4,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * Covers the freshness window only. The storage half moved to SharedPreferences (so a challenge
- * survives the process death that FCM delivery routinely causes) and is exercised by the
- * instrumented `MfaChallengeTrackerPersistenceTest`.
- */
+/** Freshness only; storage is covered by instrumented MfaChallengeTrackerPersistenceTest. */
 class MfaChallengeTrackerTest {
 
     @Test

@@ -1,30 +1,13 @@
 package org.kysecurity.mail.pgp
 
-/**
- * JVM fakes for all five enrollment ports, plus a [FakePorts] bundle that wires a ceremony from
- * them. This repo has no mocking framework — see `org.kysecurity.mail.testing.FakeCalls` for the same
- * approach one layer down.
- *
- * `internal`, not `private`: Kotlin compiles a top-level `private` class to a package-level JVM
- * name, so a second file in this package declaring the same name fails to compile as a duplicate
- * class. That already cost this package four near-identical copies of one fake.
- */
+/** `internal`, not `private`: top-level private classes collide across files in one package. */
 /** The fingerprint the fake identity reports, and so the one a valid envelope's AAD must bind. */
 internal const val FAKE_FINGERPRINT = "164D5B834E7FE927"
 
 internal const val FAKE_PLAINTEXT =
     "-----BEGIN PGP PRIVATE KEY BLOCK-----\nnot a real key\n-----END-----"
 
-/**
- * Seals a real envelope the fake ports can open, using the same primitives the browser does.
- *
- * Lives here rather than in one test class because the seam it exercises — the state machine against
- * the pure crypto in `DeviceEnvelope.kt` — is reached from more than one suite, and a second private
- * copy is how this package previously ended up with four near-identical versions of one fake.
- *
- * The shared secret is whatever [FakeEnrollmentKeys.sharedSecretResult] returns: the ECDH is the one
- * step a JVM test cannot perform, and it is covered on hardware by `EnrollmentKeyStoreTest`.
- */
+/** Seals a real envelope the fake ports can open; the ECDH is covered by `EnrollmentKeyStoreTest`. */
 internal fun sealEnvelope(
     keys: FakeEnrollmentKeys,
     deviceId: String = "dev-1",
@@ -67,15 +50,7 @@ internal class FakeIdentitySource(private val result: IdentityCheck) : IdentityS
     }
 }
 
-/**
- * [rawPublicKey] and [encodedPublicKey] deliberately **disagree**.
- *
- * The one security property the device half owns is that the code derives from the key in this
- * device's own keystore, never from anything the server sent back or from a cached copy of what was
- * published. A fake whose two accessors returned the same point could not tell a correct
- * implementation from one that derived the code from the value it published — both would be green.
- * Making them differ is what turns that into a test that fails when the derivation moves.
- */
+/** [rawPublicKey] and [encodedPublicKey] deliberately disagree, so a wrong derivation fails. */
 internal class FakeEnrollmentKeys(
     private val keyByte: Byte = 0x11,
     private val publishedByte: Byte = 0x22,
@@ -88,16 +63,10 @@ internal class FakeEnrollmentKeys(
     var sharedSecretResult: ByteArray? = ByteArray(32) { 0x33 }
     private var exists = false
 
-    /**
-     * Destroys the key from under a running ceremony, as `SecurityWipe` and Hostile Location
-     * Protection both genuinely can: both tear the enrollment down on a live screen. Set from a test's
-     * `onState` to reach the mid-window branch, which no list of canned results can produce.
-     */
+    /** Destroys the key mid-ceremony, as `SecurityWipe` and Hostile Location Protection both can. */
     var vanished = false
 
-    /** A key that mints but whose public half cannot be read back — the Keystore entry exists while
-     *  `getCertificate` returns nothing. Separate from [vanished] because it is reachable
-     *  synchronously, immediately after a *successful* mint. */
+    /** A key that mints but whose public half cannot be read back: `getCertificate` returns nothing. */
     var encodingFails = false
 
     /** The point the code must be derived from. */
@@ -198,11 +167,7 @@ internal class FakeVaultSealer(
     }
 }
 
-/**
- * A clock the test drives. [sleep] does not sleep — it advances [elapsedRealtimeMs] and
- * [epochSeconds] by exactly the amount asked for, so a five-minute polling window costs a hundred
- * iterations of arithmetic rather than five minutes of wall clock.
- */
+/** A clock the test drives: [sleep] advances the clock instead of sleeping. */
 internal class FakeEnrollmentClock(
     // 1_680_000_000 / 120 is exactly 14_000_000, so the clock starts on a bucket boundary and a
     // test can count boundary crossings without arithmetic in its head.
@@ -224,12 +189,7 @@ internal class FakeEnrollmentClock(
     }
 }
 
-/**
- * Every port, a recorded transcript of the states the ceremony emitted, and a factory.
- *
- * One constructor with named defaults, not an overload set. Two constructors whose parameters both
- * default would be ambiguous at any call site that names only a parameter they share.
- */
+/** Every port, a recorded transcript of the states the ceremony emitted, and a factory. */
 internal class FakePorts(
     identityResult: IdentityCheck = IdentityCheck.ClientProtected("164D5B834E7FE927"),
     deviceIdValue: String? = "dev-1",
@@ -239,9 +199,7 @@ internal class FakePorts(
     fetchResults: MutableList<EnrollmentCallResult> = mutableListOf(),
     fetchWhenExhausted: EnrollmentCallResult = EnrollmentCallResult.NotFound,
     reportResult: EnrollmentCallResult = EnrollmentCallResult.Ok,
-    /** A keystore that refuses to mint — StrongBox and the TEE fallback both failing. Exposed here
-     *  because [FailureReason.NO_DEVICE_KEY] was otherwise unreachable from any test: this bundle
-     *  hardcoded a minting keystore, so the branch had production call sites and no coverage. */
+    /** A keystore that refuses to mint — StrongBox and the TEE fallback both failing. */
     minting: Boolean = true,
 ) {
     val identity = FakeIdentitySource(identityResult)

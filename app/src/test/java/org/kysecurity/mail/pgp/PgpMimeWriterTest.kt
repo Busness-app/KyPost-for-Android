@@ -14,20 +14,9 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * [PgpMimeReader] is the oracle here, exactly as [PgpDecryptor] is for [PgpEncryptorTest].
- *
- * Using an independent parser — `angus.mail`, which this writer does not use — to validate what the
- * writer emits is strictly stronger than round-tripping through one library's own encoder and
- * decoder, which can agree on a shape no other MUA accepts.
- */
+/** [PgpMimeReader] is the oracle: an independent parser (`angus.mail`) this writer does not use. */
 class PgpMimeWriterTest {
 
-    /**
-     * The real subject travels inside the ciphertext as a protected header, and the reader lifts it
-     * back out. If this breaks, every KyPost-to-KyPost message displays the outer placeholder
-     * ("[Encrypted] Email Sent by KyPost") instead of its actual subject.
-     */
     @Test
     fun protectedContentParsesBackThroughPgpMimeReader() {
         val content = buildProtectedContent(
@@ -42,14 +31,7 @@ class PgpMimeWriterTest {
         assertEquals("<p>Hello from the writer.</p>", parsed.html?.trim())
     }
 
-    /**
-     * The memoryhole / draft-ietf-lamps-header-protection convention: the real Subject is repeated
-     * in a `text/rfc822-headers` part so other clients can find it.
-     *
-     * Without this part the subject is still readable by KyPost — which reads the top-level header —
-     * but Thunderbird, Mutt and K-9 show the placeholder, and the server's own
-     * `ExtractProtectedSubject` is written to accept exactly this shape.
-     */
+    /** memoryhole / draft-ietf-lamps-header-protection; the relay parses exactly this shape. */
     @Test
     fun repeatsTheSubjectInAnRfc822HeadersPart() {
         val content = buildProtectedContent(
@@ -69,13 +51,7 @@ class PgpMimeWriterTest {
         )
     }
 
-    /**
-     * Mirrors the relay's own `validatePGPMimeDeliveryShape` rule for rule.
-     *
-     * The server relays these bytes verbatim over SMTP and synthesizes nothing, so anything missing
-     * here is simply absent from the delivered mail — and anything forbidden gets the whole send
-     * rejected with a plain-text 400 after the ciphertext was already built.
-     */
+    /** Mirrors the relay's own `validatePGPMimeDeliveryShape` rule for rule. */
     @Test
     fun envelopeSatisfiesTheRelayDeliveryValidator() {
         val mime = wrapAsPgpMime(
@@ -117,14 +93,6 @@ class PgpMimeWriterTest {
         )
     }
 
-    /**
-     * The whole outbound path composed: protect the headers, encrypt and sign, wrap as PGP/MIME —
-     * then take it apart the way a recipient does.
-     *
-     * The leak assertion is the point. The real subject must appear nowhere in the delivery's
-     * cleartext; if the placeholder is ever dropped, every encrypted message advertises its subject
-     * to anyone who can see the envelope, and no unit test of either half would notice.
-     */
     @Test
     fun aCompleteDeliveryRoundTripsAndLeaksNothingInCleartext() {
         val subject = "Quarterly numbers, confidential"
@@ -171,15 +139,7 @@ class PgpMimeWriterTest {
         assertEquals(body, parsed.html?.trim())
     }
 
-    /**
-     * The `Date` header must be ASCII whatever the device's locale.
-     *
-     * This passes today without any locale pinning — `RFC_1123_DATE_TIME` hardcodes the English
-     * abbreviations RFC 1123 mandates, so it is already locale-independent. The test exists for the
-     * refactor that replaces it with `ofPattern("EEE, dd MMM yyyy HH:mm:ss Z")`, which looks
-     * equivalent, renders through the default locale, and emits "Sal, 11 Ağu 2026" on a Turkish
-     * device. That is a bug that never shows up in development and always shows up for some users.
-     */
+    /** Guards the refactor to `ofPattern(...)`, which renders through the default locale. */
     @Test
     fun dateIsAsciiUnderANonEnglishDefaultLocale() {
         val original = Locale.getDefault()
@@ -212,13 +172,6 @@ class PgpMimeWriterTest {
         )
     }
 
-    /**
-     * Attachments ride inside the ciphertext, decoded by an independent parser here.
-     *
-     * The browser client has no attachment support on this path, but this app's compose screen has
-     * an attach button — so dropping them silently would send a message the user believes carried a
-     * file.
-     */
     @Test
     fun attachmentSurvivesInsideTheProtectedContent() {
         val payload = "hello attachment\n"

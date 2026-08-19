@@ -97,14 +97,7 @@ class PushPairingActivity : LockedActivity() {
         PushNotificationDispatcher.ensureChannel(this)
         requestNotificationPermissionIfNeeded()
         consumeDeepLink(intent)
-        // Consumed: a recreation must not replay it. This is the SAME guard onNewIntent carries,
-        // and it was missing here — on the path an attacker actually reaches first. A browser or a
-        // co-installed app delivers `kypost://native-pair` through PushPairingLinkActivity ->
-        // startActivity, which lands in onCreate, never onNewIntent; getIntent() then keeps
-        // returning that Intent with its data intact, so every rotation, dark-mode toggle and
-        // restore-after-eviction re-raised the "replace your server with evil.tld" prompt with no
-        // link tap to explain it. onNewIntent's own comment describes exactly this bug and fixed
-        // only the half that could not be hit first.
+        // Consumed: a recreation must not replay it. Deep links land in onCreate, never onNewIntent.
         intent.data = null
 
         initViews()
@@ -144,11 +137,7 @@ class PushPairingActivity : LockedActivity() {
 
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
-        // getIntent() keeps returning the Intent that created this instance unless it is replaced,
-        // so without this onCreate's unconditional consumeDeepLink re-parses the ORIGINAL deep link
-        // on every recreation -- a rotation, a dark-mode toggle, a restore after eviction. An
-        // attacker's cancelled "replace your pairing with evil.tld" prompt would resurface later
-        // with no link tap to explain it, after the user had been trained by a legitimate one.
+        // getIntent() keeps returning the creating Intent unless replaced, so recreation would replay it.
         setIntent(intent)
         if (redirectedToUnlock) return
         consumeDeepLink(intent)
@@ -265,9 +254,7 @@ class PushPairingActivity : LockedActivity() {
             .setTitle(R.string.contact_sync_intro_title)
             .setMessage(R.string.contact_sync_intro_message)
             .setPositiveButton(R.string.contact_sync_intro_positive) { _, _ ->
-                // If this needs to request permissions, contactPermissionLauncher's callback
-                // calls scanQr() once that resolves. Calling it here too would launch the QR
-                // scanner on top of the still-open system permission dialog.
+                // The permission callback calls scanQr(); calling here too would stack it on the system dialog.
                 val requestedPermission = syncEnabler.checkAndEnable()
                 if (!requestedPermission) scanQr()
             }
@@ -299,34 +286,18 @@ class PushPairingActivity : LockedActivity() {
         }
     }
 
-    /** Every pairing source — deep link, QR scan, or replacing an existing pairing — always
-     *  confirms the destination server before applying it. A QR scan proves the user operated
-     *  the camera, not that they know what server the code encodes: QR codes are trivially
-     *  copyable, photographable, and re-postable, so "physical action" is not proof of trust in
-     *  the destination. */
+    /** Every pairing source always confirms the destination server: a QR scan is not proof of trust. */
     private fun confirmAndApplyPairing(pairing: PairingData) {
-        // Read from the store, not from uiState. uiState is a `stateIn(WhileSubscribed(5_000))`
-        // flow, so before anything subscribes it serves its initialValue — whose `pairing` is null.
-        // consumeDeepLink runs in onCreate ahead of the lifecycle collector, so on the cold,
-        // web-driven path (the one an attacker uses) every replacement looked like a first pairing
-        // and the user was shown "This link wants to pair this device with: …" instead of the
-        // warning that their current server is about to be replaced.
+        // From the store, not uiState: on the cold path uiState still serves its null initialValue.
         val alreadyPaired = PushRuntime.graph(this).repository.isPairedNow()
         val messageRes = if (alreadyPaired) R.string.pairing_confirm_replace_message else R.string.pairing_confirm_message
-        // The parsed host, never the raw `srv` string. A raw URL in a trust prompt is a phishing
-        // surface: `https://mail.trusted-corp.com@evil.tld/` reads as the trusted host on a
-        // wrapped dialog while every request goes to evil.tld. pairingUrlHost() also refuses such
-        // a URL outright now, so this is the second of two gates, not the only one.
+        // The parsed host, never the raw `srv`: a raw URL in a trust prompt is a phishing surface.
         val shownHost = pairingUrlHost(pairing.serverUrl)
         if (shownHost == null) {
             Toast.makeText(this, R.string.pairing_confirm_bad_url, Toast.LENGTH_LONG).show()
             return
         }
-        // showSecurely, not show(): `kypost://native-pair` is a BROWSABLE deep link, so any web
-        // page can raise this dialog, and it is the dialog that decides where this device's
-        // `X-Kypost-Device-Secret` gets minted. A plain show() leaves its accept button coverable
-        // by any app holding SYSTEM_ALERT_WINDOW — one tap on an attacker's own overlay and the
-        // device is paired to their relay, with the TOFU pin locking their certificate in.
+        // showSecurely: a BROWSABLE deep link raises this, so its accept button must not be coverable.
         AlertDialog.Builder(this)
             .setTitle(R.string.pairing_confirm_title)
             .setMessage(getString(messageRes, shownHost))
@@ -359,9 +330,7 @@ class PushPairingActivity : LockedActivity() {
 
         override fun getCount(): Int = items.size
         override fun getItem(position: Int): PushPayload = items[position]
-        // Position, not messageId.hashCode(). hasStableIds() is false so this is unused today,
-        // but a hashCode collapsed to a Long is not a stable id, and overriding hasStableIds()
-        // later would silently make two different messages the same row.
+        // Position, not messageId.hashCode(): a truncated hash is not a stable id.
         override fun getItemId(position: Int): Long = position.toLong()
 
         override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {

@@ -1,6 +1,4 @@
-// androidx.security-crypto is deprecated in full with no replacement API. Swapping it out is a
-// migration of the at-rest credential format, not a warning fix, so it is deliberately not done
-// here. File-scoped because the deprecation also fires on the imports below.
+// androidx.security-crypto is deprecated with no replacement; swapping it is a format migration.
 @file:Suppress("DEPRECATION")
 
 package org.kysecurity.mail.security
@@ -14,33 +12,10 @@ import java.security.GeneralSecurityException
 
 private const val TAG = "EncryptedPrefs"
 
-/** Records that an encrypted store was reset, so the app can tell the user rather than presenting
- *  a clean first-run screen over a secret it destroyed.
- *
- *  Plain, so it survives the reset of the encrypted store it is reporting on. It is deliberately
- *  **not** in [SecurityWipe]'s retained set — a full wipe destroys it along with everything else,
- *  because after a wipe there is no unexpected loss left to warn about and the notice would land on
- *  top of "your data has been erased" saying the same thing less clearly. (An earlier version of
- *  this comment claimed the opposite and was simply wrong; `PREFS_NAMES_RETAINED` never listed it.) */
+/** Plain, so it survives the reset it reports; not in [SecurityWipe]'s retained set. */
 internal const val CREDENTIAL_RESET_PREFS = "org.kysecurity.mail.credential_reset"
 
-/**
- * Opens a Keystore-backed [EncryptedSharedPreferences] file, resetting it **only** when the keyset
- * is genuinely undecryptable.
- *
- * `catch (Exception)` covers far more than the key invalidation the comments named. An
- * `IOException` from a full or momentarily unavailable data partition — which is routine, and which
- * happens during direct-boot to user-unlock transitions on several OEM builds — took the same
- * branch. The user's private key was deleted because the disk was full for a second.
- *
- * So: [GeneralSecurityException] (and Tink's `KeyStoreException` wrapper for it) means the keyset
- * cannot be decrypted and the file is genuinely unreadable forever — reset, and record that we did.
- * **Everything else propagates.** A transient failure must surface as a transient failure, not as
- * silent, permanent destruction of a credential.
- *
- * @param onReset invoked before the delete, with the failure, so the caller can log in its own
- *   voice. The durable marker is written here regardless.
- */
+/** Resets only on a genuinely undecryptable keyset; every other failure propagates. */
 internal fun openEncryptedPrefs(
     context: Context,
     fileName: String,
@@ -64,22 +39,7 @@ internal fun openEncryptedPrefs(
     }
 }
 
-/**
- * Whether [failure] means the keyset itself is gone or unparseable, as opposed to the storage
- * being briefly unavailable.
- *
- * Two shapes count:
- *
- * - a [GeneralSecurityException] anywhere in the cause chain: the master key can no longer decrypt
- *   the keyset (OS-level key invalidation, a restored backup);
- * - Tink's `InvalidProtocolBufferException`: the keyset bytes are not a valid protobuf at all, i.e.
- *   truncated or overwritten. It is itself an `IOException`, which is exactly why "IOException
- *   means transient" was too coarse. A store the app can never read again must reset, or the app
- *   cannot start at all.
- *
- * Everything else — a full disk, storage not yet mounted — rethrows, because destroying a
- * credential the user cannot get back is not an acceptable response to a transient failure.
- */
+/** True only when the keyset is gone or unparseable; transient storage failures are not. */
 internal fun isUnrecoverableKeyset(failure: Throwable): Boolean =
     // Bounded: a cause chain does not legitimately nest this deep, and a cyclic one would hang
     // app startup, since this decides whether LockedActivity can build the security graph at all.
@@ -89,25 +49,7 @@ internal fun isUnrecoverableKeyset(failure: Throwable): Boolean =
 
 private const val MAX_CAUSE_DEPTH = 16
 
-/**
- * Whether this throwable is a protobuf parse failure, **including the subclasses**.
- *
- * `InvalidProtocolBufferException` has nested subclasses — `InvalidWireTypeException`,
- * `TruncatedMessageException`, `SizeLimitExceededException` — and a nested class's `simpleName` is
- * its own, not its parent's. So matching `javaClass.simpleName` directly recognised only the base
- * type, and every subclass fell through to "transient, rethrow".
- *
- * That was not cosmetic. Corrupting a keyset in a way that trips `InvalidWireTypeException` (which
- * is what happens on API 31, where the stored keyset's bytes differ from API 34's) left the store
- * permanently unreadable and never reset — so `AppLockStore.isLockEnabled()` threw, out of
- * `SecurityGraph`'s constructor, out of `LockedActivity.onCreate`, and the app could not start.
- * `AppLockStoreTest.corruptedKeyset_doesNotCrash_andTripsTheTripwire` asserts the recovery; it
- * passed on API 34 and failed on 31 for this reason, taking seventeen other suites down with it
- * because the corrupted store persisted across the whole instrumentation run.
- *
- * Walking the hierarchy rather than importing the type, because it lives in Tink's *shaded*
- * protobuf package — an implementation detail this file must not depend on by name.
- */
+/** Walks the hierarchy: subclasses have their own simpleName, and the type is in shaded Tink. */
 private fun Throwable.isProtobufParseFailure(): Boolean =
     generateSequence(javaClass as Class<*>?) { it.superclass }
         .any { it.simpleName == "InvalidProtocolBufferException" }
@@ -125,7 +67,6 @@ private fun resetUnreadableStore(
     return createEncryptedPrefs(appContext, fileName)
 }
 
-/** The stores reset since the last time a screen acknowledged it, newest write wins. */
 internal fun recordCredentialReset(context: Context, fileName: String) {
     val prefs = context.applicationContext
         .getSharedPreferences(CREDENTIAL_RESET_PREFS, Context.MODE_PRIVATE)
@@ -133,14 +74,11 @@ internal fun recordCredentialReset(context: Context, fileName: String) {
     prefs.edit().putStringSet(KEY_RESET_STORES, existing + fileName).commit()
 }
 
-/** Which encrypted stores were reset out from under the user, for a screen to report. Empty when
- *  nothing was lost. */
 fun credentialResetsPending(context: Context): Set<String> =
     context.applicationContext
         .getSharedPreferences(CREDENTIAL_RESET_PREFS, Context.MODE_PRIVATE)
         .getStringSet(KEY_RESET_STORES, emptySet()).orEmpty()
 
-/** Called once the user has been told. */
 fun acknowledgeCredentialResets(context: Context) {
     context.applicationContext
         .getSharedPreferences(CREDENTIAL_RESET_PREFS, Context.MODE_PRIVATE)

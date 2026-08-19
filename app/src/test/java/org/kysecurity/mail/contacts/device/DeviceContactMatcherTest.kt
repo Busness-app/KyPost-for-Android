@@ -65,8 +65,6 @@ class DeviceContactMatcherTest {
         assertNull(DeviceContactMatcher.findMatch(emptyList(), emptyList(), existing))
     }
 
-    /** Matching on any address in the list, not just the first, is the whole point — a contact with
-     *  three emails must be found by its third. */
     @Test
     fun findMatchOnANonFirstEmailOrPhone() {
         val existing = listOf(
@@ -88,10 +86,6 @@ class DeviceContactMatcherTest {
         assertEquals("uid5", DeviceContactMatcher.findMatch(emptyList(), listOf("+1 555 111 1111"), existing))
     }
 
-    /**
-     * The index must answer exactly as the old per-candidate rescan did: the first contact in list
-     * order that matches on *either* field, never whichever field happens to be checked first.
-     */
     @Test
     fun indexPrefersTheEarlierContactRegardlessOfWhichFieldMatched() {
         val existing = listOf(

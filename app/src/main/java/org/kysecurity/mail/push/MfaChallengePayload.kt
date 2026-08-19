@@ -1,20 +1,12 @@
 package org.kysecurity.mail.push
 
-/**
- * An MFA challenge as pushed by the server.
- *
- * All context fields are optional so a server that has not been updated yet still works; the UI
- * degrades to naming what it does not know rather than pretending there was nothing to show.
- * [matchDigits] additionally drives number matching — see [MfaApprovalActivity].
- */
+/** An MFA challenge as pushed by the server; context fields are optional for older servers. */
 data class MfaChallengePayload(
     val challengeId: String,
     val ipAddress: String = "",
     val userAgent: String = "",
     val issuedAtEpochMs: Long = 0L,
-    /** The digits the server is simultaneously showing in the browser that started the sign-in.
-     *  Blank when the server sent nothing usable, in which case this challenge cannot be approved
-     *  — see [MfaNumberMatch]. */
+    /** Blank when the server sent nothing usable — this challenge cannot be approved. */
     val matchDigits: String = "",
     /** The wrong values the approval screen offers alongside [matchDigits]. The server mints these;
      *  the client never invents them. */
@@ -28,26 +20,10 @@ object MfaChallengePayloadParser {
      *  server-supplied string could push the approve/deny buttons off-screen. */
     private const val MAX_CONTEXT_LENGTH = 120
 
-    /**
-     * Bound on the challenge id itself, which is the field that matters most and was the only one
-     * with no bound at all.
-     *
-     * Every *display* string above is length-capped and the number-match values are shape-checked,
-     * but the id becomes a **key in a `SharedPreferences` XML file** ([MfaChallengeTracker]), written
-     * with a synchronous `commit()` on the push-delivery thread, and `prefs.all` is materialised on
-     * every subsequent delivery. A hostile relay sending megabytes here filled the disk and stalled
-     * the delivery thread through an input path that was already being validated for the fields that
-     * only ever reach a TextView.
-     *
-     * The charset is restricted for the same reason: this is a server-minted opaque id (UUID-shaped
-     * in practice), never free text, and it is used as a filename-adjacent map key.
-     */
+    /** The id becomes a SharedPreferences key written on the delivery thread, hence bounded. */
     private const val MAX_CHALLENGE_ID_LENGTH = 128
     private val CHALLENGE_ID_CHARS = Regex("^[A-Za-z0-9._:-]+$")
 
-    /**
-     * Accepted width of a number-match value, as a range rather than a constant.
-     */
     const val MATCH_DIGITS_MIN_LENGTH = 1
     const val MATCH_DIGITS_MAX_LENGTH = 6
 

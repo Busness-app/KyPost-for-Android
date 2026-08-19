@@ -86,17 +86,7 @@ class WebmailDeepLinkTest {
         assertNull(webmailDraftsUrl("not a url"))
     }
 
-    /**
-     * The seam between the builders and [isFirstPartyWebmailUrl]: whatever these produce must
-     * survive the guard that decides whether it may be opened at all.
-     *
-     * Both sides are tested apart, and neither test would notice them drifting. A builder change
-     * that moved the host, dropped the port or switched the scheme would leave every assertion
-     * above green and turn both handoffs into a refusal log line and a toast — a dead button on
-     * the only route a client-custody account has to its own mail. The shapes below are the ones a
-     * real pairing produces: a trailing slash, a redundant :443, a non-default port, a server
-     * mounted under a path, and a host the user typed in caps.
-     */
+    /** The seam between the builders and [isFirstPartyWebmailUrl]; neither side's tests notice drift. */
     @Test
     fun everyBuiltUrlPassesTheFirstPartyGuard() {
         val serverUrls = listOf(

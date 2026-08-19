@@ -17,11 +17,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
 
-/** Fakes OkHttp's [Call.Factory], mirroring [ContactSyncClientTest]'s hand-rolled-fake style (no
- *  mocking framework, no MockWebServer dependency in this repo). Named distinctly from
- *  [ContactSyncClientTest]'s identically-shaped private fakes since both files share the
- *  `org.kysecurity.mail.contacts` package -- top-level `private` classes are still package-namespaced
- *  at the JVM level, so same-named fakes across files in one package would collide. */
+/** Named distinctly from [ContactSyncClientTest]'s fakes: same package, so JVM names collide. */
 private class GroupsFakeCallFactory(private val responder: (Request) -> Response) : Call.Factory {
     val requests = mutableListOf<Request>()
 

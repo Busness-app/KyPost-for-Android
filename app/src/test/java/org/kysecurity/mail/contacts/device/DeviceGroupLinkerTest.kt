@@ -7,13 +7,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** Covers [findExistingGroupRowId], the pure find-by-title decision [DeviceGroupLinker] uses to
- *  avoid duplicating an on-device group the user already has — the class itself needs a real
- *  `ContentResolver`/`AppDatabase` so isn't directly unit-testable in this repo's no-Robolectric
- *  JVM test setup (same gap `ContactSyncRepositoryTest.kt` documents for `ContactSyncRepository`).
- *  Also covers [groupRenameTargets], the pure join [DeviceContactRepository] uses to detect which
- *  *already-linked* groups need a rename pass on every sync cycle (not just newly-created
- *  contacts) — the fix for the plan's Part 2 point 4 gap. */
 class DeviceGroupLinkerTest {
     @Test
     fun findExistingGroupRowId_noGroups_returnsNull() {
@@ -59,9 +52,7 @@ class DeviceGroupLinkerTest {
 
     @Test
     fun groupRenameTargets_linkedGroupNameUnchanged_stillReturnsPair() {
-        // groupRenameTargets always resolves the current fresh name for every existing link --
-        // whether that name actually differs from the on-device title is decided later by
-        // DeviceGroupLinker.renameIfNeeded's own ContentResolver query, not here.
+        // The current name is always resolved; whether it differs is decided by renameIfNeeded.
         val links = listOf(GroupLinkEntity(groupId = "g1", androidGroupRowId = 42L))
         val groups = listOf(GroupEntity(id = "g1", name = "Work", rev = 1))
         assertEquals(listOf(42L to "Work"), groupRenameTargets(links, groups))

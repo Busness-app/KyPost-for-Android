@@ -26,11 +26,7 @@ class PgpMessageStateTest {
         assertEquals(PgpMessageState.DECRYPT_FAILED, pgpMessageStateOf(true, "no pgp identity configured", null))
     }
 
-    /**
-     * The error wins over an empty body. Both conditions hold at once for a failed decrypt, and
-     * reading it as CLIENT_PROTECTED would send the user to webmail for a message that fails
-     * there too, hiding a reason the server already gave us.
-     */
+    /** Both conditions hold at once for a failed decrypt; the error must win. */
     @Test
     fun errorTakesPrecedenceOverMissingBody() {
         assertEquals(PgpMessageState.DECRYPT_FAILED, pgpMessageStateOf(true, "bad key", ""))
@@ -64,11 +60,7 @@ class PgpMessageStateTest {
 
     @Test
     fun correctlySignedMailIsNotAnAccusation() {
-        // The relay does not verify signed-but-unencrypted mail at all, so pgpVerified is
-        // permanently false for that whole population. Reading signed && !verified as INVALID
-        // fired "Signing Key Mismatch" on every correctly signed message and marked every such
-        // row with ⚠ — training the user to ignore the marker that also carries KEY_CHANGED.
-        //
+        // The relay never verifies signed-but-unencrypted mail, so pgpVerified is permanently false.
         // An empty fingerprint means nothing was checked against anything.
         assertEquals(
             PgpSignatureState.SIGNER_UNKNOWN,

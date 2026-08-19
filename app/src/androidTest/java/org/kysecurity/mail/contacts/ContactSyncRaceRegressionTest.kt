@@ -20,15 +20,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/**
- * Regression test for the `isSelf`-clobbering race between [ContactSyncRepository.sync] (server
- * pull, full-row upsert) and `DeviceContactRepository.pullDeviceChangesForOwnAccount` (read the
- * row, merge a few fields, write the whole row back) — both hit the same Room `contacts` table
- * from independent coroutine scopes with [ContactDao.upsertAll] replacing whole rows. Confirmed in
- * production via a real device's local DB showing `isSelf=0` after the server had already flipped
- * it to true. [ContactSyncRepository.syncMutex] — held around both call sites — fixes it by
- * ensuring one side's read can never observe stale data from before the other side's write.
- */
+/** ContactSyncRepository.syncMutex serializes server sync vs device pull so isSelf survives. */
 @RunWith(AndroidJUnit4::class)
 class ContactSyncRaceRegressionTest {
 

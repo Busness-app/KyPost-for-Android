@@ -7,11 +7,7 @@ import org.junit.Test
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
-/**
- * A stand-in for [KeystoreCredentialPepper] with a fixed key, since a JVM unit test has no
- * AndroidKeyStore. What matters here is that the peppered and unpeppered keys genuinely differ and
- * that a different pepper cannot unwrap — which is the whole point of the mechanism.
- */
+/** Stand-in for [KeystoreCredentialPepper]: a JVM unit test has no AndroidKeyStore. */
 private class FixedPepper(private val keyBytes: ByteArray = "test-pepper".toByteArray()) : CredentialPepper {
     override fun mix(derived: ByteArray): ByteArray {
         val mac = Mac.getInstance("HmacSHA256")
@@ -47,9 +43,6 @@ class CredentialCipherTest {
         val salt = CredentialCipher.randomSalt()
         val keys = CredentialCipher.deriveKeys("123456".toCharArray(), salt, pepper)
         val wrapped = CredentialCipher.wrap("top-secret-device-secret", keys.current)
-        // The old `wrapped.copy(...)` mutated `wrapped.ciphertext` in place and then "copied" it,
-        // so it was testing the same array twice over. Explicit, and no longer relying on a
-        // generated `copy` that WrappedSecret deliberately no longer has.
         val tampered = WrappedSecret(
             iv = wrapped.iv,
             ciphertext = wrapped.ciphertext.copyOf().also { it[0] = it[0].inc() },
@@ -68,8 +61,6 @@ class CredentialCipherTest {
 
     @Test
     fun legacyKey_stillUnwrapsSecretsWrappedBeforeThePepperExisted() {
-        // The migration path: a v1 blob was wrapped with the bare PBKDF2 output and must stay
-        // readable so rewrapPairingIfNeeded can move it onto the peppered key.
         val salt = CredentialCipher.randomSalt()
         val keys = CredentialCipher.deriveKeys("123456".toCharArray(), salt, pepper)
         val legacyWrapped = CredentialCipher.wrap("legacy-secret", keys.legacy)

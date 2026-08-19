@@ -40,21 +40,12 @@ class LockoutPolicyTest {
         assertTrue(LockoutPolicy.shouldWipe(11, wipeAfterAttempts = 10))
     }
 
-    /**
-     * The wipe used to be a hardcoded ten attempts with no off-switch — an effective denial of
-     * service for anyone with an afternoon's access to the phone, against data the app
-     * deliberately keeps no backup of.
-     */
     @Test
     fun shouldWipe_isNeverTrue_whenTheUserTurnedItOff() {
         assertFalse(LockoutPolicy.shouldWipe(10, wipeAfterAttempts = null))
         assertFalse(LockoutPolicy.shouldWipe(1_000, wipeAfterAttempts = null))
     }
 
-    /**
-     * The point of the longer ladder: the default threshold has to be out of reach of someone who
-     * borrows the phone, not merely inconvenient. Eighty minutes was the old figure.
-     */
     @Test
     fun reachingTheDefaultThresholdTakesMostOfADay() {
         val hours = LockoutPolicy.timeToWipeMillis(LockoutPolicy.DEFAULT_WIPE_THRESHOLD) / 3_600_000.0

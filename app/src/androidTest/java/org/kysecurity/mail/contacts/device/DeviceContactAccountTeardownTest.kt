@@ -9,20 +9,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/**
- * The sync account is what the contacts teardown now rests on, in two places, so it needs to
- * actually answer.
- *
- * - `DeviceContactPurge.deleteSyncedRows` uses [DeviceContactAccountManager.accountExists] to tell
- *   "the contacts permission was revoked and rows may survive" from "nothing was ever published".
- * - `SecurityWipe`'s `deviceContactAccount` step uses it to decide whether a failed removal is a
- *   reportable failure. Removing the account is what makes CP2 hard-delete the raw contacts under
- *   it, so it is the last thing standing between a wipe and an address book left outside the
- *   sandbox.
- *
- * Both used to be unasserted: nothing in either test tree touched `removeAccountBlocking`,
- * `accountExists` or `deleteSyncedRows`.
- */
+/** DeviceContactPurge and SecurityWipe both rest on these account calls. */
 @RunWith(AndroidJUnit4::class)
 class DeviceContactAccountTeardownTest {
     private val context = ApplicationProvider.getApplicationContext<android.content.Context>()
@@ -50,11 +37,6 @@ class DeviceContactAccountTeardownTest {
         assertTrue(accounts.accountExists())
     }
 
-    /**
-     * With no account present the purge reports 0 (nothing could exist), never a failure. This is
-     * the case that made every wipe on a device that never enabled sync report Incomplete when the
-     * denied-permission branch was first tightened, so it is pinned here.
-     */
     @Test
     fun deleteSyncedRows_withNoAccount_isNotAFailure() {
         accounts.removeAccountBlocking()

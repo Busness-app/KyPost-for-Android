@@ -73,8 +73,6 @@ class DeviceContactFieldMergeTest {
         assertEquals(deviceEmails, DeviceContactFieldMerge.mergeEmailList(roomEmails, deviceEmails, 100L, 200L))
     }
 
-    // --- mergeImList ---
-
     @Test
     fun mergeImListBothEmpty() {
         assertEquals(emptyList<ContactImDto>(), DeviceContactFieldMerge.mergeImList(emptyList(), emptyList(), null, null))
@@ -105,8 +103,6 @@ class DeviceContactFieldMergeTest {
         val deviceIms = listOf(ContactImDto(service = "signal", value = "device"))
         assertEquals(deviceIms, DeviceContactFieldMerge.mergeImList(roomIms, deviceIms, 100L, 200L))
     }
-
-    // --- mergeWebsiteList ---
 
     @Test
     fun mergeWebsiteListBothEmpty() {
@@ -139,8 +135,6 @@ class DeviceContactFieldMergeTest {
         assertEquals(deviceWebsites, DeviceContactFieldMerge.mergeWebsiteList(roomWebsites, deviceWebsites, 100L, 200L))
     }
 
-    // --- mergeRelationList ---
-
     @Test
     fun mergeRelationListBothEmpty() {
         assertEquals(emptyList<ContactRelationDto>(), DeviceContactFieldMerge.mergeRelationList(emptyList(), emptyList(), null, null))
@@ -171,8 +165,6 @@ class DeviceContactFieldMergeTest {
         val deviceRelations = listOf(ContactRelationDto(label = "spouse", name = "Device Person"))
         assertEquals(deviceRelations, DeviceContactFieldMerge.mergeRelationList(roomRelations, deviceRelations, 100L, 200L))
     }
-
-    // --- mergeEventList ---
 
     @Test
     fun mergeEventListBothEmpty() {

@@ -10,18 +10,12 @@ import androidx.lifecycle.lifecycleScope
 import org.kysecurity.mail.R
 import kotlinx.coroutines.launch
 
-/** Shared permission-check -> request -> enable sequence for device contact sync, used by both
- *  the Contacts screen's menu toggle and the pairing screen's first-scan intro popup so there's
- *  one canonical enable path instead of two copies of this logic. */
 class DeviceContactSyncEnabler(
     private val activity: AppCompatActivity,
     private val permissionLauncher: ActivityResultLauncher<Array<String>>,
     private val onEnabled: () -> Unit = {},
 ) {
-    /** Returns true if permissions had to be requested asynchronously — the caller must wait for
-     *  the permission launcher's own callback (which should call [enableAfterPermissionGrant] on
-     *  grant) before doing anything that assumes sync is now enabled. Returns false if it
-     *  resolved synchronously because permissions were already granted. */
+    /** True when permissions had to be requested; the caller must wait for the launcher callback. */
     fun checkAndEnable(): Boolean {
         // Refused, not just defaulted off: synced contacts land in the OS contacts provider, which
         // Hostile Location Protection's in-memory database does not cover.

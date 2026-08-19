@@ -1,26 +1,6 @@
 package android.util;
 
-/**
- * A real {@code android.util.Log} for JVM unit tests, shadowing the stub in the mockable
- * android.jar.
- *
- * <p>This exists so {@code testOptions.unitTests.isReturnDefaultValues} can be <b>false</b>. With
- * it true, every unmocked {@code android.*} call in JVM-tested production code returned a default
- * <i>silently</i> — {@code android.util.Base64} returned null, {@code org.json} returned nothing —
- * so a suite could go green over a body that did nothing. {@code DeviceEnvelope}'s KDoc records
- * exactly that happening: its tests all passed vacuously, and replacing the whole function with
- * {@code = null} left the suite green.
- *
- * <p>The setting was true for one reason: logging. Production code with no {@code Context}
- * (AppLockManager, DeviceEnvelope, EnrollmentCeremony) has to be able to record a
- * security-relevant event without that making it untestable. Flipping the flag and shadowing this
- * one class gets both — every other stubbed API now throws loudly, which is the correct signal
- * given the project's own rule that JVM-tested production code must not call {@code android.*} for
- * anything but logging.
- *
- * <p>Writes to stderr rather than discarding, so a test that logs an error is visible in the
- * report instead of silent.
- */
+/** Real android.util.Log for JVM unit tests, shadowing the mockable android.jar stub. */
 public final class Log {
     public static final int VERBOSE = 2;
     public static final int DEBUG = 3;

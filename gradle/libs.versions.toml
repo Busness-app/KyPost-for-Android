@@ -24,15 +24,7 @@ kotlinxCoroutinesPlayServices = "1.10.2"
 playServicesCodeScanner = "16.1.0"
 googleServices = "4.4.4"
 securityCrypto = "1.1.0"
-# 1.1.0 is the newest STABLE release; everything above it (1.2.0-alpha05, 1.4.0-alpha07) is an
-# alpha. Deliberately not bumped: this library backs the MFA approval gate and the unlock vault, and
-# an alpha in that path trades a known-old dependency for an unknown-new one.
-#
-# REVIEW BY 2027-02-01. A standing "revisit when it goes stable" is a decision with no expiry, and
-# this one is four years old on a minSdk 31 app — 1.1.0 predates every API level this app runs on.
-# On that date, either bump or move the date deliberately; do not let it lapse silently. Check
-# whether 1.2.0/1.4.0 have gone stable first, then validate on a device against
-# BiometricUnlockVaultTest and Run4MfaCredentialGateTest.
+# Newest stable; alphas above it back the MFA gate and unlock vault. REVIEW BY 2027-02-01.
 biometric = "1.1.0"
 workRuntime = "2.10.1"
 lifecycleProcess = "2.9.4"

@@ -3,13 +3,7 @@ package org.kysecurity.mail.contacts
 import org.kysecurity.mail.data.PendingContactChangeEntity
 import kotlinx.serialization.json.Json
 
-/**
- * Matches locally-created (not-yet-synced) contacts to their server-assigned uid in a push
- * response. The wire protocol has no client-supplied correlation id (Mobile_Contact_Sync.md
- * Part 2 explicitly calls this out), so this matches by content — a pending create's serialized
- * fn/org/emails/phones against each unclaimed entry in [changed] — in push order, claiming the
- * first unclaimed exact match per pending create.
- */
+// The wire carries no correlation id, so creates are matched by content, in push order.
 object ContactSyncReconciliation {
     private val json = Json { ignoreUnknownKeys = true }
 

@@ -7,12 +7,7 @@ import org.kysecurity.mail.contacts.ContactImDto
 import org.kysecurity.mail.contacts.ContactRelationDto
 import org.kysecurity.mail.contacts.ContactUrlDto
 
-/**
- * `groupIDs` deliberately has no field here — group membership only ever flows Room -> device
- * (see [DeviceGroupLinker]), never read back from `GroupMembership` rows into Room, per
- * `Client_Contact_Update.md` Part 2 point 3. `pgpKey`/`pronouns`/`customFields` are excluded too:
- * they have no `ContactsContract` data kind at all (Part 5) and stay Room-only.
- */
+// No groupIDs on the read side: group membership only ever flows Room -> device.
 data class DeviceRawContactSnapshot(
     val rawContactId: Long,
     val contactId: Long,
@@ -47,12 +42,7 @@ data class DeviceContactCandidate(
     val notes: String?,
 )
 
-/**
- * The write-intention shape ([org.kysecurity.mail.contacts.device.DeviceContactMappers.toDeviceFieldSet]
- * converts a [org.kysecurity.mail.contacts.ContactDto] into this). Unlike [DeviceRawContactSnapshot],
- * this *does* carry [groupIDs] — group membership is write-only (Room -> device), so it belongs on
- * the write side, not the read side. `pgpKey`/`pronouns`/`customFields` are still excluded (Part 5).
- */
+// The write side, so it does carry groupIDs; pgpKey/pronouns/customFields have no CP2 data kind.
 data class DeviceFieldSet(
     val fn: String,
     val givenName: String?,

@@ -32,13 +32,7 @@ class ClientEncryptedSenderTest {
     private fun draft(to: String = "alice@example.invalid", cc: String = "", bcc: String = "") =
         MailDraft(to = to, cc = cc, bcc = bcc, subject = "Subject", body = "<p>Body</p>", mode = "html")
 
-    /**
-     * To and CC share one ciphertext; every BCC recipient gets their own.
-     *
-     * This is the whole reason `deliveries` is a list. One shared ciphertext would put each BCC
-     * recipient's key id in a packet every other recipient can read — which is exactly the thing
-     * BCC promises not to do.
-     */
+    /** One shared ciphertext would put each BCC recipient's key id in a packet everyone can read. */
     @Test
     fun toAndCcShareDeliveryZeroAndEachBccGetsItsOwn() = runBlocking {
         val addresses = listOf("alice@example.invalid", "carol@example.invalid", "dave@example.invalid", "erin@example.invalid")
@@ -80,13 +74,6 @@ class ClientEncryptedSenderTest {
         }
     }
 
-    /**
-     * A BCC recipient's delivery is encrypted to their key alone.
-     *
-     * Asserted by decryption, not by inspecting recipient lists: the delivery must open with the BCC
-     * recipient's key and must NOT open with the To recipient's, which is the property that actually
-     * keeps the two apart.
-     */
     @Test
     fun aBccDeliveryIsEncryptedOnlyToThatBccKey() = runBlocking {
         val transport = FakeClientEncryptedTransport()
@@ -150,14 +137,7 @@ class ClientEncryptedSenderTest {
         assertTrue("nothing may be delivered", transport.sent.isEmpty())
     }
 
-    /**
-     * A broken TOFU pin is not a missing key and must not be reported as one.
-     *
-     * `key_changed` means discovery found a key whose fingerprint does not match the pinned one —
-     * which is what a key rotation looks like, and also what an interception attempt looks like.
-     * Folding it into "no key on file" tells the user nothing changed at the exact moment the one
-     * thing worth telling them did.
-     */
+    /** `key_changed` means discovery found a key whose fingerprint does not match the pinned one. */
     @Test
     fun aChangedKeyOutranksAMissingKey() = runBlocking {
         val result = sender(
@@ -229,14 +209,7 @@ class ClientEncryptedSenderTest {
         }
     }
 
-    /**
-     * The Sent copy is encrypted to the public half of the **vault** key, never to anything the
-     * server supplied.
-     *
-     * A hostile or compromised server that could hand back "your" public key would otherwise get a
-     * readable copy of every message sent, with nothing on screen looking any different. Pinned by
-     * decrypting with the vault key and proving the recipients' key cannot open it.
-     */
+    /** A server handing back "your" public key would otherwise get a readable copy of every send. */
     @Test
     fun theSentCopyIsEncryptedToTheVaultKeyNotAServerSuppliedOne() = runBlocking {
         val transport = FakeClientEncryptedTransport()

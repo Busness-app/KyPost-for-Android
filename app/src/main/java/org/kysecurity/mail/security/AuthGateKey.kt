@@ -15,41 +15,18 @@ private const val TAG = "AuthGateKey"
 /** Content is irrelevant — only whether the OS lets the key encrypt it at all. */
 private val PROOF = ByteArray(16)
 
-/**
- * Turns "the user authenticated" from a callback the app trusts into something the OS attests to,
- * on the one screen that holds no secret of its own to bind a prompt to.
- *
- * [BiometricUnlockVault] is the better shape and is used wherever it can be: there the prompt
- * produces the app's real keys, so a forged success yields nothing usable. It needs the app-lock PIN
- * to have sealed something first. The MFA approval screen must still gate a decision when no PIN is
- * set and nothing is sealed, and the gate below is what stands in: a key that does not exist outside
- * the Keystore, cannot be used without a live authentication, and therefore cannot be produced by an
- * instrumented process hooking `onAuthenticationSucceeded`.
- *
- * **Device credential is allowed here, unlike the unlock vault.** The vault excludes it because the
- * device lock-screen PIN must not become a way past this app's own PIN. There is no app PIN on this
- * path at all, so the screen lock is not bypassing anything — it is the whole of the authentication.
- */
+/** Device credential is allowed here, unlike the vault: no app PIN exists on this path. */
 object AuthGateKey {
 
     /** Exposed for the wipe assertions; the key itself never leaves this object. */
     const val ALIAS = "kypost_auth_gate"
 
-    /**
-     * A cipher to hand to `BiometricPrompt.CryptoObject`, or null when this device will not hold the
-     * key — on API 31+ that means no secure lock screen at all. Callers must fail closed on null:
-     * a prompt raised without one has nothing to prove it ran.
-     *
-     * Blocking: Keystore. Call it off the main thread.
-     */
+    /** Null when the device won't hold the key; callers must fail closed. Blocking: Keystore. */
     fun cipher(): Cipher? {
         val existing = runCatching { encryptCipher(ensureKey()) }
         existing.getOrNull()?.let { return it }
 
-        // The key exists in some form but will not operate. Nothing is sealed under it, so a
-        // replacement loses nothing and is just as unusable without the user. Logged at error
-        // level, not info: on a key configured the way [generate] configures it this should not
-        // happen, and a silent re-mint is how a real problem stays invisible.
+        // Nothing is sealed under this key, so a replacement loses nothing.
         Log.e(TAG, "Gate key unusable; minting a replacement", existing.exceptionOrNull())
         return runCatching {
             keyStore().deleteEntry(ALIAS)
@@ -58,10 +35,7 @@ object AuthGateKey {
             .getOrNull()
     }
 
-    /**
-     * Whether the OS actually unlocked [cipher] — false when the key refuses to run, which is what
-     * a success callback invoked by anything other than a real authentication produces.
-     */
+    /** False when the key refuses to run, which is what a forged success callback produces. */
     fun proves(cipher: Cipher): Boolean = runCatching { cipher.doFinal(PROOF) }.isSuccess
 
     /** Removes the key, naming the step it could not remove so [SecurityWipe] can report an
@@ -81,15 +55,7 @@ object AuthGateKey {
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
             .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
             .setUserAuthenticationRequired(true)
-            // Explicitly NOT invalidated by biometric enrollment, which is the platform default.
-            //
-            // That default is right for [BiometricUnlockVault], which excludes device credential:
-            // there, a newly enrolled finger really would be a new way past this app's own PIN.
-            // Here the gate already accepts AUTH_DEVICE_CREDENTIAL — and enrolling a biometric
-            // requires that same credential — so anyone who could enroll a finger could already
-            // satisfy this key. Leaving the default on therefore buys no security and costs the
-            // user their MFA approval path for a benign action (adding a second fingerprint),
-            // which [cipher] can only answer by silently minting a replacement.
+            // Deliberate: the gate already accepts device credential, so enrollment adds no bypass.
             .setInvalidatedByBiometricEnrollment(false)
             // 0 = per-use auth: the key is unusable except through the CryptoObject a prompt
             // returns, which is exactly the property the gate rests on.

@@ -6,12 +6,7 @@ import java.io.ByteArrayInputStream
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 
-// A real, valid self-signed X.509 certificate (subject/issuer CN=test), generated once with:
-//   openssl req -x509 -newkey rsa:2048 -nodes -keyout /dev/null -days 3650 -subj "/CN=test"
-// `sun.security.x509` internal JDK classes are not accessible from this project's unit-test JVM
-// (JPMS blocks the `java.base` package export), so a hardcoded PEM stands in for in-process
-// certificate minting. Only a genuine, parseable X509Certificate is required to exercise
-// SpkiPinner.pinFor — how it was produced is not load-bearing.
+// Self-signed X.509 (CN=test) from: openssl req -x509 -newkey rsa:2048 -nodes -subj "/CN=test"
 private const val TEST_CERT_PEM = """-----BEGIN CERTIFICATE-----
 MIIC/zCCAeegAwIBAgIUE6Qe6XIm8Bqo7G0+cLuyzRKKj3swDQYJKoZIhvcNAQEL
 BQAwDzENMAsGA1UEAwwEdGVzdDAeFw0yNjA3MjIxOTUzNDFaFw0zNjA3MTkxOTUz

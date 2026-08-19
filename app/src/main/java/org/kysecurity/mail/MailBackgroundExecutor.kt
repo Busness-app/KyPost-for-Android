@@ -8,18 +8,11 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
-/** How long [MailBackgroundExecutor.quiesce] waits for in-flight mail work to stop before giving
- *  up on it. Short: these tasks are network calls that may be blocked in a socket read, and the
- *  caller is a destructive teardown that must not be held up by an unreachable server. */
+/** Short on purpose: the caller is a teardown that must not block on an unreachable server. */
 private const val QUIESCE_TIMEOUT_MS = 2_000L
 
-// State-changing mail actions (mark read, archive, delete, move) are fired here instead of an
-// Activity-scoped executor so the IMAP round trip keeps running after the screen that triggered
-// it finishes, letting the UI update optimistically instead of waiting on the network.
+// Mail mutations outlive the Activity that fired them, so the UI can update optimistically.
 object MailBackgroundExecutor {
-    /**
-     * [java.util.concurrent.atomic.AtomicReference], not `@Volatile` plus a plain assignment.
-     */
     private val executor = java.util.concurrent.atomic.AtomicReference<ExecutorService>(
         Executors.newFixedThreadPool(2),
     )
@@ -28,29 +21,11 @@ object MailBackgroundExecutor {
         executor.get().execute(task)
     }
 
-    /**
-     * Stops in-flight mail work and hands back a fresh pool.
-     *
-     * Called before the database is closed and deleted. `SingletonGraph.invalidate()` only makes the
-     * *next* `get()` rebuild — every task already running holds the old `AppDatabase`, so closing it
-     * out from under them threw `IllegalStateException` on a pool thread, which is an uncaught
-     * exception on a non-UI thread, which is a process kill. This is the largest source of that:
-     * these tasks are fired precisely so they outlive the screen that started them.
-     *
-     * Best-effort by construction. `shutdownNow` interrupts, and a thread blocked inside a socket
-     * read does not observe an interrupt — hence the bounded wait and the unconditional rebuild.
-     * What it buys is that the common case (a task between network calls, or queued and not yet
-     * started) is torn down rather than left pointing at a closed database.
-     */
+    /** Stops in-flight work before the DB closes; best-effort, socket reads ignore interrupts. */
     fun quiesce(): Boolean {
         val previous = executor.getAndSet(Executors.newFixedThreadPool(2))
         previous.shutdownNow()
-        // `awaitTermination` returns false on timeout and throws only on interruption, so wrapping
-        // it in `runCatching` and inspecting only the failure branch discarded the one answer that
-        // matters: "threads are still running against the database you are about to close". That is
-        // the uncaught-exception-on-a-pool-thread process kill this function exists to prevent, and
-        // it was being silently accepted. Report it instead — the caller still proceeds (a wipe
-        // cannot be held hostage by a socket read), but it can now say so.
+        // awaitTermination returns false on timeout and throws only on interruption; report that.
         val settled = try {
             previous.awaitTermination(QUIESCE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         } catch (e: InterruptedException) {
@@ -63,12 +38,7 @@ object MailBackgroundExecutor {
         return settled
     }
 
-    /**
-     * Runs a mail mutation and reports failure to the user.
-     *
-     * The toast is posted against the application context because the Activity that started this
-     * has usually already finished — that is the whole reason this executor exists.
-     */
+    /** Toasts against the application context: the Activity that started this has usually finished. */
     fun submitReporting(
         context: Context,
         actionLabel: String,

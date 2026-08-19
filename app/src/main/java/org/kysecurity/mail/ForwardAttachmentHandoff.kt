@@ -2,15 +2,7 @@ package org.kysecurity.mail
 
 import org.kysecurity.mail.mail.OutgoingAttachment
 
-/**
- * Carries a forwarded message's attachments from [EmailDetailActivity] to [ComposeActivity].
- *
- * Not an Intent extra: attachments are base64 and capped at 25 MB total, while a Binder
- * transaction is limited to roughly 1 MB — putting them in the Intent throws
- * `TransactionTooLargeException` on any real attachment. Both Activities live in this process, so
- * a single-use handoff is both correct and cheaper than making Compose re-download what the detail
- * screen already has in hand.
- */
+/** Not an Intent extra: base64 attachments exceed the ~1 MB Binder transaction limit. */
 object ForwardAttachmentHandoff : ProcessScopedState {
     @Volatile
     private var pending: List<OutgoingAttachment>? = null

@@ -3,14 +3,7 @@ package org.kysecurity.mail.pgp
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
-/**
- * The per-field recipient split behind the delivery grouping.
- *
- * Deliberately **not** [org.kysecurity.mail.splitAddresses], which flattens To/CC/BCC into one list and
- * dedupes across them. That is right for the preflight, where the question is "which addresses need
- * a key" and asking twice about one person is just noise. Here it would collapse a BCC into the To
- * bucket — putting a blind recipient in a header every other recipient can read.
- */
+/** Deliberately not [org.kysecurity.mail.splitAddresses], which would collapse a BCC into To. */
 class RecipientFieldsTest {
 
     @Test
@@ -37,11 +30,7 @@ class RecipientFieldsTest {
         assertEquals(listOf("Alice@Example.invalid"), fields.to)
     }
 
-    /**
-     * An address in both To and BCC is not a blind recipient — it is already visible in the To
-     * header. Keeping it in the BCC bucket would build it a second, redundant delivery *and* leave
-     * the sender believing that copy was blind.
-     */
+    /** An address in both To and BCC is already visible in the To header, so it is not blind. */
     @Test
     fun anAddressAlreadyInToIsDroppedFromCcAndBcc() {
         val fields = splitRecipientFields(

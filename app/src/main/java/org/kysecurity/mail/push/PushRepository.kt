@@ -40,9 +40,7 @@ private const val TAG = "PushRepository"
 
 class PushRepository(
     private val context: Context,
-    // Injected rather than constructed here: this store owns a StateFlow of the current pairing,
-    // and four separate instances of it used to exist across the app, each with its own copy of
-    // that flow. PushGraph now owns the single instance.
+    // Injected: PushGraph owns the single instance that holds the pairing StateFlow.
     private val securePairingStore: SecurePairingStore = SecurePairingStore(context),
 ) {
     private val json = Json { ignoreUnknownKeys = true }
@@ -53,15 +51,7 @@ class PushRepository(
         valueKey = KEY_PULL_CURSOR,
     )
 
-    /**
-     * Push history while Hostile Location Protection is on.
-     *
-     * The whole promise of that feature is that nothing touches disk — Room goes in-memory for it.
-     * Push history was still being written to `push_state`, an unencrypted protobuf, carrying
-     * `senderName` and `emailSubject` for the last 30 messages. That is precisely the metadata the
-     * feature exists to keep off the device, so under protection it lives here and dies with the
-     * process instead.
-     */
+    /** Push history while Hostile Location Protection is on: nothing may touch disk. */
     private val inMemoryHistory = MutableStateFlow<List<PushPayload>>(emptyList())
 
     val state: Flow<PushState> = combine(
@@ -72,37 +62,17 @@ class PushRepository(
         inMemoryHistory,
     ) { prefs, pairing, volatileHistory -> toState(prefs, pairing, volatileHistory) }
 
-    /** Pairing data for making an authenticated relay call right now — `deviceSecret` comes back
-     *  null if "require unlock to receive push/MFA" is on and the app isn't currently unlocked via
-     *  PIN; callers already treat a blank/missing deviceSecret as an auth failure, so this fails
-     *  the same way a real 401 would. */
-    /**
-     * Whether a pairing exists right now, read straight from the store.
-     *
-     * For callers that need the answer synchronously *before* anything has subscribed to [state] —
-     * notably the deep-link confirmation dialog, which has to say whether accepting will replace an
-     * existing pairing. Reading that from the `WhileSubscribed` UI flow returned its initialValue on
-     * the cold path, so every replacement was presented to the user as a first pairing.
-     */
+    /** Whether a pairing exists right now, read straight from the store — for cold-path callers. */
     fun isPairedNow(): Boolean = securePairingStore.pairing.value != null
 
     fun pairingForAuthenticatedCall(): PairingData? =
         securePairingStore.pairingSnapshot(SecurityRuntime.graph(context).appLockManager.cachedCredentialKeys())
 
-    /**
-     * Pairing data for a call authorised by a PIN the caller has just verified on a foreground
-     * screen, using keys from [org.kysecurity.mail.security.AppLockManager.verifyPinForDecision].
-     *
-     * Exists for [MfaApprovalActivity], where the app is legitimately still locked at the moment the
-     * decision is submitted — see that method's KDoc for why routing it through
-     * `cachedCredentialKeys()` made every gated MFA response unsendable.
-     */
+    /** For [MfaApprovalActivity]: the app is legitimately still locked when the decision is sent. */
     fun pairingForAuthenticatedCall(keys: org.kysecurity.mail.security.CredentialKeys?): PairingData? =
         securePairingStore.pairingSnapshot(keys)
 
-    /** The TOFU TLS pin captured right after the first successful pairing, with the host it came
-     *  from, or null if none has been captured yet. Read fresh on every call — never cached by the
-     *  caller — since it can change on re-pairing. */
+    /** The TOFU TLS pin with its host, or null. Read fresh — it changes on re-pairing. */
     fun currentTlsPin(): TlsPin? = securePairingStore.currentTlsPin()
 
     /** See [SecurePairingStore.tlsPinState] — distinguishes "never pinned" from "pin lost". */
@@ -116,20 +86,11 @@ class PushRepository(
      *  credential-key scheme; see [SecurePairingStore.needsCredentialRewrap]. */
     fun needsCredentialRewrap(): Boolean = securePairingStore.needsCredentialRewrap()
 
-    /**
-     * What [savePairing] can do with a `deviceSecret` at a given moment.
-     *
-     * Captured as a value rather than re-derived inside [savePairing], because a caller that is
-     * about to mint a secret has to decide *before* the network call and store *after* it, and the
-     * app can lock in between — a background grace window expiring drops the cached credential key.
-     * Re-reading the state on the way out would turn a checked precondition into
-     * [Unavailable] with the server's rotation already committed.
-     */
+    /** Captured before the network call and reused after: the app can lock in between. */
     sealed class PairingCredentialState {
         /** The credential gate is off: secrets are stored as they arrive. */
         object NotGated : PairingCredentialState()
 
-        /** The gate is on and this process holds the PIN-derived key to wrap with. */
         /** Not a `data class`: identity `equals`/`hashCode` over [salt] behind a promise of
          *  structural equality. Only ever matched with `is`. Enforced by `SourceRulesTest`. */
         class Available(
@@ -142,19 +103,7 @@ class PushRepository(
         object Unavailable : PairingCredentialState()
     }
 
-    /**
-     * Reads the current credential state.
-     *
-     * **Every caller that is about to mint a new secret must take this first and hand the same
-     * value back to [savePairing].** The registration endpoint mints a fresh secret on each success
-     * and invalidates the previous one, so registering while the result cannot be stored burns a
-     * working credential to produce one with nowhere to go — see [PushSyncCoordinator].
-     *
-     * Keys off [AppLockStore.isCredentialPinGateEnabled] — the *policy* — never off whether a key
-     * happens to be cached, which is wrong in both directions: it would re-wrap behind a gate that
-     * has just been switched off, and it would permanently store the secret unwrapped after a
-     * pairing made in a biometric-only session.
-     */
+    /** Callers about to mint a secret must take this first and hand it back to [savePairing]. */
     fun currentCredentialState(): PairingCredentialState {
         val securityGraph = SecurityRuntime.graph(context)
         if (!securityGraph.appLockStore.isCredentialPinGateEnabled()) return PairingCredentialState.NotGated
@@ -163,10 +112,7 @@ class PushRepository(
         return PairingCredentialState.Available(keys, salt)
     }
 
-    /**
-     * Saves pairing data, wrapping `deviceSecret` behind the PIN-derived credential key when the
-     * credential gate is on.
-     */
+    /** Saves pairing data, wrapping `deviceSecret` when the credential gate is on. */
     suspend fun savePairing(
         pairing: PairingData,
         credentialState: PairingCredentialState = currentCredentialState(),
@@ -192,28 +138,10 @@ class PushRepository(
         }
     }
 
-    /**
-     * Drops everything scoped to the account we are leaving. None of these tables carries a
-     * subscriber column and [org.kysecurity.mail.ScopedValue] scopes only the cursors, so without this
-     * the previous account's data outlived the pairing that authorised it: cached mail bodies stayed
-     * readable (and folders the next account never fetches are never replaced), its contacts merged
-     * underneath the next account's, device-contact sync kept publishing them to the OS provider
-     * with no pairing at all, and — worst — queued contact changes were flushed to whichever server
-     * was paired *next*, uploading one account's contacts to another.
-     */
+    /** Drops everything scoped to the account we are leaving; no table carries a subscriber column. */
     private suspend fun purgeAccountScopedData() {
-        // The rows this app published into the OS contacts provider go FIRST, while the link table
-        // that indexes them still exists. Unpair used to clear the links and stop there, so the
-        // previous account's whole address book stayed in ContactsContract — readable by every app
-        // holding READ_CONTACTS and by the phone's own Contacts app — with the app's only route back
-        // to those rows deleted in the same breath. Removing the account is what makes CP2
-        // hard-delete them (ContactsProvider2.removeDataOfAccount); the explicit row delete covers
-        // the window before the account removal lands.
-        // DeviceContactPurge, not DeviceContactsRuntime.graph(...).repository: building that graph
-        // constructs DataRuntime.graph(...), which during a wipe rebuilds the database this is
-        // running after the deletion of.
-        // Best-effort here — an unpair has no incomplete-result channel the way SecurityWipe does —
-        // but not silent: both failures leave the previous account's address book in ContactsContract.
+        // The OS contact rows go FIRST, while the link table that indexes them still exists.
+        // DeviceContactPurge, not the graph: building that graph rebuilds the database during a wipe.
         if (org.kysecurity.mail.contacts.device.DeviceContactPurge.deleteSyncedRows(context) < 0) {
             android.util.Log.e(TAG, "Could not delete this app's raw contacts on unpair; they may remain")
         }
@@ -227,10 +155,7 @@ class PushRepository(
             .onFailure { android.util.Log.e(TAG, "Failed to cancel the device contact worker", it) }
 
         runCatching {
-            // peek, not graph: during a security wipe the database has already been closed and
-            // deleted, and building a new one here recreated `kypost_mail.db` on disk — with the
-            // hostile-location flag file also already deleted, it recreated it *disk-backed*, in
-            // the one mode that promises nothing touches disk. Nothing to purge means nothing to do.
+            // peek, not graph: building one during a wipe recreates the database, disk-backed.
             val db = org.kysecurity.mail.data.DataRuntime.peekGraph()?.database
             if (db != null) {
                 db.emailDao().clearAll()
@@ -239,15 +164,10 @@ class PushRepository(
                 db.groupDao().clearAll()
                 db.groupLinkDao().clearAll()
                 db.deviceContactLinkDao().deleteAll()
-                // The contact-sync cursor lives here now, not in the contacts_state DataStore the
-                // file deletion below still targets. Without this a re-pair to the same account
-                // resumes from the old cursor and the address book never repopulates.
+                // The contact-sync cursor lives here now; without this a re-pair resumes from the old cursor.
                 db.contactSyncStateDao().clearAll()
             }
         }.onFailure {
-            // This one silently swallowed the exact failure the function's own KDoc describes:
-            // a purge that does not happen leaves the previous account's cached mail readable and
-            // its queued contact changes ready to flush to whatever server is paired next.
             android.util.Log.e(TAG, "Failed to purge account-scoped tables", it)
         }
         // Device-contact sync gates only on its own toggle and Hostile Location Protection, never
@@ -256,36 +176,13 @@ class PushRepository(
             .onFailure { android.util.Log.e(TAG, "Failed to disable device contact sync", it) }
         runCatching { context.deleteSharedPreferences(org.kysecurity.mail.KeywordSettings.PREFS_NAME) }
             .onFailure { android.util.Log.e(TAG, "Failed to delete keyword settings", it) }
-        // The mail and contact cursor stores are scoped by subscriber, but scoping only makes a
-        // stale value unreadable — it does not remove it. Leaving them behind kept a hashed map of
-        // the previous account's folder set and its per-folder read timestamps on disk after an
-        // unpair, and the shared-scope-key defect made one of them readable again.
-        // contacts_state is legacy: the cursor moved into the contact_sync_state table (cleared
-        // above). It stays in this list so installs that predate the move do not keep the old file.
+        // Scoping makes a stale value unreadable, not absent — these files must actually be deleted.
+        // contacts_state is legacy: kept in this list so older installs do not keep the old file.
         listOf("mail_sync_state", "contacts_state").forEach { name ->
             runCatching { java.io.File(context.filesDir, "datastore/$name.preferences_pb").delete() }
                 .onFailure { android.util.Log.e(TAG, "Failed to delete datastore $name", it) }
         }
-        // Every process-static holder at once, via the registry rather than by name: an unsent
-        // draft cached under the previous account would otherwise be restored by the next Compose
-        // inside the new account's session and sent through the new account's relay; the PGP
-        // custody cache would keep hiding (or offering) the Encrypt/Sign chips for the wrong
-        // account; the ephemeral attachment plaintext would simply still be there. No code path
-        // here restarts the process. Enumerating them individually is what let the third one be
-        // written and never added — see [org.kysecurity.mail.ProcessScopedState].
-        // The sealed envelope holds THIS account's PGP private key, so it is account-scoped and
-        // belongs here. The wipe and Hostile Location Protection already tore it down; the account
-        // boundary was the third destructive path and the one left out — so unpairing, or a re-pair
-        // driven by the exported kypost://native-pair link, carried one account's private key into
-        // the next account's session behind nothing but the device lock screen. The fourth path,
-        // "Remove from this device" in SecuritySettingsActivity.confirmRemoveEnrollment, tears down
-        // the same vault and server record but is deliberately NOT routed through here or through
-        // ProcessState.resetAll(): unenroll keeps the account paired, so it must not also discard an
-        // in-progress draft or ephemeral attachment the way this account-boundary purge legitimately
-        // does. It clears org.kysecurity.mail.pgp.EnrollmentSession directly instead. Naming it here so
-        // the next destructive path that touches account-scoped in-memory state checks this list
-        // instead of repeating the omission that made EnrollmentSession the third one in the first
-        // place.
+        // Every process-static holder at once via the registry, not by name — enumeration missed one.
         val enrollmentResidue = org.kysecurity.mail.pgp.EnrollmentTeardown.destroy(context)
         if (enrollmentResidue.isNotEmpty()) {
             android.util.Log.e(TAG, "Enrollment teardown left $enrollmentResidue behind while unpairing")
@@ -315,19 +212,7 @@ class PushRepository(
         }
     }
 
-    /**
-     * Best-effort server deregistration, then unconditional local clear: even if the network call
-     * fails (offline, server already removed the device, credentials already invalid), the device
-     * must still be usable to re-pair afterward — local state can never be stuck "paired". Also
-     * cancels the periodic pull worker, which [clearPairing] alone does not do.
-     *
-     * [pairing] defaults to reading the credential here, which is right for a user-initiated unpair.
-     * [org.kysecurity.mail.security.SecurityWipe] passes one it captured *before* it started deleting
-     * files: the wipe destroys `push_pairing_secure` early on purpose (plaintext first, network
-     * last), so by the time it reaches this call there is nothing left to authenticate with and the
-     * deregister could only ever fail — leaving the relay pushing to a wiped device indefinitely,
-     * which is the exact failure the deregister exists to prevent.
-     */
+    /** Best-effort deregister then unconditional clear; SecurityWipe passes a pre-captured pairing. */
     suspend fun unpairDevice(
         deregisterClient: DeregisterClient,
         pairing: PairingData? = pairingForAuthenticatedCall(),
@@ -343,35 +228,12 @@ class PushRepository(
         return networkResult
     }
 
-    /**
-     * Severs the delivery channel itself, not just the record of who we were paired with.
-     *
-     * [clearPairing] drops this app's *copy* of the endpoint and purges account data, but it leaves
-     * the FCM registration token unrotated and the UnifiedPush subscription live at the distributor
-     * — so the relay a user just walked away from kept a working push channel into a device the UI
-     * reports as detached, and could still post sender/subject under this app's identity. Unpair is
-     * the app's own remedy for a relay the user no longer trusts, so it has to cut the channel.
-     * [org.kysecurity.mail.security.SecurityWipe] already does all of this; only this path did not.
-     *
-     * Deliberately NOT shared with the wipe's versions of these steps: the wipe runs each inside its
-     * own fault-isolated `step(...)` because its Complete/Incomplete verdict is what tells a user
-     * whether their data is really gone. Keep the two in sync by hand.
-     *
-     * Every operation is best-effort. A failure here must never prevent [clearPairing] below — the
-     * contract this method documents is that local state can never be stuck "paired", and a
-     * network-backed token delete is exactly the step most likely to fail offline.
-     *
-     * NOT called from the account-replacement path in [PushSyncCoordinator]: that branch
-     * re-registers immediately afterwards and reads the FCM token to do it, so rotating the token
-     * there would break the pairing it is in the middle of performing.
-     */
+    /** Severs the delivery channel itself. Not called from [PushSyncCoordinator]'s replacement path. */
     private suspend fun tearDownPushTransport() {
         runCatching {
             context.getSystemService(android.app.NotificationManager::class.java)?.cancelAll()
         }
-        // Unregister before deleting the connector's own state, for the reason SecurityWipe gives:
-        // reversed, the unregister has no registration records left to tell the distributor about,
-        // so the device stays subscribed at the distributor and its push server.
+        // Unregister before deleting the connector's state, or the device stays subscribed.
         runCatching { UnifiedPushRegistrar.unregister(context) }
         // Holds the WebPush ECDH private key and auth secret.
         runCatching { context.deleteDatabase("unifiedpush-connector") }
@@ -401,13 +263,7 @@ class PushRepository(
         }
     }
 
-    /**
-     * Persist the UnifiedPush endpoint + WebPush encryption keys from the last successful
-     * unifiedpush registration, so a later resync can resend the same endpoint/keys instead of
-     * falling back to an FCM token — there is no synchronous way to re-fetch these from the
-     * UnifiedPush connector, they only ever arrive via the onNewEndpoint callback. Pass all-null
-     * to clear (e.g. when the confirmed transport is no longer unifiedpush).
-     */
+    /** Persisted so a resync can resend them; they only ever arrive via onNewEndpoint. Null clears. */
     suspend fun updateUnifiedPushRegistration(endpoint: String?, p256dh: String?, auth: String?) {
         context.pushDataStore.edit { prefs ->
             if (endpoint.isNullOrBlank()) prefs.remove(KEY_UNIFIEDPUSH_ENDPOINT) else prefs[KEY_UNIFIEDPUSH_ENDPOINT] = endpoint
@@ -416,11 +272,7 @@ class PushRepository(
         }
     }
 
-    /**
-     * The durable pull cursor for [subscriberId], defaulting to 0. Scoped to the subscriber so
-     * re-pairing as a different subscriber starts from a clean cursor rather than skipping their
-     * backlog.
-     */
+    /** The durable pull cursor for [subscriberId], scoped so a new subscriber starts clean. */
     suspend fun pullCursor(subscriberId: String): Long = pullCursorValue.get(subscriberId) ?: 0L
 
     /** Advance the cursor to max(existing, [cursor]); resets when the subscriber changes. */

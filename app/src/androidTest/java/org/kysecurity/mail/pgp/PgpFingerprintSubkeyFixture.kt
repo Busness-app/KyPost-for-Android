@@ -1,13 +1,6 @@
 package org.kysecurity.mail.pgp
 
-/**
- * ed25519 primary + cv25519 encryption subkey, from `gpg --quick-generate-key` plus
- * `--quick-add-key`. Disposable, generated in a throwaway keyring purely as a fixture.
- *
- * The shape matters: every other fixture in this repo is a bare primary key with no subkey, which
- * never exercises the binding-signature verification real accounts' keys all go through.
- * [FINGERPRINT] is gpg's own reported value for it.
- */
+/** Disposable ed25519 primary + cv25519 subkey from gpg; FINGERPRINT is gpg's own value. */
 internal object PgpFingerprintSubkeyFixture {
     const val FINGERPRINT = "258E 286A 8DF6 5855 DF40 3110 9606 EA6B 6061 F145"
 

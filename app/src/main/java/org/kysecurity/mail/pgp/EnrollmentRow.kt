@@ -1,10 +1,5 @@
 package org.kysecurity.mail.pgp
 
-/**
- * What the Security page's encrypted-mail row says, and what it offers.
- *
- * A type rather than a string so the decision is testable and the copy lives with the screen.
- */
 internal sealed class EnrollmentRow {
     /** Not paired: there is no account to hold a key for. */
     object Hidden : EnrollmentRow()
@@ -32,19 +27,7 @@ internal sealed class EnrollmentRow {
     object NotEnrolled : EnrollmentRow()
 }
 
-/**
- * Decides the row.
- *
- * **Local facts before network facts.** The spec's row table lists `Enrolled` and `KEY_INVALIDATED`
- * last, after the identity branch. Ordered that way, a device with no connectivity renders as
- * "couldn't check your account" — which hides the one row whose entire job is to tell the user this
- * device can no longer open their mail, and hides "Remove from this device", a local security action
- * that must not require a working network. Both are facts about this device's own Keystore, so they
- * are answered from the Keystore first.
- *
- * Hostile Location Protection and the lock screen come before both, because under either of them the
- * `ENROLLED` probe is either a contradiction or impossible.
- */
+/** Local facts before network facts: an offline device must still be told it cannot read mail. */
 internal fun enrollmentRowFor(
     paired: Boolean,
     hostileLocation: Boolean,

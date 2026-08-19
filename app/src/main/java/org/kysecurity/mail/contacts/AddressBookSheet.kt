@@ -18,9 +18,7 @@ import org.kysecurity.mail.R
 import org.kysecurity.mail.data.DataRuntime
 import kotlinx.coroutines.launch
 
-/** Address-book picker (ContactAutocomplete.md section 3): search bar + scrollable contact list
- *  with TO/CC/BCC action chips per row. Stays open across picks so the user can multi-select —
- *  [onPick] fires once per successful pick; see [RecipientRowAdapter] for the checkmark state. */
+/** Stays open across picks so the user can multi-select; [onPick] fires once per pick. */
 class AddressBookSheet @JvmOverloads constructor(
     private val onPick: ((RecipientCandidate, RecipientField) -> Boolean)? = null,
 ) : BottomSheetDialogFragment() {

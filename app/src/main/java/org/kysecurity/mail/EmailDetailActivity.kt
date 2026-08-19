@@ -49,33 +49,15 @@ import kotlinx.coroutines.withContext
 
 class EmailDetailActivity : LockedActivity() {
 
-    // Two threads, not one. Every background task on this screen shared a single thread, so
-    // downloading a 25 MB attachment blocked the body render — and the `Show images` reload, and
-    // the quoted-HTML sanitize — behind it for the whole transfer.
+    // Two threads: a 25 MB attachment download used to block the body render behind it.
     private val ioExecutor = Executors.newFixedThreadPool(2)
     private lateinit var mailRepository: MailRepository
     private lateinit var actionButtons: List<ImageButton>
 
-    /** [actionReply], [actionReplyAll] and [actionForward] — the subset of [actionButtons] that
-     *  [applyReplyForwardAvailability] visually marks as unavailable for a
-     *  [PgpMessageState.CLIENT_PROTECTED] message. Kept as its own field, rather than re-derived
-     *  from [actionButtons] by position, so which three buttons this reaches cannot silently drift
-     *  if [actionButtons]'s order ever changes. */
+    /** The three buttons [applyReplyForwardAvailability] dims; explicit, not derived by index. */
     private lateinit var replyForwardButtons: List<ImageButton>
 
-    /**
-     * The state Reply/Reply-All/Forward's click listeners check via [mayReplyOrForward] before
-     * doing anything.
-     *
-     * Fail closed. [renderBody] runs on a background thread and, for an uncached message, makes a
-     * network round trip before it can report a real [PgpMessageState] — see its own KDoc on
-     * `bodyUnavailable` — and may never report one at all if it throws (caught by the `runCatching`
-     * around its call site, which only toasts). Defaulting to [PgpMessageState.NONE] here would
-     * leave Reply live for that entire window on exactly the messages this task exists to protect.
-     * Set to the real, encrypted-or-not verdict as soon as the Intent extra is read in `onCreate`
-     * (synchronous, no fetch involved), then overwritten with the definitive value once
-     * [renderBody] resolves it.
-     */
+    /** Fails closed: [renderBody] may never report a state, so Reply must not start out live. */
     private var replyForwardState: PgpMessageState = PgpMessageState.CLIENT_PROTECTED
     private lateinit var divider: View
     private lateinit var webView: WebView
@@ -95,35 +77,20 @@ class EmailDetailActivity : LockedActivity() {
     private var lastAppliedThemeName: String = ""
     private var lastRenderedHtml: String? = null
 
-    /** Set in the [PgpMessageState.CLIENT_PROTECTED] branch of [renderPgpBar] when no webmail URL
-     *  could be resolved for this message. [showLocked] appends [R.string.email_pgp_no_webmail] in
-     *  that case, since every [ReadOutcome] notice below was written assuming a webmail fallback
-     *  exists — several end "...or open it in webmail" with no button and no address on screen when
-     *  it does not. */
+    /** Set when no webmail URL resolved; the notices below all assume a webmail fallback exists. */
     private var webmailUnavailable: Boolean = false
 
-    /** Guards [attemptDecrypt] against a second attempt landing while the first is still in flight
-     *  — e.g. a tap on Decrypt while the automatic (unlockIfNeeded = false) attempt is still
-     *  running. Without this, an outcome that resolves out of order (a stale [ReadOutcome.Cancelled]
-     *  arriving after a real [ReadOutcome.Decrypted]) could regress a message already on screen back
-     *  to the padlock. */
+    /** Guards a second [attemptDecrypt] mid-flight from regressing the screen to the padlock. */
     private var decryptJob: Job? = null
 
     /** The message's real body, once the background fetch has answered. Reply/Forward quote this;
      *  see [quoteForReply] for why the 140-character preview was never an acceptable substitute. */
     private var fetchedBodyHtml: String? = null
 
-    /** The relay's verdict on this message's OpenPGP signature, from the detail Intent —
-     *  initially. For a [PgpMessageState.CLIENT_PROTECTED] message this app can decrypt locally,
-     *  it is overwritten with the local verdict from [displaySignatureVerdict] once that decrypt
-     *  finishes, so it does not stay the relay's verdict for the message's whole lifetime on
-     *  screen. Rendered by both [renderPgpBar] and [showLocked] — see [PgpSignatureState] for why
-     *  it is separate from [PgpMessageState]. */
+    /** The relay's signature verdict, overwritten by the local one once a local decrypt finishes. */
     private var pgpSignatureState: PgpSignatureState = PgpSignatureState.NONE
 
-    /** Attachments downloaded on this screen, keyed by their listing index, so Forward can carry
-     *  them. Populated lazily — only what the user actually opened is here, which is the honest
-     *  limit of what this screen has without re-fetching every attachment on entry. */
+    /** Only what the user actually opened is here - the honest limit of what Forward has in hand. */
     private val downloadedAttachments = linkedMapOf<Int, org.kysecurity.mail.mail.OutgoingAttachment>()
 
     /** This message's attachment listing, once loaded — what Forward has to fetch. */
@@ -159,12 +126,7 @@ class EmailDetailActivity : LockedActivity() {
         val emailBodyMode = intent.getStringExtra("email_body_mode").orEmpty()
         val hasAttachments = intent.getBooleanExtra("email_has_attachments", false)
         val pgpEncrypted = intent.getBooleanExtra("email_pgp_encrypted", false)
-        // Refines the fail-closed CLIENT_PROTECTED default above as soon as we synchronously know
-        // better: an unencrypted message was never going to become CLIENT_PROTECTED, so there is no
-        // reason to hold its Reply button hostage to the body fetch below. An encrypted one keeps
-        // the fail-closed default until renderBody reports the real state. See
-        // initialReplyForwardState's own KDoc for why this is a pure function rather than the
-        // ternary it replaced.
+        // An unencrypted message was never going to become CLIENT_PROTECTED, so do not hold Reply.
         replyForwardState = initialReplyForwardState(pgpEncrypted)
         val pgpDecryptError = intent.getStringExtra("email_pgp_decrypt_error").orEmpty()
         pgpSignatureState = org.kysecurity.mail.pgp.pgpSignatureStateOf(
@@ -186,9 +148,7 @@ class EmailDetailActivity : LockedActivity() {
         imagesBlockedBar = findViewById(R.id.emailImagesBlockedBar)
         btnShowImages = findViewById(R.id.btnShowImages)
         phishingBar = findViewById(R.id.emailPhishingBar)
-        // Advisory only: the links this warns about are already refused by
-        // SAFE_LINK_SCHEMES in shouldOverrideUrlLoading, whether or not the
-        // server ever flagged the message.
+        // Advisory only: SAFE_LINK_SCHEMES already refuses these links regardless of the flag.
         phishingBar.visibility = if (phishingFlagged) View.VISIBLE else View.GONE
         pgpBar = findViewById(R.id.emailPgpBar)
         pgpText = findViewById(R.id.emailPgpText)
@@ -233,10 +193,7 @@ class EmailDetailActivity : LockedActivity() {
             runMailActionAndFinish(getString(R.string.action_junk), emailId) { it.spam(emailId, emailFolder) }
         }
         actionReply.setOnClickListener {
-            // Checked here, not via isEnabled = false: a disabled ImageButton's onTouchEvent
-            // returns before performClick ever runs, which would make this very explanation
-            // unreachable. See applyReplyForwardAvailability's KDoc for the rest of the reasoning
-            // (fail-closed default, alpha-only visual signal, contentDescription for TalkBack).
+            // Not isEnabled = false: a disabled ImageButton never reaches performClick, so no Toast.
             if (!mayReplyOrForward(replyForwardState)) {
                 Toast.makeText(this, R.string.email_pgp_reply_disabled, Toast.LENGTH_LONG).show()
                 return@setOnClickListener
@@ -284,37 +241,17 @@ class EmailDetailActivity : LockedActivity() {
             useWideViewPort = true
             loadWithOverviewMode = true
             defaultTextEncodingName = "utf-8"
-            // Defaults that are wrong for a renderer whose input is attacker-controlled HTML:
-            // allowContentAccess defaults to true, which lets email markup reference this app's
-            // own content:// providers, and DOM storage is state an email has no business
-            // creating. allowFileAccess is already false on this minSdk but is pinned here so it
-            // stays false if the default ever moves.
+            // allowContentAccess defaults true, letting email markup reach this app's content:// providers.
             allowContentAccess = false
             allowFileAccess = false
             domStorageEnabled = false
-            // Senders can embed tracking beacons — not just <img>, but <iframe>, <video>/<audio>
-            // src or poster, <link rel="stylesheet">, and remote web fonts all fetch over the
-            // network too, and blockNetworkImage only covers image-typed resources. Blocking all
-            // network loads closes those too; loading them automatically would leak the reader's
-            // IP and "message opened" status before they've decided whether to trust the sender.
-            // btnShowImages lets them opt in per-message instead.
+            // blockNetworkImage covers only images; iframes, media, CSS and fonts fetch over the network too.
             blockNetworkLoads = true
         }
-        // Without a WebViewClient, WebView handles navigation itself: tapping a link in an email —
-        // or a <meta http-equiv="refresh"> the sender planted — replaced this view's contents with
-        // the target page, in-app, with no address bar for the user to check. That is a ready-made
-        // phishing surface inside a trusted mail client. Hand every navigation to the system
-        // instead, so it opens in a real browser with a visible URL.
+        // Without a WebViewClient, a link or <meta refresh> replaces this view in-app with no address bar.
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                // Only act on a real tap. Sender HTML navigates on its own — an <iframe src> or a
-                // <meta http-equiv="refresh"> fires this callback with hasGesture() false, needing
-                // no JavaScript and no user interaction beyond opening the message. blockNetworkLoads
-                // does not help: it gates resource loads, while this is a navigation throttle that
-                // runs first, so a non-http scheme sails straight past it. Un-gestured, that gave a
-                // remote sender one free implicit ACTION_VIEW per opened mail to any scheme on the
-                // device — including this app's own kypost://native-pair, which conjures the pairing
-                // dialog on top of the attacker's own pretext.
+                // Only a real tap: an <iframe src> or <meta refresh> fires this with hasGesture() false.
                 if (!request.hasGesture()) return true
                 val scheme = request.url.scheme?.lowercase()
                 if (scheme !in SAFE_LINK_SCHEMES) {
@@ -337,12 +274,7 @@ class EmailDetailActivity : LockedActivity() {
             lastRenderedHtml?.let { html -> webView.loadDataWithBaseURL(null, html, "text/html", "utf-8", null) }
         }
 
-        // runCatching, not a bare block: an uncaught exception on an ExecutorService thread is a
-        // process kill, and every input below is chosen by the sender — the body HTML, its length,
-        // its CSS. `stripImportant` threw on a six-hex-digit CSS escape above the Unicode codespace
-        // (fixed in decodeCssEscapes), which crashed the app on open and again on every reopen,
-        // since the message stays in the mailbox. The decode bug is fixed; this makes the next one
-        // an unreadable message rather than an unusable app.
+        // runCatching: an uncaught throw on an executor thread is a process kill, on sender-chosen input.
         ioExecutor.execute {
             runCatching {
                 renderBody(emailId, emailFolder, emailSender, emailPreview, emailBodyMode, pgpEncrypted, pgpDecryptError, loading)
@@ -358,9 +290,7 @@ class EmailDetailActivity : LockedActivity() {
         }
     }
 
-    /** The body fetch, PGP-state resolution and HTML assembly for one message. Extracted from
-     *  `onCreate` so the whole thing sits inside one `runCatching` on the executor thread — see the
-     *  call site for why that matters. */
+    /** Extracted from `onCreate` so the whole thing sits inside one `runCatching` on the executor. */
     private fun renderBody(
         emailId: String,
         emailFolder: String,
@@ -404,9 +334,7 @@ class EmailDetailActivity : LockedActivity() {
         } else {
             htmlContent
         }
-        // Resolved off the main thread with the URL it builds — pairingForAuthenticatedCall
-        // reads Keystore-backed EncryptedSharedPreferences, which is disk I/O. Both are kept:
-        // openWebmail re-derives the origin from serverUrl to check the URL it is handed.
+        // Off the main thread: pairingForAuthenticatedCall reads Keystore-backed prefs, i.e. disk I/O.
         val serverUrl = if (pgpState == PgpMessageState.CLIENT_PROTECTED) {
             PushRuntime.graph(this).repository.pairingForAuthenticatedCall()?.serverUrl
         } else {
@@ -417,10 +345,7 @@ class EmailDetailActivity : LockedActivity() {
         runOnUiThread {
             if (isFinishing || isDestroyed) return@runOnUiThread
             lastRenderedHtml = htmlContent
-            // Not `bodyToRender`: that is blanked for the PGP states with nothing to show. Enforced
-            // here too, not just emergent from the server's empty CLIENT_PROTECTED body: the spec's
-            // non-negotiable rule is that a local decrypt must never reach this property, and this
-            // makes that explicit rather than relying on the server having nothing to assign.
+            // A local decrypt must never reach this property; not `bodyToRender`, which is blanked.
             fetchedBodyHtml = content?.html?.takeIf { pgpState != PgpMessageState.CLIENT_PROTECTED }
             val plainTextBody = content?.html?.takeIf { it.isNotBlank() } ?: emailPreview
             val plainText = plainTextBody.takeIf { isPlainTextBody(it, bodyMode) }
@@ -441,9 +366,6 @@ class EmailDetailActivity : LockedActivity() {
         }
     }
 
-    /**
-     * Opens the composer with the whole message: the real body, and every attachment.
-     */
     private fun forwardMessage(
         emailId: String,
         emailFolder: String,
@@ -483,9 +405,7 @@ class EmailDetailActivity : LockedActivity() {
                         Toast.LENGTH_LONG,
                     ).show()
                 }
-                // Same sanitize-or-escape hop as the no-missing-attachments branch above. This one
-                // used to interpolate `emailPreview` — 140 characters of the sender's raw HTML —
-                // straight into the quote, which is the only path into the compose editor that did
+                // Same sanitize-or-escape hop as the branch above; never interpolate raw sender HTML.
                 quotedBodyHtmlAsync(emailPreview) { quoted ->
                     openCompose(
                         to = "",
@@ -512,15 +432,7 @@ class EmailDetailActivity : LockedActivity() {
         )
     }
 
-    /**
-     * The only screen that tells the user what happened to an encrypted message. Silence here is
-     * what the old build did, and it read as "this email is blank".
-     *
-     * [serverUrl] is passed in beside [webmailUrl] rather than read from a field so the two are
-     * provably from the same render pass: the click listener below re-checks the link against the
-     * origin it was built from, and a field could have been overwritten by a later render in
-     * between.
-     */
+    /** [serverUrl] is passed beside [webmailUrl] so both are provably from the same render pass. */
     private fun renderPgpBar(
         state: PgpMessageState,
         pgpDecryptError: String,
@@ -529,26 +441,16 @@ class EmailDetailActivity : LockedActivity() {
         /** Decided by [rendersNothing] in the same render pass that chose the body, so this cannot
          *  disagree with what was actually put on screen. */
         nothingToRender: Boolean,
-        /** The account mailbox (IMAP folder) and message id this render is for, plus the sender
-         *  exactly as displayed — needed only to kick off [attemptDecrypt] from the
-         *  [PgpMessageState.CLIENT_PROTECTED] branch below. */
+        /** Only needed to kick off [attemptDecrypt] from the CLIENT_PROTECTED branch below. */
         mailbox: String,
         messageId: String,
         sender: String,
     ) {
-        // A message can be perfectly readable and still be signed by someone other than who it
-        // claims to be from, so the signature verdict is rendered even when there is no encryption
-        // state to report. This was computed by the relay, carried through every layer and written
-        // to Room behind its own migration — and then never shown, so a forged-signature message
-        // displayed as ordinary mail while webmail flagged it.
+        // A readable message can still be signed by someone other than its claimed sender.
         val signatureNotice = signatureNoticeFor(pgpSignatureState)
 
         if (state == PgpMessageState.NONE) {
-            // The blank-screen case this function's KDoc warns about, still open for NONE after it
-            // was closed for every encrypted state. An encrypted message the server has not warmed
-            // arrives with pgpEncrypted false and no body, lands here, and rendered as silence.
-            // A signature notice, where there is one, wins: it is a stronger statement than "nothing
-            // to show" and the two would otherwise be concatenated into a contradiction.
+            // An encrypted message the server never warmed arrives with pgpEncrypted false and no body.
             val notice = signatureNotice
                 ?: getString(R.string.email_no_content).takeIf { nothingToRender }
             pgpBar.visibility = if (notice == null) View.GONE else View.VISIBLE
@@ -567,25 +469,17 @@ class EmailDetailActivity : LockedActivity() {
                 pgpText.text = getString(R.string.email_pgp_decrypted_by_server)
             PgpMessageState.CLIENT_PROTECTED -> {
                 webmailUnavailable = serverUrl == null || webmailUrl == null
-                // Defer Open in Webmail visibility to renderReadOutcome to avoid a flash
-                // of the fallback button before the on-device decrypt (attemptDecrypt with
-                // unlockIfNeeded=false) resolves. The success path (Decrypted) and the
-                // NeedsUnlock/Cancelled paths both hide webmail; only terminal failures
-                // show it via showLocked's webmailUnavailable guard.
+                // Deferred to renderReadOutcome: otherwise the fallback flashes before the decrypt resolves.
                 if (serverUrl != null && webmailUrl != null) {
                     btnOpenInWebmail.setOnClickListener {
-                        // The installed PWA, else the user's real browser — with the session
-                        // webmail already holds, and in that app's own task. See WebmailTab for
-                        // why this is neither an in-app WebView nor a Custom Tab.
+                        // The installed PWA, else the real browser, in that app's own task. See WebmailTab.
                         if (!openWebmail(this, serverUrl, webmailUrl)) {
                             Toast.makeText(this, R.string.email_pgp_no_handler, Toast.LENGTH_LONG).show()
                         }
                     }
                 }
                 btnOpenInWebmail.visibility = View.GONE
-                // No pointless "This message is end-to-end encrypted..." paragraph — show only
-                // actionable buttons (Decrypt Email vs Open in webmail). The signature badge,
-                // if any, is rendered at the end of this function.
+                // Actionable buttons only; the signature badge is rendered at the end of this function.
                 pgpText.text = ""
                 // Explicit taps always may prompt; only the automatic attempt below is silent when
                 // the key is not held.
@@ -613,28 +507,7 @@ class EmailDetailActivity : LockedActivity() {
         pgpText.visibility = if (pgpText.text.isNullOrBlank()) View.GONE else View.VISIBLE
     }
 
-    /**
-     * Records the definitive [PgpMessageState] for Reply/Reply-All/Forward's own click-time check
-     * ([replyForwardState]) and updates the three buttons' visual state to match.
-     *
-     * `POST /api/mail/draft` uploads the draft to the server. Quoting a decrypted body into a
-     * reply would hand the server the plaintext of a message this whole mode exists to keep from
-     * it — at one tap, with no warning. There is no encrypted send path in the app yet, so there
-     * is no safe destination for any of these three actions.
-     *
-     * Unconditional rather than gated on decrypt success — see [mayReplyOrForward] — so a button
-     * never starts working once a message opens; that would teach the user a rule that is not
-     * true.
-     *
-     * Deliberately does NOT set `isEnabled = false`. `View.onTouchEvent` returns before
-     * `performClick()` ever runs on a disabled view, which would make the explanatory Toast in
-     * each click listener unreachable dead code — a grey button the user taps for nothing. `alpha`
-     * carries the visual signal instead, and [contentDescription][View.setContentDescription]
-     * carries the same "why" to TalkBack that `isEnabled = false` would otherwise have announced
-     * for free (as "disabled", with no reason) — the same substitution [EmailAdapter] already makes
-     * for the inbox row's own PGP markers, and for the same reason: an emoji or a plain disabled
-     * state tells a screen-reader user nothing a sighted user wouldn't also be missing.
-     */
+    /** Not `isEnabled = false`: a disabled view never reaches performClick, so the Toast would die. */
     private fun applyReplyForwardAvailability(pgpState: PgpMessageState) {
         replyForwardState = pgpState
         if (mayReplyOrForward(pgpState)) return
@@ -645,9 +518,7 @@ class EmailDetailActivity : LockedActivity() {
         }
     }
 
-    /** The sentence for one [PgpSignatureState], or null when there is nothing to say. Shared by
-     *  [renderPgpBar] (server-side verdicts) and [renderReadOutcome] (on-device verdicts) so the
-     *  wording cannot drift between the two paths that can produce the same six states. */
+    /** Shared by [renderPgpBar] and [renderReadOutcome] so the wording cannot drift. */
     private fun signatureNoticeFor(state: PgpSignatureState): String? = when (state) {
         PgpSignatureState.VERIFIED_CONFIRMED -> "✅ " + getString(R.string.email_pgp_signature_confirmed)
         PgpSignatureState.VERIFIED_SEEN_BEFORE -> "🟢 " + getString(R.string.email_pgp_signature_seen_before)
@@ -665,40 +536,18 @@ class EmailDetailActivity : LockedActivity() {
         val deviceSecret = pairing.deviceSecret ?: return null
         val client = PgpPayloadClient(callFactory = pinnedPairingCallFactory(this))
         return EncryptedMessageReader(
-            // No wrapper here: AndroidVaultOpener.open() owns its own dispatching now — IO for the
-            // Keystore/prefs read, Main only for the BiometricPrompt itself — so nothing in this
-            // caller needs to hop for it. See VaultOpenerAndroid.kt.
+            // No wrapper: AndroidVaultOpener.open() owns its own dispatching. See VaultOpenerAndroid.kt.
             opener = AndroidVaultOpener(this@EmailDetailActivity),
             payloads = object : PayloadSource {
                 override suspend fun fetch(mailbox: String, messageId: String) =
                     client.fetch(pairing.serverUrl, deviceId, deviceSecret, mailbox, messageId)
             },
-            // Wired, and load-bearing: without it the signature verdict is whatever the relay says
-            // it is. Application context, because the reader outlives nothing but this screen and
-            // the graph behind it is process-scoped.
+            // Load-bearing: without it the signature verdict is only whatever the relay says it is.
             localSignerKeys = org.kysecurity.mail.pgp.RoomLocalSignerKeys(applicationContext),
         )
     }
 
-    /**
-     * Automatic when the key is already held, explicit when it is not.
-     *
-     * The prompt stays tied to a deliberate tap so that a dismissal is always a response to
-     * something the user just did, rather than a sheet that ambushed a message they opened by
-     * accident.
-     *
-     * [EncryptedMessageReader.read] is deliberately Android-free — no `withContext` anywhere inside
-     * it — which makes dispatching it off Main this caller's job. Left on the default
-     * `Dispatchers.Main.immediate` of [lifecycleScope], the happy path (key already held, automatic
-     * decrypt) would run a Keystore-backed disk read, the full BouncyCastle decrypt/verify and the
-     * MIME parse all on the UI thread — ANR-class on a large message. Only [encryptedReader]'s own
-     * pairing lookup goes on `Dispatchers.IO` (it is disk I/O, not CPU work); the reader's `read`
-     * itself goes on `Dispatchers.Default`, matching the CPU-bound work inside it. The one exception
-     * is the biometric prompt: `AndroidVaultOpener.open()` owns that hop back to Main itself, so
-     * nothing here has to arrange it.
-     *
-     * [decryptJob] guards against a second attempt landing mid-flight — see its KDoc.
-     */
+    /** [EncryptedMessageReader.read] is Android-free: dispatching it off Main is the caller's job. */
     private fun attemptDecrypt(mailbox: String, messageId: String, sender: String, unlockIfNeeded: Boolean) {
         if (decryptJob?.isActive == true) return
         btnDecryptHere.isEnabled = false
@@ -725,10 +574,7 @@ class EmailDetailActivity : LockedActivity() {
 
         when (outcome) {
             is ReadOutcome.Decrypted -> {
-                // The one path that shows content. The body goes to the WebView and NOWHERE else:
-                // not Room, and not fetchedBodyHtml, which feeds reply quoting into
-                // ComposeDraftCache and on to POST /api/mail/draft — the server this message was
-                // deliberately never readable by.
+                // The body goes to the WebView and NOWHERE else: not Room, and not fetchedBodyHtml.
                 lockedPlaceholder.visibility = View.GONE
                 val plainText = outcome.body.plain?.takeIf {
                     isPlainTextBody(it, outcome.body.bodyMode)
@@ -740,9 +586,7 @@ class EmailDetailActivity : LockedActivity() {
                     outcome.body.html ?: plainText.orEmpty(),
                     outcome.body.bodyMode,
                 )
-                // Routed through the same dark-theme override every other body gets — without it, a
-                // sender who hardcodes their own colors (buildEmailBodyHtml's own KDoc: "virtually
-                // all of them") renders black-on-black under a dark palette.
+                // The same dark-theme override every other body gets, or a sender's colors go black-on-black.
                 val palette = getStoredThemePalette(this)
                 val html = buildEmailBodyHtml(
                     rawHtml,
@@ -758,23 +602,13 @@ class EmailDetailActivity : LockedActivity() {
                     }
                     webView.loadDataWithBaseURL(null, htmlToLoad, "text/html", "utf-8", null)
                 }
-                // The real subject from the encrypted part's protected headers, when the sender used
-                // them — the outer envelope subject is only ever a placeholder for this path. This is
-                // the entire point of protected headers; leaving it unrendered defeats them.
+                // The real subject from the encrypted part's protected headers; the envelope one is a placeholder.
                 outcome.body.protectedSubject?.takeIf { it.isNotBlank() }?.let { subjectView.text = it }
                 // The verdict actually safe to display — see displaySignatureVerdict's KDoc for why
                 // this can differ from outcome.signature itself.
                 val verdict = displaySignatureVerdict(outcome)
                 pgpSignatureState = verdict
-                // Show the mailbox the verdict is ABOUT, not the header the sender wrote.
-                //
-                // `sender` and `resolvedSender` are separable by an attacker: a From whose display
-                // name is `bob@example.com` and whose mailbox is `eve@evil.example` renders as
-                // "bob@example.com <eve@evil.example>". The badge is computed against the resolved
-                // mailbox, so putting the raw header beside it would let a badge earned by Eve's
-                // key sit next to Bob's name. Wherever a verification verdict appears, the
-                // resolved mailbox appears with it — and displaySignatureVerdict already guarantees
-                // resolvedSender is non-blank whenever verdict is not NONE.
+                // Show the mailbox the verdict is ABOUT, not the sender-written header beside it.
                 if (verdict != PgpSignatureState.NONE) {
                     fromView.text = getString(R.string.email_from) + " " + outcome.resolvedSender
                 }
@@ -826,9 +660,7 @@ class EmailDetailActivity : LockedActivity() {
                 showLocked("")
                 btnOpenInWebmail.visibility = if (webmailUnavailable) View.GONE else View.VISIBLE
             }
-            // Terminal, unlike FetchFailed: the server answered, and its answer was that this
-            // message carries no OpenPGP payload. Retrying cannot change that, so no Retry button —
-            // offering one would invite the user to tap it forever.
+            // Terminal, unlike FetchFailed: retrying cannot change that there is no OpenPGP payload.
             ReadOutcome.NoEncryptedContent -> {
                 showLocked("")
                 btnOpenInWebmail.visibility = if (webmailUnavailable) View.GONE else View.VISIBLE
@@ -838,18 +670,11 @@ class EmailDetailActivity : LockedActivity() {
                 btnOpenInWebmail.visibility = if (webmailUnavailable) View.GONE else View.VISIBLE
             }
         }
-        // Routed through the pure decision below rather than set inline per-branch, so the one
-        // outcome that must never offer Retry (NoEncryptedContent — see showsRetryButton's KDoc)
-        // cannot drift out of sync with a JVM test that has no Android framework to exercise the
-        // branches above directly.
+        // Routed through the pure decision below so NoEncryptedContent cannot drift into offering Retry.
         btnRetryPayload.visibility = if (showsRetryButton(outcome)) View.VISIBLE else View.GONE
     }
 
-    /** The padlock and the webmail button always appear together: one says "not readable here",
-     *  the other says "readable there" — except when [webmailUnavailable], where there is genuinely
-     *  nowhere to send the user, and [R.string.email_pgp_no_webmail] is appended so the padlock does
-     *  not sit next to a notice that dangles a webmail fallback with no button and no address on
-     *  screen. */
+    /** Padlock and webmail button appear together, except when [webmailUnavailable]. */
     private fun showLocked(notice: String) {
         webView.visibility = View.GONE
         plainTextScroll.visibility = View.GONE
@@ -902,9 +727,7 @@ class EmailDetailActivity : LockedActivity() {
         infos.forEach { info ->
             val chip = Chip(this).apply {
                 text = "\uD83D\uDC41 ${info.name}"
-                // A tap views; it never writes to disk. Saving into shared Downloads puts decrypted
-                // mail outside the sandbox where no wipe reaches it, so it is a deliberate second
-                // gesture with its own confirmation rather than the meaning of a single tap.
+                // A tap views; saving outside the sandbox is a second, confirmed gesture.
                 setOnClickListener {
                     downloadAttachment(emailId, emailFolder, info, org.kysecurity.mail.security.AttachmentAction.VIEW_EPHEMERAL)
                 }
@@ -924,16 +747,7 @@ class EmailDetailActivity : LockedActivity() {
         )
     }
 
-    /**
-     * Fetches an attachment and applies [action] to it.
-     *
-     * **Everything except the Toast and the chooser runs on [ioExecutor].** This used to hop back
-     * to the main thread on completion and then do the whole of the save there: a base64 encode
-     * for the forward cache plus a `ContentResolver` insert and a full stream write, of a payload
-     * bounded only by the relay's 25 MB attachment ceiling. That is a guaranteed ANR on a large
-     * attachment and a plausible OOM (base64 of 25 MB is a ~34 MB `String`, i.e. ~68 MB of UTF-16),
-     * on the default code path.
-     */
+    /** Everything except the Toast and the chooser runs on [ioExecutor]; the payload can be 25 MB. */
     private fun downloadAttachment(
         emailId: String,
         emailFolder: String,
@@ -957,13 +771,7 @@ class EmailDetailActivity : LockedActivity() {
                 return@execute
             }
             when (action) {
-                // Deliberately NOT cached for forwarding on this path. rememberForForwarding
-                // base64-encodes the plaintext into an immutable String that lives for the life
-                // of this Activity — and, once forwarded, in the process-scoped
-                // ForwardAttachmentHandoff. A String cannot be zeroed. That silently undid the
-                // entire point of EphemeralAttachmentBytes, which goes to some trouble to
-                // Arrays.fill(bytes, 0) on a timer. forwardMessage() already re-fetches anything it
-                // does not have, so the cost is one extra download on a forward.
+                // Not cached for forwarding: base64 makes an immutable String, and a String cannot be zeroed.
                 org.kysecurity.mail.security.AttachmentAction.VIEW_EPHEMERAL -> runOnUiThread {
                     // Registering and launching the chooser is cheap and needs an Activity context.
                     if (!isFinishing && !isDestroyed) viewAttachmentEphemerally(downloaded)
@@ -980,11 +788,7 @@ class EmailDetailActivity : LockedActivity() {
         }
     }
 
-    /**
-     * Saving puts decrypted mail into shared storage, outside this app's sandbox, where no wipe
-     * step can reach it except through [DownloadedAttachmentLedger]. That is a real decision, so it
-     * gets a real prompt rather than being what an ordinary tap happens to mean.
-     */
+    /** Saving puts decrypted mail outside the sandbox, where no wipe step reaches it directly. */
     private fun confirmSaveToDownloads(emailId: String, emailFolder: String, info: AttachmentInfo) {
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle(R.string.attachment_save_confirm_title)
@@ -1021,15 +825,7 @@ class EmailDetailActivity : LockedActivity() {
         }
     }
 
-    /**
-     * Writes bytes into the shared Downloads collection via MediaStore (no storage permission
-     * needed on the app's minSdk 31). Returns false if the insert or stream write fails.
-     *
-     * Name and type are sanitised on the way in, exactly as [viewAttachmentEphemerally] does.
-     * Both come from the sender's `Content-Disposition`/`Content-Type`, which the relay passes
-     * through unfiltered — and this is the branch taken when Hostile Location Protection is *off*,
-     * i.e. by default, so it was the unhardened path that nearly everyone uses.
-     */
+    /** Name and type come from the sender's headers, unfiltered by the relay: sanitise both. */
     private fun saveToDownloads(name: String, mimeType: String, bytes: ByteArray): Boolean {
         val resolver = contentResolver
         val safeType = safeMimeType(mimeType)
@@ -1043,9 +839,7 @@ class EmailDetailActivity : LockedActivity() {
             val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
                 ?: return false
             resolver.openOutputStream(uri)?.use { it.write(bytes) } ?: return false
-            // Recorded so a later security wipe can delete it. This file is outside the app
-            // sandbox, so nothing the wipe deletes reaches it — and the screen after a wipe tells
-            // the user their local data has been erased.
+            // Recorded so a later security wipe can delete it: this file is outside the app sandbox.
             org.kysecurity.mail.security.DownloadedAttachmentLedger.record(this, uri)
             true
         }.getOrDefault(false)
@@ -1087,10 +881,7 @@ class EmailDetailActivity : LockedActivity() {
         // Reporting, not fire-and-forget: the row is removed optimistically, so a failure the user
         // never hears about reads as "it worked" until the message reappears on the next resync.
         MailBackgroundExecutor.submitReporting(this, actionLabel) { action(mailRepository) }
-        // Tell InboxActivity which row to drop immediately, mirroring its own swipe-to-archive/
-        // delete optimistic removal. Without this, returning here re-triggers InboxActivity's
-        // onStart refresh, which races the still-in-flight mutation above and can redraw the row
-        // we just "removed" — the mutation still lands, it just looks like the button did nothing.
+        // Tell InboxActivity which row to drop, or its onStart refresh races the in-flight mutation.
         setResult(RESULT_OK, Intent().putExtra(EXTRA_REMOVED_EMAIL_ID, emailId))
         finish()
     }
@@ -1105,26 +896,12 @@ class EmailDetailActivity : LockedActivity() {
         intent.putExtra(ComposeActivity.EXTRA_TO, to)
         intent.putExtra(ComposeActivity.EXTRA_SUBJECT, subject)
         intent.putExtra(ComposeActivity.EXTRA_BODY_HTML, bodyHtml)
-        // Handed through the process-scoped cache rather than the Intent: a 25 MB base64 payload
-        // in an Intent extra is well past Binder's ~1 MB transaction limit and would throw
-        // TransactionTooLargeException. Both Activities are in this process, so a handoff object
-        // is both correct and cheaper than re-downloading.
+        // Process-scoped handoff, not an Intent extra: 25 MB is far past Binder's ~1 MB limit.
         if (attachments.isNotEmpty()) ForwardAttachmentHandoff.put(attachments)
         startActivity(intent)
     }
 
-    /** Opens a link the user tapped inside an email in the system browser. Failure is silent-ish
-     *  (a toast) rather than a crash: an email can name any scheme, including ones no app handles.
-     *
-     *  CATEGORY_BROWSABLE narrows resolution to components that accept being driven by untrusted
-     *  content, which is what K-9 does on the same path — without it, an email link can reach an
-     *  installed app's non-browsable exported activities. Callers must already have checked the
-     *  scheme and the user gesture; see [SAFE_LINK_SCHEMES].
-     *
-     *  FLAG_ACTIVITY_NEW_TASK, so a sender-controlled page never renders inside this app's task:
-     *  the address bar and the app switch are the cues that this is somewhere else, and this task's
-     *  Recents card stays under this app's FLAG_SECURE. The webmail handoff in renderPgpBar reaches
-     *  the same conclusion by a different route — see WebmailTab. */
+    /** CATEGORY_BROWSABLE + NEW_TASK: an email link must not reach non-browsable activities. */
     private fun openExternally(uri: android.net.Uri) {
         val intent = Intent(Intent.ACTION_VIEW, uri)
             .addCategory(Intent.CATEGORY_BROWSABLE)
@@ -1133,35 +910,7 @@ class EmailDetailActivity : LockedActivity() {
             .onFailure { Toast.makeText(this, R.string.email_link_no_handler, Toast.LENGTH_SHORT).show() }
     }
 
-    /**
-     * The quoted original, as HTML, sanitized for the compose editor.
-     *
-     * Falls back to the escaped preview only when the body genuinely is not available (an
-     * uncached message under Hostile Location Protection, or a client-protected one), which is the
-     * same condition the PGP bar already reports to the user.
-     *
-     * Both quote builders go through here so the sanitize step cannot be forgotten on one of them.
-     * The editor is a JavaScript-enabled WebView with a bound `@JavascriptInterface` and its
-     * `setHtml` assigns to `innerHTML`, so an `onerror` attribute in a quoted message would execute
-     * with the user's outgoing mail in reach — see [org.kysecurity.mail.mail.QuotedHtmlSanitizer].
-     */
-    /**
-     * Sanitizes the quoted original off the UI thread, and refuses to try past a size bound.
-     *
-     * Both properties are load-bearing, and neither was present. `Jsoup.clean` costs time quadratic
-     * in the sender's chosen nesting depth: measured against this exact function, 10k nested `<div>`
-     * (50 KB) took 122 ms, 40k took 2.2 s, 80k (400 KB) took 12.7 s and 200k (1 MB) took 156 s, with
-     * the output amplified up to 14.6x. This ran straight from the Reply/Reply-All/Forward click
-     * listeners with no cap at all, so a message whose body is `"<div>".repeat(80000)` plus "please
-     * reply to confirm" reliably ANR'd the app on a single natural tap, repeatable with every
-     * message. The body is bounded only by the 32 MB response cap, so the tail is unbounded too.
-     *
-     * Run-2 found and fixed this same class in this same file — two quadratic regexes, closed with a
-     * bounded pattern and a 512 KB cap — and the new sanitizer reintroduced it on the *main* thread.
-     * The sibling jsoup call in this file, [stripImportant], was already on [ioExecutor]; now both
-     * are. Past the cap the quote degrades to the escaped preview, which is the same fallback this
-     * already used when the body is genuinely unavailable.
-     */
+    /** Sanitizes the quoted original off the UI thread; `Jsoup.clean` is quadratic in nesting. */
     private fun quotedBodyHtmlAsync(preview: String, then: (String) -> Unit) {
         val body = fetchedBodyHtml?.takeIf { it.isNotBlank() }
         if (body == null || body.length > REMOTE_IMAGE_SCAN_MAX_LENGTH) {
@@ -1194,9 +943,7 @@ class EmailDetailActivity : LockedActivity() {
         return if (subject.trim().startsWith(prefix, ignoreCase = true)) subject else "$prefix $subject"
     }
 
-    // Delegates to mail/AddressText.kt so the rule is unit-tested and stays
-    // identical to the webmail and Linux clients -- see AddressTextTest for why
-    // a display name must never win over the real angle-addr.
+    // Delegates to mail/AddressText.kt: a display name must never win over the real angle-addr.
     private fun extractAddress(raw: String): String = addressFromHeader(raw)
 
     override fun onDestroy() {
@@ -1214,24 +961,13 @@ class EmailDetailActivity : LockedActivity() {
         private const val STATE_MARK_READ_SUBMITTED = "mark_read_submitted"
         private const val STATE_MARK_READ_COUNT = "mark_read_count"
 
-        /** Schemes an email link may open. `intent:`, `file:`, `content:` and any third-party
-         *  app's custom scheme are refused: routing untrusted sender content into an arbitrary
-         *  installed app's deep link is not something a mail body gets to do. */
+        /** `intent:`, `file:`, `content:` and any app's custom scheme are refused. */
         private val SAFE_LINK_SCHEMES = setOf("http", "https", "mailto", "tel")
 
         /** Bodies past this size skip the remote-content scan entirely and assume none. */
         private const val REMOTE_IMAGE_SCAN_MAX_LENGTH = 512 * 1024
 
-        /** Cheap heuristic for "does this body reference remote content" (images, iframes, media,
-         *  stylesheets) — only used to decide whether the "Show images" bar is worth showing, not
-         *  a security control itself (all network loads are blocked regardless via
-         *  [android.webkit.WebSettings.setBlockNetworkLoads]).
-         *
-         *  The tag interior is bounded rather than `[^>]*`. Unbounded, this was quadratic on
-         *  sender-chosen input and — unlike [stripImportant] — had no length cap and ran on every
-         *  message on every theme: `[^>]*` scanned to end-of-body from each of the many `<img`
-         *  positions, then backtracked looking for the attribute. Measured on-device at ~21.8s for
-         *  a 128KB body of repeated `<img`, scaling 4x per doubling. 2KB is far past any real tag. */
+        /** Heuristic only, not a control. The tag interior is bounded: `[^>]*` was quadratic here. */
         private val REMOTE_IMAGE_PATTERN = Regex(
             """<(?:img|link|iframe|video|audio|source|embed|object)\b[^>]{0,2048}?\s(?:src|href|poster|data)\s*=\s*["']https?://""",
             RegexOption.IGNORE_CASE,
@@ -1239,38 +975,7 @@ class EmailDetailActivity : LockedActivity() {
     }
 }
 
-/** Wraps [bodyToRender] (the email's own, untrusted HTML) in a themed document for [WebView].
- *  Pulled out of the `onCreate` body-loading callback so it's unit-testable without a
- *  Context-backed WebView/Activity (same extraction rationale as [mergedContactDto] in
- *  `ContactEditActivity`).
- *
- *  For a dark [palette], a plain `body` rule isn't enough: most email HTML hardcodes its own
- *  light-mode colors (inline `style="color:#000"`, legacy `bgcolor` attributes, or a `<style>`
- *  block of its own), and those win over `body`'s inherited color/background at every descendant
- *  that sets its own — producing exactly the reported bug (black text on the app's dark background
- *  where an email set its own text color but not a background, or black-on-white where it set
- *  both, depending on what that particular email happens to override). CSS `!important` beats a
- *  plain (non-`!important`) declaration regardless of origin or specificity, so a wildcard
- *  `!important` override here reliably wins over whatever the email brought — *unless* the email's
- *  own declaration is itself `!important` too, which real templates increasingly do specifically to
- *  defend their background/text colors against Gmail/Outlook/Apple Mail's own automatic dark-mode
- *  recoloring. When both sides are `!important`, the cascade falls back to specificity/origin, and
- *  an inline `style="...!important"` attribute always outranks any external stylesheet rule — no
- *  selector on our side, however specific, can out-rank it (that's exactly the residual bug: an
- *  email with an `!important`-marked white background stayed white-on-white, our forced light text
- *  landing on top of it unread). [stripImportant] removes every literal `!important` from the
- *  email's own markup first, so nothing in it can compete on importance at all — our `!important`
- *  rules then win unconditionally, regardless of what selector or attribute the email used, per the
- *  CSS cascade's origin/importance step being resolved before specificity is ever considered.
- *  Does not need JavaScript (disabled in this WebView) or WebView's own force-dark APIs (which
- *  follow the *system* day/night setting, not this app's independent, non-system-linked theme
- *  picker). Links are re-forced to the palette's accent color after the wildcard rule so they don't
- *  get flattened to the same color as body text.
- *
- *  [isDark] (from [isDarkPalette]) is a caller-supplied `Boolean` rather than computed in here from
- *  [palette] directly so this function stays free of any `android.graphics.Color` call — same
- *  reasoning as [mergedContactDto]'s extraction: a plain-JVM unit test can exercise it with no
- */
+/** Wildcard `!important` rules win only because [stripImportant] removes the email's own first. */
 internal fun buildEmailBodyHtml(bodyToRender: String, palette: ThemePalette, monoFontFace: String, isDark: Boolean): String {
     val darkModeOverrideCss = if (isDark) {
         """
@@ -1406,74 +1111,20 @@ private fun escapeEmailText(text: String): String = text
     .replace(">", "&gt;")
     .replace("\"", "&quot;")
 
-/**
- * Whether [outcome] should offer a Retry button.
- *
- * True only for [ReadOutcome.FetchFailed] — a transport failure a second attempt might not repeat.
- * [ReadOutcome.NoEncryptedContent] looks similar at a glance (both leave the message unread) but is
- * terminal: the server answered, and its answer was that this message carries no OpenPGP payload,
- * so retrying cannot change it. Offering Retry there would invite the user to tap it forever.
- *
- * Pulled out as its own pure function — rather than left inline in [EmailDetailActivity]'s
- * `renderReadOutcome` `when` — so this one decision has a JVM test with no Android framework
- * involved, on a file where `isReturnDefaultValues = true` makes most other UI logic untestable.
- */
+/** True only for [ReadOutcome.FetchFailed]; NoEncryptedContent is terminal, so no Retry. */
 internal fun showsRetryButton(outcome: ReadOutcome): Boolean = outcome is ReadOutcome.FetchFailed
 
-/**
- * The signature verdict actually safe to display for [outcome].
- *
- * [ReadOutcome.Decrypted.signature] can be non-[PgpSignatureState.NONE] — e.g.
- * [PgpSignatureState.SIGNER_UNKNOWN] — even when [ReadOutcome.Decrypted.resolvedSender] is blank:
- * [org.kysecurity.mail.pgp.PgpPayloadResult.resolvedSender]'s own KDoc documents this ("empty when the
- * server could not resolve one, e.g. a multi-mailbox From"), and a multi-mailbox `From` is exactly
- * the attacker-separable shape the resolved-vs-raw-sender display rule exists for in the first
- * place. Showing a verdict with no resolved mailbox to pin it to lets that verdict read as being
- * about whatever raw sender text the screen still has on it — so with no resolved mailbox to
- * display, this returns [PgpSignatureState.NONE]: there is nothing safe to say.
- */
+/** A verdict with no resolved mailbox reads as being about the raw sender text, so return NONE. */
 internal fun displaySignatureVerdict(outcome: ReadOutcome.Decrypted): PgpSignatureState =
     outcome.signature.takeIf { outcome.resolvedSender.isNotBlank() } ?: PgpSignatureState.NONE
 
-/**
- * Whether Reply, Reply-All or Forward may be offered for a message in [state].
- *
- * False only for [PgpMessageState.CLIENT_PROTECTED] — see [EmailDetailActivity.applyReplyForwardAvailability]
- * for why that has to hold even once the message is decrypted on screen: `POST /api/mail/draft`
- * uploads to the server, so quoting a decrypted body into a reply would hand the server plaintext
- * this mode exists to keep from it, and there is no encrypted send path in the app to make that
- * safe.
- *
- * Pulled out as its own pure function for the same reason as [showsRetryButton] above: a JVM test
- * with no Android framework, on a file where `isReturnDefaultValues = true` makes the Activity's
- * own view-toggling logic untestable.
- */
+/** False only for CLIENT_PROTECTED: `POST /api/mail/draft` would upload the plaintext. */
 internal fun mayReplyOrForward(state: PgpMessageState): Boolean = state != PgpMessageState.CLIENT_PROTECTED
 
-/**
- * The [PgpMessageState] Reply/Reply-All/Forward should assume for [pgpEncrypted] before
- * `renderBody`'s background fetch — which may make a network round trip for an uncached message,
- * and may never complete at all if it throws — can report the real state.
- *
- * Fails closed: an encrypted message defaults to [PgpMessageState.CLIENT_PROTECTED], the one state
- * [mayReplyOrForward] refuses, rather than [PgpMessageState.NONE]. The alternative — assume
- * replyable until told otherwise — leaves the buttons live for the entire fetch on exactly the
- * messages this task exists to protect, and forever if the fetch throws. An unencrypted message
- * defaults to [PgpMessageState.NONE] since it was never going to become [PgpMessageState.CLIENT_PROTECTED]
- * regardless of how the fetch turns out, so there's no reason to hold it hostage to the same wait.
- *
- * Pulled out as its own pure function, rather than left as the ternary it replaced inline in
- * `onCreate`, so this specific fail-closed default has a JVM test independent of the Activity that
- * reads it — `EmailDetailActivity` itself can't be instantiated in this module's plain JUnit
- * tests (no Robolectric; see the other Android-framework-free notes throughout this file's test
- * class).
- */
+/** Fails closed: an encrypted message assumes CLIENT_PROTECTED until the fetch says otherwise. */
 internal fun initialReplyForwardState(pgpEncrypted: Boolean): PgpMessageState =
     if (pgpEncrypted) PgpMessageState.CLIENT_PROTECTED else PgpMessageState.NONE
 
-/**
- * The sender's filename, reduced to something safe to hand MediaStore.
- */
 internal fun safeFileName(raw: String, mimeType: String = ""): String {
     val base = raw.substringAfterLast('/')
         .substringAfterLast('\\')
@@ -1482,27 +1133,13 @@ internal fun safeFileName(raw: String, mimeType: String = ""): String {
         .trimStart('.')
         .take(120)
         .ifBlank { "attachment" }
-    // The extension comes from the type WE decided to declare, never from the sender's filename.
-    // Sanitising the name and then trusting its suffix let `invoice.pdf.apk` through intact: the
-    // MIME type handed to MediaStore was already reduced to application/octet-stream, but the name
-    // on disk still read as an installer, and a name is what the user sees in a file picker.
+    // The extension comes from the type we declare, never the sender's: `invoice.pdf.apk` got through.
     val expected = extensionForMimeType(mimeType)
     val stem = stripExtensions(base).ifBlank { "attachment" }
     return if (expected == null) stem else "$stem.$expected"
 }
 
-/**
- * Removes every trailing segment that looks like a file extension, so exactly one — ours, or none
- * — is put back by [safeFileName].
- *
- * Repeated, not `substringBeforeLast('.')`: a single strip leaves `invoice.pdf.apk` as
- * `invoice.pdf`, which is still a name claiming a type this app did not declare. Shaped as "what
- * is an extension" rather than "which extensions are dangerous", because a denylist of risky
- * suffixes is exactly the control that goes stale.
- *
- * A dot-segment counts as an extension only if it is 1–5 characters and entirely alphanumeric, so
- * ordinary dotted names (`minutes.2026 Q1 final`) keep their text.
- */
+/** Repeated, not `substringBeforeLast('.')`: one strip leaves `invoice.pdf.apk` as `invoice.pdf`. */
 private val EXTENSION_SUFFIX = Regex("""\.[A-Za-z0-9]{1,5}$""")
 
 internal fun stripExtensions(name: String): String {
@@ -1514,9 +1151,7 @@ internal fun stripExtensions(name: String): String {
     }
 }
 
-/** The one extension this app will put on a file, per type it is willing to declare. Null means
- *  "no extension" — which is what an unrecognised type gets, since octet-stream has no meaningful
- *  one and inventing the sender's is the bug above. */
+/** Null means "no extension", which is what an unrecognised type gets. */
 internal fun extensionForMimeType(mimeType: String): String? = when (
     mimeType.substringBefore(';').trim().lowercase()
 ) {
@@ -1535,15 +1170,7 @@ internal fun extensionForMimeType(mimeType: String): String? = when (
     else -> null
 }
 
-/**
- * MIME types this app will hand to another app as-declared. Anything else becomes
- * `application/octet-stream`, which every file handler competes for.
- *
- * The type comes from the sender's `Content-Type`, which the relay passes through unfiltered. An
- * obscure type like `application/vnd.kypost-x` lets a co-installed app guarantee itself
- * sole-resolver status for the attachment — so it applies on both the ephemeral-view path and the
- * save-to-Downloads path, not just the one that skips disk.
- */
+/** The sender's Content-Type is unfiltered; anything unlisted becomes application/octet-stream. */
 private val VIEWABLE_MIME_TYPES = setOf(
     "application/pdf",
     "image/jpeg", "image/png", "image/gif", "image/webp", "image/heic",
@@ -1557,25 +1184,15 @@ internal fun safeMimeType(raw: String): String =
         .takeIf { it in VIEWABLE_MIME_TYPES }
         ?: "application/octet-stream"
 
-// A CSS comment produces zero tokens during tokenization (CSS Syntax §4) and is fully transparent
-// between any two other tokens — including between `!` and `important` — so it has to be removed
-// before the token check rather than matched around.
+// A CSS comment is transparent between any two tokens, including between `!` and `important`.
 private val CSS_COMMENT = Regex("""/\*[^*]*\*+(?:[^/*][^*]*\*+)*/""")
 
-// A CSS escape sequence is a backslash followed by 1-6 hex digits and an optional whitespace
-// terminator (CSS Syntax §4.3.7), so a sender can spell any letter of "important" as an escape
-// (`!\49 mportant` decodes to `!Important`).
+// A CSS escape can spell any letter of "important" (`!\49 mportant` decodes to `!Important`).
 private val CSS_ESCAPE = Regex("""\\([0-9a-fA-F]{1,6})\s?""")
 
 private val BANG_CANDIDATE = Regex("""\s*!((?:\\[0-9a-fA-F]{1,6}\s?|[A-Za-z\s]){1,24})""")
 
-/**
- * Decodes CSS escape sequences, leaving anything that is not a valid code point as literal text.
- *
- * [CSS_ESCAPE] matches up to six hex digits, which reaches 0xFFFFFF — past the 0x10FFFF ceiling of
- * the Unicode codespace — and `Character.toChars` throws on those. CSS treats an out-of-range escape
- * as a parse error rendering as U+FFFD, so it can never spell a letter of "important" either way.
- */
+/** [CSS_ESCAPE] reaches 0xFFFFFF, past Unicode's 0x10FFFF, and `Character.toChars` throws. */
 private fun decodeCssEscapes(candidate: String): String =
     CSS_ESCAPE.replace(candidate) { escape ->
         val codePoint = escape.groupValues[1].toIntOrNull(16)
@@ -1586,12 +1203,7 @@ private fun decodeCssEscapes(candidate: String): String =
         }
     }
 
-/**
- * Removes every `!important` from one CSS declaration block or stylesheet body.
- *
- * Tolerant of the two spec-legal ways a sender can split the token to dodge a plain text search: a
- * CSS comment inserted anywhere, and any letter written as an escape sequence.
- */
+/** Tolerant of a CSS comment inserted anywhere and of any letter written as an escape. */
 internal fun stripImportantFromCss(css: String): String =
     BANG_CANDIDATE.replace(css.replace(CSS_COMMENT, "")) { match ->
         if (decodeCssEscapes(match.groupValues[1]).trim().equals("important", ignoreCase = true)) {
@@ -1601,21 +1213,7 @@ internal fun stripImportantFromCss(css: String): String =
         }
     }
 
-/**
- * Strips every `!important` the sender's markup can bring — see [buildEmailBodyHtml] for why that
- * is what actually closes the dark-mode override gap.
- *
- * Parsed with jsoup rather than pattern-matched over the raw body. The previous version was a
- * text-level regex sweep across the whole message, justified by "this app has no HTML parser
- * dependency" — which stopped being true when jsoup was added for [org.kysecurity.mail.mail.QuotedHtmlSanitizer].
- * Doing it structurally means the token patterns only ever run over a single `style` attribute or
- * `<style>` block, so the catastrophic-backtracking cases that needed a bounded whitespace run and a
- * 512 KB skip-the-whole-thing cap are no longer reachable from a message body at all — and CSS in
- * places CSS cannot apply (text, comments, attribute values) is no longer rewritten.
- *
- * Returns [html] byte-identical when nothing needed changing, so an unstyled message is not
- * re-serialised through the parser for no reason.
- */
+/** Parsed with jsoup, so the token patterns only run over one `style` attribute or `<style>`. */
 internal fun stripImportant(html: String): String {
     if (html.isBlank()) return html
     val doc = runCatching { org.jsoup.Jsoup.parseBodyFragment(html) }.getOrNull() ?: return html

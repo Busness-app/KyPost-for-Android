@@ -26,12 +26,7 @@ class EnrollmentStateWorkerTest {
         )
     }
 
-    /**
-     * The load-bearing one. WorkManager writes a request's input data to its own database in
-     * plaintext, so a credential carried there would sit on disk outside every store this app
-     * encrypts. The worker reads it from `SecurePairingStore` at run time instead — which only
-     * holds if the request genuinely carries nothing.
-     */
+    /** WorkManager stores input data in plaintext on disk, so the request must carry nothing. */
     @Test
     fun theRequestCarriesNoInputData() {
         assertEquals(0, EnrollmentStateWorker.buildRequest().workSpec.input.size())

@@ -5,24 +5,13 @@ import org.kysecurity.mail.data.EmailDao
 import org.kysecurity.mail.data.toEntity
 import org.kysecurity.mail.data.toUiEmail
 
-/**
- * Uses relay [MailSource] exclusively. Writes fetch results into the Room cache (the UI's read model —
- * see data/EmailDao's replaceFolderSnapshot) and exposes the actions InboxActivity/EmailDetailActivity/
- * ComposeActivity call instead of instantiating sources directly.
- */
 class MailRepository(
     private val emailDao: EmailDao,
     private val relaySource: MailSource,
 ) {
-    /** Cached rows for [folder], available immediately (e.g. a fast cold-start render). */
     fun cachedEmails(folder: String): List<Email> = emailDao.getByFolder(folder).map { it.toUiEmail() }
 
-    /**
-     * Fetches from relay source, reconciles into the Room cache, and returns the outcome.
-     * [forceFullResync] requests since=0 on the relay source (see [MailSource.fetchInbox]) —
-     * pass true for a user-initiated manual refresh; the daily self-heal cadence otherwise
-     * applies automatically inside [RelayMailSource] regardless of this flag.
-     */
+    /** [forceFullResync] asks for since=0; the daily self-heal runs regardless of this flag. */
     fun refreshFolder(folder: String, limit: Int = 50, forceFullResync: Boolean = false): MailOutcome<MailFetchResult> {
         val outcome = relaySource.fetchInbox(folder, limit, forceFullResync)
         if (outcome is MailOutcome.Success) {
@@ -73,21 +62,7 @@ class MailRepository(
     fun downloadAttachment(id: String, folder: String, index: Int): MailOutcome<DownloadedAttachment> =
         relaySource.downloadAttachment(id, folder, index)
 
-    /**
-     * Returns the cached body, or a failure when we do not have this message at all.
-     *
-     * The distinction matters for PGP state. An empty body plus `pgpEncrypted` is the wire signature
-     * of a client-protected message, so treating "we have no row for this id" the same way made the
-     * detail view assert *"this message is end-to-end encrypted"* about mail the server had actually
-     * decrypted — the wrong direction, since it hides server access from a user auditing what their
-     * host can read. Under Hostile Location Protection that was the normal case, because Room is
-     * in-memory and every cold process starts with no rows.
-     *
-     * A row that exists with no body is still reported as Success-with-empty: that is the server
-     * genuinely having no body for us. (A delta "updated" entry for a message that was never cached
-     * also lands in that shape — see [reconcileFetchResult], which now declines to create such a
-     * row rather than inventing one with a body it was never sent.)
-     */
+    // "No row" must not look like an empty body: empty + pgpEncrypted is the client-protected shape.
     fun fetchBody(id: String, folder: String): MailOutcome<MailMessageBody> {
         val cached = emailDao.getBody(id)
         if (!cached.isNullOrBlank()) {
@@ -100,13 +75,6 @@ class MailRepository(
     }
 }
 
-/**
- * Reconciles one fetch outcome into [emailDao]: a full snapshot (isDelta=false) replaces the
- * folder wholesale as before; a delta upserts "new" entries, merges "updated" entries into the
- * existing row while preserving its body/preview (Mobile_Mail_Relay.md Part 5 — "updated" entries
- * never carry a body), and deletes `removed` ids. Kept as a standalone function, independent of
- * [MailSettings]/Context, so it's testable in a plain JVM unit test.
- */
 internal fun reconcileFetchResult(emailDao: EmailDao, folder: String, mode: String, result: MailFetchResult) {
     if (!result.isDelta) {
         emailDao.replaceFolderSnapshot(folder, result.messages.map { it.toEntity(folder, mode) })
@@ -114,12 +82,7 @@ internal fun reconcileFetchResult(emailDao: EmailDao, folder: String, mode: Stri
     }
     val (updated, new) = result.messages.partition { it.id in result.updatedMessageIds }
     val newEntities = new.map { it.toEntity(folder, mode) }
-    // An "updated" entry never carries a body. With an existing row we merge, preserving the body we
-    // already have. With NO existing row there is nothing to merge into, and storing the entry as-is
-    // created a row whose empty body was indistinguishable from a client-protected message — so the
-    // detail view claimed end-to-end encryption for mail the server had decrypted. Skip it instead:
-    // we do not have this message, and a metadata-only delta is not a delivery of it. The next full
-    // snapshot (forced daily, see MailCursorStore) brings it in properly.
+    // An "updated" entry never carries a body; with no existing row, skip rather than invent one.
     val mergedEntities = updated.mapNotNull { email ->
         val incoming = email.toEntity(folder, mode)
         val existing = emailDao.getById(incoming.messageId) ?: return@mapNotNull null
@@ -131,14 +94,7 @@ internal fun reconcileFetchResult(emailDao: EmailDao, folder: String, mode: Stri
     }
     emailDao.upsertAll(newEntities + mergedEntities)
     result.removedMessageIds.forEach { emailDao.deleteById(it) }
-    // On an older relay `removed` is delivered once and never repeated: it is computed against that
-    // server's own prior window, which the same call then replaces, so a notification that went to
-    // another device — or into a response this one never applied — is gone for good, and mail
-    // deleted on the web sat in the inbox forever. A since=0 fetch is the whole window, so it can
-    // say what is *absent*; pruning against it is the only self-heal for a removal we were never
-    // told about, and it costs nothing against a relay that does retain removals. Partial (cursor)
-    // deltas must not prune: they only describe what changed, and everything they omit is still
-    // legitimately in the mailbox.
+    // Only a full window can say what is absent; cursor deltas omit unchanged mail and must not prune.
     if (result.isFullWindow) {
         emailDao.pruneStaleInFolder(folder, result.messages.map { it.id })
     }

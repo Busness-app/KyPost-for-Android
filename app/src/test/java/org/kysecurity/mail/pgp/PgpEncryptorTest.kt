@@ -8,14 +8,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * [PgpDecryptor] is the oracle for every test here.
- *
- * A round trip through the app's own decrypt path is what makes these tests evidence rather than
- * self-agreement: the ciphertext has to satisfy the same packet walk, the same integrity check and
- * the same one-pass signature completion that a real inbound message does. A fixture generated and
- * checked by the code under test alone would prove only that the encoder agrees with itself.
- */
+/** [PgpDecryptor] is the oracle for every test here: a round trip, not self-agreement. */
 class PgpEncryptorTest {
 
     @Test
@@ -45,12 +38,7 @@ class PgpEncryptorTest {
         )
     }
 
-    /**
-     * The signature must complete through the one-pass path [PgpDecryptor.readLiteral] walks, which
-     * requires the one-pass packet to precede the literal data and the signature packet to follow
-     * it. Producing the packets in any other order still yields a message that decrypts, so only a
-     * verified signature proves the nesting is right.
-     */
+    /** Only a verified signature proves the one-pass/literal/signature packet nesting is right. */
     @Test
     fun signedMessageVerifiesAgainstTheSignersPublicKey() {
         val plaintext = "Signed and encrypted on the device.\n".toByteArray(Charsets.UTF_8)
@@ -105,13 +93,6 @@ class PgpEncryptorTest {
         assertTrue("an empty recipient list must fail, not encrypt to nobody", result is EncryptResult.Failed)
     }
 
-    /**
-     * A recipient whose key will not parse must fail the whole send, never be quietly dropped.
-     *
-     * Skipping is the dangerous behaviour: the message goes out, the UI reports success, and that
-     * person silently receives mail they cannot read — or, on the delivery split, receives nothing
-     * at all while the sender believes otherwise.
-     */
     @Test
     fun failsRatherThanSkippingAnUnusableRecipientKey() {
         val result = PgpEncryptor.encrypt(
@@ -126,12 +107,6 @@ class PgpEncryptorTest {
         )
     }
 
-    /**
-     * Every recipient key gets its own PKESK packet, and **both** recipients can open the message.
-     *
-     * Asserting only that the first key decrypts would pass on a message encrypted solely to that
-     * key — and silently lock every CC'd recipient out in production.
-     */
     @Test
     fun encryptsToEveryRecipientKey() {
         val plaintext = "Two recipients.\n"
@@ -168,12 +143,6 @@ class PgpEncryptorTest {
         }
     }
 
-    /**
-     * The Sent copy is encrypted to this key, and it must come from the unlocked private key rather
-     * than from anything the server supplied — a hostile server handing back an attacker's "your"
-     * public key would otherwise get a readable copy of every message sent, with nothing on screen
-     * looking different.
-     */
     @Test
     fun ownPublicKeyRoundTripsBackIntoAnEncryptionKey() {
         val own = PgpEncryptor.ownPublicKey(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())

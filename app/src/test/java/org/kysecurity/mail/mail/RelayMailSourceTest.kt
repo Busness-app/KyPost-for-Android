@@ -138,11 +138,6 @@ class RelayMailSourceTest {
         assertEquals("c1", cursorProvider.savedCursor)
     }
 
-    /**
-     * A since=0 fetch asks for the whole window, and an older relay answers `delta: true` all the
-     * same (it treats any `since` at all as a delta request). Only this layer knows what it sent,
-     * so it is what tells the cache the response is complete enough to prune against.
-     */
     @Test
     fun sinceZeroResponse_isFlaggedAsAFullWindow() {
         val cursorProvider = FakeMailCursorProvider(storedCursor = null)
@@ -398,13 +393,6 @@ class RelayMailSourceTest {
         assertNull(sentRequest.url.queryParameter("hash"))
     }
 
-    /**
-     * The bytes must survive a body that only yields one okio segment per read, which is what a
-     * real socket does. `readBounded` called `read` once and discarded the returned count, so every
-     * attachment over 8 KiB arrived truncated and was still reported as Success. The existing
-     * download tests all used `Buffer`-backed fixtures, whose `read` has no segment limit, so none
-     * of them could fail. See [streamingResponse].
-     */
     @Test
     fun downloadAttachment_readsBodiesLargerThanOneOkioSegment() {
         // Deliberately not a round multiple of 8192, so a truncation to any segment boundary shows.
@@ -435,9 +423,7 @@ class RelayMailSourceTest {
         assertEquals("big.pdf", downloaded.name)
     }
 
-    /** Drives [readBounded] directly with a small limit rather than allocating the real 25 MB bound
-     *  twice per assertion — the logic under test is the boundary, not the constant. Bodies go
-     *  through [streamingResponse] so they read one segment at a time like a real socket. */
+    /** A small limit stands in for the real 25 MB bound; bodies read one segment at a time. */
     private fun readBoundedFrom(bytes: ByteArray, limit: Long): ByteArray {
         val body = streamingResponse(Request.Builder().url("https://relay.example.com/a").build(), bytes).body!!
         return readBounded(body, limit)
@@ -445,9 +431,6 @@ class RelayMailSourceTest {
 
     @Test
     fun readBounded_throwsRatherThanTruncatingAnOversizedBody() {
-        // One byte past the bound. readBounded used to return the prefix, and downloadAttachment
-        // wrapped it in Success — so an oversized attachment was saved to Downloads, and carried
-        // into a forward, as a silently corrupt file. There is no checksum on this path to catch it.
         val oversized = ByteArray(10_001) { (it % 251).toByte() }
         try {
             readBoundedFrom(oversized, 10_000L)
@@ -474,9 +457,7 @@ class RelayMailSourceTest {
 
     @Test
     fun relayRequests_refuseAPersistedNonHttpsServerUrl() {
-        // A pairing saved by a build predating NativePairingDeepLinkParser's https gate. Every
-        // request built from it carries X-Kypost-Device-Secret, so it must not be attempted —
-        // and it must fail as a named BadRequest, not as an opaque platform-level network error.
+        // A pairing saved before the https gate existed; its requests carry X-Kypost-Device-Secret.
         var called = false
         val callFactory = FakeCallFactory { request ->
             called = true
@@ -523,8 +504,6 @@ class RelayMailSourceTest {
         assertTrue(outcome is MailOutcome.CertificateMismatch)
     }
 
-    /** The backend returns this when a client-protected account asks the server to sign or
-     *  encrypt. Before this mapping it fell through to "Mail relay request failed (409)". */
     @Test
     fun send409WithClientSideNeeded_mapsToClientSideNeeded() {
         val body = """{"error":"this account's PGP key is end-to-end protected, so the server cannot sign or encrypt on your behalf","clientSideNeeded":true}"""
@@ -539,8 +518,6 @@ class RelayMailSourceTest {
         assertTrue("expected ClientSideNeeded, got $outcome", outcome is MailOutcome.ClientSideNeeded)
     }
 
-    /** A 409 without the marker must not inherit PGP wording — nothing else this app calls
-     *  returns 409 today, but the mapping shouldn't assume that forever. */
     @Test
     fun send409WithoutMarker_staysBadRequest() {
         val source = RelayMailSource(
@@ -576,9 +553,6 @@ class RelayMailSourceTest {
         )
     }
 
-    /** Both refusals are 409 and are told apart by which field is present. A client-custody
-     *  account must keep resolving to ClientSideNeeded — offering it a pickup-link dialog would
-     *  answer a question it never got to ask, and no re-send from this device can fix it. */
     @Test
     fun send409WithBothMarkers_prefersClientSideNeeded() {
         val body = """{"error":"e2e","clientSideNeeded":true,"keylessRecipients":["carol@example.com"]}"""
@@ -595,7 +569,6 @@ class RelayMailSourceTest {
         assertTrue("expected ClientSideNeeded, got $outcome", outcome is MailOutcome.ClientSideNeeded)
     }
 
-    /** An unrecognized 409 must not become a pickup prompt, and must not show the user raw JSON. */
     @Test
     fun send409WithNeitherField_isGenericBadRequest() {
         val source = RelayMailSource(
@@ -613,8 +586,6 @@ class RelayMailSourceTest {
         )
     }
 
-    /** A 409 whose keylessRecipients is present but empty carries no addresses to name in the
-     *  dialog, so it cannot drive the confirmation flow. */
     @Test
     fun send409WithEmptyKeylessList_isGenericBadRequest() {
         val source = RelayMailSource(
@@ -632,9 +603,6 @@ class RelayMailSourceTest {
         assertTrue("expected BadRequest, got $outcome", outcome is MailOutcome.BadRequest)
     }
 
-    /** 502 bodies are plain text and say which of two things happened — SMTP failed, or every
-     *  pickup link failed to deliver. Both mean nothing was sent, and the second is invisible
-     *  under a fixed "Upstream IMAP/SMTP failure" string. */
     @Test
     fun send502_carriesTheServersPlainTextReason() {
         val reason = "failed to deliver a pickup link to any recipient; nothing was sent"
@@ -651,10 +619,6 @@ class RelayMailSourceTest {
         assertEquals(reason, (outcome as MailOutcome.UpstreamFailure).message)
     }
 
-    /** The confirmed re-send must differ from the refused attempt in exactly one field. The
-     *  Activity achieves this by holding the same MailDraft and calling .copy() (Task 8); this
-     *  pins the wire-level property that makes it safe — a rebuilt message could differ subtly,
-     *  and the recipients who *do* have keys would get something other than what was refused. */
     @Test
     fun resendWithFallback_differsOnlyInAllowPickupFallback() {
         val callFactory = BodyRecordingCallFactory { request ->
@@ -683,8 +647,6 @@ class RelayMailSourceTest {
         assertEquals(first, second.copy(allowPickupFallback = false))
     }
 
-    /** A 200 with a non-empty warning is a success with a notice — the message was sent. It must
-     *  never map to a failure, which would invite a retry that duplicates the message. */
     @Test
     fun send200WithWarning_isSuccessCarryingTheWarning() {
         val body = """{"ok":true,"sentSaved":false,"warning":"failed to deliver a pickup link to 1 of 3 recipient(s)"}"""
@@ -727,8 +689,6 @@ class RelayMailSourceTest {
         assertEquals(120L, (outcome as MailOutcome.RateLimited).retryAfterSeconds)
     }
 
-    /** A missing or non-numeric Retry-After must not be reported as "retry now" — null means the
-     *  caller renders a generic "try again later". */
     @Test
     fun rateLimit429_withoutUsableRetryAfter_hasNullDelay() {
         val callFactory = FakeCallFactory { request ->
@@ -833,14 +793,6 @@ class RelayMailSourceTest {
         assertTrue("expected allowPickupFallback in $sent", sent.contains("\"allowPickupFallback\":true"))
     }
 
-    /** Drafts carry no crypto semantics — the server's draft handler ignores these fields — so
-     *  sending them would claim a choice the user did not make at draft-save time. The webmail
-     *  handoff saves a draft from a composition whose Encrypt toggle was on, so this is a live
-     *  path, not a hypothetical.
-     *
-     *  Decoded into the DTO rather than asserted on the raw body string (matches
-     *  resendWithFallback_differsOnlyInAllowPickupFallback above): a raw `!sent.contains("encrypt")`
-     *  would fail spuriously if a fixture subject or body ever happened to contain that word. */
     @Test
     fun saveDraft_omitsPgpFlags() {
         val callFactory = BodyRecordingCallFactory { request -> jsonResponse(request, """{"ok":true}""") }
@@ -861,14 +813,6 @@ class RelayMailSourceTest {
         assertEquals(false, sent.allowPickupFallback)
     }
 
-    /**
-     * The client-encrypted send posts pre-built ciphertext to a different endpoint entirely.
-     *
-     * `sentCopyEncrypted` is asserted true because it is an assertion *about the bytes*: the server
-     * silently drops a copy that does not claim it, so sending false would quietly cost the user
-     * their Sent folder. The outer subject must be the placeholder — the real one rides inside the
-     * ciphertext, and putting it here would hand the server the very thing this path protects.
-     */
     @Test
     fun sendClientEncrypted_postsCiphertextToTheSendPgpEndpoint() {
         val callFactory = BodyRecordingCallFactory { request ->
@@ -929,13 +873,6 @@ class RelayMailSourceTest {
         assertEquals(false, value.sentSaved)
     }
 
-    /**
-     * 403 is the send-as / From-binding refusal, and its body is plain text naming the problem.
-     *
-     * `mapErrorCode` had no 403 branch, so every endpoint degraded it to "Mail relay request failed
-     * (403)" — discarding the one sentence that tells the user their From is not authorized. Fixed
-     * for the whole class rather than at this one call site.
-     */
     @Test
     fun forbidden_carriesTheServersProse() {
         val reason = "the from address is not a verified send-as alias for this account"

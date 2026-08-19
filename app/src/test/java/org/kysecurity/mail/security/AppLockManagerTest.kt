@@ -150,11 +150,6 @@ class AppLockManagerTest {
         assertEquals(1, wipeCount)
     }
 
-    /**
-     * The threshold is the user's, not a constant. It used to be a hardcoded ten with no
-     * off-switch, which made "borrow the phone for an afternoon" a way to permanently destroy mail
-     * and contacts the app deliberately keeps no backup of.
-     */
     @Test
     fun attemptPin_neverWipes_whenTheUserTurnedTheWipeOff() = runBlocking {
         state.setWipeAfterAttempts(null)
@@ -165,7 +160,6 @@ class AppLockManagerTest {
         }
 
         assertEquals(0, wipeCount)
-        // Still throttled, just not destructive.
         assertTrue(manager.attemptPin("000001".toCharArray()) is UnlockAttemptResult.Rejected)
     }
 
@@ -183,8 +177,6 @@ class AppLockManagerTest {
         assertEquals(1, wipeCount)
     }
 
-    /** A wipe that fails a step must not be reported as a completed wipe: the UI would otherwise
-     *  show the same clean first-run state while the cached mail is still on disk. */
     @Test
     fun attemptPin_reportsWipeFailed_whenTheWipeDidNotComplete() = runBlocking {
         wipeResult = WipeResult.Incomplete(listOf("database"))
@@ -200,8 +192,6 @@ class AppLockManagerTest {
         assertEquals(listOf("database"), (result as UnlockAttemptResult.WipeFailed).failedSteps)
         assertEquals(1, wipeCount)
     }
-
-    // --- Lockout enforcement lives in the manager, not in the view -----------------------------
 
     @Test
     fun attemptPin_isRejectedWithoutConsumingAnAttempt_whileLockedOut() = runBlocking {
@@ -220,8 +210,6 @@ class AppLockManagerTest {
     fun attemptPin_refusesTheCorrectPinToo_whileLockedOut() = runBlocking {
         repeat(3) { manager.attemptPin("000001".toCharArray()) }
 
-        // The throttle is not a "wrong PIN" penalty that a lucky guess can skip past — while it is
-        // active nothing is verified at all.
         assertTrue(manager.attemptPin("482913".toCharArray()) is UnlockAttemptResult.Rejected)
         assertTrue(manager.locked.value)
     }
@@ -250,8 +238,6 @@ class AppLockManagerTest {
         assertEquals(0L, manager.remainingLockoutMillis())
     }
 
-    // --- Background grace window --------------------------------------------------------------
-
     @Test
     fun isLockedNow_staysFalse_insideTheGraceWindow() = runBlocking {
         manager.attemptPin("482913".toCharArray())
@@ -270,10 +256,6 @@ class AppLockManagerTest {
 
         clock += 30_000L
 
-        // The whole point: nothing called lockNow(). KyPostApp's Handler runs on uptimeMillis,
-        // which does not advance in deep sleep, so on a pocketed phone it may not have fired.
-        // Before this existed, `locked` stayed false for the entire time the app was backgrounded,
-        // and PushNotificationDispatcher put the sender and subject on the lock screen in full.
         assertTrue(manager.isLockedNow())
         assertTrue("the observable flow must catch up too", manager.locked.value)
     }
@@ -289,8 +271,6 @@ class AppLockManagerTest {
         gatedManager.scheduleLock(clock + 30_000L)
         clock += 30_000L
 
-        // The credential gate is meant to withhold the device secret from a backgrounded app;
-        // holding the keys until something called lockNow() left it open indefinitely.
         assertTrue(gatedManager.cachedCredentialKeys() == null)
     }
 
@@ -314,8 +294,6 @@ class AppLockManagerTest {
         assertFalse(open.isLockedNow())
     }
 
-    // --- Credential keys ----------------------------------------------------------------------
-
     @Test
     fun attemptPin_withCredentialGateEnabled_cachesDerivedKeys_untilLocked() = runBlocking {
         val salt = CredentialCipher.randomSalt()
@@ -329,13 +307,6 @@ class AppLockManagerTest {
         assertTrue(gatedManager.cachedCredentialKeys() == null)
     }
 
-    /**
-     * The opened PGP private key is plaintext held for one unlock session, so the app locking is
-     * the whole of its lifetime — the same window `credentialKeys` above is bound to.
-     *
-     * Unconditional, not gated on the lock being enabled: a manager with the lock off must still
-     * drop it, or turning the lock off would keep the key alive indefinitely.
-     */
     @Test
     fun lockNow_clearsTheOpenedEnrollmentKey() {
         org.kysecurity.mail.pgp.EnrollmentSession.put("-----BEGIN PGP PRIVATE KEY BLOCK-----".toCharArray())
@@ -363,14 +334,6 @@ class AppLockManagerTest {
         assertTrue(manager.cachedCredentialKeys() == null)
     }
 
-    // --- Biometric unlock -----------------------------------------------------------------------
-
-    /**
-     * A PIN unlock seals the derived keys **whether or not the credential gate is on**, because
-     * sealing is what gives the next biometric unlock something real to unwrap. Without it,
-     * `unlockWithBiometric` was a bare boolean: nothing cryptographic depended on the fingerprint,
-     * so hooking the success callback unlocked the app with no secret ever produced.
-     */
     @Test
     fun attemptPin_sealsTheDerivedKeys_evenWithTheGateOff() = runBlocking {
         assertFalse("precondition: this is the default configuration", state.isCredentialPinGateEnabled())
@@ -380,7 +343,6 @@ class AppLockManagerTest {
         assertNotNull(sealer.sealed)
     }
 
-    /** Sealing is a consequence of a *verified* PIN, never of an attempt. */
     @Test
     fun attemptPin_withWrongPin_sealsNothing() = runBlocking {
         manager.attemptPin("000001".toCharArray())
@@ -399,11 +361,6 @@ class AppLockManagerTest {
         assertEquals(0, state.failedAttempts)
     }
 
-    /**
-     * The wart this closes: a biometric-only session used to run with the credential gate
-     * permanently shut, so no authenticated relay call could be made and no MFA challenge could be
-     * answered — for the user whose whole point is that they use the fingerprint reader.
-     */
     @Test
     fun unlockWithBiometric_makesTheGatedCredentialUsable() = runBlocking {
         val gated = FakeAppLockState(credentialSalt = CredentialCipher.randomSalt())
@@ -416,14 +373,6 @@ class AppLockManagerTest {
         assertArrayEquals(keys.current.encoded, gatedManager.cachedCredentialKeys()?.current?.encoded)
     }
 
-    /**
-     * The lockout ladder is not something a fingerprint steps over.
-     *
-     * `unlockWithBiometric` checked nothing at all: it unlocked and called `resetFailedAttempts()`,
-     * so a biometric presented mid-ladder cleared both the accumulated delay and the progress
-     * toward the wipe threshold — an escape hatch from the throttle, handed to exactly the attacker
-     * `setInvalidatedByBiometricEnrollment(true)` is aimed at, by omission rather than by decision.
-     */
     @Test
     fun unlockWithBiometric_isRefused_whileALockoutIsRunning() = runBlocking {
         // Three wrong PINs is the first attempt that arms a delay.
@@ -439,7 +388,6 @@ class AppLockManagerTest {
         assertEquals("must not clear progress toward the wipe threshold", attemptsBefore, state.failedAttempts)
     }
 
-    /** ...and is allowed again once it has run out. */
     @Test
     fun unlockWithBiometric_succeeds_onceTheLockoutHasExpired() = runBlocking {
         repeat(3) { manager.attemptPin("000001".toCharArray()) }
@@ -451,14 +399,6 @@ class AppLockManagerTest {
         assertFalse(manager.locked.value)
     }
 
-    /**
-     * A [AppLockManager.DecisionToken] is only honoured by the manager that issued it.
-     *
-     * The constructor used to be `internal`, which is module-visible — and this app is one module,
-     * so every file could mint one while the KDoc claimed the type system prevented exactly that.
-     * There is no way to write the forgery test any more, which is the point; this asserts the
-     * remaining hole (a token from a *different* manager) is closed too.
-     */
     @Test
     fun keysFor_rejectsATokenFromAnotherManager() = runBlocking {
         val gated = FakeAppLockState(credentialSalt = CredentialCipher.randomSalt())
@@ -472,7 +412,6 @@ class AppLockManagerTest {
         Unit
     }
 
-    /** Symmetric with the PIN path: with the gate off nothing needs the key, so nothing holds it. */
     @Test
     fun unlockWithBiometric_withTheGateOff_cachesNoKeys() = runBlocking {
         manager.unlockWithBiometric(
@@ -482,11 +421,6 @@ class AppLockManagerTest {
         assertNull(manager.cachedCredentialKeys())
     }
 
-    /**
-     * Changing the PIN has to re-seal, or the blob keeps the *old* PIN's keys — and with the
-     * credential gate on, the next biometric unlock would hand out a key that no longer unwraps
-     * `deviceSecret`, so every authenticated call would fail behind a UI still reading "Paired".
-     */
     @Test
     fun resealForBiometric_sealsTheKeysOfTheNewPin() = runBlocking {
         state.setCredentialSalt(CredentialCipher.randomSalt())
@@ -503,12 +437,6 @@ class AppLockManagerTest {
         assertTrue(manager.cachedCredentialKeys() == null)
     }
 
-    /**
-     * The reason [AppLockManager.deriveAndCacheCredentialKeys] returns [UnlockAttemptResult] rather
-     * than a `Boolean`: this path runs the same wipe threshold as every other PIN check, and
-     * collapsing the outcome to `false` meant the settings screen reported a completed destructive
-     * wipe as "wrong PIN" and carried on against a store that no longer existed.
-     */
     @Test
     fun deriveAndCacheCredentialKeys_reportsAWipeRatherThanAPlainRejection() = runBlocking {
         repeat(LockoutPolicy.DEFAULT_WIPE_THRESHOLD - 1) {
@@ -520,19 +448,7 @@ class AppLockManagerTest {
         assertTrue(wipeCount > 0)
     }
 
-    /**
-     * Concurrent PIN checks must not lose an increment of the failed-attempt counter.
-     *
-     * [AppLockState.incrementFailedAttempts] is a read-modify-write, and all three public entry
-     * points hop to the multi-threaded [kotlinx.coroutines.Dispatchers.Default] pool, so without the
-     * manager's own mutex two checks in flight together both read `n` and both write `n + 1` — the
-     * lockout ladder and the wipe threshold silently under-count, which is an unthrottled parallel
-     * guessing window.
-     *
-     * The clock advances an hour on every read so no lockout is ever in force; what is under test is
-     * the counter, not the delay ladder. Attempts stay below [LockoutPolicy.DEFAULT_WIPE_THRESHOLD] so the
-     * wipe branch does not swallow the last one.
-     */
+    /** Clock jumps an hour per read, so no lockout applies and no wipe triggers. */
     @Test
     fun concurrentWrongPins_eachAdvanceTheAttemptCounter() = runBlocking {
         val attempts = LockoutPolicy.DEFAULT_WIPE_THRESHOLD - 1
@@ -552,14 +468,6 @@ class AppLockManagerTest {
         assertEquals(0, wipeCount)
     }
 
-    /**
-     * An unevaluable verifier is not a wrong PIN.
-     *
-     * `PinHasher.pepperKey` used to *create* a key whenever it found none, so an OS-level Keystore
-     * reset silently produced a different pepper and every subsequent correct PIN verified as
-     * false. Ten of those hit [LockoutPolicy.DEFAULT_WIPE_THRESHOLD] and destroyed the user's mail,
-     * contacts and pairing — in response to an event they neither caused nor could avoid.
-     */
     @Test
     fun unevaluableVerifier_isNotCountedAsAWrongPin() = runBlocking {
         state.verifierUnavailable = true
@@ -573,7 +481,6 @@ class AppLockManagerTest {
         assertTrue(manager.locked.value)
     }
 
-    /** The same guarantee on the settings/MFA entry point, which runs the identical accounting. */
     @Test
     fun unevaluableVerifier_isNotCountedByVerifyPinThrottled() = runBlocking {
         state.verifierUnavailable = true
@@ -586,14 +493,6 @@ class AppLockManagerTest {
         assertEquals(0, wipeCount)
     }
 
-    /**
-     * A correct PIN whose *credential* key cannot be derived is still a correct PIN.
-     *
-     * The two peppers are separate Keystore aliases on purpose, so the wrapping key can be lost
-     * without the verifier being lost. Letting a derivation failure propagate out of the success
-     * path would have turned that into an unlock failure — and, on the settings screen, into
-     * another counted attempt.
-     */
     @Test
     fun credentialDerivationFailure_doesNotFailAnOtherwiseCorrectUnlock() = runBlocking {
         val exploding = object : CredentialPepper {
@@ -609,7 +508,6 @@ class AppLockManagerTest {
 
         assertEquals(UnlockAttemptResult.Success, gatedManager.attemptPin("482913".toCharArray()))
         assertFalse(gatedManager.locked.value)
-        // The gated secret simply stays unavailable, exactly as after a biometric-only unlock.
         assertNull(gatedManager.cachedCredentialKeys())
         assertEquals(0, wipeCount)
     }

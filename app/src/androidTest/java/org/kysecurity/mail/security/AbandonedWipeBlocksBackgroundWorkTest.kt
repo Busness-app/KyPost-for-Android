@@ -17,22 +17,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/**
- * [SecurityWipe.blockedByAbandonedWipe] and the background entry points that depend on it.
- *
- * [LockedActivity]'s terminal block covers Activities, and only Activities. It was the whole
- * enforcement of the abandoned-wipe state, which left the paths that need no screen wide open —
- * and those are the ones that matter most, because an abandoned wipe very often leaves the pairing
- * credential on disk (`sharedPrefs` is the step that holds it, and one of the likelier ones to
- * fail). Push kept arriving, the pull worker kept fetching mail metadata and rendering sender and
- * subject as notifications, the contact worker kept writing the account's contacts back into the
- * OS provider, and a token refresh would have minted a **fresh** device secret — re-arming exactly
- * the access the wipe was trying to revoke.
- *
- * These assert the guard flips correctly and that the workers act on it. The push services take
- * the same guard on their first line; there is no way to deliver a real `RemoteMessage` from a
- * test, so those are covered by the shared predicate here rather than end to end.
- */
+/** The abandoned-wipe guard on the paths with no screen; LockedActivity only covers Activities. */
 @RunWith(AndroidJUnit4::class)
 class AbandonedWipeBlocksBackgroundWorkTest {
 
@@ -41,15 +26,7 @@ class AbandonedWipeBlocksBackgroundWorkTest {
     private fun wipeStatePrefs() =
         context.getSharedPreferences("org.kysecurity.mail.wipe_state", Context.MODE_PRIVATE)
 
-    /**
-     * Puts the app in the terminal state directly rather than by failing three real wipes, which
-     * would take minutes and destroy unrelated fixtures.
-     *
-     * The keys mirror `SecurityWipe`'s private constants, so this could rot into writing
-     * meaningless preferences that leave the guard false and pass every assertion below for the
-     * wrong reason. That is what the precondition in each test is for: it asserts the *production*
-     * predicate agrees, so a rename fails here loudly instead of silently disarming the suite.
-     */
+    /** Keys mirror SecurityWipe's private constants; each test's precondition catches a rename. */
     private fun markAbandoned() {
         wipeStatePrefs().edit()
             .putBoolean("wipe_in_progress", true)
@@ -97,11 +74,7 @@ class AbandonedWipeBlocksBackgroundWorkTest {
         )
     }
 
-    /**
-     * The pull worker is what turns a surviving credential into live mail metadata on the lock
-     * screen. Cancelling, not merely skipping: the periodic work is already enqueued, and nothing
-     * in a blocked app will legitimately want it back before a reinstall.
-     */
+    /** Cancels rather than skips: the periodic work is already enqueued and must not fire again. */
     @Test
     fun pullWorker_cancelsItselfInsteadOfPolling(): Unit = runBlocking {
         org.kysecurity.mail.push.PullScheduler.ensurePeriodic(context)
@@ -123,11 +96,7 @@ class AbandonedWipeBlocksBackgroundWorkTest {
         )
     }
 
-    /**
-     * The contact worker writes to the OS contacts provider — outside this app's sandbox, where no
-     * sandbox deletion reaches. Re-populating it after a failed wipe undoes the one step of the
-     * wipe the user cannot clean up themselves by uninstalling.
-     */
+    /** The contacts provider is outside the sandbox, where no sandbox deletion reaches. */
     @Test
     fun deviceContactSyncWorker_cancelsItselfInsteadOfWritingContacts(): Unit = runBlocking {
         markAbandoned()

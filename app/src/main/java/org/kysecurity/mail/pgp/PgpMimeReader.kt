@@ -6,12 +6,7 @@ import jakarta.mail.internet.MimeMultipart
 import java.io.ByteArrayInputStream
 import java.util.Properties
 
-/**
- * The readable parts of a decrypted PGP/MIME message.
- *
- * Both [html] and [plain] are kept rather than collapsing to one: the caller decides what to put in
- * the WebView, and a message with only a plain part must not render as an empty page.
- */
+/** Both kept: a message with only a plain part must not render as an empty page. */
 internal data class DecryptedBody(
     val html: String?,
     val plain: String?,
@@ -25,15 +20,7 @@ internal data class DecryptedBody(
     override fun toString(): String = "DecryptedBody(redacted)"
 }
 
-/**
- * Parses decrypted PGP/MIME bytes with `angus.mail`, with **no Android imports**.
- *
- * Note this is `angus.mail`'s first use in this app — it has been a declared dependency, imported by
- * nothing, so "already on the classpath" was never the same as "known to work here".
- *
- * Returns null rather than throwing on anything unparseable. The caller renders an exit-table row;
- * putting unparsed bytes into a WebView is not a degradation this accepts.
- */
+/** Returns null rather than throwing; unparsed bytes never reach a WebView. */
 internal object PgpMimeReader {
 
     fun read(mime: ByteArray): DecryptedBody? = runCatching {
@@ -51,10 +38,7 @@ internal object PgpMimeReader {
                 when {
                     part.isMimeType("text/html") -> {
                         val s = body as? String
-                        // A blank part is real content — a multipart whose only text part is empty
-                        // must yield "" and not null. But it must not lock the slot: a later
-                        // sibling with actual content has to win, or it is silently dropped and
-                        // the message renders blank with no error.
+                        // A blank part is real content, but a later non-blank sibling must win.
                         if (s != null && (html == null || html!!.isBlank())) html = s
                     }
                     part.isMimeType("text/plain") -> {

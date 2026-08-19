@@ -41,16 +41,11 @@ class EmailAdapter(
                 if (email.hasAttachments) "📎" else null,
             )
             subjectTextView.text = (markers + email.subject).joinToString(" ")
-            // The markers are emoji, which screen readers announce inconsistently or not at all,
-            // so spell the state out instead of relying on them being read. A failed signature is
-            // announced ahead of readability for the same reason it outranks it in the marker: the
-            // row opens and reads normally, which is what makes an unflagged forgery dangerous.
+            // Emoji markers are announced inconsistently by screen readers; spell the state out.
             subjectTextView.contentDescription = when {
                 signatureState == PgpSignatureState.INVALID ->
                     itemView.context.getString(R.string.email_row_pgp_bad_signature_description, email.subject)
-                // Unreachable today: signatureState comes from pgpSignatureStateOf, which cannot
-                // produce KEY_CHANGED (that state comes only from a local decrypt). Kept so a
-                // future row-level local verdict does not silently regress this branch.
+                // Unreachable today: pgpSignatureStateOf cannot produce KEY_CHANGED.
                 signatureState == PgpSignatureState.KEY_CHANGED ->
                     itemView.context.getString(R.string.email_row_pgp_key_changed_description, email.subject)
                 pgpState == PgpMessageState.CLIENT_PROTECTED ->
@@ -65,8 +60,6 @@ class EmailAdapter(
             cardView.setCardBackgroundColor(panel)
             contentLayout.setBackgroundColor(panel)
 
-            // Minor "unread" cue: a small accent dot plus a bolder, higher-contrast subject —
-            // the same signal used for keyword pills with unread mail (InboxActivity.styleKeywordChip).
             val isUnread = email.status == "unread"
             unreadDot.visibility = if (isUnread) View.VISIBLE else View.GONE
             if (isUnread) {
@@ -102,14 +95,7 @@ class EmailAdapter(
     }
 }
 
-/** Reports an inbox list change row by row.
- *
- *  Not `notifyDataSetChanged()`: that marks every attached ViewHolder invalid, so adapter positions
- *  read NO_POSITION until the next layout pass. ItemTouchHelper dispatches a completed swipe from a
- *  posted runnable that abandons the swipe permanently when it reads NO_POSITION, which strands the
- *  swipe's recover animation — the delete background then paints under the list until the process
- *  is killed, and the message is never deleted. Deleting several emails in a row is what lines a
- *  second swipe up with the first one's list update. */
+/** Not notifyDataSetChanged(): NO_POSITION holders strand ItemTouchHelper's swipe animation. */
 internal fun dispatchEmailListUpdate(
     old: List<Email>,
     new: List<Email>,

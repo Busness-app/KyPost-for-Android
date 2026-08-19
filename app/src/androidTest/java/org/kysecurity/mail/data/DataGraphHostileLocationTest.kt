@@ -42,33 +42,12 @@ class DataGraphHostileLocationTest {
         graph.database.close()
     }
 
-    /**
-     * Reproduces finding C1 (2026-07-22 spec's final-review fix round): the two tests above only
-     * prove *in-memory Room never creates a file* — they say nothing about whether turning
-     * Hostile Location Protection *on* actually deletes a database file that already existed from
-     * before the toggle. This exercises the exact sequence
-     * [org.kysecurity.mail.security.SecuritySettingsActivity]'s `hostileLocationSwitch` listener runs
-     * in production (`SecurityWipe.closeAndDeleteDatabase` then `HostileLocationSettings.setEnabled(true)`,
-     * then — standing in for the process restart `AppRestart.relaunch` would otherwise do — a
-     * fresh `DataGraph(context)` construction) and asserts nothing from before the toggle
-     * survives: the old file is gone, and the rebuilt graph is in-memory-only.
-     */
     @Test
     fun enablingAfterExistingOnDiskDatabase_deletesThePreToggleFile() = runBlocking {
         HostileLocationSettings(context).setEnabled(false)
-        // Drop any graph built earlier in this instrumentation run. DataRuntime is a
-        // process-lifetime singleton and DataGraph picks in-memory vs. disk-backed ONCE, at
-        // construction — so a graph built by an earlier class while protection was on stays
-        // in-memory no matter what the flag says now, and the precondition below fails with
-        // "on-disk DB must exist" for a reason that has nothing to do with what this test asserts.
-        // Latent since this test was written; it surfaced when a sibling suite started exercising
-        // the enabled posture more.
+        // DataGraph picks memory vs disk once at construction; drop graphs from earlier tests.
         DataRuntime.invalidate()
-        // DataRuntime is a process-lifetime singleton (see SingletonGraph) — using it here (not
-        // a standalone `DataGraph(context)`, unlike the two tests above) matters: it's the same
-        // instance production code (and SecurityWipe.closeAndDeleteDatabase below) reaches via
-        // DataRuntime.graph(context) elsewhere in the app, so this reproduces the real call chain
-        // rather than a disconnected copy of it.
+        // Use the DataRuntime singleton — the instance SecurityWipe.closeAndDeleteDatabase reaches.
         DataRuntime.graph(context).database.openHelper.writableDatabase // force creation with real pre-toggle state
         val dbFile = context.getDatabasePath("kypost_mail.db")
         assertTrue("Precondition: on-disk DB must exist before toggling on", dbFile.exists())
@@ -80,10 +59,7 @@ class DataGraphHostileLocationTest {
 
         assertFalse("Enabling must delete the pre-toggle on-disk database file", dbFile.exists())
 
-        // Standing in for the process restart AppRestart.relaunch would otherwise do: a fresh,
-        // independent DataGraph (not through the now-stale DataRuntime singleton — see
-        // SecurityWipe.wipeAndResetApp's caller contract) must come up in-memory and must not
-        // resurrect the deleted file.
+        // Stands in for the AppRestart.relaunch restart: a fresh graph, not the stale singleton.
         val rebuiltGraph = DataGraph(context)
         rebuiltGraph.database.openHelper.writableDatabase
         assertFalse(

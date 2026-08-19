@@ -22,21 +22,10 @@ private const val FULL_RESYNC_SINCE = "0"
 private const val CHANGE_TYPE_UPDATED = "updated"
 private const val HEADER_RETRY_AFTER = "Retry-After"
 
-/** Matches the JSON field the backend sets alongside its 409 on /api/mail/send, not the prose
- *  of the error message — the message is user-facing copy and may be reworded, the field is the
- *  contract. */
+/** The JSON field, not the error prose — the prose is user-facing copy and may be reworded. */
 private const val CLIENT_SIDE_NEEDED_MARKER = "clientSideNeeded"
 
-/**
- * Named rather than a 5-tuple: a Triple-of-Pairs made [downloadAttachment]'s call site unreadable
- * once Retry-After joined it.
- *
- * Read by property, never destructured, and deliberately **not** a `data class` — the generated
- * `equals`/`hashCode` would be identity-over-[ByteArray] behind a promise of structural equality,
- * which is the trap [org.kysecurity.mail.security.WrappedSecret] and
- * [org.kysecurity.mail.security.PinHash] each refuse in their own KDoc. Enforced by
- * `SourceRulesTest`; positional reads were what tied the two together.
- */
+/** Not a `data class`: the generated equals/hashCode would be identity-over-[ByteArray]. */
 private class DownloadResponse(
     val code: Int,
     val bytes: ByteArray,
@@ -51,28 +40,11 @@ private class DownloadResponse(
 internal fun parseRetryAfterSeconds(header: String?): Long? =
     header?.trim()?.toLongOrNull()?.takeIf { it >= 0 }
 
-/**
- * Talks to the six relay endpoints in Mobile_Mail_Relay.md. Blocking by design to match
- * [MailSource]'s synchronous interface — callers already run on a background executor thread.
- * Auth is sent as X-Kypost-Device-Id/X-Kypost-Device-Secret headers, sourced from the
- * pairing state (never query params/cookies).
- */
 class RelayMailSource(
     private val pairingProvider: () -> PairingData?,
     private val cursorProvider: MailCursorProvider,
     private val json: Json = Json { ignoreUnknownKeys = true },
-    /**
-     * Injected `Call.Factory`; see `PairingAuthHeaders.kt` for why every credentialed client
-     * takes one.
-     *
-     * **In production this is a [org.kysecurity.mail.push.PinnedOrFallbackCallFactory]**, which
-     * re-reads the TLS pin per request and refuses outright once a pin that existed has gone. It
-     * used to be a plain unpinned client plus a separate `pinnedCallFactory: () -> Call.Factory?`
-     * that this class null-coalesced against — so the mail endpoints, which carry every message
-     * body and this device's credential, fell back to bare system-CA trust for any reason the pin
-     * could not be read, silently and permanently. There is one factory now and it owns that
-     * decision; see [org.kysecurity.mail.push.TlsPinState].
-     */
+    /** In production a pinned-or-refuse factory; never null-coalesce it against an unpinned one. */
     private val callFactory: Call.Factory,
 ) : MailSource {
 
@@ -232,9 +204,6 @@ class RelayMailSource(
         }
     }
 
-    /**
-     * Relays ciphertext this device already built, via `POST /api/mail/send-pgp`.
-     */
     override fun sendClientEncrypted(message: ClientEncryptedMessage): MailOutcome<MailSendOutcome> {
         val pairing = pairingProvider() ?: return MailOutcome.Unauthorized("Device is not paired")
         val base = baseUrl(pairing, "/api/mail/send-pgp")
@@ -306,10 +275,7 @@ class RelayMailSource(
         val result = effectiveCallFactory().executeSync(request) { response ->
             DownloadResponse(
                 code = response.code,
-                // Bounded read. `bytes()` materialises the whole body, and the advertised `size`
-                // from the attachment listing was never enforced, so a relay could advertise a
-                // kilobyte and stream hundreds of megabytes into the heap. Mirrors the 25MB
-                // outbound cap in ComposeActivity, and matches the server's own message limit.
+                // Bounded read: `bytes()` would materialise whatever a relay chose to stream.
                 bytes = response.body?.let { readBounded(it, MAX_ATTACHMENT_DOWNLOAD_BYTES) } ?: ByteArray(0),
                 name = filenameFromDisposition(response.header("Content-Disposition")),
                 contentType = response.header("Content-Type") ?: "application/octet-stream",
@@ -354,10 +320,7 @@ class RelayMailSource(
             MailOutcome.BadRequest(rawBody.ifBlank { "Malformed request" })
         }
         401 -> MailOutcome.Unauthorized("Bad secret or unknown device")
-        // Plain text, and the prose is the whole value: it names an unauthorized From, which is the
-        // one thing the user can act on. Without this branch it fell through to the generic
-        // "Mail relay request failed (403)" and the sentence was discarded — for every endpoint,
-        // not just the client-encrypted send that surfaced it.
+        // The 403 prose names an unauthorized From, which is the one thing the user can act on.
         403 -> MailOutcome.BadRequest(rawBody.ifBlank { "Refused" })
         // Two PGP refusals share this status. clientSideNeeded is checked first to match the
         // server's own precedence: a client-custody account cannot encrypt server-side at all, so
@@ -397,39 +360,18 @@ class RelayMailSource(
         return onResponse(code, body)
     }
 
-    /**
-     * The endpoint URL for [path], or null if the pairing's `serverUrl` is not one this app may send
-     * credentials to.
-     *
-     * [pairingUrlHost] re-checks https (and rejects userinfo) at *request* time, not just at pairing
-     * time. `toHttpUrlOrNull` accepts `http://` without complaint, and every request built here
-     * carries `X-Kypost-Device-Secret`, so a pairing persisted by a build predating
-     * `NativePairingDeepLinkParser`'s https gate reached this point looking valid.
-     *
-     * `sameOrigin` and `pairingUrlHost` both already carry doc comments about re-validating
-     * persisted pairings; this was the one consumer that didn't.
-     */
+    /** Null unless serverUrl is still https: re-checked per request, not only at pairing time. */
     private fun baseUrl(pairing: PairingData, path: String): HttpUrl? {
         if (pairingUrlHost(pairing.serverUrl) == null) return null
         return "${pairing.serverUrl.trimEnd('/')}$path".toHttpUrlOrNull()
     }
 }
 
-/** Pulls the filename out of a Content-Disposition header, honoring both the RFC 5987 `filename*`
- *  form and the plain quoted `filename=` form; empty when the header is absent or unparseable. */
 /** Same order of magnitude as the outbound cap in `ComposeActivity` and the server's own
  *  `MaxInboundMessageBytes`, so no legitimate attachment is refused. */
 private const val MAX_ATTACHMENT_DOWNLOAD_BYTES = 25L * 1024 * 1024
 
-/** Reads at most [limit] bytes, and throws [IOException] if the body had more to give — never
- *  allocating the whole of an oversized body, which is the out-of-memory kill this bound exists to
- *  prevent.
- *
- *  The unit tests could not see it: `FakeCalls.response()` builds a `Buffer`-backed body, and
- *  `Buffer.read` copies `min(byteCount, size)` from itself in one call with no segment limit. The
- *  fake took a fast path that does not exist on a socket, in exactly the dimension under test. See
- *  `RelayMailSourceTest.downloadAttachment_readsBodiesLargerThanOneOkioSegment`, which drives a
- */
+/** Reads at most [limit] bytes, throwing if there was more; never allocates an oversized body. */
 internal fun readBounded(body: okhttp3.ResponseBody, limit: Long): ByteArray {
     val source = body.source()
     val buffer = okio.Buffer()
@@ -486,11 +428,7 @@ private fun RelayEmailDto.toUiEmail(tab: String): Email {
         subject = subject,
         sender = sender,
         preview = body.orEmpty().take(140),
-        // Union of the wire keywords and the tab-derived label, not a
-        // replacement: the label is what the keyword tabs filter on
-        // (KeywordTabs), while the wire list is what carries server-set
-        // keywords like the $Phishing anti-phishing flag. Dropping either
-        // breaks one of the two.
+        // Union, not a replacement: the label drives KeywordTabs, the wire list carries $Phishing.
         keywords = (keywords + emailLabel).filter { it.isNotBlank() }.toSet(),
         sentTo = sentTo,
         cc = cc,

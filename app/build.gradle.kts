@@ -7,16 +7,7 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
-/**
- * Signing material, environment first.
- *
- * The environment wins so that `keystore.properties` can hold only non-secret fields — a path and
- * an alias — without changing how the build is invoked. `.gitignore` does not make a password in
- * the working tree safe: it stops one specific accident and does nothing about a tarball, an
- * rsync, a backup daemon, a Docker `COPY .`, or anything else running as the developer's user.
- *
- * `checkSigningSecretsAreNotInTheTree` below is what enforces it. See keystore.properties.example.
- */
+// Environment first, so keystore.properties can hold only a path and an alias.
 val keystorePropertiesFile = rootProject.file("keystore.properties")
 val keystoreProperties = Properties().apply {
     if (keystorePropertiesFile.exists()) {
@@ -24,31 +15,12 @@ val keystoreProperties = Properties().apply {
     }
 }
 
-/**
- * `providers.environmentVariable`, **never** `System.getenv`. The latter reads the *daemon's*
- * environment, which is fixed when the daemon starts and is not a declared configuration-cache
- * input, so a warm daemon silently produces an unsigned release from a shell that exported the
- * variables.
- */
+// providers.environmentVariable, never System.getenv: the latter reads the daemon's stale env.
 fun signingValue(env: String, property: String): String? =
     providers.environmentVariable(env).orNull ?: keystoreProperties[property] as String?
 
-/**
- * The two `keystore.properties` fields that must never hold a value.
- *
- * `storeFile` and `keyAlias` are paths and names, not secrets, and keeping them in the file is the
- * point of reading the environment first. These two are passwords.
- */
 val SECRET_PROPERTY_KEYS = listOf("storePassword", "keyPassword")
 
-/**
- * Whether the file currently holds a password.
- *
- * The environment-first read above was added so this file could be reduced to non-secret fields —
- * and then nothing checked whether it had been, so it sat there with the production store and key
- * passwords in it while the comment above explained at length why that was unacceptable. A
- * mitigation nobody is told they have not adopted is a mitigation nobody adopts.
- */
 val keystoreFileHoldsSecrets = SECRET_PROPERTY_KEYS.any {
     !(keystoreProperties[it] as String?).isNullOrBlank()
 }
@@ -63,14 +35,7 @@ if (keystoreFileHoldsSecrets) {
     )
 }
 
-/**
- * Fails the build when the file holds a password, on demand rather than always.
- *
- * A task, not a hard failure at configuration time: a developer mid-migration must still be able to
- * build, and turning "you have not migrated yet" into "you cannot build" would get the check
- * deleted rather than the password moved. CI runs this task, so the repo cannot regress; locally it
- * is the warning above.
- */
+// A task rather than a configuration-time failure, so a developer mid-migration can still build.
 tasks.register("checkSigningSecretsAreNotInTheTree") {
     group = "verification"
     description = "Fails if keystore.properties holds a signing password."
@@ -132,16 +97,7 @@ android {
         }
     }
 
-    /**
-     * Lint findings that matter here fail the build.
-     *
-     * An explicit `fatal` list rather than `warningsAsErrors = true`. That lever needs a 383-entry
-     * baseline file to be usable here, none of it security-relevant, and a suppression file that
-     * large is indistinguishable from not running the check. Escalating the specific checks this
-     * app's threat model depends on gives the same gate with real signal and no baseline.
-     *
-     * Add to this list when a new check guards something in `SECURITY.md`; do not add a baseline.
-     */
+    // Explicit fatal list rather than warningsAsErrors, which would need a 383-entry baseline.
     lint {
         abortOnError = true
         fatal += listOf(
@@ -204,28 +160,7 @@ android {
     }
     testOptions {
         unitTests {
-            // OFF, so an unmocked android.* call throws instead of quietly returning a default.
-            //
-            // It was on, for one reason: `android.util.Log` otherwise throws "not mocked", which
-            // would force Context-free production code (AppLockManager, DeviceEnvelope,
-            // EnrollmentCeremony) to choose between recording a security-relevant event and being
-            // unit-testable. The price was paid by every OTHER android.* call in JVM-tested code,
-            // silently — `android.util.Base64` returned null, `org.json` returned nothing — so a
-            // suite could go green over a body that did nothing. That is not hypothetical:
-            // DeviceEnvelope's KDoc records its tests passing vacuously, with `= null` as the whole
-            // function body leaving the suite green.
-            //
-            // src/test/java/android/util/Log.java buys the logging back on its own. It shadows the
-            // stub with a real implementation, so the one API this flag existed for keeps working
-            // while everything else now fails loudly. Flipping it cost ten test failures, all of
-            // them that same Log class and none of them anything else — which is the measurement
-            // that says the rule below was already being followed.
-            //
-            // THE RULE, now enforced by the runtime rather than by convention: production code
-            // reachable from src/test must not call android.* for anything but logging. Use
-            // java.util.Base64 and kotlinx.serialization, as DeviceEnvelope and Sec1Point do. Code
-            // that genuinely needs the framework belongs in src/androidTest. `SourceRulesTest`
-            // keeps the two historically silent APIs named explicitly.
+            // OFF: unmocked android.* throws. src/test/java/android/util/Log.java restores logging.
             isReturnDefaultValues = false
         }
     }
@@ -247,18 +182,7 @@ android {
 
 }
 
-/**
- * Fails the build when a **release variant** is configured without signing material.
- *
- * Gate on the *tasks that emit a signable artifact*, never on `gradle.startParameter.taskNames`.
- * Task names describe how the build was invoked rather than what it builds, and they are wrong in
- * both directions: `./gradlew :app:assemble` reaches `packageRelease` without the token "Release"
- * ever appearing, while `--configuration releaseRuntimeClasspath` contains "release" and is a
- * read-only query that must not abort.
- *
- * Without a signingConfig AGP does not fall back to the debug keystore — it emits an artifact that
- * `apksigner verify` rejects outright, so nothing downstream catches this for us.
- */
+// Gate on the tasks that emit a signable artifact, never on gradle.startParameter.taskNames.
 // `packageRelease` (APK) and `signReleaseBundle` (AAB), matched exactly. A prefix match on
 // "package…Release" also catches `packageReleaseResources`, a resource-merge step in the *compile*
 // chain, which would fail release compilation rather than only artifact production.
@@ -295,27 +219,14 @@ dependencies {
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.messaging)
     implementation(libs.unifiedpush.connector) {
-        // androidx.security.crypto and this connector both pull in Google's tink — the former via
-        // tink-android, the latter via plain tink. Both jars ship the same com.google.crypto.tink.*
-        // classes, so both on the classpath is a duplicate-class build failure. Keeping
-        // tink-android is what the connector's own docs recommend.
-        //
-        // **Scoped to this dependency, never `configurations.all`.** A global exclusion of a crypto
-        // artifact means a future version where the two jars stop being interchangeable surfaces as
-        // NoClassDefFoundError in the push path at runtime, on a subset of devices, after a routine
-        // bump — instead of a resolution failure at build time. The global form was also, silently,
-        // excluding tink from AGP's own instrumented-test runner, whose seven artifacts are now
-        // recorded in gradle/verification-metadata.xml rather than hidden.
+        // tink and tink-android both ship com.google.crypto.tink.*; never configurations.all.
         exclude(group = "com.google.crypto.tink", module = "tink")
     }
     implementation(libs.play.services.code.scanner)
     // QR *generation* for the "My QR Code" screen — play-services-code-scanner above only scans.
     implementation(libs.zxing.core)
     implementation(libs.rich.html.editor)
-    // Sanitizes sender HTML before it is quoted into the compose editor, which is a JavaScript
-    // enabled WebView with a bound @JavascriptInterface. Parser-backed rather than hand-rolled on
-    // purpose: an allowlist applied to a real DOM is the only form that survives mXSS and
-    // malformed-markup tricks, and it is what the comparable clients (K-9, FairEmail) use.
+    // Sanitizes sender HTML before it is quoted into the JavaScript-enabled compose WebView.
     implementation(libs.jsoup)
 
     implementation(libs.androidx.appcompat)
@@ -328,10 +239,7 @@ dependencies {
     implementation(libs.bouncycastle.bcpg)
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
-    // Encryption at rest for kypost_mail.db, which holds every cached message body, the contact
-    // book and PGP key material. It was a plain SQLite file: readable by anyone with the device
-    // and root, or with an unlocked bootloader, whatever the app lock said. See
-    // security/DatabaseKey.kt.
+    // Encryption at rest for kypost_mail.db: message bodies, contacts and PGP key material.
     implementation(libs.sqlcipher.android)
     ksp(libs.androidx.room.compiler)
     implementation(libs.androidx.window)

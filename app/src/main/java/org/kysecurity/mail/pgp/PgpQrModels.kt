@@ -26,12 +26,7 @@ data class PgpQrKeyDto(
     val contactCard: PgpQrContactCardDto? = null,
 )
 
-/** The shareable subset of the token owner's self-contact (server's `contacts.Contact` with
- *  `isSelf == true`), included in [PgpQrKeyDto] when they have one set. Field names and types
- *  mirror the server's `pgpQRContactCard` struct exactly (`backend/internal/api/pgp_qr_handlers.go`
- *  in kypost-server); it reuses this app's existing [ContactFieldDto]-family types rather than
- *  duplicating them, since [org.kysecurity.mail.contacts.ContactDto] already models the identical JSON
- *  shapes for the app's own contact sync. */
+/** Mirrors the server's `pgpQRContactCard` struct (`backend/internal/api/pgp_qr_handlers.go`). */
 @Serializable
 data class PgpQrContactCardDto(
     val fn: String? = null,

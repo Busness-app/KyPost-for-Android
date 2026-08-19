@@ -6,9 +6,7 @@ import org.junit.Test
 
 class PinHasherTest {
 
-    /** The production pepper is an AndroidKeyStore HMAC key, which a JVM test has no access to —
-     *  same reason [CredentialCipher]'s tests inject one. Any deterministic transform exercises the
-     *  peppering path; what matters here is that a pepper participates at all. */
+    /** The real pepper is a Keystore HMAC key; any deterministic transform exercises the path. */
     private val pepper = CredentialPepper { derived -> derived.map { (it + 1).toByte() }.toByteArray() }
 
     @Test
@@ -40,8 +38,6 @@ class PinHasherTest {
         assertFalse(a.contentEquals(b))
     }
 
-    /** The peppered verifier must not equal the bare PBKDF2 one, or the pepper is not reaching the
-     *  stored value and an extracted hash stays offline-crackable. */
     @Test
     fun pepperedHash_differsFromLegacyHash() {
         val salt = PinHasher.randomSalt()
@@ -50,8 +46,6 @@ class PinHasherTest {
         assertFalse(peppered.hash.contentEquals(legacy.hash))
     }
 
-    /** A v1 hash written by an older install still has to verify, so the upgrade path in
-     *  `AppLockStore.verifyPin` can recognise the correct PIN before rewriting it peppered. */
     @Test
     fun legacyVerifier_stillMatchesLegacyHash() {
         val salt = PinHasher.randomSalt()

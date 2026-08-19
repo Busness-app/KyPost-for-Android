@@ -4,14 +4,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The blank-screen case.
- *
- * `renderPgpBar`'s own KDoc says "Silence here is what the old build did, and it read as 'this email
- * is blank'". That was fixed for every encrypted state and left open for [PgpMessageState.NONE],
- * which is exactly where an encrypted-but-unwarmed message lands: `pgpEncrypted` is `omitempty`
- * server-side and defaults to false here, so it arrives flagged as ordinary mail with no body.
- */
+/** `pgpEncrypted` is `omitempty` server-side, so an unwarmed encrypted message arrives as NONE. */
 class RendersNothingTest {
 
     @Test
@@ -30,20 +23,13 @@ class RendersNothingTest {
         assertFalse(rendersNothing(PgpMessageState.NONE, body = "<p>hello</p>", preview = ""))
     }
 
-    /**
-     * The preview is the fallback the detail view already renders for [PgpMessageState.NONE], so a
-     * message carrying one is not blank and must not be labelled as such.
-     */
+    /** The preview is the fallback the detail view already renders for [PgpMessageState.NONE]. */
     @Test
     fun aPreviewIsSomethingToShow() {
         assertFalse(rendersNothing(PgpMessageState.NONE, body = null, preview = "lunch tomorrow?"))
     }
 
-    /**
-     * Every other state already puts its own notice on screen, and saying "nothing to show" beside
-     * "this message is end-to-end encrypted" would contradict it. CLIENT_PROTECTED in particular
-     * renders an empty body **on purpose**.
-     */
+    /** CLIENT_PROTECTED renders an empty body on purpose; every state here puts its own notice up. */
     @Test
     fun aStateThatExplainsItselfIsNotBlank() {
         listOf(

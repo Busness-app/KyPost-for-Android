@@ -58,12 +58,6 @@ class MailRepositoryTest {
         assertEquals(setOf("m1"), dao.rows.keys)
     }
 
-    /**
-     * The self-heal. A since=0 fetch returns the server's whole window, but an older relay labels
-     * it `delta: true`, so pruning used to be skipped and a removal the device never received (its
-     * one-shot `removed` notification went to another poller, or to a response that never arrived)
-     * stayed in the inbox forever. Mail deleted on the web is exactly that case.
-     */
     @Test
     fun fullWindowDeltaResult_prunesIdsAbsentFromTheResponse() {
         val dao = FakeEmailDao()
@@ -82,8 +76,6 @@ class MailRepositoryTest {
         assertEquals(setOf("m1"), dao.rows.keys)
     }
 
-    /** Pruning on a full window must not cost us the bodies of entries the window reports as
-     *  `updated` — those entries never carry one, so the merge still has to win. */
     @Test
     fun fullWindowDeltaResult_prunesButPreservesCachedBodyOfUpdatedEntries() {
         val dao = FakeEmailDao()
@@ -108,8 +100,6 @@ class MailRepositoryTest {
         assertEquals("cached-preview", dao.rows["m1"]?.preview)
     }
 
-    /** A cursor-based (partial) delta must keep pruning to itself — it only ever describes what
-     *  changed, so anything it doesn't mention is still legitimately in the mailbox. */
     @Test
     fun partialDeltaResult_doesNotPruneUnmentionedRows() {
         val dao = FakeEmailDao()
@@ -160,14 +150,6 @@ class MailRepositoryTest {
         assertEquals("read", merged.status)
     }
 
-    /**
-     * An "updated" delta entry never carries a body. With no local row there is nothing to merge
-     * into, and storing the entry anyway created a row whose empty body was indistinguishable from a
-     * client-protected message — so the detail view asserted "this message is end-to-end encrypted"
-     * about mail the server had decrypted and previously shown. Skipping it is correct: we do not
-     * have this message, and a metadata-only delta is not a delivery of it. The forced daily full
-     * snapshot brings it in with its body.
-     */
     @Test
     fun deltaResult_updatedEntryWithNoLocalCache_isSkippedRatherThanStoredBodyless() {
         val dao = FakeEmailDao()

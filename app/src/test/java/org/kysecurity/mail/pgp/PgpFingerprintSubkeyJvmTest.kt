@@ -9,17 +9,7 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 import java.io.ByteArrayOutputStream
 
-/**
- * [PgpFingerprint.compute] on keys that carry an encryption subkey — the shape every real account's
- * key has, and the only shape that reaches `hasValidBindingSignature`.
- *
- * Every pre-existing fixture is a bare primary key with no subkey, so that function had no test at
- * all. It was also the one place still using Bouncy Castle's Jca verifier, which asks the platform
- * JCA for an EdDSA `KeyFactory` that Android does not have — so on a real phone every ed25519 key
- * was rejected as unparseable while these JVM tests stayed green on a JDK that does have EdDSA.
- * `PgpFingerprintSubkeyDeviceTest` is the on-device half of this pair; both must exist, because
- * either one alone is exactly what missed the bug.
- */
+/** JVM half of the pair with `PgpFingerprintSubkeyDeviceTest`: a JDK has EdDSA, Android does not. */
 class PgpFingerprintSubkeyJvmTest {
 
     @Test
@@ -27,15 +17,7 @@ class PgpFingerprintSubkeyJvmTest {
         assertEquals(SUBKEY_FINGERPRINT, PgpFingerprint.compute(SUBKEY_ARMORED))
     }
 
-    /**
-     * The rejection half. A subkey bound by a *foreign* primary's signature must not be accepted:
-     * the caller persists the whole blob, so a grafted subkey the user's one fingerprint check
-     * never covered is key material smuggled in behind a verified label.
-     *
-     * Built by grafting the donor key's subkey onto the fixture's ring, which leaves the donor's
-     * binding signature in place over the wrong primary — the precise thing verification exists to
-     * catch, and a case no amount of parsing alone would notice.
-     */
+    /** Grafting leaves the donor's binding signature in place over the wrong primary. */
     @Test
     fun graftedForeignSubkey_returnsNull() {
         val target = ringOf(SUBKEY_ARMORED)

@@ -10,13 +10,6 @@ import kotlinx.serialization.json.Json
 import okhttp3.Call
 import okhttp3.Request
 
-/**
- * The outcome of asking the relay for one message's OpenPGP payload.
- *
- * The three specific status codes are distinct cases rather than one [Failed], because each gets a
- * different exit-table row and a different sentence to the user. Collapsing them would tell someone
- * whose message is simply too large that the server could not be reached.
- */
 internal sealed class PgpPayloadResult {
     data class Success(
         val encryptedPayload: String,
@@ -76,13 +69,6 @@ private data class PgpPayloadDto(
 
 private val JSON = Json { ignoreUnknownKeys = true }
 
-/**
- * Reads one message's OpenPGP ciphertext via `GET /api/mail/pgp-payload`. Pairing-authenticated with
- * X-Kypost-Device-Id/X-Kypost-Device-Secret exactly like every other relay call this app makes.
- *
- * Kept parallel to [PgpBootstrapClient] and [RecipientKeyClient]: same injectable [Call.Factory] so
- * tests run without a real network call, same device-header auth.
- */
 internal class PgpPayloadClient(
     // Injected Call.Factory; see PairingAuthHeaders.kt for why every credentialed client takes one.
     private val callFactory: Call.Factory,

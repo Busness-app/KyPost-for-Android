@@ -31,18 +31,7 @@ internal sealed class EncryptResult {
     data class Failed(val message: String) : EncryptResult()
 }
 
-/**
- * OpenPGP encryption and signing, with **no Android imports** — the outbound mirror of
- * [PgpDecryptor].
- *
- * Uses Bouncy Castle's lightweight `Bc*` operators rather than the `Jce*` ones, for the reason
- * [PgpDecryptor] gives: Android ships a stripped-down "BC" JCE provider that collides with the full
- * one, so the `Jce*` path behaves differently on a device than in a JVM test. The `Bc*` path uses no
- * JCE provider at all, which is what makes [PgpEncryptorTest] evidence rather than decoration under
- * the project-wide `isReturnDefaultValues = true`.
- *
- * Every failure is an [EncryptResult.Failed], never a throw, matching [PgpDecryptor]'s contract.
- */
+/** Bc* operators, never Jce*: Android's stripped "BC" JCE provider makes the Jce path differ. */
 internal object PgpEncryptor {
 
     fun encrypt(
@@ -57,17 +46,11 @@ internal object PgpEncryptor {
         if (plaintext.size > MAX_DECRYPTED_PLAINTEXT_BYTES) {
             return EncryptResult.Failed("this message is too large to encrypt")
         }
-        // Explicit rather than emergent. Bouncy Castle already throws when the generator is opened
-        // with no recipient method, which runCatching would turn into a Failed — but a documented
-        // contract resting on a library's incidental throw is one upgrade away from becoming a
-        // message encrypted to nobody and reported as sent.
         if (recipientPublicKeys.isEmpty()) {
             return EncryptResult.Failed("no recipient keys to encrypt to")
         }
 
-        // A recipient whose key cannot be parsed or carries no usable encryption key is a hard
-        // failure, never a skip: skipping means that person silently cannot read their own mail
-        // while the sender is told the message went out.
+        // An unparseable recipient key is a hard failure, never a skip.
         val encryptionKeys = recipientPublicKeys.map { armored ->
             encryptionKeyOf(armored) ?: return EncryptResult.Failed("a recipient key is unusable")
         }
@@ -91,10 +74,7 @@ internal object PgpEncryptor {
                 val compressor = PGPCompressedDataGenerator(CompressionAlgorithmTags.ZIP)
                 val compressedOut = compressor.open(encryptedOut)
 
-                // Packet order is the whole contract of a one-pass signature, and it is what
-                // PgpDecryptor.readLiteral walks: the one-pass header, then the literal data, then
-                // the signature. Any other order still decrypts, so only a verified signature
-                // proves this is right.
+                // One-pass contract: one-pass header, then literal data, then signature.
                 signer?.generateOnePassVersion(false)?.encode(compressedOut)
 
                 val literalGenerator = PGPLiteralDataGenerator()
@@ -119,16 +99,7 @@ internal object PgpEncryptor {
         EncryptResult.Ok(out.toString(Charsets.UTF_8.name()))
     }.getOrElse { EncryptResult.Failed(it.message ?: "could not encrypt this message") }
 
-    /**
-     * The armored public half of the enrolled private key, for encrypting the Sent copy.
-     *
-     * Derived from the unlocked private key and never fetched from the server. A hostile or
-     * compromised server that could supply "your" public key would otherwise get every Sent copy
-     * encrypted to a key it holds, with nothing on screen looking any different.
-     *
-     * Carries the whole ring, not just the master key: on the ed25519/cv25519 pairs this product
-     * generates only the subkey encrypts, so a master-only export would be unusable as a recipient.
-     */
+    /** Derived from the private key, never fetched; the whole ring, since only the subkey encrypts. */
     fun ownPublicKey(armoredPrivateKey: CharArray): String? = runCatching {
         val ring = armoredPrivateKey.useArmoredStream { keyStream ->
             PGPSecretKeyRingCollection(PGPUtil.getDecoderStream(keyStream), BcKeyFingerprintCalculator())
@@ -141,22 +112,7 @@ internal object PgpEncryptor {
         out.toString(Charsets.UTF_8.name())
     }.getOrNull()
 
-    /**
-     * The key a message should actually be encrypted to.
-     *
-     * For the ed25519/cv25519 pairs this product generates the master key signs and only the subkey
-     * encrypts, so taking the master would produce a message the recipient cannot open.
-     *
-     * Recipient key material comes from the relay, which client-side custody exists precisely not to
-     * trust, so the blob is validated locally before any of it is used. [PgpFingerprint.compute] is
-     * the same validator the QR and contact-sync paths already apply, and it rejects the two shapes
-     * that leave the primary fingerprint — the string a user compares out of band — describing only
-     * part of what gets used: an appended second key ring, and a subkey bound by a foreign signature
-     * or by none at all. Revocation is then filtered here because [PGPPublicKey.isEncryptionKey]
-     * ignores it, so a subkey its own owner has retired was otherwise still a valid selection.
-     *
-     * Returning null is a hard failure at the call site, never a skipped recipient — see [encrypt].
-     */
+    /** Only the subkey encrypts, and the relay-supplied blob is validated locally before use. */
     private fun encryptionKeyOf(armoredPublicKey: String): PGPPublicKey? = runCatching {
         if (PgpFingerprint.compute(armoredPublicKey) == null) return@runCatching null
         PGPPublicKeyRingCollection(
@@ -165,37 +121,18 @@ internal object PgpEncryptor {
         ).keyRings.asSequence()
             .flatMap { ring -> ring.publicKeys.asSequence() }
             .filter { it.isEncryptionKey && !it.hasRevocation() && !it.hasExpired() }
-            // Newest, not "last in the serialisation". `lastOrNull()` happened to be right for the
-            // ed25519/cv25519 pairs this product generates, where exactly one subkey encrypts — and
-            // silently picked whichever subkey a third-party key happened to serialise last when
-            // there were two, which is how a recipient gets a message under a subkey they have
-            // rotated away from.
+            // Newest, not "last in the serialisation": a ring may carry a rotated-away subkey.
             .maxByOrNull { it.creationTime.time }
     }.getOrNull()
 
-    /**
-     * Whether this key's own stated validity period has run out.
-     *
-     * Checked alongside revocation because [PGPPublicKey.isEncryptionKey] ignores both. Without it,
-     * a recipient whose key expired last year still got a message encrypted to it and the sender
-     * was told it went out — the failure the "a recipient key is unusable" hard stop in [encrypt]
-     * exists to surface, arriving as silence instead.
-     *
-     * `validSeconds == 0` means "no expiry" in OpenPGP, which is the common case and is not an
-     * expiry of zero seconds.
-     */
+    /** `validSeconds == 0` means no expiry; [PGPPublicKey.isEncryptionKey] ignores expiry. */
     private fun PGPPublicKey.hasExpired(nowMillis: Long = System.currentTimeMillis()): Boolean {
         val validSeconds = validSeconds
         if (validSeconds <= 0L) return false
         return nowMillis > creationTime.time + validSeconds * 1000L
     }
 
-    /**
-     * A one-pass signature generator initialised from the enrolled private key.
-     *
-     * The empty passphrase matches [PgpDecryptor]: the armored key came out of the device envelope
-     * already unwrapped, so a key that still needs one is not a key this device can use.
-     */
+    /** Empty passphrase: the armored key came out of the device envelope already unwrapped. */
     private fun signatureGeneratorFor(armoredPrivateKey: CharArray): PGPSignatureGenerator? = runCatching {
         val secretKey = armoredPrivateKey.useArmoredStream { keyStream ->
             PGPSecretKeyRingCollection(PGPUtil.getDecoderStream(keyStream), BcKeyFingerprintCalculator())

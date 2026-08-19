@@ -9,18 +9,7 @@ import java.security.spec.ECGenParameterSpec
 import java.security.spec.ECParameterSpec
 import java.security.spec.ECPoint
 
-/**
- * The on-curve check that stands between an attacker-supplied ephemeral public key and this
- * device's enrollment private key.
- *
- * `parseDeviceEnvelope` checks the blob is 65 bytes starting `0x04`. That is a length-and-prefix
- * check: it says nothing about whether (x, y) satisfies the curve equation, which is the
- * precondition for an invalid-curve attack. Before this validator the only thing rejecting such a
- * point was whichever `KeyFactory` provider happened to resolve at runtime — a property this
- * codebase asserts nowhere and does not control.
- *
- * Pure math on `java.security.spec` types, so it runs on the JVM rather than needing a device.
- */
+/** `parseDeviceEnvelope` only checks length and prefix; this is the on-curve check. */
 class EnrollmentPointValidationTest {
 
     private val p256: ECParameterSpec = AlgorithmParameters.getInstance("EC").run {

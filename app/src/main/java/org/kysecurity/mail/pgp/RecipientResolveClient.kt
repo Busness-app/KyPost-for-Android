@@ -15,15 +15,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 
 private val JSON_MEDIA_TYPE = "application/json".toMediaType()
 
-/**
- * One recipient's resolved key.
- *
- * [usable] is the server's own verdict, already folding in revocation and expiry — do not re-derive
- * it from [tier]. [tier] explains *where* the key came from and is what distinguishes a broken pin
- * from a missing key: `key_changed` means discovery found a key whose fingerprint does not match the
- * one pinned to that contact, which is what a key rotation looks like and also what an interception
- * attempt looks like.
- */
+/** [usable] already folds in revocation and expiry — do not re-derive it from [tier]. */
 data class ResolvedRecipientKey(
     val address: String,
     val publicKey: String,
@@ -63,18 +55,7 @@ private data class ResolveResponseDto(val results: List<ResolvedKeyDto> = emptyL
 @Serializable
 private data class ResolveErrorDto(val error: String = "")
 
-/**
- * Fetches recipients' actual public keys via `POST /api/pgp/recipients/resolve`, so this device can
- * encrypt locally for a client-custody account.
- *
- * The sibling of [RecipientKeyClient], and **not** a replacement for it. `/check` is the cheap,
- * contacts-only preflight that drives the inline "no key on file" warning on both send paths;
- * `/resolve` runs the full discovery ladder — contacts, then WKD, then keyserver — and hands back
- * key material, which is only meaningful when this device is the one doing the encrypting.
- *
- * **Body format differs from `/check`.** Here 200, 409 and 413 are all JSON, while 400 and 500 are
- * plain text. Decoding a plain-text body would report "malformed response" for a real server error.
- */
+/** 200, 409 and 413 are JSON here; 400 and 500 are plain text — do not decode those. */
 class RecipientResolveClient(
     private val json: Json = Json { ignoreUnknownKeys = true },
     // Injected Call.Factory; see PairingAuthHeaders.kt for why every credentialed client takes one.

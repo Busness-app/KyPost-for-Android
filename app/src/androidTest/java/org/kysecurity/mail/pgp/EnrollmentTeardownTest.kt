@@ -28,11 +28,6 @@ class EnrollmentTeardownTest {
         assertFalse("sealed blob survived", EnrollmentVault(context).hasBlob())
     }
 
-    /**
-     * Teardown must be safe to run twice, because both callers can be interrupted and re-entered:
-     * a process death mid-wipe, or Hostile Location Protection toggled again. A second pass over
-     * nothing must report success, not a phantom failure that would mark the wipe incomplete.
-     */
     @Test
     fun asecondPassOverNothingReportsSuccess() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()

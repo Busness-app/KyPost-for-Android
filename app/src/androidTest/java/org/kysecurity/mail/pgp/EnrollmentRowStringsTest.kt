@@ -10,18 +10,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/**
- * Every state a user can be shown has real, distinct copy.
- *
- * Not an `ActivityScenario` walk: driving `SecuritySettingsActivity` through nine states needs
- * injection points that screen does not have, and this repository has no Activity-launching test to
- * build on. What *can* rot silently is a resource that was never added, a duplicate that makes two
- * different situations read identically, or a string that drifts into promising behaviour the app
- * does not have — and all three are caught here against a real Context.
- *
- * The mapping under test is the one the screens use; if a screen stops using it, that is visible in
- * review rather than here.
- */
 @RunWith(AndroidJUnit4::class)
 class EnrollmentRowStringsTest {
 
@@ -53,11 +41,7 @@ class EnrollmentRowStringsTest {
         assertEquals("every row must be distinguishable", rendered.size, rendered.toSet().size)
     }
 
-    /**
-     * **The capability rule, enforced.** A user who completes this ceremony gets a device that HOLDS
-     * a key it does not yet USE. Any string here claiming the user can read encrypted mail on this
-     * device is false until the deferred decryption work lands.
-     */
+    /** The device HOLDS a key it does not yet USE, so no copy may promise reading mail here. */
     @Test
     fun noStringClaimsThisDeviceCanReadEncryptedMail() {
         val all = rowCopy.values.map { context.getString(it) } + listOf(
@@ -65,12 +49,7 @@ class EnrollmentRowStringsTest {
             context.getString(R.string.enrollment_enrolled_detail),
             context.getString(R.string.enrollment_code_intro),
         )
-        // "use encrypted mail on this device" and not the shorter "use encrypted mail": the
-        // account-level rows legitimately say "your account doesn't use encrypted mail yet", which
-        // is a fact about the account and not a claim about what this device does. What is banned is
-        // the device-scoped promise — security_encryption_no_lock_screen used to read "Set a screen
-        // lock to use encrypted mail on this device", and a user who followed it through the whole
-        // ceremony was then told "You'll still read your encrypted mail in your browser for now".
+        // Device-scoped only: account rows may say "your account doesn't use encrypted mail yet".
         val banned = listOf(
             "can read",
             "can now read",

@@ -7,22 +7,7 @@ import kotlinx.serialization.json.Json
 
 private val mapperJson = Json { ignoreUnknownKeys = true }
 
-/**
- * [previous] is the contact's existing row, if any, fetched by the caller before this sync
- * delta is applied. `pgpKey` arrives via ordinary two-way contact sync — unlike the QR
- * key-exchange flow, which independently recomputes and requires user confirmation of a
- * fingerprint before ever trusting a key — so this is the one place that same discipline is
- * applied to sync-derived keys: the fingerprint is (re)computed locally from the key bytes, and
- * a previously-verified fingerprint changing out from under the contact sets
- * [ContactEntity.pgpKeyNeedsReverification] instead of silently updating the trust badge.
- *
- * [verifiedInPerson] is set only by the QR key-exchange flow, where the user has just compared
- * this exact fingerprint out-of-band against the other person's device. That is the strongest
- * trust state the app can reach, so it must CLEAR the badge rather than raise it. Raising it
- * there — which is what happened when a contact legitimately rotated their key and the user
- * re-verified in person — trained users to dismiss the app's only TOFU alarm, and the badge is
- * plain text with no provenance, so a dismissed real key swap looks identical.
- */
+// Fingerprints are recomputed locally; an in-person QR check CLEARS the alarm, never raises it.
 fun ContactDto.toEntity(
     previous: ContactEntity? = null,
     verifiedInPerson: Boolean = false,
@@ -34,16 +19,9 @@ fun ContactDto.toEntity(
         previousFingerprint != null && newFingerprint != null && previousFingerprint != newFingerprint
     val stillNeedsReverification = !verifiedInPerson &&
         previous?.pgpKeyNeedsReverification == true && newFingerprint == previousFingerprint
-    // [PgpFingerprint.compute] returns null for the shapes it refuses to vouch for — an appended
-    // second key ring, a subkey bound by a foreign signature or by none — and its KDoc requires
-    // callers to treat that as "reject this key". Reading it as "no information" meant a key the
-    // local parser rejects raised nothing, which is the one alarm here that does not depend on the
-    // relay's own verdict. It also cleared an outstanding alarm, because stillNeedsReverification
-    // asks for newFingerprint == previousFingerprint and a null fingerprint never matches.
+    // A null from [PgpFingerprint.compute] means "reject this key", not "no information".
     val keyUnparseable = !verifiedInPerson && !pgpKey.isNullOrBlank() && newFingerprint == null
-    // The mirror of [keyRotated]: same person, different key vs. same key, different person. A
-    // device-side merge carries pgpKey over untouched, so the fingerprint is unchanged and the
-    // rotation check cannot fire — but ContactsContract has no per-account write ACL, so any app
+    // The mirror of keyRotated: same key, different person — a merge leaves the fingerprint intact.
     val identityRebound = (identityChanged || previous?.identityNeedsReview == true) &&
         !pgpKey.isNullOrBlank()
 
@@ -83,10 +61,7 @@ fun ContactDto.toEntity(
         // The KEY alarm only. A QR fingerprint comparison answers this one, so verifiedInPerson
         // clearing it is correct.
         pgpKeyNeedsReverification = keyRotated || keyUnparseable || stillNeedsReverification,
-        // The IDENTITY alarm, in its own column so the ceremony cannot clear it. A fingerprint
-        // comparison attests to the key; it says nothing about which addresses that key is displayed
-        // beside, and the save path builds its DTO from the current — possibly already tampered —
-        // Room row while the confirmation screen shows the scanned card's addresses.
+        // The IDENTITY alarm, in its own column so the QR ceremony cannot clear it.
         identityNeedsReview = identityRebound,
     )
 }

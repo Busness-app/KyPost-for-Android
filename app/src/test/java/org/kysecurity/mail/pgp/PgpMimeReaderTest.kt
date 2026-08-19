@@ -131,9 +131,7 @@ class PgpMimeReaderTest {
 
     @Test
     fun walkKeepsRealContentWhenALaterSiblingOfTheSameSubtypeIsBlank() {
-        // The other direction of the same fix as walkPrefersFirstNonBlankPartOverAnEarlierBlankSibling:
-        // once the slot holds real content, a later blank sibling of the same subtype must not
-        // overwrite it and blank a message that was already readable.
+        // Once the slot holds real content, a later blank sibling must not overwrite it.
         val body = read(
             """
             Content-Type: multipart/mixed; boundary="b1"
@@ -154,9 +152,7 @@ class PgpMimeReaderTest {
 
     @Test
     fun walkKeepsAnAllBlankMultipartAsEmptyStringNotNull() {
-        // The other half of the same fix: a blank part is still real content when nothing better ever
-        // turns up. A multipart whose only text/html part is empty must yield "" and a non-null
-        // DecryptedBody, not null.
+        // A blank part is still real content when nothing better ever turns up.
         val body = read(
             """
             Content-Type: multipart/mixed; boundary="b1"

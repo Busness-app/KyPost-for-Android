@@ -7,15 +7,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
-/**
- * Drives the "App Pull" delivery mode: fetches queued notifications directly from the
- * KyPost server (bypassing FCM / the Cloudflare relay), renders them through the
- * same [PushNotificationDispatcher] the FCM data-message path uses, and advances a
- * durable per-subscriber cursor so nothing is shown twice across polls or restarts.
- *
- * The server's `deliveryMode` (from both register and pull responses) is authoritative:
- * a single [pullOnce] both persists that mode and (dis)arms the periodic background poller.
- */
+/** Drives App Pull mode; the server's `deliveryMode` is authoritative and the cursor is durable. */
 class PullSyncCoordinator(
     private val appContext: Context,
     private val repository: PushRepository,
@@ -34,10 +26,7 @@ class PullSyncCoordinator(
         scope.launch { runCatching { pullOnce() } }
     }
 
-    /**
-     * Performs one pull cycle. Safe to call when unpaired or in push mode — it simply
-     * reports [PullOutcome.NotPaired]/[PullOutcome.NotPullMode] without touching the network.
-     */
+    /** Safe to call when unpaired or in push mode; reports without touching the network. */
     suspend fun pullOnce(): PullOutcome {
         val state = repository.state.first()
         val pairing = repository.pairingForAuthenticatedCall() ?: return PullOutcome.NotPaired
