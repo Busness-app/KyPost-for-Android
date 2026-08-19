@@ -178,9 +178,12 @@ class NativeRegistrationClient(
                         deliveryMode = DeliveryMode.fromWire(body.deliveryMode),
                         pullEndpoint = body.pullEndpoint,
                         transport = PushTransport.fromWire(body.transport),
-                        // The chain MINUS its trust anchor — see [SpkiPinner.pinsForChain] for why
-                        // both "leaf only" and "whole chain" are wrong. Installs pinned under the
-                        // old whole-chain rule keep validating and narrow on this next capture.
+                        // THE LEAF, and only the leaf — see [SpkiPinner.pinsForChain]. Pinning an
+                        // issuer admits every certificate that issuer signs, which for a public CA
+                        // is every certificate anyone can buy. Renewal continuity comes from
+                        // [PushSyncCoordinator.refreshTlsPin]'s rolling window, not from widening
+                        // what a pin means. Installs pinned under the old whole-chain rule keep
+                        // validating and narrow on the next successful resync.
                         tlsPin = registrationHost?.let { host ->
                             SpkiPinner.pinsForChain(handshake?.peerCertificates.orEmpty())
                                 .takeIf { it.isNotEmpty() }

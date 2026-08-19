@@ -160,12 +160,23 @@ private fun pepperKeyOrNull(alias: String): SecretKey? {
 private fun pepperKey(alias: String): SecretKey =
     pepperKeyOrNull(alias) ?: throw PepperUnavailableException(alias)
 
+/** Serialises minting across every alias. `KeyGenerator.generateKey()` OVERWRITES an existing
+ *  entry, so the check-then-generate below is not merely wasteful when it races — the loser's key
+ *  is destroyed, and with it every [WrappedSecret] sealed under it and every PIN verifier derived
+ *  from it. A wrong-PIN result then counts toward [LockoutPolicy]'s wipe threshold.
+ *
+ *  [AppLockStore.putCredentialSaltIfAbsent] already carries this exact guard, for this exact
+ *  reason, on the salt these keys are used with; the key itself was left unguarded. */
+private val pepperMintLock = Any()
+
 /** Throws when the Keystore is unreadable: generating there would overwrite a good key.
  *
  *  StrongBox is requested and then NOT required, because a device without it must still be able
  *  to set a PIN. Which one was granted is read back via [pepperSecurityLevel] rather than
  *  assumed -- see [PepperSecurityLevel] for why that distinction is the whole threat model. */
-private fun createPepperKeyIfAbsent(alias: String): SecretKey {
+private fun createPepperKeyIfAbsent(alias: String): SecretKey = synchronized(pepperMintLock) {
+    // Re-checked inside the lock: the thread that waited here is usually waiting for the mint it
+    // is about to duplicate.
     pepperKeyOrNull(alias)?.let { return it }
 
     // Deliberately no setUserAuthenticationRequired: background token rotations need this key.

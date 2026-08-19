@@ -60,7 +60,13 @@ abstract class LockedActivity : AppCompatActivity() {
         val verdict = SecurityWipe.startupVerdict.getCompleted()
 
         // Unreadable Keystore: neither answer is safe, so show nothing. Transient, not terminal.
-        val lockTripwireUnreadable =
+        // Both durable halves count. The encrypted half used to be missing from this check, so a
+        // store that would not open was read as an empty one — silently, one frame before the
+        // tripwire turned that into a wipe. It now refuses to open at all, and this is where that
+        // refusal has to land. It arrives as a cached boolean from [SecurityWipe.enforceTripwire]
+        // rather than a probe here, because opening that store is disk and Keystore work and this
+        // runs in `onCreate` on the way into every screen in the app.
+        val lockTripwireUnreadable = SecurityWipe.lockStoreUnreadable ||
             runCatching { AppLockStore(this).tripwireState() }.getOrNull() == TripwireState.UNREADABLE
         // Checked here because isEnabled() resolves UNREADABLE to true, hiding it from callers.
         val protectionUnreadable = runCatching { HostileLocationSettings(this).state() }
@@ -173,13 +179,35 @@ abstract class LockedActivity : AppCompatActivity() {
             androidx.appcompat.app.AlertDialog.Builder(this)
                 .setCancelable(false)
                 .setTitle(org.kysecurity.mail.R.string.security_wipe_blocked_title)
-                .setMessage(org.kysecurity.mail.R.string.security_wipe_incomplete_final_notice)
+                .setMessage(
+                    getString(org.kysecurity.mail.R.string.security_wipe_incomplete_final_notice) +
+                        "\n\n" + getString(org.kysecurity.mail.R.string.security_wipe_blocked_recovery),
+                )
+                // The escape hatch. This state is terminal and blocks the app on every launch
+                // forever, and the only way out is clearing storage or uninstalling — which the
+                // dialog neither said nor offered, leaving the user with a dead app and no route.
+                .setNeutralButton(org.kysecurity.mail.R.string.security_wipe_blocked_open_settings) { _, _ ->
+                    openAppInfo()
+                    finishAffinity()
+                }
                 .setPositiveButton(org.kysecurity.mail.R.string.security_wipe_blocked_close) { _, _ ->
                     finishAffinity()
                 }
                 .create()
                 .showSecurely()
         }
+    }
+
+    /** Best-effort: a device with no settings activity for this package leaves the dialog's text
+     *  as the instruction, which is why the text says it too rather than relying on the button. */
+    private fun openAppInfo() {
+        runCatching {
+            startActivity(
+                Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                    .setData(android.net.Uri.fromParts("package", packageName, null))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        }.onFailure { android.util.Log.e("LockedActivity", "Could not open App info", it) }
     }
 
     /** The resume-time half of the gate. Final for the same reason [onCreate] is; subclasses
@@ -202,7 +230,9 @@ abstract class LockedActivity : AppCompatActivity() {
     }
 
     private companion object {
-        /** One-shot: later screens must not bounce the task again on the same verdict. */
+        /** One-shot: later screens must not bounce the task again on the same verdict. NOT reset
+         *  by [NoticeLatches] — [AppRestart.relaunch] keeps the process, so the verdict this
+         *  latched on is still there, and clearing it would relaunch the task again forever. */
         val startupWipeHandled = java.util.concurrent.atomic.AtomicBoolean(false)
 
         /** Likewise for the credential-reset notice — one dialog per process, not one per screen. */
@@ -210,5 +240,17 @@ abstract class LockedActivity : AppCompatActivity() {
 
         /** And for the stranded-downloads notice, for the same reason. */
         val strandedDownloadsReported = java.util.concurrent.atomic.AtomicBoolean(false)
+
+        /** Both notices are cleared by the user tapping OK, which is also what clears the pref
+         *  behind them. A relaunch between showing and acknowledging used to lose the notice for
+         *  the rest of the process while the pref stayed set — so the user was never told their
+         *  credentials had been reset. The process survives [AppRestart.relaunch]; these latches
+         *  must not. */
+        val noticeLatches = object : org.kysecurity.mail.ProcessScopedState {
+            override fun resetForNewSession() {
+                credentialResetReported.set(false)
+                strandedDownloadsReported.set(false)
+            }
+        }.also { org.kysecurity.mail.ProcessState.register(it) }
     }
 }

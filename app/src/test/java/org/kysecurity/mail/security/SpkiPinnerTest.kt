@@ -34,49 +34,70 @@ private fun selfSignedTestCertificate(): X509Certificate {
     return factory.generateCertificate(ByteArrayInputStream(TEST_CERT_PEM.toByteArray())) as X509Certificate
 }
 
-// A real two-certificate chain: a self-issued root and a leaf the root signed. Generated once with
-//   openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.pem -subj "/CN=KyPost Test Root"
-//   openssl x509 -req -in leaf.csr -CA ca.pem -CAkey ca.key -out leaf.pem
-// and embedded, matching TEST_CERT_PEM above: pinsForChain's rule is about issuer/subject
-// identity, and no fixture short of a real chain can exercise that.
+// A real THREE-certificate chain: a self-issued root, an intermediate it signed, and a leaf the
+// intermediate signed. Generated once with openssl and embedded, because the rule under test is
+// about which link in a real chain gets pinned and no synthetic fixture can stand in for that.
+// Verified at generation time with: openssl verify -CAfile root.pem -untrusted int.pem leaf.pem
 private const val LEAF_CERT_PEM = """-----BEGIN CERTIFICATE-----
-MIIDCDCCAfCgAwIBAgIUZiSRmJK38BjGDurrvPg8Pr34PKUwDQYJKoZIhvcNAQEL
-BQAwGzEZMBcGA1UEAwwQS3lQb3N0IFRlc3QgUm9vdDAeFw0yNjA4MTkxMjM2MzVa
-Fw0zNjA4MTYxMjM2MzVaMB0xGzAZBgNVBAMMEnJlbGF5LnRlc3QuaW52YWxpZDCC
-ASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBANQUp3ud8+RODA5G2pwY8PSH
-fp2kztjmWEAmUsOHQPdI/ykxWOb1K1swgSm2HCy5Kdr+OU3KaQSXcEjVn/7KiD0/
-q6/mgWbPBbQL4eVsjDGhGWEcrtaA1qQewGzroo7+bqQXq/hbRup+tS42NEfPLKkp
-wtTmvOr/swHiSDFPHzPhHNR8GrzWg1HYFDoWCDWgqvTkd7sLpePIL33yfaLtzo00
-P5Z0f96B63G+wuLIyXxJX7Yzy7v6mfbygtIEisnSAGZ3qpanUvAndqQAxJlJBcYU
-guA9zI1WFys5l/IoEpQeY8KFPj+XhwKReYzytcCR42sep6A5tF7eQ/Tcdibp/q0C
-AwEAAaNCMEAwHQYDVR0OBBYEFOtBh60X800LLRpZ++oJ8TPyJLuAMB8GA1UdIwQY
-MBaAFNtMdl9Tt7PzbL3CgKym84uWGFejMA0GCSqGSIb3DQEBCwUAA4IBAQBj6V/P
-xujiMUbvRVjG2lAZumKlqbfBlEdN6bQXPOZW70URIqHQPx/gyY5RwC9qPGf9dJFm
-PE556X3jc+Ju29aj2+2ZNEueyfHb1j7zL7fz5X1uyuTH4VIkCp4Oy0Lwg4eVQ12D
-J+rkj3xfSqiJUB5hAReJmTSZDt0OS6GyPUVUCUZ+80fEy9dNwbbl7GFAo0DymQcr
-6gF588HsLhEYLMJSbcnBfFAfPsnGU3ohUZQCO284oileHLV08dJ8OzfttgOWaYHf
-4rO78ChN+sSvkFsIqDT2K3ZnjeEVwxP5VJliaMeFi6ZTBrtw2nFRrPc69CfcvPxC
-kJ77Uth/Erg7jqvZ
+MIIDPTCCAiWgAwIBAgIUPrt+Z8RyJyXFMhLx/jxlJc9rNZQwDQYJKoZIhvcNAQEL
+BQAwIzEhMB8GA1UEAwwYS3lQb3N0IFRlc3QgSW50ZXJtZWRpYXRlMB4XDTI2MDgx
+OTE0MTc0MVoXDTM2MDgxNjE0MTc0MVowHTEbMBkGA1UEAwwScmVsYXkudGVzdC5p
+bnZhbGlkMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAgex9eCSfj84w
+203cipfG1CFTScv86+H4hjTmGNlGUIgXB3VYssn8zLgE3P85Uavj3Mk2lfyXCKfq
+UNxhuwGUop0kfqBLXlfCasoYaxtKfa+nxNmWU/tb9/Y140BBwVEOXI5DT/KYpRAf
+e4ETsBiyCXVn1Fyo7t9sb7mv5pUGeeGef0IjIe7j0ig+SusQZofWb/cghxPPt7Ba
+YsO/ZQLAc2l0Ei8t0zO61qx1Rq23ng7jiJBKpzSk3fj55oZqOIzP8+7bRiql8ZDC
+oEajnKx/Lg8uSkHwmlTMpAK0Crc7Y0seoYQjfORMiyZLBsOsMNlNfDdzzRhbAhZu
+tVuyf3YtGwIDAQABo28wbTAMBgNVHRMBAf8EAjAAMB0GA1UdEQQWMBSCEnJlbGF5
+LnRlc3QuaW52YWxpZDAdBgNVHQ4EFgQUrCaRmB5IDyNDNS/DhzmljgT9eKowHwYD
+VR0jBBgwFoAUeAz//y78dudZHnyDAt3rXU6BYUIwDQYJKoZIhvcNAQELBQADggEB
+ABanDkWf14igft0qAbO3CyAoVdO7vEZ6MtJsUcVmTcgbpSRYY6E03Nequ8gyHe7S
+JtlYf1wHC3Vwsif0VjxQoq+fIxXsN9eUqgD4+mVSuGoiFv/q023iorRfeGX8YsN7
+6n5ABBPnOz9rM4yM/2rPeEGmD2ErF0fgCAskCvy41PBkgQFd5Pjv3f3+tb48r3zy
+n1bpamq6pYriZv1bP++T4yWA0/MCvXv0zaQMkYzB+8xKHCqZSQ6s4ns3oXOtNwX3
+w/GxyHJQpqAB/6NDfZvkmZ3yy0w+tQ61356/laazfFSN5RZYp5GhL2DG9EQVtx52
+CdvEuErSk+blPXRRjddqgyU=
+-----END CERTIFICATE-----"""
+
+private const val INTERMEDIATE_CERT_PEM = """-----BEGIN CERTIFICATE-----
+MIIDLzCCAhegAwIBAgIUCLCzNFVKZnvOPl0FcU7lrxf86IAwDQYJKoZIhvcNAQEL
+BQAwGzEZMBcGA1UEAwwQS3lQb3N0IFRlc3QgUm9vdDAeFw0yNjA4MTkxNDE3NDFa
+Fw0zNjA4MTYxNDE3NDFaMCMxITAfBgNVBAMMGEt5UG9zdCBUZXN0IEludGVybWVk
+aWF0ZTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAOEfHNyjQAA5qEL1
+8rW5vLSgrqQzC8lKZVb/0wcjmLh+tUEoPOXgGT9+HEAOhIjZ2axPsikrEGpIjNOM
+yBrgReRcJXKvms78yTf9pa4kTfeP/WsWhgCFXDd5zVUkujAFpOcAu2vijND6rmX9
+iSXi+XdZ3KdlFdXtZ5vyX+143CYeaDFwfdWVhzv1NLTdjV2tWe7mLM+8QE8wFnpZ
++kWpKEymRgXZ+YHvag5H3Wcl8XAhPbZmgss2CNCGn9gcQck2pLiqw9s6DXp7ElbT
+F2jUXtmE8X9DSTBPaMp4IUX/PJejvmFKEzHEU10s2CI3/oQTEEYioTwgv0JZWNTO
+lX1x+mUCAwEAAaNjMGEwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMCAQYw
+HQYDVR0OBBYEFHgM//8u/HbnWR58gwLd611OgWFCMB8GA1UdIwQYMBaAFNNZN//A
+14qPJBVtNtl0MzAKMQoxMA0GCSqGSIb3DQEBCwUAA4IBAQCRFleb7Ay+U+iJMEPc
+7NHLHXQDgg/EEBsFVGKG0XHnhrd631zv6izind2Buq6Ol0u1SymzEtaZPmqqQHy7
+ZOig8H1n5s8xwOinOL/X0Eaas3AWzPtf94Q/wfh+BSuUKBQag6EFoZ7Jj1R4rCg+
+25g2VE73w4VZC17XP46PsyfeLXVfnpxINBSktf32iKEJD7bBWWrn3+NpcZ4xsWtQ
+mclNL4Px26P0v9uoOqogT2/GYOBL3HzpTrs9YbQr3/G18CyQscMemdqI/zcIdEt4
+0MsJX90cpSIlIOuZWfS2lDtpFPtkuwq5yxdiwpmX7hpeVb1cnP4keUU1z7MzyU1y
+72cf
 -----END CERTIFICATE-----"""
 
 private const val ROOT_CERT_PEM = """-----BEGIN CERTIFICATE-----
-MIIDFzCCAf+gAwIBAgIUfOpIcwCtV4ADYH4afuZk+MgUVfkwDQYJKoZIhvcNAQEL
-BQAwGzEZMBcGA1UEAwwQS3lQb3N0IFRlc3QgUm9vdDAeFw0yNjA4MTkxMjM2MzVa
-Fw00NjA4MTQxMjM2MzVaMBsxGTAXBgNVBAMMEEt5UG9zdCBUZXN0IFJvb3QwggEi
-MA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQCtYotF3D/jzz5SXqdg1cY9hPH/
-5R2AFXW0Osh7gu8TwFPbhUcjgKHfQ7ZyB/sAiPKmN12YbCt8gMY8u8a9gqkymVwk
-ueyONFxQ972crK3fe1zb5szU4tKN7kwJhAqCGc5v1l9xtbt2BcfoqXVK2/Q4V6iM
-2MV9foJGY80NLnXOAg1mQNukOJa5mScGw1rkHsQMtUyBRTbpgx21S9rWQtCnTtA+
-5L3MHb22RNXh5AIGx11f9PEMMvaIdPAKHZgwaqslksTTAQpUQbKCRy+dghxSEHEW
-D1HNewVyosjdyZR237/ft+jM/F2O0/1OTE6lZtIbnL2PxjIQepV9EjG835n/AgMB
-AAGjUzBRMB0GA1UdDgQWBBTbTHZfU7ez82y9woCspvOLlhhXozAfBgNVHSMEGDAW
-gBTbTHZfU7ez82y9woCspvOLlhhXozAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3
-DQEBCwUAA4IBAQB+AAWg9PansyHoFt6zfDqRMqRflgp2xeml/8UjtxDuMryTgm8k
-KoB4u3lbgRF2eIgXx5lRLsX3cK5us+3r5FL5CMamg14PwTAxfqORfr6bkQUBRCwY
-ClOD9eN1E4rzFqTVE16iVcBqdQAz4Tpiq6r5gZSjCMX7tsrt5sxN5MIG5dN3lQML
-bbVFyuPHBHDKT4aXA0csw2H+MhGUKZqkXnLD+h9ANRUplMKE7LVyURK9sNCw6LDi
-B3W/DhrjuSPxbTIanPMCNUFZodMJpT0E4uF6ESfZ5XKfeTcCD3uyOtkbBEaKfaOy
-CGknzaYSAKda2Go1B2mBiBbi7aWimQ+QkkPD
+MIIDFzCCAf+gAwIBAgIUMgIgO8M6JKLOq57IEBRlfcdDRQ8wDQYJKoZIhvcNAQEL
+BQAwGzEZMBcGA1UEAwwQS3lQb3N0IFRlc3QgUm9vdDAeFw0yNjA4MTkxNDE3NDFa
+Fw00NjA4MTQxNDE3NDFaMBsxGTAXBgNVBAMMEEt5UG9zdCBUZXN0IFJvb3QwggEi
+MA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQCtlE+NZCD6sgVtTE8RaoE3oGdA
+7PdKk1OpTHaMjN9hj1nlm0rFOjNBKRq48MYQbzi5QHzgzy/VuKS390L9i4utX8hE
+dakYvS4F3ENdDb3LNgLA3mvSSabCr2PJNbsTthYnf6GVBzrGnYxN59SiY3nYLdtQ
+m+0oDwva4/elRTx0yI4M6Akk860M97uDeZxTytnZJvq14PVAL34KYCNoeYUU+i9v
+alcocTM6JjTDlJyeRgZsU3Y+cLl2sx4wFoc5rH6ok581Rm37/bvlvNYC4N82tVko
+KzDwyHSipeaTEcYRxLKQfi2/X5C8c4Mcd2GzsjwDM8Hfh/3XEhO2uJo071BPAgMB
+AAGjUzBRMB0GA1UdDgQWBBTTWTf/wNeKjyQVbTbZdDMwCjEKMTAfBgNVHSMEGDAW
+gBTTWTf/wNeKjyQVbTbZdDMwCjEKMTAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3
+DQEBCwUAA4IBAQCkmSPR7Y/4d9RKUuxW3F/2TLlR1uEcn2zM0yMT1A0ygSyrLotB
+bm3deE54J75muqjmX3pvinEbgXQnBXJbQxEd59FQT4WLwx/Z8QmOTngoPDb4ltIK
+meV915jy4OZ10cacW8+nfwvqWQio6FthsnhFeaDKgoMyDlsE+N0B/2otVEj1EoMn
+sGglkJS284GvUQ02LOXRs6TrkEDN/+wUDYl4jVpm3t7duU8QIUszAwL29rrJ8+9L
+y1eTZAqlCP50cqQQB6HTmT1HLMJEcbjNBQBvHUejkoM7LkBxn+daogBI292y0cLa
+1dQqCxWXJpQAkR5cRvU2CFesGYDw7KmQTtWo
 -----END CERTIFICATE-----"""
 
 private fun certificateOf(pem: String): X509Certificate =
@@ -97,31 +118,54 @@ class SpkiPinnerTest {
     }
 
     @Test
-    fun pinsForChain_excludesTheTrustAnchor() {
+    fun pinsForChain_pinsTheLeafAndNothingElse() {
         val leaf = certificateOf(LEAF_CERT_PEM)
+        val intermediate = certificateOf(INTERMEDIATE_CERT_PEM)
         val root = certificateOf(ROOT_CERT_PEM)
 
-        val pins = SpkiPinner.pinsForChain(listOf(leaf, root))
+        val pins = SpkiPinner.pinsForChain(listOf(leaf, intermediate, root))
 
-        // The whole finding: CertificatePinner passes on ANY chain member, so a pinned public root
-        // admits every certificate that root has ever issued. Pinning it is not pinning.
-        assertTrue("the leaf must be pinned", SpkiPinner.pinFor(leaf) in pins)
-        assertFalse("the trust anchor must NOT be pinned", SpkiPinner.pinFor(root) in pins)
-        assertEquals(1, pins.size)
+        assertEquals(setOf(SpkiPinner.pinFor(leaf)), pins)
+    }
+
+    /** THE FINDING. `CertificatePinner` passes when ANY chain member matches ANY configured pin,
+     *  so pinning an issuer admits every certificate that issuer signs. For the ordinary
+     *  deployment — a self-hosted relay behind a public CA — that made the pin assert "issued by
+     *  Let's Encrypt" and nothing more, which anyone who can answer for the host can satisfy in
+     *  ninety seconds for free. The old test could not catch this: it passed the intermediate
+     *  FIRST in the list, where it is indistinguishable from a leaf. */
+    @Test
+    fun pinsForChain_refusesToPinAnIssuer() {
+        val leaf = certificateOf(LEAF_CERT_PEM)
+        val intermediate = certificateOf(INTERMEDIATE_CERT_PEM)
+        val root = certificateOf(ROOT_CERT_PEM)
+
+        val pins = SpkiPinner.pinsForChain(listOf(leaf, intermediate, root))
+
+        assertFalse("an intermediate must NOT be pinned", SpkiPinner.pinFor(intermediate) in pins)
+        assertFalse("a trust anchor must NOT be pinned", SpkiPinner.pinFor(root) in pins)
+        // And the intermediate really is one, so the assertion above is not vacuous.
+        assertFalse("the fixture's intermediate is genuinely not self-issued", SpkiPinner.isTrustAnchor(intermediate))
+        assertTrue("the fixture's root is genuinely self-issued", SpkiPinner.isTrustAnchor(root))
     }
 
     @Test
-    fun pinsForChain_keepsIntermediates() {
-        // The leaf here stands in for an intermediate: what matters is that it is not self-issued,
-        // which is exactly the property that distinguishes an intermediate from a root.
-        val intermediate = certificateOf(LEAF_CERT_PEM)
-        val root = certificateOf(ROOT_CERT_PEM)
+    fun rollingPins_keepsTheFreshestAndCapsTheWindow() {
+        val fresh = setOf("sha256/A")
+        val history = setOf("sha256/B", "sha256/C")
 
-        val pins = SpkiPinner.pinsForChain(listOf(intermediate, root))
+        val rolled = SpkiPinner.rollingPins(fresh, history)
 
-        // Pinning issuers alongside the leaf is what lets a routine renewal keep validating; only
-        // the anchor is dropped, not "everything but the leaf".
-        assertTrue(SpkiPinner.pinFor(intermediate) in pins)
+        // Newest first and truncation from the back: the pin in use must survive the cap.
+        assertEquals(listOf("sha256/A", "sha256/B"), rolled.toList())
+        assertEquals(SpkiPinner.MAX_PINNED_LEAVES, rolled.size)
+    }
+
+    @Test
+    fun rollingPins_doesNotGrowWhenNothingRotated() {
+        val rolled = SpkiPinner.rollingPins(setOf("sha256/A"), setOf("sha256/A"))
+
+        assertEquals(setOf("sha256/A"), rolled)
     }
 
     @Test

@@ -328,27 +328,13 @@ class EmailDetailActivity : LockedActivity() {
         // Computed from the same inputs the line above used, so the notice cannot claim the screen is
         // empty while something is on it, or stay silent while it is not.
         val nothingToRender = rendersNothing(pgpState, content?.html, emailPreview)
-        // Cosmetic heuristic, so on a multi-megabyte sender-chosen body a bounded "assume none"
-        // beats an unbounded scan. Belt-and-braces with the bounded tag interior in the pattern.
-        val hasRemoteImages = bodyToRender.length <= REMOTE_IMAGE_SCAN_MAX_LENGTH &&
-            REMOTE_IMAGE_PATTERN.containsMatchIn(bodyToRender)
         val palette = getStoredThemePalette(this)
         val monoFontFace = ibmPlexMonoFontFaceCss(this)
-
         val isDark = isDarkPalette(palette)
-        val htmlToLoad = if (hasRemoteImages) {
-            buildEmailBodyHtml(blockExternalResources(bodyToRender), palette, monoFontFace, isDark)
-        } else {
-            buildEmailBodyHtml(bodyToRender, palette, monoFontFace, isDark)
-        }
-        // What "Show images" loads: images restored, every OTHER remote resource still stripped.
-        // The unmodified body is deliberately never retained — re-loading it is what turned a
-        // request for pictures into a request for iframes, fonts and stylesheets as well.
-        val htmlWithImages = if (hasRemoteImages) {
-            buildEmailBodyHtml(blockExternalResources(bodyToRender, keepImages = true), palette, monoFontFace, isDark)
-        } else {
-            htmlToLoad
-        }
+        val rendered = renderableBody(bodyToRender, palette, monoFontFace, isDark)
+        val hasRemoteImages = rendered.hasRemoteImages
+        val htmlToLoad = rendered.stripped
+        val htmlWithImages = rendered.withImages
         // Off the main thread: pairingForAuthenticatedCall reads Keystore-backed prefs, i.e. disk I/O.
         val serverUrl = if (pgpState == PgpMessageState.CLIENT_PROTECTED) {
             PushRuntime.graph(this).repository.pairingForAuthenticatedCall()?.serverUrl
@@ -625,20 +611,16 @@ class EmailDetailActivity : LockedActivity() {
                 )
                 // The same dark-theme override every other body gets, or a sender's colors go black-on-black.
                 val palette = getStoredThemePalette(this)
-                val html = buildEmailBodyHtml(
-                    rawHtml,
-                    palette,
-                    ibmPlexMonoFontFaceCss(this),
-                    isDark = isDarkPalette(palette),
-                )
+                // Through the SAME helper renderBody uses. This path had its own copy of the
+                // stripping decision, with a different guard, on a WebView whose blockNetworkLoads
+                // is mutable and shared with the envelope render above it. Two copies of one
+                // security control had already drifted once.
+                val rendered = renderableBody(rawHtml, palette, ibmPlexMonoFontFaceCss(this), isDarkPalette(palette))
                 if (plainText == null) {
-                    val htmlToLoad = if (REMOTE_IMAGE_PATTERN.containsMatchIn(rawHtml)) {
-                        buildEmailBodyHtml(blockExternalResources(rawHtml), palette, ibmPlexMonoFontFaceCss(this), isDark = isDarkPalette(palette))
-                    } else {
-                        html
-                    }
-                    webView.loadDataWithBaseURL(null, htmlToLoad, "text/html", "utf-8", null)
+                    lastRenderedHtml = rendered.withImages
+                    webView.loadDataWithBaseURL(null, rendered.stripped, "text/html", "utf-8", null)
                 }
+                imagesBlockedBar.visibility = if (plainText == null && rendered.hasRemoteImages) View.VISIBLE else View.GONE
                 // The real subject from the encrypted part's protected headers; the envelope one is a placeholder.
                 outcome.body.protectedSubject?.takeIf { it.isNotBlank() }?.let { subjectView.text = it }
                 // The verdict actually safe to display — see displaySignatureVerdict's KDoc for why
@@ -661,48 +643,30 @@ class EmailDetailActivity : LockedActivity() {
                 }
                 btnOpenInWebmail.visibility = View.GONE
             }
-            ReadOutcome.NeedsUnlock -> {
+            // The decrypt can still be retried here and the user is the missing input, so offer
+            // it rather than the webmail fallback. Cancelled is silent on purpose: the user
+            // dismissed a sheet they raised, and a toast would be noise about their own action.
+            ReadOutcome.NeedsUnlock,
+            ReadOutcome.Cancelled,
+            -> {
                 showLocked("")
                 btnDecryptHere.visibility = View.VISIBLE
                 btnOpenInWebmail.visibility = View.GONE
             }
-            // Silent on purpose: the user dismissed a sheet they raised. A toast here would be
-            // noise about their own action.
-            ReadOutcome.Cancelled -> {
-                showLocked("")
-                btnDecryptHere.visibility = View.VISIBLE
-                btnOpenInWebmail.visibility = View.GONE
-            }
-            ReadOutcome.NotEnrolled -> {
-                showLocked("")
-                btnOpenInWebmail.visibility = if (webmailUnavailable) View.GONE else View.VISIBLE
-            }
-            ReadOutcome.NoSecureLockScreen -> {
-                showLocked("")
-                btnOpenInWebmail.visibility = if (webmailUnavailable) View.GONE else View.VISIBLE
-            }
-            ReadOutcome.TooLarge -> {
-                showLocked("")
-                btnOpenInWebmail.visibility = if (webmailUnavailable) View.GONE else View.VISIBLE
-            }
-            ReadOutcome.NotClientProtected -> {
-                showLocked("")
-                btnOpenInWebmail.visibility = if (webmailUnavailable) View.GONE else View.VISIBLE
-            }
-            is ReadOutcome.UnsealFailed -> {
-                showLocked("")
-                btnOpenInWebmail.visibility = if (webmailUnavailable) View.GONE else View.VISIBLE
-            }
-            is ReadOutcome.FetchFailed -> {
-                showLocked("")
-                btnOpenInWebmail.visibility = if (webmailUnavailable) View.GONE else View.VISIBLE
-            }
-            // Terminal, unlike FetchFailed: retrying cannot change that there is no OpenPGP payload.
-            ReadOutcome.NoEncryptedContent -> {
-                showLocked("")
-                btnOpenInWebmail.visibility = if (webmailUnavailable) View.GONE else View.VISIBLE
-            }
-            is ReadOutcome.DecryptFailed -> {
+            // Every remaining outcome means "this device cannot open this message", whatever the
+            // reason, and they all render identically: the padlock plus the webmail fallback when
+            // one resolved. Listed rather than collapsed to `else` so the compiler still forces a
+            // decision when a new outcome is added; whether Retry is offered is not decided here
+            // but by `showsRetryButton` below, which is why these can share a branch at all.
+            ReadOutcome.NotEnrolled,
+            ReadOutcome.NoSecureLockScreen,
+            ReadOutcome.TooLarge,
+            ReadOutcome.NotClientProtected,
+            ReadOutcome.NoEncryptedContent,
+            is ReadOutcome.UnsealFailed,
+            is ReadOutcome.FetchFailed,
+            is ReadOutcome.DecryptFailed,
+            -> {
                 showLocked("")
                 btnOpenInWebmail.visibility = if (webmailUnavailable) View.GONE else View.VISIBLE
             }
@@ -957,7 +921,7 @@ class EmailDetailActivity : LockedActivity() {
     /** Sanitizes the quoted original off the UI thread; `Jsoup.clean` is quadratic in nesting. */
     private fun quotedBodyHtmlAsync(preview: String, then: (String) -> Unit) {
         val body = fetchedBodyHtml?.takeIf { it.isNotBlank() }
-        if (body == null || body.length > REMOTE_IMAGE_SCAN_MAX_LENGTH) {
+        if (body == null || body.length > QUOTE_SANITIZE_MAX_LENGTH) {
             then(TextUtils.htmlEncode(preview))
             return
         }
@@ -1008,17 +972,51 @@ class EmailDetailActivity : LockedActivity() {
         /** `intent:`, `file:`, `content:` and any app's custom scheme are refused. */
         private val SAFE_LINK_SCHEMES = setOf("http", "https", "mailto", "tel")
 
-        /** Bodies past this size skip the remote-content scan entirely and assume none. */
-        private const val REMOTE_IMAGE_SCAN_MAX_LENGTH = 512 * 1024
-
-        /** Heuristic only, not a control, and it fails toward NOT showing the bar -- which leaves
-         *  `blockNetworkLoads` on, so a remote resource this misses (a `<style>` beacon, say) is
-         *  still never fetched. Do not "fix" it into a gate. */
-        private val REMOTE_IMAGE_PATTERN = Regex(
-            """<(?:img|link|iframe|video|audio|source|embed|object)\b[^>]{0,2048}?\s(?:src|href|poster|data)\s*=\s*["']https?://""",
-            RegexOption.IGNORE_CASE,
-        )
+        /** Caps the quote sanitizer only: `Jsoup.clean` is quadratic in nesting depth, so a
+         *  sender-chosen body past this size falls back to the escaped preview. NOT a
+         *  remote-content bound — [renderableBody] strips unconditionally and at any size. */
+        private const val QUOTE_SANITIZE_MAX_LENGTH = 512 * 1024
     }
+}
+
+/** A body that has already been through [blockExternalResources], both ways.
+ *
+ *  [hasRemoteImages] is EXACT, not a guess: it is true when keeping images actually changes the
+ *  output, which is the only definition that cannot disagree with what the two strings contain. */
+internal class RenderableBody(
+    val stripped: String,
+    val withImages: String,
+    val hasRemoteImages: Boolean,
+)
+
+/** Strips remote resources UNCONDITIONALLY, and is the single place that decides how a body is
+ *  rendered.
+ *
+ *  Both render paths in this screen used to gate [blockExternalResources] on a regex named
+ *  `hasRemoteImages` — a stated heuristic standing in for a stated control — and one of them also
+ *  skipped it entirely for bodies over 512 KB. Raw sender HTML reached `loadDataWithBaseURL` on
+ *  both, and the only thing that stopped it fetching was `blockNetworkLoads` being on: a defence
+ *  one mutable WebView setting deep, on a setting the "Show images" button exists to clear.
+ *
+ *  Stripping first and deriving the flag from the result removes the gate, the size cliff and the
+ *  regex together. It costs one extra jsoup parse on bodies that have nothing to strip, which is
+ *  the parse the old code already paid on every body that did. */
+internal fun renderableBody(
+    body: String,
+    palette: ThemePalette,
+    monoFontFace: String,
+    isDark: Boolean,
+): RenderableBody {
+    val stripped = blockExternalResources(body)
+    val keptImages = blockExternalResources(body, keepImages = true)
+    return RenderableBody(
+        stripped = buildEmailBodyHtml(stripped, palette, monoFontFace, isDark),
+        // What "Show images" loads: images restored, every OTHER remote resource still stripped.
+        // The unmodified body is deliberately never retained — re-loading it is what turned a
+        // request for pictures into a request for iframes, fonts and stylesheets as well.
+        withImages = buildEmailBodyHtml(keptImages, palette, monoFontFace, isDark),
+        hasRemoteImages = stripped != keptImages,
+    )
 }
 
 /** Wildcard `!important` rules win only because [stripImportant] removes the email's own first. */
@@ -1165,21 +1163,83 @@ internal fun blockExternalResources(
  *  survive untouched -- the decoded form is only adopted when an escape was HIDING a resource. */
 private fun stripResourceUrls(css: String): String {
     val commentless = css.replace(CSS_COMMENT, "")
-    val direct = commentless.replace(CSS_AT_IMPORT, "").replace(RESOURCE_URL_PATTERN, "none")
+    val direct = stripResourceFunctions(commentless.replace(CSS_AT_IMPORT, ""))
     val decoded = decodeCssEscapes(commentless)
     if (decoded == commentless) return direct
-    val decodedStripped = decoded.replace(CSS_AT_IMPORT, "").replace(RESOURCE_URL_PATTERN, "none")
+    val decodedStripped = stripResourceFunctions(decoded.replace(CSS_AT_IMPORT, ""))
     return if (decodedStripped == decoded) direct else decodedStripped
 }
 
-/** `@import` takes a bare string as well as a `url()`, so the token pattern below cannot see it. */
+/** `@import` takes a bare string as well as a `url()`, so the function scan below cannot see it. */
 private val CSS_AT_IMPORT = Regex("""@import\b[^;]*;?""", RegexOption.IGNORE_CASE)
 
-/** `image-set()` and `cross-fade()` fetch remote bytes exactly as `url()` does. */
-private val RESOURCE_URL_PATTERN = Regex(
-    """(?:url|image-set|-webkit-image-set|cross-fade)\s*\([^)]*\)""",
-    RegexOption.IGNORE_CASE,
-)
+/** Every CSS function that can pull remote bytes.
+ *
+ *  `image-set()` and `cross-fade()` are listed even though their arguments are usually `url()`
+ *  calls the scan would strip anyway, because both also accept a BARE STRING as a URL. */
+private val RESOURCE_FUNCTIONS =
+    listOf("url", "image-set", "-webkit-image-set", "cross-fade", "-webkit-cross-fade", "src")
+
+/** Replaces every resource-fetching function call with `none`, matching parentheses properly.
+ *
+ *  This was a regex — `(?:url|image-set|…)\s*\([^)]*\)` — and `[^)]*` is the bug: it stops at the
+ *  FIRST `)`, which in CSS is not necessarily the closing one. `url("http://x/a)b")` matched only
+ *  as far as `url("http://x/a)`, and what the replacement left behind was `b")` — the tail of a
+ *  URL the strip exists to remove. Balanced scanning is not something a regular expression can do,
+ *  so this is a scanner. An unbalanced call consumes to the end of the input, which fails closed. */
+private fun stripResourceFunctions(css: String): String {
+    val out = StringBuilder(css.length)
+    var i = 0
+    while (i < css.length) {
+        val name = RESOURCE_FUNCTIONS.firstOrNull { functionStartsAt(css, i, it) }
+        if (name == null) {
+            out.append(css[i])
+            i++
+            continue
+        }
+        out.append("none")
+        val close = matchingParen(css, css.indexOf('(', i + name.length))
+        i = if (close < 0) css.length else close + 1
+    }
+    return out.toString()
+}
+
+/** True when [name] begins a function call at [index]: an identifier boundary, the name, optional
+ *  whitespace, then `(`. The boundary check stops `background-url(` matching `url`. */
+private fun functionStartsAt(css: String, index: Int, name: String): Boolean {
+    if (index > 0 && isCssIdentifierChar(css[index - 1])) return false
+    if (!css.regionMatches(index, name, 0, name.length, ignoreCase = true)) return false
+    var cursor = index + name.length
+    while (cursor < css.length && css[cursor].isWhitespace()) cursor++
+    return cursor < css.length && css[cursor] == '('
+}
+
+private fun isCssIdentifierChar(c: Char): Boolean = c.isLetterOrDigit() || c == '-' || c == '_'
+
+/** The index of the `)` closing the `(` at [open], or -1 if there is none. Quoted sections are
+ *  skipped whole: a `)` inside a string is text, and a `\)` inside one is not a delimiter either. */
+private fun matchingParen(css: String, open: Int): Int {
+    if (open < 0) return -1
+    var depth = 0
+    var i = open
+    var quote: Char? = null
+    while (i < css.length) {
+        val c = css[i]
+        when {
+            quote != null && c == '\\' -> i++
+            quote != null && c == quote -> quote = null
+            quote != null -> Unit
+            c == '"' || c == '\'' -> quote = c
+            c == '(' -> depth++
+            c == ')' -> {
+                depth--
+                if (depth == 0) return i
+            }
+        }
+        i++
+    }
+    return -1
+}
 
 /** Same conservative fallback as the web reader: use a parser and recognize real HTML tags, so
  *  an address such as `<user@example.com>` remains text while `<center>`/`<o:p>` mail renders. */

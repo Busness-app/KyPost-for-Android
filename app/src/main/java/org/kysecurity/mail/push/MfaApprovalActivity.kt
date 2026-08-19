@@ -83,6 +83,19 @@ class MfaApprovalActivity : AppCompatActivity() {
             return
         }
 
+        // And its own startup-wipe gate, for the same reason. `blockedByAbandonedWipe` is FALSE
+        // while a wipe is running, so without this a notification tap could open this screen
+        // mid-wipe: it reads the pairing store the wipe is deleting, and its PIN prompt feeds the
+        // failed-attempt counter that triggers a SECOND wipe. LockedActivity blocks on exactly this
+        // and this screen is deliberately outside it.
+        if (!SecurityWipe.startupVerdict.isCompleted) {
+            lifecycleScope.launch {
+                SecurityWipe.startupVerdict.await()
+                if (!isFinishing && !isDestroyed) recreate()
+            }
+            return
+        }
+
         enableEdgeToEdge()
         setContentView(R.layout.activity_mfa_approval)
 
@@ -282,8 +295,8 @@ class MfaApprovalActivity : AppCompatActivity() {
             object : BiometricPrompt.AuthenticationCallback() {
                 override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
                     val cipher = result.cryptoObject?.cipher
-                    val keys = cipher?.let { CredentialEnvelope.open(unlock.sealed, it) }
-                    if (keys == null) {
+                    val proof = cipher?.let { CredentialEnvelope.open(unlock.sealed, it) }
+                    if (proof == null) {
                         // The blob and the key are out of step; the PIN both authenticates and
                         // re-seals, so route there rather than failing the screen.
                         authenticateWithoutSealedKeys(posture)
@@ -292,7 +305,7 @@ class MfaApprovalActivity : AppCompatActivity() {
                     authInFlight = false
                     // Held for this decision only, exactly as the PIN path does — this screen is
                     // deliberately not an unlock, so the keys must not go into the manager's cache.
-                    decisionKeys = keys
+                    decisionKeys = proof.keys
                     authenticated = true
                     setButtonsEnabled(true)
                 }

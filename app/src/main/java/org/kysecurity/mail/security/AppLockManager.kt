@@ -76,15 +76,17 @@ class AppLockManager(
         return false
     }
 
-    /** Keys come from [BiometricUnlockVault]; caching mirrors [attemptPin]. */
-    fun unlockWithBiometric(keys: CredentialKeys): UnlockAttemptResult {
+    /** Takes a [BiometricProof], never bare keys: only [CredentialEnvelope.open] mints one, and it
+     *  only does so from a Cipher a strong biometric has already authorized. Caching mirrors
+     *  [attemptPin]. */
+    fun unlockWithBiometric(proof: BiometricProof): UnlockAttemptResult {
         // Under the same lockout as every PIN check; a fingerprint must not clear the ladder.
         val remaining = remainingLockoutMillis()
         if (remaining > 0) return UnlockAttemptResult.Rejected(remaining)
 
         _locked.value = false
         state.resetFailedAttempts()
-        if (state.isCredentialPinGateEnabled()) credentialKeys = keys
+        if (state.isCredentialPinGateEnabled()) credentialKeys = proof.keys
         return UnlockAttemptResult.Success
     }
 
@@ -160,8 +162,11 @@ class AppLockManager(
     suspend fun resealForBiometric(pin: CharArray) = withContext(Dispatchers.Default) {
         // Under pinGate: the salt is minted on first use, so concurrent derivations must not race.
         pinGate.withLock {
+            // Error, not info: silently, this is "biometric unlock stopped working and nobody was
+            // told". The unseal path can recover on the next PIN unlock, but only if someone knows
+            // to look, and INFO on a failing security feature is not telling anyone.
             runCatching { sealer.seal(deriveUsingPersistedSalt(pin)) }
-                .onFailure { android.util.Log.i("AppLockManager", "Could not re-seal after a PIN change", it) }
+                .onFailure { android.util.Log.e("AppLockManager", "Could not re-seal after a PIN change", it) }
         }
         Unit
     }

@@ -78,6 +78,9 @@ class PushRepository(
     /** See [SecurePairingStore.tlsPinState] — distinguishes "never pinned" from "pin lost". */
     fun tlsPinState(): TlsPinState = securePairingStore.tlsPinState()
 
+    /** See [SecurePairingStore.tlsPinIsLeafOnly] — false means a legacy whole-chain set is stored. */
+    fun tlsPinIsLeafOnly(): Boolean = securePairingStore.tlsPinIsLeafOnly()
+
     /** Persist the TLS pin captured on a just-succeeded pairing call. Only
      *  [PushSyncCoordinator.attemptPairing] calls this, not every routine registration resync. */
     suspend fun saveTlsPin(pin: TlsPin) = securePairingStore.saveTlsPin(pin)

@@ -452,6 +452,8 @@
     <string name="security_credential_reset_message">This device’s secure storage could no longer be read, so KyPost had to reset it. This usually happens after a change to the device’s screen lock or a system update.\n\nAnything that was stored there is gone: you may need to pair this device again, set your KyPost PIN again, and re-enrol this device for encrypted mail. No mail or contacts were deleted.</string>
     <string name="security_wipe_blocked_title">Manual recovery required</string>
     <string name="security_wipe_blocked_close">Close</string>
+    <string name="security_wipe_blocked_open_settings">App info</string>
+    <string name="security_wipe_blocked_recovery">To finish clearing this device, open App info and choose Storage, then Clear storage — or uninstall KyPost.</string>
     <string name="security_verifier_unavailable">This device\'s secure key store has changed, so your PIN can no longer be checked. This attempt was not counted. Reinstall the app to set it up again.</string>
     <string name="security_change_pin_secret_unreadable">Your PIN was not changed. The paired credential could not be read with your current PIN, and changing it would make this device unable to reach the server. Unpair and pair again to fix this.</string>
     <string name="security_hostile_location_confirm_enable_title">Turn on Hostile Location Protection?</string>

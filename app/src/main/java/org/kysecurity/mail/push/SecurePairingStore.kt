@@ -40,17 +40,24 @@ private const val KEY_TLS_PIN = "pair_tls_spki_pin"
 private const val KEY_TLS_PINS = "pair_tls_spki_pins"
 private const val KEY_TLS_PIN_HOST = "pair_tls_spki_pin_host"
 
+/** Absent means the stored set was written under the old whole-chain rule and may contain a public
+ *  CA intermediate — see [org.kysecurity.mail.security.SpkiPinner.pinsForChain]. Such a set is
+ *  REPLACED, not merged into, on the next capture, or the intermediate would ride the rolling
+ *  window forever on any install whose certificate happens not to rotate. */
+private const val KEY_TLS_PINS_ARE_LEAVES = "pair_tls_spki_pins_leaf_only"
+
 /** Plain companion file; see [SecurePairingStore.tlsPinState]. */
 internal const val TLS_PIN_TRIPWIRE_PREFS = "push_tls_pin_tripwire"
 private const val KEY_TLS_PIN_EVER_CAPTURED = "tls_pin_ever_captured"
 
 /** A TOFU certificate pin together with the host it was actually observed on.
  *
- *  [spkiSha256] holds a pin per certificate in the observed chain EXCEPT its trust anchor.
- *  `CertificatePinner` passes when ANY chain member matches ANY configured pin — which is what
- *  lets a routine renewal keep validating under an already-pinned issuer, and equally what makes
- *  a pinned public root admit every certificate that root has ever issued. See
- *  [org.kysecurity.mail.security.SpkiPinner.pinsForChain], which owns that policy. */
+ *  [spkiSha256] holds LEAF pins only, at most [org.kysecurity.mail.security.SpkiPinner
+ *  .MAX_PINNED_LEAVES] of them: the leaf in use and the one it replaced. `CertificatePinner`
+ *  passes when ANY chain member matches ANY configured pin, so an issuer pin admits every
+ *  certificate that issuer signs — see [org.kysecurity.mail.security.SpkiPinner.pinsForChain],
+ *  which owns that policy, and [PushSyncCoordinator.refreshTlsPin], which owns the rotation that
+ *  makes leaf-only survive renewal. */
 data class TlsPin(val host: String, val spkiSha256: Set<String>) {
     init {
         // An empty pin set is not "unpinned", it is worse: CertificatePinner passes vacuously when
@@ -215,6 +222,8 @@ class SecurePairingStore(context: Context) {
                 // Superseded by the set above; left behind it would win on the next legacy read.
                 .remove(KEY_TLS_PIN)
                 .putString(KEY_TLS_PIN_HOST, pin.host)
+                // Every write from here on is leaf-only; this is what retires the legacy set.
+                .putBoolean(KEY_TLS_PINS_ARE_LEAVES, true)
                 .commit()
         }
         // Last, and before the suspend returns: a cached pin must never outlive its own durability.
@@ -223,6 +232,11 @@ class SecurePairingStore(context: Context) {
 
     /** The currently enforced TLS pin, or null if none was ever captured. */
     fun currentTlsPin(): TlsPin? = cachedTlsPin
+
+    /** False while the stored set still carries whole-chain pins from before the leaf-only rule.
+     *  [org.kysecurity.mail.push.PushSyncCoordinator.refreshTlsPin] replaces rather than merges
+     *  on false, so the narrowing happens exactly once and cannot be undone by a quiet server. */
+    fun tlsPinIsLeafOnly(): Boolean = prefs.getBoolean(KEY_TLS_PINS_ARE_LEAVES, false)
 
     /** The pin, or why there isn't one. "No pin yet" and "the pin is gone" must not be collapsed. */
     fun tlsPinState(): TlsPinState {
@@ -259,6 +273,7 @@ class SecurePairingStore(context: Context) {
                 .remove(KEY_TLS_PIN)
                 .remove(KEY_TLS_PINS)
                 .remove(KEY_TLS_PIN_HOST)
+                .remove(KEY_TLS_PINS_ARE_LEAVES)
                 .commit()
             // Deliberate unpair: there genuinely is no pin any more, so the marker goes too and the
             // next pairing gets a clean TOFU window rather than being refused as "lost".

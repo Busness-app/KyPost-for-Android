@@ -24,8 +24,8 @@ class CredentialEnvelopeTest {
         val opened = CredentialEnvelope.open(sealed, CredentialEnvelope.decryptCipher(pair.private))
 
         assertNotNull(opened)
-        assertArrayEquals(keys.current.encoded, opened!!.current.encoded)
-        assertArrayEquals(keys.legacy.encoded, opened.legacy.encoded)
+        assertArrayEquals(keys.current.encoded, opened!!.keys.current.encoded)
+        assertArrayEquals(keys.legacy.encoded, opened.keys.legacy.encoded)
     }
 
     @Test

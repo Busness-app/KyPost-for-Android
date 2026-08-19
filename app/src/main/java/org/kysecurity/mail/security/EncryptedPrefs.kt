@@ -9,6 +9,7 @@ import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import java.security.GeneralSecurityException
+import java.security.KeyStore
 
 private const val TAG = "EncryptedPrefs"
 
@@ -22,39 +23,83 @@ internal const val CREDENTIAL_RESET_PREFS = "org.kysecurity.mail.credential_rese
  *  blob decryptable, which is the same argument the credential peppers already carry. */
 internal val ENCRYPTED_PREFS_MASTER_KEY_ALIAS: String = MasterKey.DEFAULT_MASTER_KEY_ALIAS
 
-/** Resets only on a genuinely undecryptable keyset; every other failure propagates. */
+private const val ANDROID_KEYSTORE = "AndroidKeyStore"
+
+/** Retries before a failure is classified at all. AndroidKeyStore is routinely unavailable for a
+ *  few hundred milliseconds around boot, and that window used to be enough to destroy a mailbox. */
+private const val OPEN_ATTEMPTS = 3
+private const val OPEN_RETRY_BACKOFF_MS = 120L
+
+/** Opening failed and the store is NOT known to be unrecoverable, so nothing was deleted.
+ *
+ *  Callers must treat this as "unknown", never as "empty". [AppLockStore.tripwireBroken] answers
+ *  null on it and [LockedActivity] blocks — because the alternative, which this app shipped, was
+ *  reading a transient Keystore fault as a vanished PIN hash and wiping the device over it. */
+class EncryptedStoreUnavailableException(fileName: String, cause: Throwable) :
+    IllegalStateException("Encrypted store '$fileName' could not be opened", cause)
+
+/**
+ * Opens [fileName], resetting it ONLY when the keyset is provably undecryptable.
+ *
+ * "Provably" is the whole contract. Deleting an encrypted store is destruction of user data and
+ * [AppLockStore.tripwireBroken] turns an empty app-lock store into a full device wipe, so the bar
+ * for it is positive evidence — a keyset that will not parse, or a master key alias that is
+ * confirmed absent — and never merely "an exception came out of Tink". Everything else throws
+ * [EncryptedStoreUnavailableException] and the app blocks until the next launch.
+ */
 internal fun openEncryptedPrefs(
     context: Context,
     fileName: String,
     onReset: (Throwable) -> Unit = {},
 ): SharedPreferences {
     val appContext = context.applicationContext
-    return try {
-        createEncryptedPrefs(appContext, fileName)
-    } catch (e: GeneralSecurityException) {
-        resetUnreadableStore(appContext, fileName, e, onReset)
-    } catch (e: java.io.IOException) {
-        // Tink reports an unreadable keyset as an IOException too, so this cannot be blanket
-        // propagated — but an ordinary I/O failure must be. [isUnrecoverableKeyset] is the
-        // distinction; anything else is transient and rethrows.
-        if (isUnrecoverableKeyset(e)) {
-            resetUnreadableStore(appContext, fileName, e, onReset)
-        } else {
-            Log.e(TAG, "Encrypted store '$fileName' could not be opened; NOT resetting it", e)
-            throw e
+    var last: Throwable? = null
+    repeat(OPEN_ATTEMPTS) { attempt ->
+        try {
+            return createEncryptedPrefs(appContext, fileName)
+        } catch (e: GeneralSecurityException) {
+            last = e
+        } catch (e: java.io.IOException) {
+            // Tink reports an unreadable keyset as an IOException too, so neither exception type
+            // classifies on its own; [isUnrecoverableKeyset] is the only thing that decides.
+            last = e
         }
+        if (attempt < OPEN_ATTEMPTS - 1) Thread.sleep(OPEN_RETRY_BACKOFF_MS)
     }
+
+    val cause = last ?: IllegalStateException("Encrypted store '$fileName' would not open")
+    if (!isUnrecoverableKeyset(cause)) {
+        Log.e(TAG, "Encrypted store '$fileName' could not be opened; NOT resetting it", cause)
+        throw EncryptedStoreUnavailableException(fileName, cause)
+    }
+    return resetUnreadableStore(appContext, fileName, cause, onReset)
 }
 
-/** True only when the keyset is gone or unparseable; transient storage failures are not. */
-internal fun isUnrecoverableKeyset(failure: Throwable): Boolean =
+/** True only on positive evidence that nothing can ever open this store again.
+ *
+ *  Two proofs are accepted, and no others. A keyset that will not parse is destroyed by
+ *  definition, and a master key alias the Keystore CONFIRMS is absent can never decrypt one. A
+ *  Keystore that merely refuses to answer proves nothing and is not one of them — the previous
+ *  version of this function answered true for every [GeneralSecurityException], which made it a
+ *  tautology over the branch that called it. */
+internal fun isUnrecoverableKeyset(failure: Throwable): Boolean {
     // Bounded: a cause chain does not legitimately nest this deep, and a cyclic one would hang
     // app startup, since this decides whether LockedActivity can build the security graph at all.
-    generateSequence(failure) { it.cause }.take(MAX_CAUSE_DEPTH).any { cause ->
-        cause is GeneralSecurityException || cause.isProtobufParseFailure()
-    }
+    val chain = generateSequence(failure) { it.cause }.take(MAX_CAUSE_DEPTH)
+    if (chain.any { it.isProtobufParseFailure() }) return true
+    return masterKeyAliasPresent() == false
+}
 
 private const val MAX_CAUSE_DEPTH = 16
+
+/** Null when the Keystore itself could not be consulted — never confused with "the alias is gone". */
+private fun masterKeyAliasPresent(): Boolean? = runCatching {
+    KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+        .containsAlias(ENCRYPTED_PREFS_MASTER_KEY_ALIAS)
+}.getOrElse {
+    Log.e(TAG, "Could not ask the Keystore whether the master key is still there", it)
+    null
+}
 
 /** Walks the hierarchy: subclasses have their own simpleName, and the type is in shaded Tink. */
 private fun Throwable.isProtobufParseFailure(): Boolean =

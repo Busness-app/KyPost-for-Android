@@ -1,6 +1,7 @@
 package org.kysecurity.mail.push
 
 import com.google.firebase.messaging.FirebaseMessaging
+import org.kysecurity.mail.security.SpkiPinner
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.tasks.await
 
@@ -170,7 +171,16 @@ class PushSyncCoordinator(
         return result
     }
 
-    /** Writes [fresh] when it actually differs, and only for the host already pinned.
+    /** Rolls [fresh] to the front of the accepted leaf pins, for the host already pinned.
+     *
+     *  This is the continuity that makes leaf-only pinning survive certificate renewal. The call
+     *  that produced [fresh] ALREADY validated against the stored pins, so its chain is the same
+     *  server: adopting its leaf is not a downgrade, it is how the pin stays current. The window
+     *  is [SpkiPinner.MAX_PINNED_LEAVES] wide so a rotation landing between two resyncs is carried
+     *  rather than fatal.
+     *
+     *  A set written before the leaf-only rule may contain a public CA intermediate, which admits
+     *  every certificate that CA issues — so it is REPLACED rather than merged, exactly once.
      *
      *  The host guard is not ceremony: a pin is only meaningful against the host it was observed
      *  on, and moving one silently would leave the old host unpinned. A differing host is a
@@ -179,8 +189,11 @@ class PushSyncCoordinator(
         if (fresh == null) return
         val stored = repository.currentTlsPin()
         if (stored != null && stored.host != fresh.host) return
-        if (stored?.spkiSha256 == fresh.spkiSha256) return
-        repository.saveTlsPin(fresh)
+        val leafOnly = repository.tlsPinIsLeafOnly()
+        val history = if (leafOnly) stored?.spkiSha256.orEmpty() else emptySet()
+        val merged = SpkiPinner.rollingPins(fresh.spkiSha256, history)
+        if (leafOnly && stored?.spkiSha256 == merged) return
+        repository.saveTlsPin(TlsPin(host = fresh.host, spkiSha256 = merged))
     }
 
     private suspend fun persistDelivery(pairing: PairingData, result: NativeRegistrationResult.Success) {
