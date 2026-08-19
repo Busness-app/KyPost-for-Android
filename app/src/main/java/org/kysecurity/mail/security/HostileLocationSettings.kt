@@ -29,8 +29,9 @@ class HostileLocationSettings(context: Context) {
         appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     /** Mirrors [AppLockStore.tripwireState] but fails the opposite way; keep them separate. */
-    fun state(): HostileLocationState =
+    fun state(): HostileLocationState = synchronized(LOCK) {
         cached ?: readState().also { if (it != HostileLocationState.UNREADABLE) cached = it }
+    }
 
     private fun readState(): HostileLocationState {
         val claimed = prefs.getBoolean(KEY_ENABLED, false)
@@ -66,24 +67,31 @@ class HostileLocationSettings(context: Context) {
     /** UNREADABLE answers true: callers decide where bytes go and have no wait-and-see. */
     fun isEnabled(): Boolean = state() != HostileLocationState.DISABLED
 
-    /** Key first when enabling, marker first when disabling, so an interruption leaves it ON. */
-    fun setEnabled(enabled: Boolean) {
-        cached = null
-        if (enabled) {
-            KeystoreHlpKey.ensureExists()
-            writeMarker(true)
-            return
+    /** Key first when enabling, marker first when disabling, so an interruption leaves it ON.
+     *  Under [LOCK] because minting the key is slow: a read landing mid-enable used to resolve
+     *  DISABLED and cache it for the life of the process. */
+    fun setEnabled(enabled: Boolean) = synchronized(LOCK) {
+        try {
+            if (enabled) {
+                KeystoreHlpKey.ensureExists()
+                writeMarker(true)
+            } else {
+                prefs.edit().clear().commit()
+                KeystoreHlpKey.destroy()
+            }
+        } finally {
+            cached = null
         }
-        prefs.edit().clear().commit()
-        KeystoreHlpKey.destroy()
     }
 
     /** One byte, so the MAC covers the value and not merely the fact that a marker exists. */
     private fun payload(enabled: Boolean): ByteArray = byteArrayOf(if (enabled) 1 else 0)
 
     private companion object {
+        /** Guards [cached] and every posture write, so no read sees a half-applied change. */
+        private val LOCK = Any()
+
         /** Process-wide: one shared file. UNREADABLE is transient and never cached. */
-        @Volatile
         private var cached: HostileLocationState? = null
     }
 

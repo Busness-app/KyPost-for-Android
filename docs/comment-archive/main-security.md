@@ -1547,8 +1547,8 @@ Replaced in source by: `/** UNREADABLE answers true: callers decide where bytes 
      */
 ```
 
-### `fun setEnabled(enabled: Boolean) {`
-Replaced in source by: `/** Key first when enabling, marker first when disabling, so an interruption leaves it ON. */`
+### `fun setEnabled(enabled: Boolean) = synchronized(LOCK) {`
+Replaced in source by: `/** Key first when enabling, marker first when disabling, so an interruption leaves it ON. Under [LOCK] because minting the key is slow: a read landing mid-enable used to resolve DISABLED and cache it for the life of the process. */`
 ```
     /**
      * Writes the flag, minting or destroying [KeystoreHlpKey] to match.
@@ -1571,7 +1571,19 @@ Replaced in source by: `/** Key first when enabling, marker first when disabling
      */
 ```
 
-### `@Volatile`
+### `private val LOCK = Any()`
+Replaced in source by: `/** Guards [cached] and every posture write, so no read sees a half-applied change. */`
+```
+        /**
+         * Guards [cached] and every posture write, so no read can observe a half-applied change.
+         *
+         * Minting the Keystore key takes long enough to be hit: a read landing between `cached =
+         * null` and the key existing saw "no key" -- the fresh-install path -- resolved DISABLED
+         * and cached it for the life of the process, while the UI went on showing protection ON.
+         */
+```
+
+### `private var cached: HostileLocationState? = null`
 Replaced in source by: `/** Process-wide: one shared file. UNREADABLE is transient and never cached. */`
 ```
         /**
