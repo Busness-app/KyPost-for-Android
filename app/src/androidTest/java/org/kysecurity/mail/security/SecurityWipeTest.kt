@@ -37,7 +37,7 @@ class SecurityWipeTest {
         appLockStore.setPin("482913".toCharArray())
         appLockStore.enableLock()
 
-        PushRuntime.graph(context).securePairingStore.savePairing(pairing)
+        PushRuntime.graph(context).securePairingStore.savePairing(pairing, gateEnabled = false)
 
         // Room only creates the database file lazily on first access, so force it into existence
         // here — otherwise the post-wipe "file doesn't exist" assertion below would be trivially
@@ -53,6 +53,65 @@ class SecurityWipeTest {
         assertNull(PushRuntime.graph(context).securePairingStore.pairing.value)
         assertFalse(dbFile.exists())
     }
+
+    /**
+     * Every EncryptedSharedPreferences file in this app is sealed under ONE AndroidKeyStore alias.
+     * The wipe destroyed `kypost_credential_pepper` and `kypost_pin_pepper` — because "an alias
+     * outliving a wipe is a durable, attributable artefact on a device the user was told is clean"
+     * — and left behind the key that actually opens a recovered prefs blob.
+     *
+     * Deleted files on flash are frequently recoverable; that is the entire reason DatabaseKey
+     * encrypts the SQLCipher passphrase rather than storing it plainly. Recovered blob plus live
+     * master key equals the passphrase, so this alias is the difference between a wipe and a
+     * delay.
+     */
+    @Test
+    fun wipeAndResetApp_destroysTheAndroidxMasterKey() = runBlocking {
+        // Force every encrypted store into existence, which mints the master key if it is absent.
+        AppLockStore(context).setPin("482913".toCharArray())
+        PushRuntime.graph(context).securePairingStore.savePairing(pairing, gateEnabled = false)
+        DatabaseKey.passphrase(context)
+
+        assertTrue(
+            "precondition: the master key must exist, or this test proves nothing",
+            keystoreAliasExists(ENCRYPTED_PREFS_MASTER_KEY_ALIAS),
+        )
+
+        SecurityWipe.wipeAndResetApp(context)
+
+        assertFalse(
+            "the androidx security master key must not outlive the wipe",
+            keystoreAliasExists(ENCRYPTED_PREFS_MASTER_KEY_ALIAS),
+        )
+    }
+
+    /**
+     * The step has to run AFTER the network phase, and this is the case that proves it: the
+     * deregister ends in clearPairing(), which WRITES to an encrypted store and so recreates both
+     * the file and the alias. A master-key deletion placed next to `credentialPeppers` is silently
+     * undone on every wipe that reaches the relay — which is every wipe on a connected device.
+     */
+    @Test
+    fun wipeAndResetApp_leavesNoEncryptedPrefsFileBehindEither() = runBlocking {
+        PushRuntime.graph(context).securePairingStore.savePairing(pairing, gateEnabled = false)
+        AppLockStore(context).setPin("482913".toCharArray())
+
+        SecurityWipe.wipeAndResetApp(context)
+
+        val sharedPrefsDir = File(context.dataDir, "shared_prefs")
+        val survivors = sharedPrefsDir.listFiles { file -> file.name.endsWith(".xml") }
+            .orEmpty()
+            .map { it.name.removeSuffix(".xml") }
+            // The wipe's own bookkeeping is the one thing that may outlive it.
+            .filterNot { it == "org.kysecurity.mail.wipe_state" }
+
+        assertTrue("shared_prefs must be empty after a wipe, but held $survivors", survivors.isEmpty())
+    }
+
+    private fun keystoreAliasExists(alias: String): Boolean =
+        java.security.KeyStore.getInstance("AndroidKeyStore")
+            .apply { load(null) }
+            .containsAlias(alias)
 
     /** push_state holds sender names and subjects in the clear; a wipe cannot leave it behind. */
     @Test

@@ -34,7 +34,7 @@ class SecurePairingStoreTest {
 
     @Test
     fun savePairing_thenReload_roundTripsAllFields() = runBlocking {
-        SecurePairingStore(context).savePairing(pairing)
+        SecurePairingStore(context).savePairing(pairing, gateEnabled = false)
 
         // A fresh instance must read the same persisted (decrypted) data back.
         val reloaded = SecurePairingStore(context).pairing.value
@@ -93,7 +93,7 @@ class SecurePairingStoreTest {
     @Test
     fun clearPairing_removesPersistedData() = runBlocking {
         val store = SecurePairingStore(context)
-        store.savePairing(pairing)
+        store.savePairing(pairing, gateEnabled = false)
         store.clearPairing()
 
         assertNull(SecurePairingStore(context).pairing.value)
@@ -101,7 +101,7 @@ class SecurePairingStoreTest {
 
     @Test
     fun underlyingPrefsFile_doesNotContainPlaintextSecrets() = runBlocking {
-        SecurePairingStore(context).savePairing(pairing)
+        SecurePairingStore(context).savePairing(pairing, gateEnabled = false)
 
         val prefsFile = File(context.filesDir.parentFile, "shared_prefs/push_pairing_secure.xml")
         assertTrue("expected encrypted prefs file to exist", prefsFile.exists())
@@ -115,7 +115,7 @@ class SecurePairingStoreTest {
     /** A corrupt keyset makes EncryptedSharedPreferences.create throw in init; it must recover. */
     @Test
     fun corruptedKeyset_doesNotCrash_resetsToUnpairedAndStaysUsable() = runBlocking {
-        SecurePairingStore(context).savePairing(pairing)
+        SecurePairingStore(context).savePairing(pairing, gateEnabled = false)
 
         val rawPrefs = context.getSharedPreferences("push_pairing_secure", android.content.Context.MODE_PRIVATE)
         val valueKeysetKey = "__androidx_security_crypto_encrypted_prefs_value_keyset__"
@@ -134,7 +134,7 @@ class SecurePairingStoreTest {
         assertNull("corrupted store should read back as unpaired, not stale/garbage data", recovered.pairing.value)
 
         // The reset must leave a genuinely working store behind, not just a non-crashing shell.
-        recovered.savePairing(pairing)
+        recovered.savePairing(pairing, gateEnabled = false)
         assertEquals(pairing, SecurePairingStore(context).pairing.value)
     }
 }

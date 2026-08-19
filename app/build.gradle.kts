@@ -187,6 +187,12 @@ android {
 // "package…Release" also catches `packageReleaseResources`, a resource-merge step in the *compile*
 // chain, which would fail release compilation rather than only artifact production.
 tasks.matching { it.name == "packageRelease" || it.name == "signReleaseBundle" }.configureEach {
+    // The secrets check runs HERE, not only in CI. On a developer machine keystore.properties is
+    // gitignored, so no CI job can see it — which made "CI fails on this" true and useless: a
+    // password could sit in the working tree indefinitely behind nothing but a build warning.
+    // Gated on release packaging rather than preBuild so the debug loop is unaffected and the
+    // refusal lands at the moment the password is actually about to be used.
+    dependsOn("checkSigningSecretsAreNotInTheTree")
     // Resolved at configuration time and captured below as a plain Boolean. Referencing
     // `keystorePropertiesFile` from inside doFirst instead makes the action hold a reference to the
     // build script, which the configuration cache cannot serialize.

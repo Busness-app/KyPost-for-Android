@@ -1,3 +1,18 @@
+# DEFERRED BUMPS. Five entries below are 3+ years stale and are NOT security fixes, so they were
+# deliberately kept out of the security pass rather than mixed into it:
+#
+#   androidx-cardview  1.0.0  (2018)   androidx-appcompat  1.6.1  (Feb 2023)
+#   material          1.10.0  (2023)   androidx-core-ktx  1.10.1  (May 2023)
+#   biometric          1.1.0  (2021)   <- see its own note below; this one is security-relevant
+#
+# Bumping any of them means regenerating gradle/verification-metadata.xml, which is the file CI
+# watches most closely. Do it in its own commit:
+#
+#   ./gradlew --write-verification-metadata sha256 help
+#
+# NEVER from inside CI — see the block comment in .github/workflows/ci.yml for why that would
+# defeat the control. Let the 31/34/36 emulator matrix catch the UI regressions.
+
 [versions]
 agp = "9.3.1"
 kotlin = "2.2.20"
@@ -25,6 +40,12 @@ playServicesCodeScanner = "16.1.0"
 googleServices = "4.4.4"
 securityCrypto = "1.1.0"
 # Newest stable; alphas above it back the MFA gate and unlock vault. REVIEW BY 2027-02-01.
+#
+# "Newest stable" is accurate and is not a defence: it means the library is ABANDONED at this
+# branch, five years back, under an app whose unlock vault and MFA gate both depend on it. The
+# review is not "is there a newer stable" (there is not, and there may never be) — it is: write
+# down what in 1.1.0 has been audited and is being relied on, or move to the 1.2.0-alpha line and
+# say what that buys. A date alone defers the question without recording it.
 biometric = "1.1.0"
 workRuntime = "2.10.1"
 lifecycleProcess = "2.9.4"

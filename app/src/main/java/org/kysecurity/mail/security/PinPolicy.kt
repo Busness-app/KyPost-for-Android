@@ -5,7 +5,11 @@ object PinPolicy {
     const val MIN_LENGTH = 8
     const val MAX_LENGTH = 12
 
-    /** Runs of any length are caught by [isRun]; this covers repeat and date families it misses. */
+    /** Runs of any length are caught by [isRun]; this covers repeat and date families it misses.
+     *
+     *  A finite list against a 10^8 space is a nudge, not a control -- the cost of guessing is
+     *  [CREDENTIAL_KDF_ITERATIONS] and the Keystore pepper, not this. Kept because the entries it
+     *  does catch are the ones people actually reach for first. */
     private val WEAK_PINS = setOf(
         // Repeating pairs and quads.
         "12121212", "21212121", "11223344", "44332211", "12341234", "43214321",
@@ -29,9 +33,18 @@ object PinPolicy {
         pin.size < MIN_LENGTH -> Result.TooShort
         pin.size > MAX_LENGTH -> Result.TooLong
         !pin.all { it.isDigit() } -> Result.NotNumeric
-        pin.concatToString() in WEAK_PINS -> Result.TooCommon
+        isListed(pin) -> Result.TooCommon
         isRun(pin) -> Result.TooCommon
         else -> Result.Valid
+    }
+
+    /** Compared character by character rather than via `pin.concatToString()`.
+     *
+     *  The PIN travels this whole codebase as a [CharArray] for one reason -- see [PinHasher]'s
+     *  KDoc -- and `concatToString()` mints an immutable, unzeroable copy of it on the validation
+     *  path, which runs on every PIN set and every PIN change. */
+    private fun isListed(pin: CharArray): Boolean = WEAK_PINS.any { weak ->
+        weak.length == pin.size && weak.indices.all { weak[it] == pin[it] }
     }
 
     private fun isRun(pin: CharArray): Boolean {

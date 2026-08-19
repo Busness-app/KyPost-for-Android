@@ -57,6 +57,80 @@ class EmailDetailActivityTest {
         assertTrue(blocked.contains("Hi"))
     }
 
+    /** `[style]` is an ATTRIBUTE selector and matches `<div style=...>`, never `<style>`, so a
+     *  `<style>` block was never inspected at all. With "Show images" pressed — which clears
+     *  `blockNetworkLoads` wholesale — that is a read receipt with the reader's IP on it. */
+    @Test
+    fun blockExternalResources_stripsResourceUrlsInsideStyleElements() {
+        val blocked = blockExternalResources(
+            "<style>body{background-image:url(https://tracker.example/beacon?u=victim)}</style><p>Hi</p>",
+        )
+
+        assertFalse("a <style> beacon must not survive", blocked.contains("tracker.example"))
+        assertTrue(blocked.contains("Hi"))
+    }
+
+    @Test
+    fun blockExternalResources_stripsAtImportInBothForms() {
+        val urlForm = blockExternalResources("<style>@import url(https://tracker.example/x.css);</style>")
+        val stringForm = blockExternalResources("<style>@import \"https://tracker.example/y.css\";</style>")
+
+        assertFalse(urlForm.contains("tracker.example"))
+        // `@import` takes a bare string too, which no url() pattern can see.
+        assertFalse(stringForm.contains("tracker.example"))
+    }
+
+    @Test
+    fun blockExternalResources_stripsImageSetAndCrossFade() {
+        val blocked = blockExternalResources(
+            "<div style=\"background:image-set(url(https://tracker.example/a.png) 1x)\">Hi</div>",
+        )
+
+        assertFalse(blocked.contains("tracker.example"))
+    }
+
+    /** A CSS escape can spell the function name: `\75 rl(...)` is a `url()` token to a CSS parser
+     *  and was not one to the regex. [stripImportantFromCss] already had to learn this lesson. */
+    @Test
+    fun blockExternalResources_seesResourceUrlsHiddenBehindCssEscapes() {
+        val blocked = blockExternalResources(
+            "<style>body{background:\\75 rl(https://tracker.example/beacon)}</style>",
+        )
+
+        assertFalse(blocked.contains("tracker.example"))
+    }
+
+    /** Only when an escape was HIDING something: decoding unconditionally would rewrite legitimate
+     *  escapes in content strings for no benefit. */
+    @Test
+    fun blockExternalResources_leavesInnocentCssEscapesAlone() {
+        val blocked = blockExternalResources("<div style=\"content:'\\201C'\">Hi</div>")
+
+        assertTrue("an escape that hides nothing must survive", blocked.contains("201C"))
+    }
+
+    /** A CSS comment is transparent between any two tokens, including inside a declaration. */
+    @Test
+    fun blockExternalResources_stripsResourceUrlsAroundCssComments() {
+        val blocked = blockExternalResources(
+            "<style>body{background:/*x*/url(https://tracker.example/beacon)}</style>",
+        )
+
+        assertFalse(blocked.contains("tracker.example"))
+    }
+
+    /** Fails CLOSED, like QuotedHtmlSanitizer. Returning unparseable markup unchanged handed a
+     *  sender who can break jsoup every beacon this function exists to strip. */
+    @Test
+    fun blockExternalResources_failsClosedWhenTheMarkupCannotBeParsed() {
+        val hostile = "<img src=\"https://tracker.example/beacon\">"
+
+        val blocked = blockExternalResources(hostile) { throw StackOverflowError("nested too deep") }
+
+        assertFalse("a parse failure must not pass the markup through", blocked.contains("<img"))
+        assertTrue("the reader keeps their context as escaped text", blocked.contains("&lt;img"))
+    }
+
     private val darkPalette = ThemePalette(
         bg = "#1a1a1e",
         panel = "#252530",

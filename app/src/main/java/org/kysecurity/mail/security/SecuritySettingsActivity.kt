@@ -91,6 +91,10 @@ class SecuritySettingsActivity : LockedActivity() {
         val hostileLocationEnabled: Boolean,
         val graceMillis: Long,
         val wipeAfterAttempts: Int?,
+
+        /** Where the PIN pepper lives. Not a diagnostic: it is the difference between the PIN
+         *  costing years to guess and costing an afternoon. See [PepperSecurityLevel]. */
+        val pinPepperLevel: PepperSecurityLevel,
     )
 
     override fun onCreateUnlocked(savedInstanceState: Bundle?) {
@@ -107,6 +111,8 @@ class SecuritySettingsActivity : LockedActivity() {
                     hostileLocationEnabled = graph.hostileLocationSettings.isEnabled(),
                     graceMillis = graph.appLockSettings.graceMillis(),
                     wipeAfterAttempts = graph.appLockStore.wipeAfterAttempts(),
+                    // Keystore I/O, so it belongs in this off-main block with the rest.
+                    pinPepperLevel = pinPepperSecurityLevel(),
                 )
             }
             if (isFinishing || isDestroyed) return@launch
@@ -177,6 +183,24 @@ class SecuritySettingsActivity : LockedActivity() {
         }
         lockCard.addViewSpaced(wipeThresholdButton, bottomDp = 4)
         lockCard.addViewSpaced(caption(getString(R.string.security_wipe_threshold_intro)), bottomDp = 0)
+
+        // Only when there is something to say. On the overwhelming majority of devices the pepper
+        // is hardware-backed and this row would be noise; where it is not, the PIN's real cost to
+        // guess is nothing like the cost this screen otherwise implies, and the user is entitled to
+        // know that before choosing one. Shown only once a lock exists, since there is no pepper
+        // and nothing to warn about before then.
+        if (snapshot.lockEnabled && !snapshot.pinPepperLevel.isHardwareBacked()) {
+            lockCard.addViewSpaced(
+                TextView(this).apply {
+                    text = getString(R.string.security_pin_pepper_software_warning)
+                    textSize = 13f
+                    setPadding(dpToPx(12), dpToPx(10), dpToPx(12), dpToPx(10))
+                    applyWarningCalloutTheme(this@SecuritySettingsActivity, this)
+                },
+                topDp = 10,
+                bottomDp = 0,
+            )
+        }
 
         val locationCard = container.addSection(R.string.security_section_location)
         val hostileLocationSettings = SecurityRuntime.graph(this).hostileLocationSettings
@@ -798,8 +822,11 @@ class SecuritySettingsActivity : LockedActivity() {
 
         if (gateEnabled && salt != null) {
             // PHASE 3 — promote: re-derive under the new PIN and cache, so savePairing's gate-on
-            // branch can wrap. This also clears the staged copy. Failing here is survivable now:
-            // the staged blob keeps the secret readable until a later save promotes it.
+            // branch can wrap. The savePairing below is what clears the staged copy (see
+            // SecurePairingStore's SecretWrite.Wrapped branch) — for a while this comment claimed
+            // that and the code did not, leaving the staged blob on disk after every PIN change.
+            // Failing here is survivable: the staged blob keeps the secret readable until a later
+            // save promotes it.
             appLockManager.deriveAndCacheCredentialKeys(newPin)
             if (secretToRewrap != null) {
                 PushRuntime.graph(this@SecuritySettingsActivity).repository.savePairing(secretToRewrap)
@@ -945,7 +972,11 @@ class SecuritySettingsActivity : LockedActivity() {
             ?: return false
         val currentPairing = store.pairingSnapshot(credentialKeys) ?: return false
         if (currentPairing.deviceSecret.isNullOrBlank()) return false
-        store.savePairing(currentPairing)
+        // gateEnabled = false is the POINT of this function, not an omission: the caller is turning
+        // the credential gate off, so the secret is deliberately written back in the clear. This is
+        // the one call site in the app where a plaintext write is correct, which is precisely why
+        // the posture is now stated rather than inferred from a missing key.
+        store.savePairing(currentPairing, gateEnabled = false)
         return true
     }
 

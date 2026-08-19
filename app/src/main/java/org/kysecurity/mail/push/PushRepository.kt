@@ -119,7 +119,12 @@ class PushRepository(
     ) {
         when (credentialState) {
             is PairingCredentialState.Available ->
-                securePairingStore.savePairing(pairing, credentialState.keys, credentialState.salt)
+                securePairingStore.savePairing(
+                    pairing,
+                    gateEnabled = true,
+                    credentialKeys = credentialState.keys,
+                    credentialSalt = credentialState.salt,
+                )
             is PairingCredentialState.Unavailable -> {
                 if (!pairing.deviceSecret.isNullOrBlank()) {
                     android.util.Log.e(
@@ -131,7 +136,7 @@ class PushRepository(
                 securePairingStore.savePairing(pairing, SecretWrite.Preserve)
             }
             is PairingCredentialState.NotGated ->
-                securePairingStore.savePairing(pairing)
+                securePairingStore.savePairing(pairing, gateEnabled = false)
         }
         context.pushDataStore.edit { prefs ->
             prefs.remove(KEY_SYNC_ERROR)

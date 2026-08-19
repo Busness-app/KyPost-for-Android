@@ -1011,7 +1011,9 @@ class EmailDetailActivity : LockedActivity() {
         /** Bodies past this size skip the remote-content scan entirely and assume none. */
         private const val REMOTE_IMAGE_SCAN_MAX_LENGTH = 512 * 1024
 
-        /** Heuristic only, not a control. The tag interior is bounded: `[^>]*` was quadratic here. */
+        /** Heuristic only, not a control, and it fails toward NOT showing the bar -- which leaves
+         *  `blockNetworkLoads` on, so a remote resource this misses (a `<style>` beacon, say) is
+         *  still never fetched. Do not "fix" it into a gate. */
         private val REMOTE_IMAGE_PATTERN = Regex(
             """<(?:img|link|iframe|video|audio|source|embed|object)\b[^>]{0,2048}?\s(?:src|href|poster|data)\s*=\s*["']https?://""",
             RegexOption.IGNORE_CASE,
@@ -1117,9 +1119,21 @@ internal fun softWrapPlainText(text: String): String = LONG_PLAIN_TOKEN.replace(
  *
  *  [keepImages] is what "Show images" actually means: `<img>` keeps its `src`, and iframes, media,
  *  stylesheets and CSS `url()` stay stripped whatever the WebView's network flags say. Clearing
- *  `blockNetworkLoads` alone would re-enable all of them, which is not what that button asks for. */
-internal fun blockExternalResources(html: String, keepImages: Boolean = false): String {
-    val document = runCatching { org.jsoup.Jsoup.parseBodyFragment(html) }.getOrNull() ?: return html
+ *  `blockNetworkLoads` alone would re-enable all of them, which is not what that button asks for.
+ *
+ *  Fails CLOSED, matching [org.kysecurity.mail.mail.QuotedHtmlSanitizer]: markup this cannot parse
+ *  is markup whose resource URLs it cannot have removed, and handing it back unchanged gave a
+ *  sender who can break jsoup every beacon this function exists to strip. */
+internal fun blockExternalResources(
+    html: String,
+    keepImages: Boolean = false,
+    /** Injectable so the fail-closed path can be PROVEN rather than assumed: jsoup is too tolerant
+     *  to be made to throw from a test fixture, and "it fails closed" is exactly the kind of claim
+     *  that must not rest on reading the code. */
+    parse: (String) -> org.jsoup.nodes.Document = org.jsoup.Jsoup::parseBodyFragment,
+): String {
+    val document = runCatching { parse(html) }.getOrNull()
+        ?: return escapeEmailText(html)
     val resourceTags = if (keepImages) "iframe, video, audio, source, embed, object" else "img, iframe, video, audio, source, embed, object"
     document.select(resourceTags).forEach { element ->
         element.removeAttr("src")
@@ -1128,14 +1142,44 @@ internal fun blockExternalResources(html: String, keepImages: Boolean = false): 
         element.removeAttr("data")
     }
     document.select("link").forEach { it.removeAttr("href") }
+    // `[style]` is an ATTRIBUTE selector: it matches `<div style=...>` and NOT `<style>`. Both
+    // carry `url()`, only the first was ever scrubbed, so a `<style>` block was an unstripped
+    // beacon that fired the moment "Show images" cleared blockNetworkLoads.
     document.select("[style]").forEach { element ->
-        element.attr("style", element.attr("style").replace(RESOURCE_URL_PATTERN, "none"))
+        element.attr("style", stripResourceUrls(element.attr("style")))
+    }
+    document.select("style").forEach { element ->
+        val cleaned = stripResourceUrls(element.data())
+        element.empty()
+        element.appendChild(org.jsoup.nodes.DataNode(cleaned))
     }
     document.outputSettings().prettyPrint(false)
     return document.body().html()
 }
 
-private val RESOURCE_URL_PATTERN = Regex("url\\s*\\([^)]*\\)", RegexOption.IGNORE_CASE)
+/** Strips every remote-loading CSS construct from one declaration block or `<style>` body.
+ *
+ *  The escape pass is the same lesson [stripImportantFromCss] already learned, applied to the
+ *  other token that matters: `\75 rl(https://x)` is a `url()` to a CSS parser and was not one to
+ *  [RESOURCE_URL_PATTERN]. Decoding is conditional so legitimate escapes (`content:"\201C"`)
+ *  survive untouched -- the decoded form is only adopted when an escape was HIDING a resource. */
+private fun stripResourceUrls(css: String): String {
+    val commentless = css.replace(CSS_COMMENT, "")
+    val direct = commentless.replace(CSS_AT_IMPORT, "").replace(RESOURCE_URL_PATTERN, "none")
+    val decoded = decodeCssEscapes(commentless)
+    if (decoded == commentless) return direct
+    val decodedStripped = decoded.replace(CSS_AT_IMPORT, "").replace(RESOURCE_URL_PATTERN, "none")
+    return if (decodedStripped == decoded) direct else decodedStripped
+}
+
+/** `@import` takes a bare string as well as a `url()`, so the token pattern below cannot see it. */
+private val CSS_AT_IMPORT = Regex("""@import\b[^;]*;?""", RegexOption.IGNORE_CASE)
+
+/** `image-set()` and `cross-fade()` fetch remote bytes exactly as `url()` does. */
+private val RESOURCE_URL_PATTERN = Regex(
+    """(?:url|image-set|-webkit-image-set|cross-fade)\s*\([^)]*\)""",
+    RegexOption.IGNORE_CASE,
+)
 
 /** Same conservative fallback as the web reader: use a parser and recognize real HTML tags, so
  *  an address such as `<user@example.com>` remains text while `<center>`/`<o:p>` mail renders. */
@@ -1261,7 +1305,13 @@ internal fun stripImportantFromCss(css: String): String =
         }
     }
 
-/** Parsed with jsoup, so the token patterns only run over one `style` attribute or `<style>`. */
+/** Parsed with jsoup, so the token patterns only run over one `style` attribute or `<style>`.
+ *
+ *  Fails OPEN, unlike [blockExternalResources], and that asymmetry is deliberate rather than an
+ *  oversight: this is a LEGIBILITY control, not a security one. Its only job is to let the dark
+ *  theme's overrides win, so a parse failure costs the reader an email in its own colours and
+ *  nothing more. It also runs on [blockExternalResources]'s output, which by then is either a
+ *  parsed document re-serialised or plain escaped text -- both of which parse. */
 internal fun stripImportant(html: String): String {
     if (html.isBlank()) return html
     val doc = runCatching { org.jsoup.Jsoup.parseBodyFragment(html) }.getOrNull() ?: return html
