@@ -584,4 +584,6 @@
         <item quantity="one">%1$d wrong PIN</item>
         <item quantity="other">%1$d wrong PINs</item>
     </plurals>
+    <!-- Shown only when the Keystore could not give this app a hardware-backed key. -->
+    <string name="security_pin_pepper_software_warning">This device\'s secure hardware is unavailable to KyPost, so your PIN is protected by software alone. Someone who takes the device and unlocks its storage could try PINs far faster than the delays above suggest. Use a longer PIN, and consider lowering the erase-after threshold.</string>
 </resources>

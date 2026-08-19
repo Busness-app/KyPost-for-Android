@@ -39,7 +39,7 @@ class SecurePairingStoreCredentialGateTest {
         val salt = CredentialCipher.randomSalt()
         val keys = CredentialCipher.deriveKeys("482913".toCharArray(), salt)
         val store = SecurePairingStore(context)
-        store.savePairing(pairing, credentialKeys = keys, credentialSalt = salt)
+        store.savePairing(pairing, gateEnabled = true, credentialKeys = keys, credentialSalt = salt)
 
         // A read with no key available (app locked) must come back with deviceSecret == null,
         // not throw and not leak the wrapped ciphertext as if it were the plaintext secret.
@@ -53,7 +53,7 @@ class SecurePairingStoreCredentialGateTest {
         val salt = CredentialCipher.randomSalt()
         val keys = CredentialCipher.deriveKeys("482913".toCharArray(), salt)
         val store = SecurePairingStore(context)
-        store.savePairing(pairing, credentialKeys = keys, credentialSalt = salt)
+        store.savePairing(pairing, gateEnabled = true, credentialKeys = keys, credentialSalt = salt)
 
         assertEquals(pairing.deviceSecret, store.pairingSnapshot(credentialKeys = keys)?.deviceSecret)
     }
@@ -61,7 +61,7 @@ class SecurePairingStoreCredentialGateTest {
     @Test
     fun savePairing_withoutCredentialKeys_behavesAsUnwrapped() = runBlocking {
         val store = SecurePairingStore(context)
-        store.savePairing(pairing)
+        store.savePairing(pairing, gateEnabled = false)
 
         assertEquals(pairing.deviceSecret, store.pairingSnapshot(credentialKeys = null)?.deviceSecret)
     }
@@ -70,7 +70,7 @@ class SecurePairingStoreCredentialGateTest {
     fun aWrongPinCannotUnwrap() = runBlocking {
         val salt = CredentialCipher.randomSalt()
         val store = SecurePairingStore(context)
-        store.savePairing(pairing, credentialKeys = CredentialCipher.deriveKeys("482913".toCharArray(), salt), credentialSalt = salt)
+        store.savePairing(pairing, gateEnabled = true, credentialKeys = CredentialCipher.deriveKeys("482913".toCharArray(), salt), credentialSalt = salt)
 
         val wrongKeys = CredentialCipher.deriveKeys("000001".toCharArray(), salt)
         assertNull(store.pairingSnapshot(credentialKeys = wrongKeys)?.deviceSecret)
@@ -79,13 +79,13 @@ class SecurePairingStoreCredentialGateTest {
     @Test
     fun needsCredentialRewrap_isTrueWhenStoredUnwrapped_andFalseOnceWrapped() = runBlocking {
         val store = SecurePairingStore(context)
-        store.savePairing(pairing)
+        store.savePairing(pairing, gateEnabled = false)
         // This is the state a background FCM token rotation leaves behind in a process that was
         // never PIN-unlocked; rewrapPairingIfNeeded keys off exactly this.
         assertTrue(store.needsCredentialRewrap())
 
         val salt = CredentialCipher.randomSalt()
-        store.savePairing(pairing, credentialKeys = CredentialCipher.deriveKeys("482913".toCharArray(), salt), credentialSalt = salt)
+        store.savePairing(pairing, gateEnabled = true, credentialKeys = CredentialCipher.deriveKeys("482913".toCharArray(), salt), credentialSalt = salt)
         assertFalse(store.needsCredentialRewrap())
     }
 
@@ -95,7 +95,7 @@ class SecurePairingStoreCredentialGateTest {
         val salt = CredentialCipher.randomSalt()
         val keys = CredentialCipher.deriveKeys("482913".toCharArray(), salt)
         val store = SecurePairingStore(context)
-        store.savePairing(pairing, credentialKeys = keys, credentialSalt = salt)
+        store.savePairing(pairing, gateEnabled = true, credentialKeys = keys, credentialSalt = salt)
 
         // Exactly what the gate-on/no-key branch does: rewrite the pairing, keep hands off the
         // secret.
@@ -112,7 +112,7 @@ class SecurePairingStoreCredentialGateTest {
     @Test
     fun savePairing_withSecretWritePreserve_leavesAnUnwrappedSecretIntact() = runBlocking {
         val store = SecurePairingStore(context)
-        store.savePairing(pairing)
+        store.savePairing(pairing, gateEnabled = false)
 
         store.savePairing(pairing.copy(deviceSecret = null), SecretWrite.Preserve)
 
@@ -124,9 +124,9 @@ class SecurePairingStoreCredentialGateTest {
     @Test
     fun savePairing_withoutPreserve_stillClearsTheSecret() = runBlocking {
         val store = SecurePairingStore(context)
-        store.savePairing(pairing)
+        store.savePairing(pairing, gateEnabled = false)
 
-        store.savePairing(pairing.copy(deviceSecret = null))
+        store.savePairing(pairing.copy(deviceSecret = null), gateEnabled = false)
 
         assertNull(store.pairingSnapshot(credentialKeys = null)?.deviceSecret)
     }
@@ -135,7 +135,7 @@ class SecurePairingStoreCredentialGateTest {
     fun clearPairing_dropsTheWrappedSecretAndTheTlsPin() = runBlocking {
         val salt = CredentialCipher.randomSalt()
         val store = SecurePairingStore(context)
-        store.savePairing(pairing, credentialKeys = CredentialCipher.deriveKeys("482913".toCharArray(), salt), credentialSalt = salt)
+        store.savePairing(pairing, gateEnabled = true, credentialKeys = CredentialCipher.deriveKeys("482913".toCharArray(), salt), credentialSalt = salt)
         store.saveTlsPin(TlsPin(host = "server.example.com", spkiSha256 = setOf("sha256/AAAA")))
 
         store.clearPairing()

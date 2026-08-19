@@ -51,7 +51,7 @@ class PinChangeSecretRecoveryTest {
 
     private fun storeWithWrappedSecret(): SecurePairingStore =
         SecurePairingStore(context).also {
-            runBlocking { it.savePairing(pairing, credentialKeys = oldKeys, credentialSalt = salt) }
+            runBlocking { it.savePairing(pairing, gateEnabled = true, credentialKeys = oldKeys, credentialSalt = salt) }
         }
 
     /** Death after staging, before the verifier swap: the OLD PIN is still authoritative. */
@@ -85,20 +85,50 @@ class PinChangeSecretRecoveryTest {
         )
     }
 
-    /** The completed change: promoting clears the staged copy, leaving exactly one wrapping. */
+    /** The completed change: promoting clears the staged copy, leaving exactly one wrapping.
+     *
+     *  The `assertFalse` is the load-bearing one. This test used to assert only that the old PIN
+     *  opened nothing — which passed whether or not the staged blob was removed, because staging
+     *  writes under the NEW keys and the old PIN could never open it in either case. The staged
+     *  copy was in fact never cleared on this path, and the test could not see it. */
     @Test
     fun promotingClearsTheStagedCopy() = runBlocking {
         val store = storeWithWrappedSecret()
         store.stagePendingSecret(pairing.deviceSecret!!, newKeys)
-        store.savePairing(pairing, credentialKeys = newKeys, credentialSalt = salt)
+        assertTrue("precondition: the change is mid-flight", store.hasPendingSecret())
+
+        store.savePairing(pairing, gateEnabled = true, credentialKeys = newKeys, credentialSalt = salt)
 
         val reopened = SecurePairingStore(context)
         assertEquals(pairing.deviceSecret, reopened.pairingSnapshot(newKeys)?.deviceSecret)
+        assertFalse(
+            "promotion must REMOVE the staged wrapping, not merely stop reading it",
+            reopened.hasPendingSecret(),
+        )
         // The old PIN must no longer open anything: staging is a transition, not a second key.
         assertNull(
             "a promoted change must not leave the old PIN able to unwrap the secret",
             reopened.pairingSnapshot(oldKeys)?.deviceSecret,
         )
+    }
+
+    /** An abandoned change legitimately keeps its staged copy — that IS the recovery path — but
+     *  the next successful wrapped write must reclaim it. Without this, a PIN change the user
+     *  started and walked away from left the device secret openable under a PIN they never
+     *  adopted, on disk, indefinitely. */
+    @Test
+    fun anAbandonedChangeIsReclaimedByTheNextWrappedWrite() = runBlocking {
+        val store = storeWithWrappedSecret()
+        store.stagePendingSecret(pairing.deviceSecret!!, newKeys)
+        assertTrue("the abandoned staging is what keeps the secret recoverable", store.hasPendingSecret())
+
+        // The user gives up and the app later re-wraps under the PIN that stayed authoritative.
+        store.savePairing(pairing, gateEnabled = true, credentialKeys = oldKeys, credentialSalt = salt)
+
+        val reopened = SecurePairingStore(context)
+        assertFalse("the never-adopted PIN must not keep a readable copy", reopened.hasPendingSecret())
+        assertEquals(pairing.deviceSecret, reopened.pairingSnapshot(oldKeys)?.deviceSecret)
+        assertNull(reopened.pairingSnapshot(newKeys)?.deviceSecret)
     }
 
     /** The state the old code created silently, and which nothing could see. */

@@ -46,11 +46,11 @@ private const val KEY_TLS_PIN_EVER_CAPTURED = "tls_pin_ever_captured"
 
 /** A TOFU certificate pin together with the host it was actually observed on.
  *
- *  [spkiSha256] holds a pin per certificate in the observed chain, not just the leaf.
- *  `CertificatePinner` passes when ANY chain member matches ANY configured pin, so pinning the
- *  issuers alongside the leaf is what lets a routine certificate renewal — which mints a new leaf
- *  key — keep validating. Pinning the leaf alone made every renewal a hard outage recoverable only
- *  by unpairing, and unpairing destroys the local mailbox. */
+ *  [spkiSha256] holds a pin per certificate in the observed chain EXCEPT its trust anchor.
+ *  `CertificatePinner` passes when ANY chain member matches ANY configured pin — which is what
+ *  lets a routine renewal keep validating under an already-pinned issuer, and equally what makes
+ *  a pinned public root admit every certificate that root has ever issued. See
+ *  [org.kysecurity.mail.security.SpkiPinner.pinsForChain], which owns that policy. */
 data class TlsPin(val host: String, val spkiSha256: Set<String>) {
     init {
         // An empty pin set is not "unpinned", it is worse: CertificatePinner passes vacuously when
@@ -89,9 +89,14 @@ sealed interface SecretWrite {
     }
 }
 
-/** Holds pairing proof material in a Keystore-backed EncryptedSharedPreferences file. */
+/** Holds pairing proof material in a Keystore-backed EncryptedSharedPreferences file.
+ *
+ *  CONSTRUCTION IS DISK AND KEYSTORE I/O. It was written `by lazy`, which read as "cheap to
+ *  build" — and then [init] below forced it three lines later, so the laziness was decoration and
+ *  every construction paid a Tink keyset load, an AndroidKeyStore round trip and an XML parse on
+ *  whatever thread got there first. Stated instead of hidden: build this off the main thread. */
 class SecurePairingStore(context: Context) {
-    private val prefs: SharedPreferences by lazy { buildEncryptedPrefs(context.applicationContext) }
+    private val prefs: SharedPreferences = buildEncryptedPrefs(context.applicationContext)
 
     private val _pairing = MutableStateFlow<PairingData?>(null)
     val pairing: StateFlow<PairingData?> = _pairing.asStateFlow()
@@ -125,7 +130,12 @@ class SecurePairingStore(context: Context) {
                 SecretWrite.Clear -> editor.clearWrappedSecret().remove(KEY_DEVICE_SECRET)
                 is SecretWrite.Wrapped -> {
                     val wrapped = CredentialCipher.wrap(secret.secret, secret.keys.current)
-                    editor.remove(KEY_DEVICE_SECRET)
+                    // clearPendingSecret: this write IS the promotion a staged copy was waiting
+                    // for, so the staging window closes here. Without it an abandoned PIN change
+                    // left the device secret readable under a PIN the user never adopted, on disk,
+                    // forever — and SecuritySettingsActivity's PHASE 3 comment claimed otherwise.
+                    editor.clearPendingSecret()
+                        .remove(KEY_DEVICE_SECRET)
                         .putString(KEY_DEVICE_SECRET_CIPHERTEXT, Base64.encodeToString(wrapped.ciphertext, Base64.NO_WRAP))
                         .putString(KEY_DEVICE_SECRET_SALT, Base64.encodeToString(secret.salt, Base64.NO_WRAP))
                         .putString(KEY_DEVICE_SECRET_IV, Base64.encodeToString(wrapped.iv, Base64.NO_WRAP))
@@ -139,18 +149,27 @@ class SecurePairingStore(context: Context) {
         _pairing.value = readPairing(credentialKeys = null)
     }
 
-    /** Writes the pairing's own secret under the current gate posture. */
+    /** Writes the pairing's own secret under the STATED gate posture.
+     *
+     *  [gateEnabled] has no default and is deliberately not inferred from `credentialKeys == null`.
+     *  "The gate is off, store it in the clear" and "the gate is on and this caller does not hold
+     *  the key" both arrive here as a null key and mean opposite things; inferring collapsed them
+     *  into the first, so a caller that merely forgot to pass keys silently downgraded a wrapped
+     *  device secret to plaintext on disk. Gate on with no key now PRESERVES what is already
+     *  there — the one answer that is safe under either reading. */
     suspend fun savePairing(
         pairing: PairingData,
+        gateEnabled: Boolean,
         credentialKeys: CredentialKeys? = null,
         credentialSalt: ByteArray? = null,
     ) {
         val deviceSecret = pairing.deviceSecret
         val secret = when {
             deviceSecret.isNullOrBlank() -> SecretWrite.Clear
+            !gateEnabled -> SecretWrite.Plaintext(deviceSecret)
             credentialKeys != null && credentialSalt != null ->
                 SecretWrite.Wrapped(deviceSecret, credentialKeys, credentialSalt)
-            else -> SecretWrite.Plaintext(deviceSecret)
+            else -> SecretWrite.Preserve
         }
         savePairing(pairing, secret)
     }
@@ -276,6 +295,14 @@ class SecurePairingStore(context: Context) {
                 .commit()
         }
     }
+
+    /** Whether a staged wrapping is still on disk.
+     *
+     *  A test seam, and a deliberate one: "promoting clears the staged copy" used to be asserted
+     *  only through `pairingSnapshot(oldKeys) == null`, which passes whether or not the copy is
+     *  actually gone — the staged blob is written under the NEW keys, so the old PIN could never
+     *  have opened it either way. The claim is now checkable instead of inferable. */
+    internal fun hasPendingSecret(): Boolean = prefs.contains(KEY_DEVICE_SECRET_PENDING_CIPHERTEXT)
 
     private fun readPairing(credentialKeys: CredentialKeys?): PairingData? {
         val subId = prefs.getString(KEY_SUBSCRIBER_ID, null).orEmpty()

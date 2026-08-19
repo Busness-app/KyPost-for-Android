@@ -140,7 +140,13 @@ object EphemeralAttachmentBytes : org.kysecurity.mail.ProcessScopedState {
     }
 }
 
-/** Serves registered bytes through a pipe, never a file; each token is single-use. */
+/** Serves registered bytes through a pipe, never a file.
+ *
+ *  A token is NOT single-use. It stays readable until the TTL sweep reaps it, and any holder of
+ *  the URI may open it any number of times inside that window — see [openFile] for why, and
+ *  [ATTACHMENT_TTL_MILLIS] for the bound that replaces single-use. This paragraph exists because
+ *  the KDoc here, and two comments in [openFile], used to claim single-use semantics over code
+ *  that has never had them, including by naming a `finally` block that does not exist. */
 class EphemeralAttachmentProvider : ContentProvider() {
     override fun attachInfo(context: android.content.Context, info: ProviderInfo) {
         super.attachInfo(context, info)
@@ -158,7 +164,9 @@ class EphemeralAttachmentProvider : ContentProvider() {
         }
         val token = tokenFrom(uri)
         // peek, not take: a viewer that probes before reading must not consume its own attachment.
-        // The token is taken in the writer's finally below, once the bytes have actually been served.
+        // NOTHING consumes the token on this path — not here, not in the writer. The TTL sweep is
+        // the sole owner and the sole bound. Consuming on write-completion is what broke every
+        // probe-then-reopen viewer, which is why it is not done.
         val attachment = EphemeralAttachmentBytes.peek(token)
             ?: throw IOException("Attachment expired or unknown: $uri")
         val pipe = ParcelFileDescriptor.createReliablePipe()
@@ -176,13 +184,15 @@ class EphemeralAttachmentProvider : ContentProvider() {
                         e,
                     )
                 }
-                // Deliberately NOT zeroed here. Zeroing on write-completion races a second reader
-                // still streaming the same array, and taking the token on completion re-breaks the
-                // probe-then-reopen viewers this change exists for. The TTL sweep is the single
-                // owner, and it already bounds exposure for the registered-but-never-opened case to
-                // the same 60s — so this is consistent with the existing contract, not looser.
-                // ponytail: bytes linger until the next sweep rather than the read's end. Upgrade
-                // path is refcounted acquire/release if that window ever needs to be tighter.
+                // Deliberately NOT zeroed, and deliberately NOT taken. Zeroing on write-completion
+                // races a second reader still streaming the same array, and taking the token on
+                // completion re-breaks the probe-then-reopen viewers this exists for. The TTL sweep
+                // is the single owner, and it already bounds exposure for the
+                // registered-but-never-opened case to the same 60s — so this is consistent with the
+                // existing contract, not looser.
+                // ponytail: bytes linger until the next sweep rather than the read's end, and the
+                // URI stays replayable for that window. Upgrade path is refcounted
+                // acquire/release if either needs to be tighter.
             }
         } catch (e: RejectedExecutionException) {
             // Every writer slot is held by a stalled viewer; fail loudly rather than queue. Nothing

@@ -15,6 +15,13 @@ private const val TAG = "EncryptedPrefs"
 /** Plain, so it survives the reset it reports; not in [SecurityWipe]'s retained set. */
 internal const val CREDENTIAL_RESET_PREFS = "org.kysecurity.mail.credential_reset"
 
+/** The ONE AndroidKeyStore alias every encrypted store in this app is sealed under.
+ *
+ *  Named here rather than left implicit in [createEncryptedPrefs]'s defaulted builder, because
+ *  [SecurityWipe] has to destroy it: deleting the prefs FILES without this key leaves a recovered
+ *  blob decryptable, which is the same argument the credential peppers already carry. */
+internal val ENCRYPTED_PREFS_MASTER_KEY_ALIAS: String = MasterKey.DEFAULT_MASTER_KEY_ALIAS
+
 /** Resets only on a genuinely undecryptable keyset; every other failure propagates. */
 internal fun openEncryptedPrefs(
     context: Context,
@@ -88,7 +95,9 @@ fun acknowledgeCredentialResets(context: Context) {
 private const val KEY_RESET_STORES = "reset_stores"
 
 private fun createEncryptedPrefs(appContext: Context, fileName: String): SharedPreferences {
-    val masterKey = MasterKey.Builder(appContext)
+    // Alias named explicitly, not left to the defaulted constructor: SecurityWipe destroys this
+    // key by name, and the two must not be able to drift apart.
+    val masterKey = MasterKey.Builder(appContext, ENCRYPTED_PREFS_MASTER_KEY_ALIAS)
         .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
         .build()
     return EncryptedSharedPreferences.create(

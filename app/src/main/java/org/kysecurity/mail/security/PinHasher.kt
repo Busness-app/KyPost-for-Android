@@ -30,9 +30,18 @@ object PinHasher {
     }
 
     /** Read-only derivation: peppers, never creates. Throws [PepperUnavailableException] when the
-     *  Keystore key behind [pepper] is gone. */
-    private fun derive(pin: CharArray, salt: ByteArray, pepper: CredentialPepper): ByteArray =
-        pepper.mix(pbkdf2(pin, salt))
+     *  Keystore key behind [pepper] is gone.
+     *
+     *  The un-peppered intermediate is zeroed: it is the v1 verifier, so a copy of it left on the
+     *  heap is a copy of a value that still authenticates a legacy install. */
+    private fun derive(pin: CharArray, salt: ByteArray, pepper: CredentialPepper): ByteArray {
+        val raw = pbkdf2(pin, salt)
+        try {
+            return pepper.mix(raw)
+        } finally {
+            java.util.Arrays.fill(raw, 0)
+        }
+    }
 
     /** v1 verifier, retained only so a pre-pepper hash can be checked once and upgraded. */
     fun hashLegacy(pin: CharArray, salt: ByteArray): PinHash = PinHash(salt, pbkdf2(pin, salt))
@@ -43,10 +52,23 @@ object PinHasher {
         salt: ByteArray,
         expectedHash: ByteArray,
         pepper: CredentialPepper = KeystorePinPepper,
-    ): Boolean = MessageDigest.isEqual(derive(pin, salt, pepper), expectedHash)
+    ): Boolean {
+        val candidate = derive(pin, salt, pepper)
+        try {
+            return MessageDigest.isEqual(candidate, expectedHash)
+        } finally {
+            java.util.Arrays.fill(candidate, 0)
+        }
+    }
 
-    fun matchesLegacy(pin: CharArray, salt: ByteArray, expectedHash: ByteArray): Boolean =
-        MessageDigest.isEqual(hashLegacy(pin, salt).hash, expectedHash)
+    fun matchesLegacy(pin: CharArray, salt: ByteArray, expectedHash: ByteArray): Boolean {
+        val candidate = hashLegacy(pin, salt).hash
+        try {
+            return MessageDigest.isEqual(candidate, expectedHash)
+        } finally {
+            java.util.Arrays.fill(candidate, 0)
+        }
+    }
 
     fun randomSalt(): ByteArray = ByteArray(SALT_LENGTH_BYTES).also { SecureRandom().nextBytes(it) }
 

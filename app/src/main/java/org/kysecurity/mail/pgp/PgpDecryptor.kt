@@ -184,7 +184,13 @@ internal object PgpDecryptor {
         return ByteArray(0) to RawSignature.Absent
     }
 
-    /** Peak is 2x [limit]; [org.kysecurity.mail.MemoryBudget.PGP_PLAINTEXT_PEAK_BYTES] must match. */
+    /** Peak is 2x [limit]; [org.kysecurity.mail.MemoryBudget.PGP_PLAINTEXT_PEAK_BYTES] must match.
+     *
+     *  Every array this abandons is zeroed first. `copyOf` allocates, copies and drops the old
+     *  array, so growing to 16 MB used to shed un-zeroed plaintext prefixes at 8 KB, 16 KB, 32 KB
+     *  and so on all the way up — a whole geometric ladder of decrypted mail left for the
+     *  collector, in the one function that reads decrypted mail. [decrypt] scrubs its plaintext on
+     *  the integrity-failure path; this is the same rule applied to the copies. */
     internal fun readAllWithLimit(input: InputStream, limit: Int): ByteArray? {
         // One array, grown in place. The previous shape accumulated a chunk list and then joined
         // it into a full-size result, so at the first copy the chunks AND the result were both
@@ -197,15 +203,23 @@ internal object PgpDecryptor {
                 if (size >= limit) {
                     // At the ceiling. One more readable byte means the message is over the limit,
                     // and the caller must not be handed a prefix as if it were the whole thing.
-                    return if (input.read() < 0) bytes else null
+                    if (input.read() < 0) return bytes
+                    // Refused: nothing about this message may outlive the refusal.
+                    java.util.Arrays.fill(bytes, 0)
+                    return null
                 }
-                bytes = bytes.copyOf(minOf(bytes.size.toLong() * 2, limit.toLong()).toInt())
+                val grown = bytes.copyOf(minOf(bytes.size.toLong() * 2, limit.toLong()).toInt())
+                java.util.Arrays.fill(bytes, 0)
+                bytes = grown
             }
             val count = input.read(bytes, size, bytes.size - size)
             if (count < 0) break
             size += count
         }
-        return if (size == bytes.size) bytes else bytes.copyOf(size)
+        if (size == bytes.size) return bytes
+        val trimmed = bytes.copyOf(size)
+        java.util.Arrays.fill(bytes, 0)
+        return trimmed
     }
 
     private fun verifyOnePass(

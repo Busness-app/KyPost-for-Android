@@ -18,7 +18,9 @@ import java.io.IOException
 /** DataStore has no delete API, so the backing files go directly; a wipe always relaunches. */
 private val DATASTORE_NAMES = listOf("push_state", "contacts_state", "mail_sync_state")
 
-/** Retained because a later step still needs them: ordering, the wipe marker and the ledger. */
+/** Retained because a later step still needs them: ordering, the wipe marker and the ledger.
+ *  These are retained by the MID-wipe sweep only; [PREFS_NAMES_RETAINED_FINAL] is what actually
+ *  outlives the wipe. */
 private val PREFS_NAMES_RETAINED = setOf(
     "app_lock_secure",
     "app_lock_tripwire",
@@ -35,6 +37,19 @@ private val METADATA_PREFS_NAMES = listOf(org.kysecurity.mail.KeywordSettings.PR
 private const val WIPE_STATE_PREFS = "org.kysecurity.mail.wipe_state"
 private const val KEY_WIPE_IN_PROGRESS = "wipe_in_progress"
 private const val KEY_WIPE_ATTEMPTS = "wipe_attempts"
+
+/** The files that may outlive the wipe, and the ONLY ones: destruction that is still owed.
+ *
+ *  Both are PLAIN prefs, which is what makes retaining them free — neither holds a secret and
+ *  neither needs the master key the final step destroys.
+ *
+ *  [DownloadedAttachmentLedger] is not optional and is the trap here. It is the only record of
+ *  decrypted mail that escaped the sandbox into shared Downloads; [DownloadedAttachmentLedger
+ *  .deleteAll] deliberately keeps the file when the provider refused a row, so a later wipe can
+ *  retry it. Sweeping it away makes that plaintext permanently unreachable while the wipe reports
+ *  Complete — a worse outcome than the surviving key this whole step exists to remove.
+ *  `WipeResurrectionTest.wipe_completesButReportsAttachmentsItCouldNotRemove` is the guard. */
+private val PREFS_NAMES_RETAINED_FINAL = setOf(WIPE_STATE_PREFS, DownloadedAttachmentLedger.PREFS_NAME)
 
 /** Set when the wipe gives up. Must NOT clear [KEY_WIPE_IN_PROGRESS]; that marker outlives it. */
 private const val KEY_WIPE_ABANDONED = "wipe_abandoned"
@@ -272,6 +287,26 @@ object SecurityWipe {
             )
         }
 
+        // ABSOLUTELY LAST, and it is a `step` because a survivor is exactly what an incomplete
+        // wipe exists to name.
+        //
+        // Every EncryptedSharedPreferences file in this app -- the pairing store, the app-lock
+        // store, the database passphrase, the enrollment vault -- is sealed under ONE
+        // AndroidKeyStore alias. Deleting those FILES while the key that opens them stays in the
+        // Keymaster blob store leaves a recovered blob decryptable: the same argument
+        // `credentialPeppers` already makes, applied to the key that actually opens something.
+        //
+        // WHY LAST, and not next to `credentialPeppers`: the deregister above ends in
+        // clearPairing(), which WRITES to an encrypted store. That write recreates both the file
+        // and this alias, so destroying it any earlier is undone by the network phase on every
+        // wipe that reaches the relay. The sweep here removes whatever came back.
+        step("androidxMasterKey") {
+            deleteAllSharedPrefs(appContext, retained = PREFS_NAMES_RETAINED_FINAL)
+            check(deleteKeystoreKey(ENCRYPTED_PREFS_MASTER_KEY_ALIAS)) {
+                "the androidx security master key survived the wipe"
+            }
+        }
+
         if (failed.isEmpty()) {
             clearWipeMarker(appContext)
             WipeResult.Complete
@@ -414,14 +449,14 @@ object SecurityWipe {
     }
 
     /** Throws on the first failure so [wipeAndResetApp] records the step as failed. */
-    private fun deleteAllSharedPrefs(appContext: Context) {
+    private fun deleteAllSharedPrefs(appContext: Context, retained: Set<String> = PREFS_NAMES_RETAINED) {
         val dir = File(appContext.dataDir, "shared_prefs")
         // Null means the directory could not be enumerated, which is not "nothing here".
         val files = dir.listFiles { file -> file.name.endsWith(".xml") }
             ?: if (dir.exists()) throw IOException("Could not enumerate $dir") else emptyArray()
         val names = files
             .map { it.name.removeSuffix(".xml") }
-            .filterNot { it in PREFS_NAMES_RETAINED }
+            .filterNot { it in retained }
         val undeleted = names.filterNot { appContext.deleteSharedPreferences(it) }
         if (undeleted.isNotEmpty()) {
             throw IOException("Failed to delete shared preferences: $undeleted")

@@ -22,6 +22,12 @@ suspend fun rewrapPairingIfNeeded(context: Context, appLockManager: AppLockManag
         // currently-unwrapped one comes back the same either way.
         val currentPairing = securePairingStore.pairingSnapshot(credentialKeys) ?: return@withContext
         if (currentPairing.deviceSecret.isNullOrBlank()) return@withContext
-        securePairingStore.savePairing(currentPairing, credentialKeys, credentialSalt)
+        // gateEnabled = true is checked, not assumed: the early return above already established it.
+        securePairingStore.savePairing(
+            currentPairing,
+            gateEnabled = true,
+            credentialKeys = credentialKeys,
+            credentialSalt = credentialSalt,
+        )
     }
 }
