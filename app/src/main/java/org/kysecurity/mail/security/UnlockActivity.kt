@@ -29,6 +29,10 @@ class UnlockActivity : AppCompatActivity() {
     private lateinit var appLockManager: AppLockManager
     private var countdown: CountDownTimer? = null
 
+    /** Set when onCreate returned early to wait for the startup wipe verdict: the views and
+     *  [appLockManager] are unset, so every other lifecycle callback must stand down too. */
+    private var awaitingStartupVerdict = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -36,6 +40,18 @@ class UnlockActivity : AppCompatActivity() {
         applyThemeToActivity(this)
         window.applySecureFlag()
         window.applyOverlayProtection()
+
+        // Outside LockedActivity, which is what normally holds a screen back until the startup
+        // wipe has ruled. A PIN attempt taken before then feeds the failed-attempt counter that
+        // triggers a wipe, while one may already be running.
+        if (!SecurityWipe.startupVerdict.isCompleted) {
+            awaitingStartupVerdict = true
+            lifecycleScope.launch {
+                SecurityWipe.startupVerdict.await()
+                if (!isFinishing && !isDestroyed) recreate()
+            }
+            return
+        }
 
         appLockManager = SecurityRuntime.graph(this).appLockManager
 
@@ -55,6 +71,7 @@ class UnlockActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (awaitingStartupVerdict) return
         applyRemainingLockout()
     }
 
@@ -170,8 +187,8 @@ class UnlockActivity : AppCompatActivity() {
             object : BiometricPrompt.AuthenticationCallback() {
                 override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
                     val cipher = result.cryptoObject?.cipher
-                    val keys = cipher?.let { CredentialEnvelope.open(unlock.sealed, it) }
-                    if (keys == null) {
+                    val proof = cipher?.let { CredentialEnvelope.open(unlock.sealed, it) }
+                    if (proof == null) {
                         // The blob and the key have gone out of step. Nothing here is recoverable by
                         // trying again, and the PIN both unlocks and re-seals.
                         errorText.visibility = View.VISIBLE
@@ -180,7 +197,7 @@ class UnlockActivity : AppCompatActivity() {
                         return
                     }
                     // Rejected means an earlier lockout is still running; biometrics skip nothing.
-                    if (appLockManager.unlockWithBiometric(keys) !is UnlockAttemptResult.Success) {
+                    if (appLockManager.unlockWithBiometric(proof) !is UnlockAttemptResult.Success) {
                         errorText.visibility = View.VISIBLE
                         errorText.text = getString(R.string.unlock_wrong_pin)
                         applyRemainingLockout()

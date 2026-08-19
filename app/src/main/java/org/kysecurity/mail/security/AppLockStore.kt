@@ -141,8 +141,26 @@ class AppLockStore(context: Context) : AppLockState {
     }
 
     /** True when the encrypted store lost its contents while [wasLockEnabled] says a lock was
-     *  configured. [SecurityWipe.enforceTripwire] turns this into a wipe at startup. */
-    fun tripwireBroken(): Boolean = wasLockEnabled() && !prefs.contains(KEY_PIN_HASH)
+     *  configured. [SecurityWipe.enforceTripwire] turns this into a wipe at startup.
+     *
+     *  NULL means the encrypted store could not be opened at all, which is neither answer. That
+     *  case must never be rounded down to "the PIN hash is gone": it is a transient Keystore fault
+     *  far more often than it is tampering, and this return value destroys the mailbox. Callers
+     *  block instead — see [LockedActivity.passesStartupTripwire]. */
+    fun tripwireBroken(): Boolean? {
+        if (!wasLockEnabled()) return false
+        val store = try {
+            prefs
+        } catch (e: EncryptedStoreUnavailableException) {
+            Log.e(TAG, "The app-lock store could not be opened; refusing to call the tripwire", e)
+            return null
+        }
+        return !store.contains(KEY_PIN_HASH)
+    }
+
+    /** Whether the encrypted half can be read right now. Disk and Keystore work: call it off the
+     *  main thread, and prefer [SecurityWipe.lockStoreUnreadable], which caches one answer. */
+    fun encryptedStoreReadable(): Boolean = runCatching { prefs }.isSuccess
 
     override fun isLockEnabled(): Boolean = prefs.getBoolean(KEY_LOCK_ENABLED, false)
     override fun enableLock() {

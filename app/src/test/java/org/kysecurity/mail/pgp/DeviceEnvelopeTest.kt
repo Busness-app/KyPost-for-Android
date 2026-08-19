@@ -6,6 +6,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
+import kotlin.test.assertFailsWith
 import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
@@ -181,5 +182,24 @@ class DeviceEnvelopeTest {
     private companion object {
         val FIXTURE_SECRET = ByteArray(32) { 0x11 }
         val FIXTURE_SALT = ByteArray(65) { 0x22 }
+    }
+
+    /** RFC 5869's ceiling, and the reason it is enforced rather than assumed: the block counter is
+     *  written as ONE byte, so at 256 blocks it wraps to zero and that round reproduces round 1's
+     *  output. A silent key collision is not a failure mode worth leaving to "nobody calls it with
+     *  that length". */
+    @Test
+    fun hkdfRefusesLengthsPastTheOneByteCounter() {
+        assertFailsWith<IllegalArgumentException> {
+            hkdfSha256(ByteArray(32), ByteArray(32), ByteArray(4), 255 * 32 + 1)
+        }
+        assertFailsWith<IllegalArgumentException> {
+            hkdfSha256(ByteArray(32), ByteArray(32), ByteArray(4), 0)
+        }
+    }
+
+    @Test
+    fun hkdfStillExpandsUpToTheCeiling() {
+        assertEquals(255 * 32, hkdfSha256(ByteArray(32), ByteArray(32), ByteArray(4), 255 * 32).size)
     }
 }

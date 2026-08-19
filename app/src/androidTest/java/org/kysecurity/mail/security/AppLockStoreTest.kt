@@ -68,7 +68,7 @@ class AppLockStoreTest {
     fun tripwire_isUnsetUntilALockIsConfigured() {
         val store = AppLockStore(context)
         assertFalse(store.wasLockEnabled())
-        assertFalse(store.tripwireBroken())
+        assertEquals(false, store.tripwireBroken())
     }
 
     @Test
@@ -96,7 +96,7 @@ class AppLockStoreTest {
 
         val recovered = AppLockStore(context)
         assertFalse(recovered.isLockEnabled())
-        assertTrue("deleting the encrypted store must be detectable", recovered.tripwireBroken())
+        assertEquals("deleting the encrypted store must be detectable", true, recovered.tripwireBroken())
     }
 
     @Test
@@ -123,12 +123,12 @@ class AppLockStoreTest {
 
         // But "unlocked" alone is not an acceptable outcome: the tripwire is what turns this into
         // a wipe at startup rather than a free pass into the cached mailbox.
-        assertTrue("a corrupted keyset must trip the tripwire", recovered.tripwireBroken())
+        assertEquals("a corrupted keyset must trip the tripwire", true, recovered.tripwireBroken())
 
         // The reset must leave a genuinely working store behind, not just a non-crashing shell.
         recovered.setPin("903471".toCharArray())
         assertTrue(AppLockStore(context).verifyPin("903471".toCharArray()))
-        assertFalse("setting a new PIN clears the tripwire", AppLockStore(context).tripwireBroken())
+        assertEquals("setting a new PIN clears the tripwire", false, AppLockStore(context).tripwireBroken())
     }
 
     /** Deleting both prefs files used to erase the lock silently; a Keystore alias now survives it. */
@@ -143,7 +143,7 @@ class AppLockStoreTest {
 
         val recovered = AppLockStore(context)
         assertFalse(recovered.isLockEnabled())
-        assertTrue("deleting both files must still be detectable", recovered.tripwireBroken())
+        assertEquals("deleting both files must still be detectable", true, recovered.tripwireBroken())
     }
 
     /** A forged marker on a store that never had a lock has nothing to protect, so no wipe. */
@@ -158,8 +158,9 @@ class AppLockStoreTest {
             .putString("lock_was_enabled_mac", "Zm9yZ2Vk")
             .commit()
 
-        assertFalse(
+        assertEquals(
             "a forged marker with no Keystore key behind it must not arm a wipe",
+            false,
             AppLockStore(context).tripwireBroken(),
         )
     }
@@ -176,7 +177,7 @@ class AppLockStoreTest {
 
         val recovered = AppLockStore(context)
         assertFalse(recovered.wasLockEnabled())
-        assertFalse(recovered.tripwireBroken())
+        assertEquals(false, recovered.tripwireBroken())
     }
 
     /** A silent salt overwrite left the device secret wrapped under a key nothing reproduces.

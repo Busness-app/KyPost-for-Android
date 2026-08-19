@@ -6,6 +6,7 @@ import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -81,5 +82,92 @@ class EphemeralAttachmentProviderTest {
 
         // The one that was accepted is still readable — a refusal must not disturb it.
         assertEquals("application/pdf", context.contentResolver.getType(first))
+    }
+
+    /** THE RACE. `peek` handed the SAME array to every concurrent opener, and the
+     *  RejectedExecutionException path filled it unconditionally — so a reader still streaming
+     *  that buffer got a half-zeroed file and no error. Revocation now defers the fill to the last
+     *  release. */
+    @Test
+    fun revokingWhileAReaderHoldsTheBytesDoesNotZeroThemUnderIt() {
+        val secret = "decrypted attachment plaintext".toByteArray()
+        val expected = secret.copyOf()
+        val uri = requireNotNull(EphemeralAttachmentBytes.register(secret, "text/plain", "secret.txt"))
+        val token = requireNotNull(uri.lastPathSegment)
+
+        val held = requireNotNull(EphemeralAttachmentBytes.acquire(token))
+
+        // The capability goes immediately...
+        assertTrue(EphemeralAttachmentBytes.revoke(token))
+        assertNull("the token must stop resolving at once", context.contentResolver.getType(uri))
+        // ...but the bytes the live reader is streaming must NOT be pulled out from under it.
+        assertArrayEquals("a live read must not be corrupted by a revoke", expected, held.bytes)
+
+        // And the moment that reader lets go, the plaintext is gone.
+        EphemeralAttachmentBytes.release(held)
+        assertArrayEquals(ByteArray(expected.size), held.bytes)
+    }
+
+    /** With no reader holding it, revocation zeroes inline rather than waiting for the TTL sweep. */
+    @Test
+    fun revokingAnUnreadAttachmentZeroesItImmediately() {
+        val secret = "never opened".toByteArray()
+        val uri = requireNotNull(EphemeralAttachmentBytes.register(secret, "text/plain", "x.txt"))
+
+        assertTrue(EphemeralAttachmentBytes.revoke(requireNotNull(uri.lastPathSegment)))
+
+        assertArrayEquals(ByteArray(secret.size), secret)
+    }
+
+    /** Bytes are bounded by the READ's end now, not only by the 60s TTL: the last release of an
+     *  expired attachment zeroes it. */
+    @Test
+    fun theLastReleaseAfterExpiryZeroesTheBytes() {
+        val secret = "decrypted".toByteArray()
+        val expected = secret.copyOf()
+        val uri = requireNotNull(EphemeralAttachmentBytes.register(secret, "text/plain", "x.txt"))
+        val token = requireNotNull(uri.lastPathSegment)
+
+        val held = requireNotNull(EphemeralAttachmentBytes.acquire(token))
+        // Sweep it while the read is in flight; a deterministic sweep, not a wait on the timer.
+        EphemeralAttachmentBytes.purgeExpired(System.currentTimeMillis() + 10 * 60_000L)
+
+        assertArrayEquals("still readable while a reader holds it", expected, held.bytes)
+
+        EphemeralAttachmentBytes.release(held)
+        assertArrayEquals(ByteArray(expected.size), held.bytes)
+    }
+
+    /** Two readers, and only the second release may zero. */
+    @Test
+    fun zeroingWaitsForEveryReader() {
+        val secret = "decrypted".toByteArray()
+        val expected = secret.copyOf()
+        val uri = requireNotNull(EphemeralAttachmentBytes.register(secret, "text/plain", "x.txt"))
+        val token = requireNotNull(uri.lastPathSegment)
+
+        val first = requireNotNull(EphemeralAttachmentBytes.acquire(token))
+        val second = requireNotNull(EphemeralAttachmentBytes.acquire(token))
+        EphemeralAttachmentBytes.revoke(token)
+
+        EphemeralAttachmentBytes.release(first)
+        assertArrayEquals("one reader remains", expected, second.bytes)
+
+        EphemeralAttachmentBytes.release(second)
+        assertArrayEquals(ByteArray(expected.size), second.bytes)
+    }
+
+    /** A viewer that probes for type or size before reading must still be able to reopen: this is
+     *  why the token is not consumed on first open, and the refcount is what makes that safe. */
+    @Test
+    fun aTokenStaysOpenableAcrossRepeatedReads() {
+        val bytes = "reopen me".toByteArray()
+        val expected = bytes.copyOf()
+        val uri = requireNotNull(EphemeralAttachmentBytes.register(bytes, "text/plain", "note.txt"))
+
+        repeat(3) {
+            val read = context.contentResolver.openInputStream(uri).use { requireNotNull(it).readBytes() }
+            assertArrayEquals(expected, read)
+        }
     }
 }

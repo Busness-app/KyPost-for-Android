@@ -19,6 +19,20 @@ private val OAEP = OAEPParameterSpec(
     PSource.PSpecified.DEFAULT,
 )
 
+/** Proof that these keys came out of [CredentialEnvelope.open] — i.e. out of a Cipher that a
+ *  strong biometric had already authorized.
+ *
+ *  Private constructor plus an internal issuer, the same shape as [AppLockManager.DecisionToken]
+ *  and for the same reason. [AppLockManager.unlockWithBiometric] unlocks the mailbox and clears
+ *  the failed-attempt ladder; it used to take a bare [CredentialKeys] from any caller, so the
+ *  entire security property lived in UnlockActivity having remembered to run a BiometricPrompt
+ *  first and nothing required it to. `SourceRulesTest` keeps [issue] to this file. */
+class BiometricProof private constructor(internal val keys: CredentialKeys) {
+    internal companion object {
+        fun issue(keys: CredentialKeys) = BiometricProof(keys)
+    }
+}
+
 object CredentialEnvelope {
 
     fun encryptCipher(publicKey: PublicKey): Cipher =
@@ -30,12 +44,16 @@ object CredentialEnvelope {
     fun seal(keys: CredentialKeys, cipher: Cipher): ByteArray =
         cipher.doFinal(keys.current.encoded + keys.legacy.encoded)
 
-    fun open(sealed: ByteArray, cipher: Cipher): CredentialKeys? {
+    /** [cipher] must be the one a BiometricPrompt CryptoObject just authorized; that is what the
+     *  returned [BiometricProof] attests to, and it is the only way to mint one. */
+    fun open(sealed: ByteArray, cipher: Cipher): BiometricProof? {
         val plaintext = runCatching { cipher.doFinal(sealed) }.getOrNull() ?: return null
         if (plaintext.size != AES_KEY_BYTES * 2) return null
-        return CredentialKeys(
-            current = SecretKeySpec(plaintext, 0, AES_KEY_BYTES, "AES"),
-            legacy = SecretKeySpec(plaintext, AES_KEY_BYTES, AES_KEY_BYTES, "AES"),
+        return BiometricProof.issue(
+            CredentialKeys(
+                current = SecretKeySpec(plaintext, 0, AES_KEY_BYTES, "AES"),
+                legacy = SecretKeySpec(plaintext, AES_KEY_BYTES, AES_KEY_BYTES, "AES"),
+            ),
         )
     }
 }

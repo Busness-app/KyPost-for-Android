@@ -32,7 +32,10 @@ object PinPolicy {
     fun validate(pin: CharArray): Result = when {
         pin.size < MIN_LENGTH -> Result.TooShort
         pin.size > MAX_LENGTH -> Result.TooLong
-        !pin.all { it.isDigit() } -> Result.NotNumeric
+        // ASCII, NOT `Char.isDigit()`, which is the Unicode Nd category: `٠١٢٣٤٥٦٧` and
+        // `०१२३४५६७` both passed it. The KDoc above reasons about a 10^8 space and [isRun]
+        // subtracts code points, and neither statement was true of the alphabet actually accepted.
+        !pin.all { it in '0'..'9' } -> Result.NotNumeric
         isListed(pin) -> Result.TooCommon
         isRun(pin) -> Result.TooCommon
         else -> Result.Valid

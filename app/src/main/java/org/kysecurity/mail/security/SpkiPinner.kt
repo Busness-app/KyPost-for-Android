@@ -6,30 +6,53 @@ import java.security.cert.X509Certificate
 
 /** TOFU: the server cert pin is captured at pairing time and enforced on every later connect. */
 object SpkiPinner {
+
+    /** How many leaf pins may be accepted at once. Two: the one in use, and the one it replaced.
+     *
+     *  This is the renewal window. [org.kysecurity.mail.push.PushSyncCoordinator.refreshTlsPin]
+     *  rolls a fresh leaf in on every registration that ALREADY validated against a stored pin, so
+     *  a certificate rotation between two resyncs is carried rather than fatal. Larger would just
+     *  widen the set of keys a stolen one hides in. */
+    const val MAX_PINNED_LEAVES = 2
+
     fun pinFor(certificate: Certificate): String = CertificatePinner.pin(certificate)
 
-    /** The pins to store for an observed handshake chain: everything except the trust anchor.
+    /** The pin to store for an observed handshake chain: THE LEAF, and nothing else.
      *
-     *  Two mistakes are being avoided at once, and they pull in opposite directions.
+     *  `CertificatePinner` passes when ANY chain member matches ANY configured pin. That single
+     *  fact rules out every issuer in the chain, not just the root:
      *
-     *  Pinning the LEAF ALONE made every routine certificate renewal a hard outage, because a
-     *  renewal mints a new leaf key that no stored pin matches, and the only way out was unpairing
-     *  — which deletes the mailbox. Intermediates are pinned so a renewed leaf under an
-     *  already-pinned issuer still validates.
+     *  - A pinned public ROOT admits every certificate that root has ever issued or ever will.
+     *  - A pinned public INTERMEDIATE is the same defect one link down, and it is the one this
+     *    function used to have. For the ordinary deployment — a self-hosted relay behind Let's
+     *    Encrypt — pinning R11 or E5 meant the pin asserted "issued by Let's Encrypt" and nothing
+     *    more. Anyone who can answer for the host (DNS hijack, BGP, a hostile resolver, a
+     *    compromised registrar) obtains their own certificate from the same CA in ninety seconds,
+     *    for free, and it chains to the pinned intermediate. That is not a pin; it is WebPKI with
+     *    extra steps and a UI that claims otherwise.
+     *  - A pinned LEAF is a pin. It names one key.
      *
-     *  Pinning the ROOT is worse than not pinning. `CertificatePinner` passes when ANY chain
-     *  member matches ANY configured pin, so a pinned public root admits every certificate that
-     *  root has ever issued or ever will: an attacker who can answer for the host obtains their
-     *  own certificate from the same CA and the pin passes. That is not a pin.
+     *  Leaf-only was tried before and reverted because a renewal that mints a new key matches no
+     *  stored pin, and the only recovery was unpairing, which deletes the mailbox. That is a real
+     *  problem and it is NOT solved by weakening the pin. It is solved by continuity —
+     *  [MAX_PINNED_LEAVES] and `refreshTlsPin` — which keeps the pin current across renewals
+     *  without ever accepting a key this device has not seen on an already-validated connection.
      *
-     *  Self-issued is the test, NOT `dropLast(1)`: servers commonly do not send the root, and
-     *  dropping the last element blind would throw away the intermediate on exactly those chains.
-     *  A chain that is entirely self-issued is a single self-signed server certificate — the
-     *  self-hosted-relay case — and pinning that leaf is both correct and the only option. */
+     *  An entirely self-issued chain is a single self-signed server certificate, the
+     *  self-hosted-relay case, and its leaf is also its anchor: pinning it is both correct and the
+     *  only option, which falls out of taking the leaf without a special case. */
     fun pinsForChain(chain: List<Certificate>): Set<String> =
-        chain.filterNot(::isTrustAnchor).ifEmpty { chain }.mapTo(LinkedHashSet(), ::pinFor)
+        chain.firstOrNull()?.let { setOf(pinFor(it)) }.orEmpty()
 
     /** A root is self-issued. Position in the chain is presentation; this is the property. */
     internal fun isTrustAnchor(certificate: Certificate): Boolean =
         (certificate as? X509Certificate)?.let { it.issuerX500Principal == it.subjectX500Principal } == true
+
+    /** [fresh] first, then as much of [history] as the window allows.
+     *
+     *  Order is the policy: the newest observation is the one that must survive truncation. Both
+     *  entries are leaves this device saw on a connection that had already validated against a pin
+     *  it held, so widening to two never admits a key from outside that chain of custody. */
+    fun rollingPins(fresh: Set<String>, history: Set<String>): Set<String> =
+        (fresh + history).take(MAX_PINNED_LEAVES).toSet()
 }

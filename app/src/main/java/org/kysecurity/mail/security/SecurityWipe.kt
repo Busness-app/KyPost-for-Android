@@ -9,6 +9,7 @@ import org.kysecurity.mail.data.DataRuntime
 import org.kysecurity.mail.push.PushRuntime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -86,8 +87,19 @@ sealed class WipeResult {
 object SecurityWipe {
     private const val TAG = "SecurityWipe"
 
+    /** Two entry points reach a wipe — [enforceTripwire] at startup and the failed-attempt
+     *  threshold in [AppLockManager] — and the screens that raise the second (UnlockActivity,
+     *  MfaApprovalActivity) sit outside [LockedActivity]'s startup gate. Concurrently, the two
+     *  double-counted [KEY_WIPE_ATTEMPTS] against one episode and raced each other's
+     *  `deleteSharedPreferences`, which reports a file the OTHER run already deleted as a failed
+     *  step: a clean wipe reported to the user as incomplete, having burnt two of three resumes. */
+    private val wipeGate = kotlinx.coroutines.sync.Mutex()
+
     /** [NonCancellable]: a half-finished wipe is worse than either outcome. */
-    suspend fun wipeAndResetApp(context: Context): WipeResult = withContext(Dispatchers.IO + NonCancellable) {
+    suspend fun wipeAndResetApp(context: Context): WipeResult =
+        withContext(Dispatchers.IO + NonCancellable) { wipeGate.withLock { runWipe(context) } }
+
+    private suspend fun runWipe(context: Context): WipeResult {
         val appContext = context.applicationContext
         val failed = mutableListOf<String>()
 
@@ -162,9 +174,15 @@ object SecurityWipe {
         // does not own; a row it can never delete would otherwise fail this wipe on every resume
         // until MAX_WIPE_RESUMES bricked the app permanently, over a file the user can remove
         // themselves in ten seconds. Reported instead — see [WipeResult.Complete]'s scope.
+        //
+        // The count on the throwing path is the ledger's own size, read BEFORE the sweep. A
+        // placeholder list's `.size` was reported to the user as a fact — "1 attachment could not
+        // be removed" — on the one screen whose entire purpose is telling them the truth about
+        // what survived, when the ledger might hold two hundred.
+        val recordedBeforeSweep = DownloadedAttachmentLedger.recordedCount(appContext)
         val strandedDownloads = runCatching { DownloadedAttachmentLedger.deleteAll(appContext) }
             .onFailure { android.util.Log.e(TAG, "Downloads sweep threw", it) }
-            .getOrDefault(listOf("<sweep failed>"))
+            .getOrElse { List(maxOf(recordedBeforeSweep, 1)) { index -> "<sweep failed #$index>" } }
         if (strandedDownloads.isNotEmpty()) {
             android.util.Log.e(
                 TAG,
@@ -307,7 +325,7 @@ object SecurityWipe {
             }
         }
 
-        if (failed.isEmpty()) {
+        return if (failed.isEmpty()) {
             clearWipeMarker(appContext)
             WipeResult.Complete
         } else {
@@ -369,8 +387,12 @@ object SecurityWipe {
             .edit().remove(KEY_STRANDED_DOWNLOADS).commit()
     }
 
-    /** Accumulates across resumes: a second sweep that strands a different row must not hide the
-     *  first. commit(), like every other write here. */
+    /** The high-water mark across resumes, NOT a running total.
+     *
+     *  [DownloadedAttachmentLedger.deleteAll] keeps every row it could not delete, so each sweep
+     *  reports the whole surviving set rather than only what it newly failed on — summing would
+     *  count the same file once per resume. The previous comment here claimed accumulation over
+     *  code that has always taken a maximum; the code was right. commit(), like every write here. */
     private fun recordStrandedDownloads(appContext: Context, count: Int) {
         val prefs = appContext.getSharedPreferences(WIPE_STATE_PREFS, Context.MODE_PRIVATE)
         prefs.edit().putInt(KEY_STRANDED_DOWNLOADS, maxOf(prefs.getInt(KEY_STRANDED_DOWNLOADS, 0), count)).commit()
@@ -511,12 +533,37 @@ object SecurityWipe {
             return wipeAndResetApp(appContext)
         }
 
-        if (!AppLockStore(appContext).tripwireBroken()) return null
-        android.util.Log.e(TAG, "App-lock state vanished while a lock was configured; wiping")
-        return wipeAndResetApp(appContext)
+        // Tri-state. `null` is "the encrypted store would not open", which is NOT "the PIN hash is
+        // gone" — the store is opened through [openEncryptedPrefs], which now refuses to reset
+        // anything it cannot prove is destroyed. Wiping on it turned a transient AndroidKeyStore
+        // fault into the loss of every message on the device. [LockedActivity] blocks instead.
+        val broken = AppLockStore(appContext).tripwireBroken()
+        lockStoreUnreadable = broken == null
+        return when (broken) {
+            false -> null
+            true -> {
+                android.util.Log.e(TAG, "App-lock state vanished while a lock was configured; wiping")
+                wipeAndResetApp(appContext)
+            }
+            null -> {
+                android.util.Log.e(TAG, "App-lock store is unreadable; refusing to wipe on an unproven tripwire")
+                null
+            }
+        }
     }
 
     /** A gate: Application.onCreate cannot promise to run before the launcher Activity. */
     val startupVerdict: kotlinx.coroutines.CompletableDeferred<WipeResult?> =
         kotlinx.coroutines.CompletableDeferred()
+
+    /** Set by [enforceTripwire] when the app-lock store could not be opened, so [LockedActivity]
+     *  can block without paying for the check itself.
+     *
+     *  Deliberately a cached boolean rather than a probe at each screen: opening the store is a
+     *  Tink keyset load, an AndroidKeyStore round trip and an XML parse, and asking in every
+     *  `onCreate` put all three on the main thread on the way into every screen in the app. It is
+     *  answered once, on IO, by the routine that already had to ask. */
+    @Volatile
+    var lockStoreUnreadable: Boolean = false
+        private set
 }

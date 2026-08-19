@@ -49,4 +49,21 @@ class PinPolicyTest {
             assertEquals("expected $it to reach the blocklist", PinPolicy.Result.TooCommon, PinPolicy.validate(it.toCharArray()))
         }
     }
+
+    /** `Char.isDigit()` is the Unicode Nd category, not ASCII, so these passed a check whose
+     *  surrounding KDoc reasons about a 10^8 space — and [PinPolicy.isRun] subtracts code points,
+     *  which means neither the stated cost to guess nor the run detection described the alphabet
+     *  actually accepted. */
+    @Test
+    fun nonAsciiDigitsAreNotNumeric() {
+        assertEquals(PinPolicy.Result.NotNumeric, PinPolicy.validate("\u0660\u0661\u0662\u0663\u0664\u0665\u0666\u0667".toCharArray()))
+        assertEquals(PinPolicy.Result.NotNumeric, PinPolicy.validate("\u0966\u0967\u0968\u0969\u096A\u096B\u096C\u096D".toCharArray()))
+        // Mixed is still refused: one non-ASCII digit is enough.
+        assertEquals(PinPolicy.Result.NotNumeric, PinPolicy.validate("4829137\u0660".toCharArray()))
+    }
+
+    @Test
+    fun plainAsciiDigitsStillPass() {
+        assertEquals(PinPolicy.Result.Valid, PinPolicy.validate("48291374".toCharArray()))
+    }
 }

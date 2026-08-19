@@ -108,7 +108,11 @@ class Run4MfaCredentialGateTest {
         val state = GateState(credentialSalt = CredentialCipher.randomSalt())
         val m = manager(state)
 
-        m.unlockWithBiometric(CredentialCipher.deriveKeys("48291374".toCharArray(), state.credentialSalt()!!, GatePepper))
+        m.unlockWithBiometric(
+            BiometricProof.issue(
+                CredentialCipher.deriveKeys("48291374".toCharArray(), state.credentialSalt()!!, GatePepper),
+            ),
+        )
 
         assertNotNull("the sealed keys are the gate's key", m.cachedCredentialKeys())
     }

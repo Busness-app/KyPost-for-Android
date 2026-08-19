@@ -14,8 +14,14 @@ private const val PASSPHRASE_BYTES = 32
 /** SQLCipher passphrase: 32 random bytes, not PIN-derived — the DB opens with no PIN entered. */
 internal object DatabaseKey {
 
+    /** Serialises the check-mint-store sequence below. Two threads reaching a first open together
+     *  both read no passphrase, both call [discardUnopenableDatabase] — which DELETES the database
+     *  — and both mint; whichever loses the `commit()` has handed its caller a passphrase that is
+     *  on nobody's disk, so the database it opens can never be reopened. */
+    private val mintLock = Any()
+
     /** Base64 so the byte helper and the ATTACH ... KEY SQL text derive the same key. */
-    fun passphrase(context: Context): String {
+    fun passphrase(context: Context): String = synchronized(mintLock) {
         val appContext = context.applicationContext
         val prefs = openEncryptedPrefs(appContext, PREFS_FILE) {
             android.util.Log.e(TAG, "Database key store keyset is undecryptable", it)

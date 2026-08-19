@@ -36,14 +36,23 @@ object DownloadedAttachmentLedger {
      *  process, under an ownership model this app does not control — a row it can never delete
      *  must be REPORTED to the user, not turned into a permanently failing wipe step that blocks
      *  the app forever. Sandbox destruction is the terminal kind; this is not. */
-    fun deleteAll(context: Context): List<String> {
+    fun deleteAll(
+        context: Context,
+        /** Injectable for the same reason [org.kysecurity.mail.blockExternalResources] takes a
+         *  parser: "it fails closed" is exactly the kind of claim that must not rest on reading the
+         *  code, and no real provider can be made to return 0-rows-then-throw-on-query on demand.
+         *  Returns the row count, or throws exactly as `ContentResolver` would. */
+        delete: (Uri) -> Int = { context.applicationContext.contentResolver.delete(it, null, null) },
+        /** Likewise: true still there, false provably gone, null unanswerable. */
+        resolves: (Uri) -> Boolean? = { stillResolves(context.applicationContext, it) },
+    ): List<String> {
         val appContext = context.applicationContext
         val store = prefs(appContext)
         val recorded = store.getStringSet(KEY_URIS, emptySet()).orEmpty()
         val undeleted = LinkedHashSet<String>()
         recorded.forEach { raw ->
             val uri = Uri.parse(raw)
-            val deleted = runCatching { appContext.contentResolver.delete(uri, null, null) }
+            val deleted = runCatching { delete(uri) }
                 .onFailure { android.util.Log.w(TAG, "Could not delete $raw", it) }
                 .getOrNull()
             when {
@@ -51,8 +60,11 @@ object DownloadedAttachmentLedger {
                 deleted == null -> undeleted += raw
                 deleted > 0 -> Unit
                 // Zero rows affected is ambiguous. It is only "already gone" if the row really is
-                // gone, so ask the provider rather than assuming the outcome we wanted.
-                stillResolves(appContext, uri) -> undeleted += raw
+                // gone, so ask the provider rather than assuming the outcome we wanted — and an
+                // UNANSWERABLE question is not a yes. `stillResolves` used to swallow its own
+                // SecurityException into `false`, dropping a row this app can no longer read from
+                // the one ledger that makes it reachable, while the wipe reported Complete.
+                resolves(uri) != false -> undeleted += raw
             }
         }
         // commit(), not apply(): a resumed wipe may start in a different process.
@@ -66,10 +78,19 @@ object DownloadedAttachmentLedger {
         return emptyList()
     }
 
-    /** True when the row is still readable, i.e. the delete did not actually remove anything. */
-    private fun stillResolves(appContext: Context, uri: Uri): Boolean = runCatching {
+    /** True when the row is still readable, false when it is provably gone, NULL when the provider
+     *  could not be asked at all — which callers must not round down to "gone". */
+    internal fun stillResolves(appContext: Context, uri: Uri): Boolean? = runCatching {
         appContext.contentResolver.query(uri, arrayOf("_id"), null, null, null)
             ?.use { it.moveToFirst() } ?: false
-    }.getOrDefault(false)
+    }.getOrElse {
+        android.util.Log.w(TAG, "Could not ask whether $uri still exists", it)
+        null
+    }
+
+    /** How many rows are recorded, without touching the provider. [SecurityWipe] reads this before
+     *  a sweep so a sweep that THROWS can still report a truthful count instead of a placeholder. */
+    fun recordedCount(context: Context): Int =
+        prefs(context).getStringSet(KEY_URIS, emptySet()).orEmpty().size
 }
 

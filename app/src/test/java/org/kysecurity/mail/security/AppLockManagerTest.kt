@@ -356,7 +356,7 @@ class AppLockManagerTest {
         manager.attemptPin("000001".toCharArray())
         val keys = CredentialCipher.deriveKeys("482913".toCharArray(), CredentialCipher.randomSalt(), TestPepper)
 
-        manager.unlockWithBiometric(keys)
+        manager.unlockWithBiometric(BiometricProof.issue(keys))
 
         assertFalse(manager.locked.value)
         assertEquals(0, state.failedAttempts)
@@ -369,7 +369,7 @@ class AppLockManagerTest {
         val gatedManager = newManager(gated)
         val keys = CredentialCipher.deriveKeys("482913".toCharArray(), gated.credentialSalt()!!, TestPepper)
 
-        gatedManager.unlockWithBiometric(keys)
+        gatedManager.unlockWithBiometric(BiometricProof.issue(keys))
 
         assertArrayEquals(keys.current.encoded, gatedManager.cachedCredentialKeys()?.current?.encoded)
     }
@@ -382,7 +382,7 @@ class AppLockManagerTest {
         val attemptsBefore = state.failedAttempts
 
         val keys = CredentialCipher.deriveKeys("482913".toCharArray(), CredentialCipher.randomSalt(), TestPepper)
-        val result = manager.unlockWithBiometric(keys)
+        val result = manager.unlockWithBiometric(BiometricProof.issue(keys))
 
         assertTrue("expected Rejected, got $result", result is UnlockAttemptResult.Rejected)
         assertTrue("must stay locked", manager.locked.value)
@@ -396,7 +396,7 @@ class AppLockManagerTest {
 
         val keys = CredentialCipher.deriveKeys("482913".toCharArray(), CredentialCipher.randomSalt(), TestPepper)
 
-        assertEquals(UnlockAttemptResult.Success, manager.unlockWithBiometric(keys))
+        assertEquals(UnlockAttemptResult.Success, manager.unlockWithBiometric(BiometricProof.issue(keys)))
         assertFalse(manager.locked.value)
     }
 
@@ -416,7 +416,9 @@ class AppLockManagerTest {
     @Test
     fun unlockWithBiometric_withTheGateOff_cachesNoKeys() = runBlocking {
         manager.unlockWithBiometric(
-            CredentialCipher.deriveKeys("482913".toCharArray(), CredentialCipher.randomSalt(), TestPepper),
+            BiometricProof.issue(
+                CredentialCipher.deriveKeys("482913".toCharArray(), CredentialCipher.randomSalt(), TestPepper),
+            ),
         )
 
         assertNull(manager.cachedCredentialKeys())

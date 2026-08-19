@@ -121,6 +121,125 @@ class EmailDetailActivityTest {
 
     /** Fails CLOSED, like QuotedHtmlSanitizer. Returning unparseable markup unchanged handed a
      *  sender who can break jsoup every beacon this function exists to strip. */
+    /** THE SIZE CLIFF. Both render paths gated `blockExternalResources` on a regex named
+     *  `hasRemoteImages`, and one of them skipped the scan entirely past 512 KB — so a large enough
+     *  body reached `loadDataWithBaseURL` with every resource URL intact, defended only by the
+     *  WebView's `blockNetworkLoads`, which the "Show images" button exists to clear. */
+    @Test
+    fun renderableBody_stripsABodyFarPastTheOldScanCeiling() {
+        val padding = "<p>x</p>".repeat(80_000)
+        val body = padding + "<img src=\"https://tracker.example/beacon.png\">"
+        assertTrue("the fixture must exceed the old 512 KB ceiling", body.length > 512 * 1024)
+
+        val rendered = renderableBody(body, darkPalette, "", isDark = true)
+
+        assertFalse(rendered.stripped.contains("tracker.example"))
+        assertTrue("and the images bar must still offer it", rendered.hasRemoteImages)
+    }
+
+    /** A `<style>` beacon — which the old regex could not see at all — is stripped from BOTH
+     *  variants, and the images bar stays hidden.
+     *
+     *  Both halves are deliberate. `blockExternalResources` scrubs `<style>` regardless of
+     *  `keepImages`, so there is nothing "Show images" could restore here: offering the bar would
+     *  promise pictures that do not exist and clear `blockNetworkLoads` for nothing. The flag
+     *  answers "is there an image to show", and the beacon's safety does not depend on it —
+     *  which is the whole reason stripping is no longer gated on the flag. */
+    @Test
+    fun renderableBody_stripsAStyleOnlyBeaconFromBothVariantsAndOffersNoBar() {
+        val body = "<style>div{background:url(https://tracker.example/b.png)}</style><div>Hi</div>"
+
+        val rendered = renderableBody(body, darkPalette, "", isDark = true)
+
+        assertFalse(rendered.stripped.contains("tracker.example"))
+        assertFalse("not even behind Show images", rendered.withImages.contains("tracker.example"))
+        assertFalse(rendered.hasRemoteImages)
+    }
+
+    /** And when a message carries both, pressing "Show images" restores the picture WITHOUT
+     *  reviving the stylesheet beacon riding along with it. */
+    @Test
+    fun renderableBody_showImagesDoesNotReviveAStyleBeacon() {
+        val body = "<style>div{background:url(https://tracker.example/b.png)}</style>" +
+            "<img src=\"https://pictures.example/i.png\">"
+
+        val rendered = renderableBody(body, darkPalette, "", isDark = true)
+
+        assertTrue(rendered.hasRemoteImages)
+        assertTrue(rendered.withImages.contains("pictures.example"))
+        assertFalse(rendered.withImages.contains("tracker.example"))
+    }
+
+    @Test
+    fun renderableBody_reportsNoRemoteImagesForAPlainBody() {
+        val rendered = renderableBody("<p>Just words.</p>", darkPalette, "", isDark = true)
+
+        assertFalse(rendered.hasRemoteImages)
+        assertEquals(rendered.stripped, rendered.withImages)
+    }
+
+    /** "Show images" means images, and only images: every other remote resource stays stripped. */
+    @Test
+    fun renderableBody_keepsOnlyImagesInTheShowImagesVariant() {
+        val body = "<img src=\"https://a.example/i.png\"><iframe src=\"https://b.example/f\"></iframe>"
+
+        val rendered = renderableBody(body, darkPalette, "", isDark = true)
+
+        assertTrue(rendered.withImages.contains("a.example"))
+        assertFalse("the iframe must stay stripped", rendered.withImages.contains("b.example"))
+        assertFalse(rendered.stripped.contains("a.example"))
+    }
+
+    /** `[^)]*` stops at the FIRST `)`, which in a quoted CSS url is not the closing one: the old
+     *  regex replaced `url("http://x/a)` and left `b")` — the tail of the URL it meant to remove. */
+    @Test
+    fun blockExternalResources_stripsAUrlContainingAQuotedParenthesis() {
+        val blocked = blockExternalResources(
+            "<div style=\"background:url('https://tracker.example/a)b.png')\">Hi</div>",
+        )
+
+        assertFalse(blocked.contains("tracker.example"))
+        assertFalse("no fragment of the URL may survive", blocked.contains("b.png"))
+    }
+
+    @Test
+    fun blockExternalResources_stripsNestedResourceFunctions() {
+        val blocked = blockExternalResources(
+            "<div style=\"background:image-set(url(https://a.example/1x.png) 1x, url(https://a.example/2x.png) 2x)\">Hi</div>",
+        )
+
+        assertFalse(blocked.contains("a.example"))
+    }
+
+    /** `image-set()` takes a bare string as a URL, with no `url()` for the scan to find inside. */
+    @Test
+    fun blockExternalResources_stripsABareStringInsideImageSet() {
+        val blocked = blockExternalResources(
+            "<div style=\"background:image-set('https://tracker.example/x.png' 1x)\">Hi</div>",
+        )
+
+        assertFalse(blocked.contains("tracker.example"))
+    }
+
+    /** An unbalanced call consumes to the end of the declaration rather than being skipped: a
+     *  strip that cannot find the end of what it is removing must not leave the remainder. */
+    @Test
+    fun blockExternalResources_failsClosedOnAnUnterminatedUrl() {
+        val blocked = blockExternalResources(
+            "<style>div{background:url(https://tracker.example/x.png</style>",
+        )
+
+        assertFalse(blocked.contains("tracker.example"))
+    }
+
+    /** The identifier boundary: only a real function call is a call. */
+    @Test
+    fun blockExternalResources_doesNotMatchUrlInsideALongerIdentifier() {
+        val blocked = blockExternalResources("<div style=\"color:#fff;--my-url:red\">Hi</div>")
+
+        assertTrue(blocked.contains("--my-url"))
+    }
+
     @Test
     fun blockExternalResources_failsClosedWhenTheMarkupCannotBeParsed() {
         val hostile = "<img src=\"https://tracker.example/beacon\">"

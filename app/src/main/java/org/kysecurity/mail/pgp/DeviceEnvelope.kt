@@ -21,6 +21,9 @@ private const val TAG = "DeviceEnvelope"
 /** HKDF-SHA256 (RFC 5869), extract-then-expand. Built from [Mac] rather than pulled in as a
  *  dependency: this app adds none for crypto. */
 internal fun hkdfSha256(ikm: ByteArray, salt: ByteArray, info: ByteArray, length: Int): ByteArray {
+    // RFC 5869's own ceiling. The counter is written as ONE byte, so past 255 blocks it wraps to
+    // zero and round 256 reproduces round 1's output — a silent key collision rather than an error.
+    require(length in 1..(255 * 32)) { "HKDF-SHA256 cannot expand to $length bytes" }
     val mac = Mac.getInstance("HmacSHA256")
     mac.init(SecretKeySpec(salt, "HmacSHA256"))
     val prk = mac.doFinal(ikm)
