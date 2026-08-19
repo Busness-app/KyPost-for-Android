@@ -17,8 +17,14 @@ object MailBackgroundExecutor {
         Executors.newFixedThreadPool(2),
     )
 
+    /** Never lets a task throw out of the pool. An uncaught exception on an executor thread kills
+     *  the process, and these tasks run blocking mail I/O whose failure modes include `quiesce()`
+     *  interrupting them mid-call — a routine event during a wipe or a protection toggle, not a bug
+     *  worth a crash. [submitReporting] already had this; the fire-and-forget path did not. */
     fun submit(task: () -> Unit) {
-        executor.get().execute(task)
+        executor.get().execute {
+            runCatching(task).onFailure { android.util.Log.e("MailBackground", "Background mail task threw", it) }
+        }
     }
 
     /** Stops in-flight work before the DB closes; best-effort, socket reads ignore interrupts. */

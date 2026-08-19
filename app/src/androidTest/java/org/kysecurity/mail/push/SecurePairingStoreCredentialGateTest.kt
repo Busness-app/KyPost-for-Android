@@ -136,7 +136,7 @@ class SecurePairingStoreCredentialGateTest {
         val salt = CredentialCipher.randomSalt()
         val store = SecurePairingStore(context)
         store.savePairing(pairing, credentialKeys = CredentialCipher.deriveKeys("482913".toCharArray(), salt), credentialSalt = salt)
-        store.saveTlsPin(TlsPin(host = "server.example.com", spkiSha256 = "sha256/AAAA"))
+        store.saveTlsPin(TlsPin(host = "server.example.com", spkiSha256 = setOf("sha256/AAAA")))
 
         store.clearPairing()
 
@@ -147,11 +147,11 @@ class SecurePairingStoreCredentialGateTest {
     @Test
     fun tlsPin_carriesTheHostItWasObservedOn() = runBlocking {
         val store = SecurePairingStore(context)
-        store.saveTlsPin(TlsPin(host = "server.example.com", spkiSha256 = "sha256/AAAA"))
+        store.saveTlsPin(TlsPin(host = "server.example.com", spkiSha256 = setOf("sha256/AAAA")))
 
         // Enforcing a pin against a host it did not come from is what bricked requests when the
         // registration URL and the server URL disagreed.
         assertEquals("server.example.com", store.currentTlsPin()?.host)
-        assertEquals("sha256/AAAA", store.currentTlsPin()?.spkiSha256)
+        assertEquals(setOf("sha256/AAAA"), store.currentTlsPin()?.spkiSha256)
     }
 }

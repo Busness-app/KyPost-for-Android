@@ -107,7 +107,8 @@ class EmailDetailActivity : LockedActivity() {
     @androidx.annotation.VisibleForTesting
     internal fun markReadSubmitCountForTest(): Int = markReadSubmitCount
 
-    override fun onCreateUnlocked(savedInstanceState: Bundle?) {        savedInstanceState?.let { state ->
+    override fun onCreateUnlocked(savedInstanceState: Bundle?) {
+        savedInstanceState?.let { state ->
             markReadSubmitted = state.getBoolean(STATE_MARK_READ_SUBMITTED, false)
             markReadSubmitCount = state.getInt(STATE_MARK_READ_COUNT, 0)
         }
@@ -267,10 +268,16 @@ class EmailDetailActivity : LockedActivity() {
             }
         }
         btnShowImages.setOnClickListener {
+            // blockNetworkImage, NOT blockNetworkLoads. Clearing the latter re-enables every remote
+            // fetch — iframes, stylesheets, fonts, media, `url()` in CSS — which is not what a
+            // button labelled "show images" asks for, and the sender chose all of them. The
+            // narrower flag is only consulted while blockNetworkLoads is off, hence the order.
             webView.settings.blockNetworkLoads = false
+            webView.settings.blockNetworkImage = false
             imagesBlockedBar.visibility = View.GONE
-            // WebView.reload() doesn't reliably re-fetch a page loaded via loadDataWithBaseURL, so
-            // re-issue the same load now that the setting allows network images through.
+            // The images-stripped body, not the original: `blockExternalResources` has already
+            // removed every non-image resource URL, so re-issuing it lets images through and
+            // nothing else. WebView.reload() doesn't reliably re-fetch a loadDataWithBaseURL page.
             lastRenderedHtml?.let { html -> webView.loadDataWithBaseURL(null, html, "text/html", "utf-8", null) }
         }
 
@@ -328,11 +335,19 @@ class EmailDetailActivity : LockedActivity() {
         val palette = getStoredThemePalette(this)
         val monoFontFace = ibmPlexMonoFontFaceCss(this)
 
-        val htmlContent = buildEmailBodyHtml(bodyToRender, palette, monoFontFace, isDark = isDarkPalette(palette))
+        val isDark = isDarkPalette(palette)
         val htmlToLoad = if (hasRemoteImages) {
-            buildEmailBodyHtml(blockExternalResources(bodyToRender), palette, monoFontFace, isDark = isDarkPalette(palette))
+            buildEmailBodyHtml(blockExternalResources(bodyToRender), palette, monoFontFace, isDark)
         } else {
-            htmlContent
+            buildEmailBodyHtml(bodyToRender, palette, monoFontFace, isDark)
+        }
+        // What "Show images" loads: images restored, every OTHER remote resource still stripped.
+        // The unmodified body is deliberately never retained — re-loading it is what turned a
+        // request for pictures into a request for iframes, fonts and stylesheets as well.
+        val htmlWithImages = if (hasRemoteImages) {
+            buildEmailBodyHtml(blockExternalResources(bodyToRender, keepImages = true), palette, monoFontFace, isDark)
+        } else {
+            htmlToLoad
         }
         // Off the main thread: pairingForAuthenticatedCall reads Keystore-backed prefs, i.e. disk I/O.
         val serverUrl = if (pgpState == PgpMessageState.CLIENT_PROTECTED) {
@@ -344,7 +359,7 @@ class EmailDetailActivity : LockedActivity() {
 
         runOnUiThread {
             if (isFinishing || isDestroyed) return@runOnUiThread
-            lastRenderedHtml = htmlContent
+            lastRenderedHtml = htmlWithImages
             // A local decrypt must never reach this property; not `bodyToRender`, which is blanked.
             fetchedBodyHtml = content?.html?.takeIf { pgpState != PgpMessageState.CLIENT_PROTECTED }
             val plainTextBody = content?.html?.takeIf { it.isNotBlank() } ?: emailPreview
@@ -393,8 +408,9 @@ class EmailDetailActivity : LockedActivity() {
             }
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
+                var droppedForBudget = 0
                 fetched.forEach { (index, downloaded) ->
-                    if (downloaded != null) rememberForForwarding(index, downloaded)
+                    if (downloaded != null && !rememberForForwarding(index, downloaded)) droppedForBudget++
                 }
                 val failed = fetched.count { it.second == null }
                 if (failed > 0) {
@@ -402,6 +418,15 @@ class EmailDetailActivity : LockedActivity() {
                     Toast.makeText(
                         this,
                         getString(R.string.forward_attachments_failed, failed),
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+                if (droppedForBudget > 0) {
+                    // Distinct from a failed download: these were fetched fine and are too large to
+                    // carry. Silence here would forward a message minus attachments it appears to have.
+                    Toast.makeText(
+                        this,
+                        getString(R.string.forward_attachments_too_large, droppedForBudget),
                         Toast.LENGTH_LONG,
                     ).show()
                 }
@@ -423,13 +448,25 @@ class EmailDetailActivity : LockedActivity() {
         attachmentInfos.mapNotNull { downloadedAttachments[it.index] }
             .ifEmpty { downloadedAttachments.values.toList() }
 
-    private fun rememberForForwarding(index: Int, downloaded: org.kysecurity.mail.mail.DownloadedAttachment) {
+    /** Bounded by [MemoryBudget.FORWARD_ATTACHMENT_BYTES]. Refuses rather than evicts: dropping an
+     *  earlier attachment to make room would forward a message that silently lost one.
+     *  @return false when this attachment did not fit and was not retained. */
+    private fun rememberForForwarding(index: Int, downloaded: org.kysecurity.mail.mail.DownloadedAttachment): Boolean {
+        if (downloadedAttachments.containsKey(index)) return true
+        val held = downloadedAttachments.values.sumOf { it.size.toLong() }
+        if (held + downloaded.bytes.size > MemoryBudget.FORWARD_ATTACHMENT_BYTES) {
+            android.util.Log.w(
+                TAG,
+                "Not retaining ${downloaded.bytes.size} more bytes for forwarding; already holding $held",
+            )
+            return false
+        }
         downloadedAttachments[index] = org.kysecurity.mail.mail.OutgoingAttachment(
             name = downloaded.name,
             mimeType = downloaded.mimeType,
-            dataBase64 = android.util.Base64.encodeToString(downloaded.bytes, android.util.Base64.NO_WRAP),
-            size = downloaded.bytes.size,
+            bytes = downloaded.bytes,
         )
+        return true
     }
 
     /** [serverUrl] is passed beside [webmailUrl] so both are provably from the same render pass. */
@@ -777,11 +814,15 @@ class EmailDetailActivity : LockedActivity() {
                     if (!isFinishing && !isDestroyed) viewAttachmentEphemerally(downloaded)
                 }
                 org.kysecurity.mail.security.AttachmentAction.SAVE_TO_DOWNLOADS -> {
-                    rememberForForwarding(info.index, downloaded)
                     val saved = saveToDownloads(downloaded.name, downloaded.mimeType, downloaded.bytes)
                     val message = if (saved) getString(R.string.attachment_saved, info.name) else getString(R.string.attachment_save_failed, info.name)
                     runOnUiThread {
-                        if (!isFinishing && !isDestroyed) Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        // On Main, like every other touch of downloadedAttachments: a plain
+                        // LinkedHashMap written from this pool AND from the forward path on Main
+                        // is a data race, not merely an ordering question.
+                        rememberForForwarding(info.index, downloaded)
+                        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
                     }
                 }
             }
@@ -838,9 +879,12 @@ class EmailDetailActivity : LockedActivity() {
         return runCatching {
             val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
                 ?: return false
-            resolver.openOutputStream(uri)?.use { it.write(bytes) } ?: return false
-            // Recorded so a later security wipe can delete it: this file is outside the app sandbox.
+            // Recorded BEFORE a byte is written, and with commit(): this row is the only thing that
+            // makes a file outside the sandbox reachable by a later wipe, so it has to be durable
+            // before the file exists. Recorded after, a crash in openOutputStream leaves decrypted
+            // mail in shared storage that nothing will ever find again.
             org.kysecurity.mail.security.DownloadedAttachmentLedger.record(this, uri)
+            resolver.openOutputStream(uri)?.use { it.write(bytes) } ?: return false
             true
         }.getOrDefault(false)
     }
@@ -1069,11 +1113,15 @@ internal fun softWrapPlainText(text: String): String = LONG_PLAIN_TOKEN.replace(
     match.value.chunked(16).joinToString("\u200B")
 }
 
-/** Removes loadable resource URLs from the initial reader pass; the original HTML is retained
- *  for the user's explicit Show Images action. */
-internal fun blockExternalResources(html: String): String {
+/** Removes loadable resource URLs from the reader pass.
+ *
+ *  [keepImages] is what "Show images" actually means: `<img>` keeps its `src`, and iframes, media,
+ *  stylesheets and CSS `url()` stay stripped whatever the WebView's network flags say. Clearing
+ *  `blockNetworkLoads` alone would re-enable all of them, which is not what that button asks for. */
+internal fun blockExternalResources(html: String, keepImages: Boolean = false): String {
     val document = runCatching { org.jsoup.Jsoup.parseBodyFragment(html) }.getOrNull() ?: return html
-    document.select("img, iframe, video, audio, source, embed, object").forEach { element ->
+    val resourceTags = if (keepImages) "iframe, video, audio, source, embed, object" else "img, iframe, video, audio, source, embed, object"
+    document.select(resourceTags).forEach { element ->
         element.removeAttr("src")
         element.removeAttr("srcset")
         element.removeAttr("poster")

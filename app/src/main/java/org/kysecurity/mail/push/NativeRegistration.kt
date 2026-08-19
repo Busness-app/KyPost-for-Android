@@ -178,8 +178,14 @@ class NativeRegistrationClient(
                         deliveryMode = DeliveryMode.fromWire(body.deliveryMode),
                         pullEndpoint = body.pullEndpoint,
                         transport = PushTransport.fromWire(body.transport),
+                        // The WHOLE chain, not `firstOrNull()`. Pinning only the leaf meant every
+                        // certificate renewal minted a key no stored pin matched, and the only way
+                        // out was unpairing — which deletes the mailbox. See [TlsPin].
                         tlsPin = registrationHost?.let { host ->
-                            handshake?.peerCertificates?.firstOrNull()?.let { TlsPin(host, SpkiPinner.pinFor(it)) }
+                            handshake?.peerCertificates
+                                ?.mapTo(LinkedHashSet()) { SpkiPinner.pinFor(it) }
+                                ?.takeIf { it.isNotEmpty() }
+                                ?.let { TlsPin(host, it) }
                         },
                     )
                 } else {

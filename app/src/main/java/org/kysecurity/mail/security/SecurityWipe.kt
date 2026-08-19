@@ -43,6 +43,10 @@ private const val KEY_WIPE_ABANDONED = "wipe_abandoned"
  *  every later launch rather than only on the run that gave up. */
 private const val KEY_WIPE_FAILED_STEPS = "wipe_failed_steps"
 
+/** How many saved attachments the sweep could not remove from shared Downloads. Reported to the
+ *  user once and then acknowledged; it is NOT a failed step — see the sweep's call site. */
+private const val KEY_STRANDED_DOWNLOADS = "stranded_downloads"
+
 /** Captured at wipe start: the sweep deletes the flag's own file, so a resume reads it here. */
 private const val KEY_HOSTILE_LOCATION_WAS_ENABLED = "hostile_location_was_enabled"
 
@@ -139,10 +143,23 @@ object SecurityWipe {
                 if (file.exists()) throw IOException("Failed to delete unifiedpush.connector preferences")
             }
         }
-        step("downloadedAttachments") {
-            // Outside the sandbox, so no sandbox deletion reaches them — but this routine tells the
-            // user their local data has been erased, and it has to be true of these too.
-            DownloadedAttachmentLedger.deleteAll(appContext)
+        // NOT a `step`, deliberately. These rows live in shared storage, in a provider this app
+        // does not own; a row it can never delete would otherwise fail this wipe on every resume
+        // until MAX_WIPE_RESUMES bricked the app permanently, over a file the user can remove
+        // themselves in ten seconds. Reported instead — see [WipeResult.Complete]'s scope.
+        val strandedDownloads = runCatching { DownloadedAttachmentLedger.deleteAll(appContext) }
+            .onFailure { android.util.Log.e(TAG, "Downloads sweep threw", it) }
+            .getOrDefault(listOf("<sweep failed>"))
+        if (strandedDownloads.isNotEmpty()) {
+            android.util.Log.e(
+                TAG,
+                "Local wipe could not remove ${strandedDownloads.size} saved attachment(s) from " +
+                    "shared Downloads; they are outside the sandbox and must be deleted by hand",
+            )
+            // Persisted, not returned: the wipe always relaunches, so the screen that could read a
+            // return value is gone by the time there is one to read. Same shape as
+            // `credentialResetsPending`, and in the retained prefs file so it outlives the sweep.
+            recordStrandedDownloads(appContext, strandedDownloads.size)
         }
         // Before the sharedPrefs sweep: creating the store would recreate its file and keyset.
         step("enrollmentTeardown") {
@@ -189,6 +206,19 @@ object SecurityWipe {
             // and an alias outliving a wipe is exactly what the incomplete result exists to name.
             val leftBehind = AppLockStore(appContext).resetReportingLeftovers()
             check(leftBehind.isEmpty()) { "app lock teardown left $leftBehind" }
+        }
+
+        // AFTER `appLock`, which is the last thing that can still need to evaluate the verifier.
+        // The peppers are useless once the hash and the wrapped secret are gone, but "useless" is
+        // not "absent": two aliases named `kypost_*` surviving in the Keymaster blob store are a
+        // durable, attributable record that this app was installed and a PIN was configured, on a
+        // device this routine has just told the user is clean.
+        step("credentialPeppers") {
+            val leftBehind = listOfNotNull(
+                "deleteCredentialPepper".takeIf { !KeystoreCredentialPepper.destroy() },
+                "deletePinPepper".takeIf { !KeystorePinPepper.destroy() },
+            )
+            check(leftBehind.isEmpty()) { "credential peppers left $leftBehind" }
         }
 
         // Re-assert the posture the deletions erased; after sharedPrefs or it is deleted again.
@@ -277,6 +307,26 @@ object SecurityWipe {
 
     /** Refuse-everything check for non-Activity entry points; one boolean, no graph or Keystore. */
     fun blockedByAbandonedWipe(context: Context): Boolean = abandonedWipe(context) != null
+
+    /** How many saved attachments the last wipe could not remove from shared Downloads; zero when
+     *  there is nothing to report. Survives the wipe's own sweep — see [PREFS_NAMES_RETAINED]. */
+    fun strandedDownloadsPending(context: Context): Int =
+        context.applicationContext
+            .getSharedPreferences(WIPE_STATE_PREFS, Context.MODE_PRIVATE)
+            .getInt(KEY_STRANDED_DOWNLOADS, 0)
+
+    fun acknowledgeStrandedDownloads(context: Context) {
+        context.applicationContext
+            .getSharedPreferences(WIPE_STATE_PREFS, Context.MODE_PRIVATE)
+            .edit().remove(KEY_STRANDED_DOWNLOADS).commit()
+    }
+
+    /** Accumulates across resumes: a second sweep that strands a different row must not hide the
+     *  first. commit(), like every other write here. */
+    private fun recordStrandedDownloads(appContext: Context, count: Int) {
+        val prefs = appContext.getSharedPreferences(WIPE_STATE_PREFS, Context.MODE_PRIVATE)
+        prefs.edit().putInt(KEY_STRANDED_DOWNLOADS, maxOf(prefs.getInt(KEY_STRANDED_DOWNLOADS, 0), count)).commit()
+    }
 
     /** commit(): the process may be killed at any point during a wipe. */
     private fun recordFailedSteps(appContext: Context, failed: List<String>, abandoned: Boolean) {

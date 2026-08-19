@@ -179,11 +179,20 @@ class AppLockStoreTest {
         assertFalse(recovered.tripwireBroken())
     }
 
-    /** A silent salt overwrite left the device secret wrapped under a key nothing reproduces. */
-    @Test(expected = IllegalStateException::class)
-    fun credentialSalt_refusesToOverwrite_loudly() {
+    /** A silent salt overwrite left the device secret wrapped under a key nothing reproduces.
+     *
+     *  The loser of a race gets the winner's salt back rather than an exception: throwing here
+     *  escaped AppLockManager's PIN paths, which catch only PepperUnavailableException. */
+    @Test
+    fun credentialSalt_neverOverwrites_andReturnsThePersistedOne() {
         val store = AppLockStore(context)
-        store.setCredentialSalt(ByteArray(16) { 1 })
-        store.setCredentialSalt(ByteArray(16) { 2 })
+        val first = store.putCredentialSaltIfAbsent(ByteArray(16) { 1 })
+        val second = store.putCredentialSaltIfAbsent(ByteArray(16) { 2 })
+
+        assertTrue("the first mint must win", first.contentEquals(ByteArray(16) { 1 }))
+        assertTrue("a later mint must return the persisted salt, not its candidate", second.contentEquals(first))
+        assertTrue("and must not have overwritten it", store.credentialSalt()!!.contentEquals(first))
+        // A separate instance must agree; the lock ordering them is companion-scoped, not per-field.
+        assertTrue(AppLockStore(context).credentialSalt()!!.contentEquals(first))
     }
 }

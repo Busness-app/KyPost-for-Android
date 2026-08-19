@@ -95,6 +95,16 @@
                     android:text="@string/push_pairing_unpair" />
             </LinearLayout>
 
+            <!-- The non-destructive recovery. Separate from Unpair on purpose: a rotated
+                 certificate or a stranded device secret needs a new credential, not a wiped
+                 mailbox, and the two must never be the same button. -->
+            <Button
+                android:id="@+id/btnReconnectServer"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/push_pairing_reconnect" />
+
             <com.google.android.material.chip.ChipGroup
                 android:id="@+id/pushProviderChipGroup"
                 android:layout_width="wrap_content"

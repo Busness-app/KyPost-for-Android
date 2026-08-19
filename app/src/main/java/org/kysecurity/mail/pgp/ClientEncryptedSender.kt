@@ -105,7 +105,7 @@ internal class ClientEncryptedSender(
             body = draft.body,
             subject = draft.subject,
             attachments = draft.attachments.map {
-                OutgoingMimeAttachment(name = it.name, mimeType = it.mimeType, dataBase64 = it.dataBase64)
+                OutgoingMimeAttachment(name = it.name, mimeType = it.mimeType, bytes = it.bytes)
             },
             boundaryToken = boundaryToken,
         ).toByteArray(Charsets.UTF_8)

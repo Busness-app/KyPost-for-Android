@@ -24,6 +24,11 @@ Owns the Android app module build, manifest, source sets, resources, and test ex
   successful register invalidates the previous secret. No bearer tokens, no cookies, no separate
   mobile login. (Replaces the earlier account-wide `sub`/`hash` shared-secret scheme, which the
   backend removed entirely — no dual-auth fallback.)
+- The relay's TLS certificate is pinned TOFU over the whole observed chain, and the pin set is
+  refreshed on every successful registration. Certificate renewal must not require re-pairing:
+  unpairing purges account-scoped data, so making it the recovery path for a routine renewal costs
+  the user their cached mail. `PushRepository.resetPairingCredential` is the non-destructive
+  recovery; `clearPairing` remains the destructive one. See `app/src/main/AGENTS.md`.
 - Pairing proof material lives in a Keystore-backed `EncryptedSharedPreferences` file
   (`SecurePairingStore`), not plaintext DataStore — see `app/src/main/AGENTS.md` for the exact
   storage split. Push delivery state and history are plaintext DataStore; the contact-sync cursor

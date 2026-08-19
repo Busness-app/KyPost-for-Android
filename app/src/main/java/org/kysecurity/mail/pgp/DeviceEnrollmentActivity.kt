@@ -185,7 +185,8 @@ class DeviceEnrollmentActivity : LockedActivity() {
         }
     }
 
-    override fun onCreateUnlocked(savedInstanceState: Bundle?) {        setContentView(R.layout.activity_device_enrollment)
+    override fun onCreateUnlocked(savedInstanceState: Bundle?) {
+        setContentView(R.layout.activity_device_enrollment)
         setTitle(R.string.enrollment_title)
         applyThemeToActivity(this)
         applyTopInsetWithHeader(this, findViewById(R.id.deviceEnrollmentRoot))

@@ -18,7 +18,7 @@ class WipeDeregisterPinningTest {
     @Test
     fun aCapturedPinProducesAClient() {
         val client = SecurityWipe.pinnedDeregisterClient(
-            TlsPin(host = "relay.example.com", spkiSha256 = "sha256/${"A".repeat(43)}="),
+            TlsPin(host = "relay.example.com", spkiSha256 = setOf("sha256/${"A".repeat(43)}=")),
         )
         assertNotNull("a captured pin must still produce a working deregister path", client)
     }

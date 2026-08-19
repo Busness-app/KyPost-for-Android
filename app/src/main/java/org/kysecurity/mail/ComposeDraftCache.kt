@@ -33,7 +33,13 @@ object ComposeDraftCache : ProcessScopedState {
         sealed = true
     }
 
-    override fun resetForNewSession() = clear()
+    /** Zeroes rather than merely dropping — see [ForwardAttachmentHandoff.resetForNewSession].
+     *  [clear] deliberately does NOT: an ordinary "draft consumed" drop shares these instances with
+     *  a compose screen that may still be alive, and only a session boundary owns them outright. */
+    override fun resetForNewSession() {
+        draft?.attachments?.forEach { it.wipe() }
+        clear()
+    }
 }
 
 data class CachedDraft(

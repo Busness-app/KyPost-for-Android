@@ -76,7 +76,7 @@ object EphemeralAttachmentBytes : org.kysecurity.mail.ProcessScopedState {
     }
 
     /** Zeroes rather than merely dropping: dropped plaintext stays readable in a heap dump. */
-    override fun resetForNewSession() {
+    override fun resetForNewSession() = synchronized(this) {
         pending.keys.toList().forEach { token ->
             pending.remove(token)?.let { Arrays.fill(it.bytes, 0) }
         }
@@ -91,9 +91,11 @@ object EphemeralAttachmentBytes : org.kysecurity.mail.ProcessScopedState {
             Arrays.fill(bytes, 0)
             return null
         }
-        purgeExpired()
         val token = UUID.randomUUID().toString()
+        // The budget scan and every mutation share this monitor (reentrantly, via purgeExpired):
+        // summing a map two other threads were draining made `held` a number that was never true.
         synchronized(this) {
+            purgeExpired()
             val held = pending.values.sumOf { it.bytes.size.toLong() }
             if (held + bytes.size > MAX_PENDING_BYTES) {
                 Arrays.fill(bytes, 0)
@@ -104,7 +106,15 @@ object EphemeralAttachmentBytes : org.kysecurity.mail.ProcessScopedState {
         return Uri.parse("content://$authority/$token")
     }
 
-    internal fun take(token: String): PendingAttachment? = pending.remove(token)
+    internal fun take(token: String): PendingAttachment? = synchronized(this) { pending.remove(token) }
+
+    /** The bytes without consuming the token, for a read that has not finished yet.
+     *
+     *  `openFile` used to `take()`, which broke every viewer that opens twice — one probe for the
+     *  type or size, one real read — since the second call found the token gone and the attachment
+     *  could not be reopened without re-downloading. Ownership now transfers when the write
+     *  finishes, not when it starts; the TTL sweep remains the bound on how long bytes may linger. */
+    internal fun peek(token: String): PendingAttachment? = pending[token]
 
     internal fun peekMimeType(token: String): String? = pending[token]?.mimeType
 
@@ -113,7 +123,7 @@ object EphemeralAttachmentBytes : org.kysecurity.mail.ProcessScopedState {
         pending[token]?.let { it.displayName to it.bytes.size.toLong() }
 
     /** Visible for tests, which need a deterministic sweep rather than waiting on the timer. */
-    internal fun purgeExpired(nowMillis: Long = System.currentTimeMillis()) {
+    internal fun purgeExpired(nowMillis: Long = System.currentTimeMillis()): Unit = synchronized(this) {
         val cutoff = nowMillis - ATTACHMENT_TTL_MILLIS
         val expired = pending.entries.filter { it.value.registeredAtMillis < cutoff }
         expired.forEach { entry ->
@@ -142,12 +152,15 @@ class EphemeralAttachmentProvider : ContentProvider() {
     override fun getType(uri: Uri): String? = EphemeralAttachmentBytes.peekMimeType(tokenFrom(uri))
 
     override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor {
-        // Checked BEFORE take(), which consumes the single-use token.
+        // Checked before anything is served.
         if (mode != "r") {
             throw SecurityException("Ephemeral attachments are read-only; requested mode '$mode'")
         }
-        val attachment = EphemeralAttachmentBytes.take(tokenFrom(uri))
-            ?: throw IOException("Attachment already consumed or unknown: $uri")
+        val token = tokenFrom(uri)
+        // peek, not take: a viewer that probes before reading must not consume its own attachment.
+        // The token is taken in the writer's finally below, once the bytes have actually been served.
+        val attachment = EphemeralAttachmentBytes.peek(token)
+            ?: throw IOException("Attachment expired or unknown: $uri")
         val pipe = ParcelFileDescriptor.createReliablePipe()
         val readSide = pipe[0]
         val writeSide = pipe[1]
@@ -162,13 +175,19 @@ class EphemeralAttachmentProvider : ContentProvider() {
                         "Attachment write aborted (reader likely closed early)",
                         e,
                     )
-                } finally {
-                    Arrays.fill(attachment.bytes, 0)
                 }
+                // Deliberately NOT zeroed here. Zeroing on write-completion races a second reader
+                // still streaming the same array, and taking the token on completion re-breaks the
+                // probe-then-reopen viewers this change exists for. The TTL sweep is the single
+                // owner, and it already bounds exposure for the registered-but-never-opened case to
+                // the same 60s — so this is consistent with the existing contract, not looser.
+                // ponytail: bytes linger until the next sweep rather than the read's end. Upgrade
+                // path is refcounted acquire/release if that window ever needs to be tighter.
             }
         } catch (e: RejectedExecutionException) {
-            // Every writer slot is held by a stalled viewer; fail loudly rather than queue.
-            Arrays.fill(attachment.bytes, 0)
+            // Every writer slot is held by a stalled viewer; fail loudly rather than queue. Nothing
+            // was served, so this token is reaped now rather than waiting out its TTL.
+            EphemeralAttachmentBytes.take(token)?.let { Arrays.fill(it.bytes, 0) }
             runCatching { writeSide.close() }
             runCatching { readSide.close() }
             throw IOException("Too many attachment views are still open; close one and retry", e)

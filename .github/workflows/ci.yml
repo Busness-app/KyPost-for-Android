@@ -61,8 +61,13 @@ jobs:
       # that regenerates it silently defeats the supply-chain control this repo already paid
       # for: an injected dependency would be recorded as legitimate by the very run that
       # should have caught it.
-      - name: unit tests and lint
-        run: ./gradlew testDebugUnitTest lint
+      # checkSigningSecretsAreNotInTheTree runs HERE, not only as a task nobody invokes. It was
+      # registered in app/build.gradle.kts with a comment claiming "CI fails on this; see
+      # ci.yml" — and no workflow ever called it, so the control was a sentence. On a fresh
+      # checkout keystore.properties does not exist (it is gitignored) and the task is a no-op;
+      # it fires only if one is ever committed with a password in it.
+      - name: unit tests, lint and signing-secret check
+        run: ./gradlew checkSigningSecretsAreNotInTheTree testDebugUnitTest lint
 
       # The other half of the rule above, expressed as a check rather than a comment: if
       # anything in this job regenerated the metadata, the file is dirty and the job fails.
@@ -75,8 +80,9 @@ jobs:
       # standard — "the build refuses if it is tracked" is.
       #
       # Checks what git TRACKS, not what is on disk: keystore.properties legitimately exists in a
-      # developer's tree (see keystore.properties.example) and is written by the release-build job
-      # below. Committed is the failure.
+      # developer's tree (see keystore.properties.example). Committed is the failure.
+      # Complements checkSigningSecretsAreNotInTheTree above, which covers the other half — a
+      # file that is present and holds a password, whether or not git has ever seen it.
       - name: no signing material or built artifacts are tracked
         run: |
           tracked=$(git ls-files -- \
@@ -125,17 +131,26 @@ jobs:
       # The signing identity is irrelevant to what this job checks; packageRelease simply
       # refuses to run without one, by the guard in app/build.gradle.kts. The APK produced here
       # is a build artifact of the check and is never published.
+      # Passwords go to the environment, NOT into keystore.properties. The build reads
+      # KYPOST_* first precisely so a password never has to sit in a file, and a CI job that
+      # wrote one there was demonstrating the opposite of the practice it enforces below.
       - name: throwaway signing key
         run: |
           keytool -genkeypair -v -keystore "$RUNNER_TEMP/ci-throwaway.jks" -alias ci \
             -keyalg RSA -keysize 4096 -validity 30 \
             -storepass ci-throwaway -keypass ci-throwaway \
             -dname "CN=KyPost CI, O=Verification Only, C=US"
-          printf 'storeFile=%s\nstorePassword=ci-throwaway\nkeyAlias=ci\nkeyPassword=ci-throwaway\n' \
-            "$RUNNER_TEMP/ci-throwaway.jks" > keystore.properties
+          {
+            echo "KYPOST_KEYSTORE=$RUNNER_TEMP/ci-throwaway.jks"
+            echo "KYPOST_STORE_PASSWORD=ci-throwaway"
+            echo "KYPOST_KEY_ALIAS=ci"
+            echo "KYPOST_KEY_PASSWORD=ci-throwaway"
+          } >> "$GITHUB_ENV"
 
+      # Same check as the unit job, and it means something here: this job is the one that used
+      # to write a cleartext password to disk.
       - name: assemble release
-        run: ./gradlew :app:assembleRelease
+        run: ./gradlew checkSigningSecretsAreNotInTheTree :app:assembleRelease
 
       # app/proguard-rules.pro told a reader to "verify with a look at mapping.txt" and nothing
       # ever did, so R8's actual output was checked by a comment. A keep rule that over-matches —

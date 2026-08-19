@@ -74,7 +74,13 @@ interface AppLockState {
 
     /** Persisted once: regenerating it makes already-wrapped secrets undecryptable. */
     fun credentialSalt(): ByteArray?
-    fun setCredentialSalt(salt: ByteArray)
+
+    /** Returns the persisted salt, minting [candidate] only if there is none.
+     *
+     *  Compare-and-set, not check-and-throw: two stores racing the first mint must both come back
+     *  with the winner's salt. Throwing here escaped [AppLockManager]'s PIN paths, which catch only
+     *  [PepperUnavailableException], and crashed the coroutine mid-authentication. */
+    fun putCredentialSaltIfAbsent(candidate: ByteArray): ByteArray
 
     /** Clears PIN, lock/biometric/credential-gate flags, and attempt counters — the app-lock
      *  half of [SecurityWipe]'s full wipe, also used by "turn off Require Unlock to Open". */
@@ -218,10 +224,12 @@ class AppLockStore(context: Context) : AppLockState {
     override fun credentialSalt(): ByteArray? =
         prefs.getString(KEY_CREDENTIAL_SALT, null)?.let { Base64.decode(it, Base64.NO_WRAP) }
 
-    /** Refuses to overwrite: a second salt makes every already-wrapped secret undecryptable. */
-    override fun setCredentialSalt(salt: ByteArray) {
-        check(!prefs.contains(KEY_CREDENTIAL_SALT)) { "Refusing to overwrite an existing credential salt" }
-        prefs.edit().putString(KEY_CREDENTIAL_SALT, Base64.encodeToString(salt, Base64.NO_WRAP)).commit()
+    /** Never overwrites: a second salt makes every already-wrapped secret undecryptable. Under
+     *  [counterLock], which is shared across instances — a field lock would not order two stores. */
+    override fun putCredentialSaltIfAbsent(candidate: ByteArray): ByteArray = synchronized(counterLock) {
+        credentialSalt() ?: candidate.also {
+            prefs.edit().putString(KEY_CREDENTIAL_SALT, Base64.encodeToString(it, Base64.NO_WRAP)).commit()
+        }
     }
 
     override fun reset() {

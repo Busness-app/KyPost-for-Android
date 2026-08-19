@@ -52,5 +52,41 @@ class PushPayloadParserTest {
         assertEquals("New email", PushPayloadParser.title(payload))
         assertEquals("You received a new labeled email", PushPayloadParser.body(payload))
     }
+
+    /** These land in a notification AND in the persisted `push_state` history, so an unbounded
+     *  relay string is a file the app later OOMs reading. Same rule MfaChallengePayloadParser
+     *  already applies to its own fields on the same delivery channel. */
+    @Test
+    fun parse_boundsEveryRelaySuppliedString() {
+        val payload = PushPayloadParser.parse(
+            mapOf(
+                "messageId" to "m".repeat(10_000),
+                "senderName" to "s".repeat(10_000),
+                "emailSubject" to "j".repeat(10_000),
+            ),
+        )
+
+        requireNotNull(payload)
+        assertEquals(PushPayloadParser.MAX_MESSAGE_ID_LENGTH, payload.messageId.length)
+        assertEquals(PushPayloadParser.MAX_HEADER_LENGTH, payload.senderName.length)
+        assertEquals(PushPayloadParser.MAX_HEADER_LENGTH, payload.emailSubject.length)
+    }
+
+    @Test
+    fun parse_boundsKeywordCountAndLength() {
+        val payload = PushPayloadParser.parse(
+            mapOf(
+                "messageId" to "m-1",
+                "Keywords" to (
+                    (1..500).joinToString(",") { "k$it" } +
+                        "," + "x".repeat(PushPayloadParser.MAX_KEYWORD_LENGTH + 1)
+                    ),
+            ),
+        )
+
+        requireNotNull(payload)
+        assertEquals(PushPayloadParser.MAX_KEYWORDS, payload.keywords.size)
+        assertTrue(payload.keywords.all { it.length <= PushPayloadParser.MAX_KEYWORD_LENGTH })
+    }
 }
 

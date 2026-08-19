@@ -149,10 +149,12 @@ class PushSyncCoordinator(
                     pairing.copy(deviceId = result.deviceId ?: pairing.deviceId, deviceSecret = result.deviceSecret),
                     credentialState,
                 )
-                // Still TOFU: capture only when none is stored, for installs from before pinning existed.
-                if (repository.currentTlsPin() == null) {
-                    result.tlsPin?.let { repository.saveTlsPin(it) }
-                }
+                // Still TOFU, now with continuity. This call already validated against the stored
+                // pins, so its chain is the same server and refreshing is not a downgrade — it is
+                // what keeps a pin current across certificate renewals, and what upgrades installs
+                // still carrying a single legacy leaf pin onto the full chain. Capturing once and
+                // never again meant the stored pin went stale and bricked the pairing.
+                refreshTlsPin(result.tlsPin)
                 persistDelivery(pairing, result)
                 repository.updateTransport(result.transport)
                 // Gate on the transport we requested: older servers return null and would wipe what we set.
@@ -166,6 +168,19 @@ class PushSyncCoordinator(
             is NativeRegistrationResult.Error -> repository.updateSyncState(lastSyncAtEpochMs = null, syncError = result.message)
         }
         return result
+    }
+
+    /** Writes [fresh] when it actually differs, and only for the host already pinned.
+     *
+     *  The host guard is not ceremony: a pin is only meaningful against the host it was observed
+     *  on, and moving one silently would leave the old host unpinned. A differing host is a
+     *  re-pairing, which goes through [attemptPairing] and its unconditional capture instead. */
+    private suspend fun refreshTlsPin(fresh: TlsPin?) {
+        if (fresh == null) return
+        val stored = repository.currentTlsPin()
+        if (stored != null && stored.host != fresh.host) return
+        if (stored?.spkiSha256 == fresh.spkiSha256) return
+        repository.saveTlsPin(fresh)
     }
 
     private suspend fun persistDelivery(pairing: PairingData, result: NativeRegistrationResult.Success) {

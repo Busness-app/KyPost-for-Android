@@ -93,7 +93,8 @@ class SecuritySettingsActivity : LockedActivity() {
         val wipeAfterAttempts: Int?,
     )
 
-    override fun onCreateUnlocked(savedInstanceState: Bundle?) {        appLockStore = SecurityRuntime.graph(this).appLockStore
+    override fun onCreateUnlocked(savedInstanceState: Bundle?) {
+        appLockStore = SecurityRuntime.graph(this).appLockStore
         setTitle(R.string.security_settings_title)
 
         lifecycleScope.launch {
@@ -506,14 +507,31 @@ class SecuritySettingsActivity : LockedActivity() {
                     // Also the metadata stores: push_state held 30 senders and subjects.
                     SecurityWipe.deletePlaintextMetadataStores(this@SecuritySettingsActivity)
                     // ...and attachments in shared Downloads, which sit OUTSIDE the sandbox.
-                    runCatching { DownloadedAttachmentLedger.deleteAll(this@SecuritySettingsActivity) }
-                        .onFailure {
-                            android.util.Log.e(
-                                "SecuritySettings",
-                                "Could not erase downloaded attachments while enabling protection",
-                                it,
-                            )
+                    // Reported, never fatal: the rows belong to a provider this app does not own,
+                    // and refusing to enable protection over one is the wrong way to fail.
+                    val stranded = runCatching {
+                        DownloadedAttachmentLedger.deleteAll(this@SecuritySettingsActivity)
+                    }.getOrElse {
+                        android.util.Log.e(
+                            "SecuritySettings",
+                            "Could not erase downloaded attachments while enabling protection",
+                            it,
+                        )
+                        listOf("<sweep failed>")
+                    }
+                    if (stranded.isNotEmpty()) {
+                        android.util.Log.e(
+                            "SecuritySettings",
+                            "${stranded.size} saved attachment(s) remain in shared Downloads",
+                        )
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(
+                                this@SecuritySettingsActivity,
+                                R.string.security_stranded_downloads_toast,
+                                Toast.LENGTH_LONG,
+                            ).show()
                         }
+                    }
                     // Before the flag flips: an interruption must not leave a readable envelope.
                     tearDownEnrollmentForHostileLocation(this@SecuritySettingsActivity)
                 }
@@ -760,15 +778,31 @@ class SecuritySettingsActivity : LockedActivity() {
             return@withContext false
         }
 
+        // PHASE 1 — stage the new wrapping while the OLD PIN is still authoritative. Nothing is
+        // swapped yet, so a death here costs only an orphaned staged blob that the next successful
+        // savePairing clears. Without this the window between setPin and the re-wrap below stranded
+        // the device secret permanently, and the relay's eventual 409 read as "re-pair this device",
+        // which deletes the mailbox. See [SecurePairingStore.stagePendingSecret].
+        // Non-null together or not at all: both phases below act on the same wrapped secret.
+        val secretToRewrap = pairing?.takeIf { !it.deviceSecret.isNullOrBlank() }
+        if (gateEnabled && salt != null && secretToRewrap != null) {
+            val newKeys = CredentialCipher.deriveKeys(newPin, salt)
+            securePairingStore.stagePendingSecret(secretToRewrap.deviceSecret!!, newKeys)
+        }
+
+        // PHASE 2 — swap the verifier. From here the new PIN is the only one that opens the app,
+        // and the staged wrapping above is the copy it can read.
         appLockStore.setPin(newPin)
         // The sealed blob still holds the old PIN's keys until this runs.
         appLockManager.resealForBiometric(newPin)
 
         if (gateEnabled && salt != null) {
-            // Re-derive under the new PIN and cache, so savePairing's gate-on branch can wrap.
+            // PHASE 3 — promote: re-derive under the new PIN and cache, so savePairing's gate-on
+            // branch can wrap. This also clears the staged copy. Failing here is survivable now:
+            // the staged blob keeps the secret readable until a later save promotes it.
             appLockManager.deriveAndCacheCredentialKeys(newPin)
-            if (pairing?.deviceSecret != null) {
-                PushRuntime.graph(this@SecuritySettingsActivity).repository.savePairing(pairing)
+            if (secretToRewrap != null) {
+                PushRuntime.graph(this@SecuritySettingsActivity).repository.savePairing(secretToRewrap)
             }
         }
         true

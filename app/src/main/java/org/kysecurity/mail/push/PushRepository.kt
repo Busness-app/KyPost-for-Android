@@ -193,6 +193,26 @@ class PushRepository(
         }
     }
 
+    /** Drops pairing proof and the TOFU pin, KEEPING account-scoped data.
+     *
+     *  Recovering from a rotated certificate or a stranded device secret is not a change of
+     *  account, and must not cost the user their mail. [clearPairing] stays the destructive one,
+     *  for a deliberate unpair and for [PushSyncCoordinator.attemptPairing]'s genuine
+     *  account-replacement branch. Clearing the pin reopens the TOFU window so the next pairing
+     *  can capture a fresh chain. */
+    suspend fun resetPairingCredential() {
+        securePairingStore.clearPairing()
+        context.pushDataStore.edit { prefs ->
+            prefs.remove(KEY_SYNC_ERROR)
+            prefs.remove(KEY_LAST_SYNC_AT)
+            // Registration state that belongs to the credential being reset, not to the account.
+            prefs.remove(KEY_TRANSPORT)
+            prefs.remove(KEY_UNIFIEDPUSH_ENDPOINT)
+            prefs.remove(KEY_UNIFIEDPUSH_P256DH)
+            prefs.remove(KEY_UNIFIEDPUSH_AUTH)
+        }
+    }
+
     suspend fun clearPairing() {
         purgeAccountScopedData()
         securePairingStore.clearPairing()

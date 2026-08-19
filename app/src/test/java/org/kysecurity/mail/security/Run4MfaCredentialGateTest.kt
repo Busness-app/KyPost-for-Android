@@ -40,7 +40,8 @@ private class GateState(
     override fun wipeAfterAttempts() = wipeThreshold
     override fun setWipeAfterAttempts(attempts: Int?) { wipeThreshold = attempts }
     override fun credentialSalt() = credentialSalt
-    override fun setCredentialSalt(salt: ByteArray) { credentialSalt = salt }
+    override fun putCredentialSaltIfAbsent(candidate: ByteArray): ByteArray =
+        credentialSalt ?: candidate.also { credentialSalt = it }
     override fun reset() = Unit
 }
 

@@ -250,7 +250,9 @@ class AppLockManager(
     private fun deriveUsingPersistedSalt(pin: CharArray): CredentialKeys {
         // Create-on-demand suits the wrapping key, not the verifier; hence separate aliases.
         if (pepper === KeystoreCredentialPepper) KeystoreCredentialPepper.ensureExists()
-        val salt = state.credentialSalt() ?: CredentialCipher.randomSalt().also { state.setCredentialSalt(it) }
+        // The returned salt is the persisted one, which may be another store's mint rather than
+        // this candidate — deriving from the candidate would key the secret to a salt on nobody's disk.
+        val salt = state.putCredentialSaltIfAbsent(CredentialCipher.randomSalt())
         return CredentialCipher.deriveKeys(pin, salt, pepper)
     }
 }

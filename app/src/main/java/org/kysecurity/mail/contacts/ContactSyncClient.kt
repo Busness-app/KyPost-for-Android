@@ -1,6 +1,6 @@
 package org.kysecurity.mail.contacts
 
-import org.kysecurity.mail.executeSync
+import org.kysecurity.mail.executeDecoding
 import org.kysecurity.mail.pairingAuthHeaders
 import org.kysecurity.mail.push.pairingEndpoint
 import kotlinx.coroutines.Dispatchers
@@ -78,7 +78,7 @@ class ContactSyncClient(
         return when (
             val mapped = executeMapped(
                 request = request,
-                decode = { raw -> runCatching { json.decodeFromString<ContactDedupeReportDto>(raw) }.getOrNull() },
+                deserializer = ContactDedupeReportDto.serializer(),
                 malformedMessage = "Malformed contact dedupe response",
                 unauthorizedMessage = "Bad secret or unknown device",
                 serviceUnavailableMessage = "Contact dedupe is not configured on the backend",
@@ -101,7 +101,7 @@ class ContactSyncClient(
         return when (
             val mapped = executeMapped(
                 request = request,
-                decode = { raw -> runCatching { json.decodeFromString<ContactSyncPullResponseDto>(raw) }.getOrNull() },
+                deserializer = ContactSyncPullResponseDto.serializer(),
                 malformedMessage = "Malformed contact sync response",
                 unauthorizedMessage = "Bad secret or unknown device",
                 serviceUnavailableMessage = "Contact sync is not configured on the backend",
@@ -116,28 +116,31 @@ class ContactSyncClient(
         }
     }
 
+    /** Streams the 200 body: a full contact-book pull is the second largest JSON this app reads,
+     *  and `.string()` held a UTF-16 copy of it alive beside the decoded DTOs. */
     private suspend fun <T> executeMapped(
         request: Request,
-        decode: (String) -> T?,
+        deserializer: kotlinx.serialization.DeserializationStrategy<T>,
         malformedMessage: String,
         unauthorizedMessage: String,
         serviceUnavailableMessage: String,
         failureMessagePrefix: String,
     ): HttpMappedResult<T> {
         val result = withContext(Dispatchers.IO) {
-            callFactory.executeSync(request) { response -> response.code to response.body?.string().orEmpty() }
+            callFactory.executeDecoding(request, json, deserializer)
         }
-        val (code, rawBody) = result.getOrNull()
+        val response = result.getOrNull()
             ?: return HttpMappedResult.Retryable(
                 result.exceptionOrNull()?.message ?: "$failureMessagePrefix: network error",
             )
 
-        return when (code) {
-            200 -> decode(rawBody)?.let { HttpMappedResult.Success(it) } ?: HttpMappedResult.Retryable(malformedMessage)
-            400 -> HttpMappedResult.BadRequest(rawBody.ifBlank { "Malformed request" })
+        return when (response.code) {
+            200 -> response.decoded?.let { HttpMappedResult.Success(it) }
+                ?: HttpMappedResult.Retryable(malformedMessage)
+            400 -> HttpMappedResult.BadRequest(response.errorBody.ifBlank { "Malformed request" })
             401 -> HttpMappedResult.Unauthorized(unauthorizedMessage)
             503 -> HttpMappedResult.ServiceUnavailable(serviceUnavailableMessage)
-            else -> HttpMappedResult.Retryable("$failureMessagePrefix ($code)")
+            else -> HttpMappedResult.Retryable("$failureMessagePrefix (${response.code})")
         }
     }
 }

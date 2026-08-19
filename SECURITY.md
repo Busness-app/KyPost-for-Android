@@ -58,7 +58,14 @@ A PIN or biometric gate on opening the app (`security/AppLockManager.kt`).
   after three resumes it stops retrying — but it does *not* forget: the marker persists,
   and every launch from then on blocks the whole app behind "manual recovery required"
   instead of presenting a first-run screen over data that is still on disk. Reinstalling
-  is the recovery.
+  is the recovery. Only *sandbox* destruction is terminal in this sense: a file in shared
+  storage that another process refuses to delete is reported, not treated as a failed
+  step, because it cannot be made to succeed by retrying and blocking the app does not
+  delete it.
+- **Keystore aliases are part of the wipe.** Every alias this app mints is destroyed and
+  the deletion is verified, including the two credential peppers — an alias surviving a
+  wipe is a durable, attributable record that this app was installed, on a device the
+  routine has just described as clean.
 - Because an attacker gets a bounded number of guesses, common PINs are rejected at
   set time (`security/PinPolicy.kt`). The sequences and repeats that dominate published
   leaked-PIN datasets would otherwise all fit inside the free guesses.
@@ -84,6 +91,15 @@ When enabled:
 - Keyword settings are not persisted.
 - Attachments are viewed ephemerally, with no disk write at all
   (`security/AttachmentAction.kt`, `security/EphemeralAttachmentProvider.kt`).
+- Notifications carry no sender and no subject, whether or not the app is locked
+  (`push/PushNotificationDispatcher.contentSuppressed`). Posting a notification hands its
+  title and text to `system_server`, which records them in Notification History and
+  `dumpsys notification` — an on-disk record in another UID that no wipe step here can
+  reach. Withholding the content is the only control this app has over it.
+
+**Known limitation — notifications posted before protection was enabled.** Turning the
+mode on cannot retract what the OS already recorded. Clear Notification History from
+Android's own settings if that matters to you.
 
 The flag is written with `commit()` rather than `apply()`, and *after* the on-disk
 database has been deleted, so a process death cannot leave protection off while the user
@@ -102,8 +118,12 @@ default), a single tap writes an attachment to the shared Downloads collection, 
 outside the app sandbox. Nothing the wipe deletes reaches shared storage on its own, so
 those files previously survived a wipe, an app-lock reset and a re-pair while the app
 reported local data as cleared. `security/DownloadedAttachmentLedger.kt` exists to record
-those MediaStore rows so the wipe can remove them. **Files a user has since moved,
-copied, or opened into another app are beyond the app's reach entirely.**
+those MediaStore rows so the wipe can remove them, and the row is committed synchronously
+*before* the file is written — recorded after, a process death in between leaves a copy
+nothing will ever find again. **Files a user has since moved, copied, or opened into
+another app are beyond the app's reach entirely.** A row the provider refuses to delete
+does not fail the wipe: it is counted and reported to the user on the next launch, because
+a permanently blocked app is the wrong answer to a file they can delete themselves.
 
 ### Cached mail at rest
 

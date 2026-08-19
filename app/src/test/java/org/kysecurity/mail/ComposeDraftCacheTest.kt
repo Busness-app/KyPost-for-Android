@@ -1,12 +1,21 @@
 package org.kysecurity.mail
 
 import org.junit.After
+import org.junit.Before
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 import org.kysecurity.mail.mail.OutgoingAttachment
 
 class ComposeDraftCacheTest {
+
+    /** The cache is process-wide, so arrive clean rather than trusting whoever ran before: any
+     *  other class calling `InMemoryPlaintext.clearAll()` leaves it sealed, which makes `save()`
+     *  here a silent no-op. */
+    @Before
+    fun unseal() {
+        ComposeDraftCache.take()
+    }
 
     /** The cache is process-wide: clear() seals it, and only take() unseals for the next test. */
     @After
@@ -40,7 +49,7 @@ class ComposeDraftCacheTest {
     @Test
     fun anAttachmentAloneIsWorthKeeping() {
         ComposeDraftCache.save(
-            draft(attachments = listOf(OutgoingAttachment("photo.jpg", "image/jpeg", "base64", 1024))),
+            draft(attachments = listOf(OutgoingAttachment("photo.jpg", "image/jpeg", ByteArray(1024)))),
         )
 
         assertEquals("photo.jpg", ComposeDraftCache.take()?.attachments?.single()?.name)
