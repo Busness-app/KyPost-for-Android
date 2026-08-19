@@ -8,21 +8,11 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/**
- * Exercises the real [KeystoreCredentialPepper] — the unit tests substitute a fixed pepper because
- * a JVM test has no AndroidKeyStore, so this is the only place the actual device binding is
- * verified.
- */
+/** The only place the real KeystoreCredentialPepper device binding is exercised. */
 @RunWith(AndroidJUnit4::class)
 class CredentialCipherKeystoreTest {
 
-    /**
-     * [KeystoreCredentialPepper.mix] reads the pepper and never creates it — the split that stopped
-     * a lost verifier key from reading every correct PIN as wrong and wiping the device on the tenth
-     * try. Production creates it on the establish path ([AppLockManager.deriveUsingPersistedSalt],
-     * [PinHasher.hash]); a test that only ever reads must do the same, or it passes solely on a
-     * device where some earlier test happened to establish one.
-     */
+    /** mix only reads the pepper; production creates it on the establish path, so create it here. */
     @Before
     fun establishThePepper() {
         KeystoreCredentialPepper.ensureExists()

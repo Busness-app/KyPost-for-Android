@@ -43,16 +43,6 @@ class EnrollmentKeyStoreTest {
         assertEquals(null, entry.privateKey.encoded)
     }
 
-    /**
-     * The key must ROTATE, not persist. It used to be idempotent — `ensureKeyPair` returned early
-     * when the alias existed — and that made it a permanent, unauthenticated Keystore key.
-     *
-     * Two consequences, both real. It became a standing path to every envelope the relay has ever
-     * retained, openable with no prompt of any kind, which defeats [EnrollmentVault]'s per-use
-     * authentication by a parallel route. And it gave an attacker unbounded lead time to precompute
-     * against a stable, known public key, which is what makes grinding the enrollment code
-     * affordable.
-     */
     @Test
     fun newKeyPairRotatesRatherThanReusing() {
         EnrollmentKeyStore.newKeyPair()

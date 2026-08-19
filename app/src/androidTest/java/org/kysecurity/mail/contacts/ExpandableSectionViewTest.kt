@@ -1,4 +1,3 @@
-// app/src/androidTest/java/org/kysecurity/mail/contacts/ExpandableSectionViewTest.kt
 package org.kysecurity.mail.contacts
 
 import android.view.ContextThemeWrapper
@@ -17,11 +16,7 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class ExpandableSectionViewTest {
 
-    // The header layout references ?attr/selectableItemBackground (view_expandable_section_header.xml),
-    // an AppCompat/MaterialComponents theme attribute. The bare instrumentation targetContext isn't
-    // themed (it resolves to the plain framework theme), so it fails to inflate with
-    // "Failed to resolve attribute" — wrap it in the app's real theme, exactly like every Activity in
-    // this app gets via the manifest's android:theme="@style/Theme.KyPost".
+    // Header needs ?attr/selectableItemBackground; the bare targetContext theme can't resolve it.
     private val context = ContextThemeWrapper(
         InstrumentationRegistry.getInstrumentation().targetContext,
         R.style.Theme_KyPost,

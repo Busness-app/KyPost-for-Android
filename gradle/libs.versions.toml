@@ -24,10 +24,7 @@ kotlinxCoroutinesPlayServices = "1.10.2"
 playServicesCodeScanner = "16.1.0"
 googleServices = "4.4.4"
 securityCrypto = "1.1.0"
-# 1.1.0 is the newest STABLE release; everything above it (1.2.0-alpha05, 1.4.0-alpha07) is an
-# alpha. Deliberately not bumped: this library backs the MFA approval gate and the unlock vault, and
-# an alpha in that path trades a known-old dependency for an unknown-new one. Revisit when 1.2.0 or
-# 1.4.0 goes stable — this is the one dependency here that is stale on purpose.
+# Newest stable; alphas above it back the MFA gate and unlock vault. REVIEW BY 2027-02-01.
 biometric = "1.1.0"
 workRuntime = "2.10.1"
 lifecycleProcess = "2.9.4"

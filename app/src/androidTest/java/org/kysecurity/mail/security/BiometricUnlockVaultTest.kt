@@ -19,15 +19,7 @@ import java.security.KeyStore
 import java.security.PrivateKey
 import javax.crypto.spec.SecretKeySpec
 
-/**
- * The Keystore half of biometric unlock.
- *
- * The open path cannot be driven to completion here — the private key needs a live
- * `BiometricPrompt`, which no automated test can satisfy — so the crypto itself is pinned in
- * `CredentialEnvelopeTest` and what this suite proves is everything around it: that the key really
- * does refuse to work without the user, and that a device with no biometric seals nothing rather
- * than sealing under something weaker.
- */
+/** The open path needs a live prompt; the crypto is pinned in CredentialEnvelopeTest. */
 @RunWith(AndroidJUnit4::class)
 class BiometricUnlockVaultTest {
 
@@ -46,11 +38,6 @@ class BiometricUnlockVaultTest {
     @Before fun clean() { vault.destroy() }
     @After fun cleanup() { vault.destroy() }
 
-    /**
-     * The property everything else rests on. A key that could be used without the user would make
-     * the sealed blob openable by anyone holding a device image, which is the whole of what the
-     * fingerprint is buying.
-     */
     @Test
     fun theSealingKeyRequiresUserAuthentication() {
         assumeTrue("needs an enrolled strong biometric", biometricEnrolled())
@@ -90,11 +77,7 @@ class BiometricUnlockVaultTest {
         assertThrows(Exception::class.java) { unlock.cipher.doFinal(unlock.sealed) }
     }
 
-    /**
-     * Fail closed on a device with no fingerprint: no key, no blob, and no biometric offer. The
-     * unsafe alternative is a key minted under whatever authenticators *are* available, which would
-     * quietly turn the device lock-screen PIN into a way past this app's own PIN.
-     */
+    /** Fail closed: a key under whatever authenticators exist would let the device PIN past ours. */
     @Test
     fun withNoEnrolledBiometricNothingIsSealed() {
         assumeTrue("only meaningful without a biometric", !biometricEnrolled())

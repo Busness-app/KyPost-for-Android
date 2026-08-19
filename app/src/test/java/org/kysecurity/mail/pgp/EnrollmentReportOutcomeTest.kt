@@ -3,13 +3,7 @@ package org.kysecurity.mail.pgp
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
-/**
- * The worker's retry decision, tested as a pure function.
- *
- * It lives apart from the worker so it can be asserted without a device: the mapping is the
- * security-relevant part — a wrong branch here either drops a correction the server needs, or
- * spins forever against a credential the server will never accept.
- */
+/** The worker's retry decision as a pure function, so it can be asserted without a device. */
 class EnrollmentReportOutcomeTest {
 
     /** The marker is now wrong in the unsafe direction — the Security page is telling the user this
@@ -22,14 +16,7 @@ class EnrollmentReportOutcomeTest {
         )
     }
 
-    /**
-     * Retrying is bounded.
-     *
-     * WorkManager applies no attempt ceiling of its own — verified against work-runtime 2.10.1,
-     * which only clamps the backoff at five hours — so an unbounded RETRY is a work item that never
-     * terminates, waking for the life of the install against a relay that may have been
-     * decommissioned years earlier.
-     */
+    /** WorkManager applies no attempt ceiling of its own (work-runtime 2.10.1 only clamps backoff). */
     @Test
     fun retryingStopsAtTheAttemptCeiling() {
         assertEquals(
@@ -74,11 +61,7 @@ class EnrollmentReportOutcomeTest {
         assertEquals(EnrollmentReportOutcome.DONE, enrollmentReportOutcome(EnrollmentCallResult.Ok))
     }
 
-    /**
-     * 404 on this route means the device row is gone — deregistered, or the account was deleted.
-     * There is nothing left to correct, so this is done rather than a retry loop against a row that
-     * will never come back.
-     */
+    /** 404 on this route means the device row is gone — deregistered, or the account deleted. */
     @Test
     fun aMissingDeviceRowIsDoneNotARetry() {
         assertEquals(

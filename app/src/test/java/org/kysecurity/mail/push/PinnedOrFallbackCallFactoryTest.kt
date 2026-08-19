@@ -9,14 +9,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import javax.net.ssl.SSLPeerUnverifiedException
 
-/**
- * The distinction this class exists for: "no pin yet" and "the pin is gone" are different states.
- *
- * The implementation this replaces was `pinnedProvider() ?: fallback`, which answered both with an
- * unpinned client. Every request from this app carries `X-Kypost-Device-Secret`, so the second case
- * was a permanent, silent downgrade to bare system-CA trust — triggered by anything that lost the
- * pin, most plausibly a reset of the encrypted store that holds it.
- */
 class PinnedOrFallbackCallFactoryTest {
 
     private val request = Request.Builder().url("https://relay.example/api/inbox").build()
@@ -86,8 +78,6 @@ class PinnedOrFallbackCallFactoryTest {
         assertThrows(SSLPeerUnverifiedException::class.java) { call.execute() }
     }
 
-    /** The refusal has to arrive through the same failure path every other network error does, or
-     *  callers will not map it to a user-facing message. */
     @Test
     fun aRefusalReachesTheEnqueueCallbackAsAFailure() {
         val factory = PinnedOrFallbackCallFactory(

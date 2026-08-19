@@ -26,11 +26,7 @@ class RecipientMatchingTest {
 
     @Test
     fun toRecipientCandidateOrNull_returnsNullWhenPrimaryEmailCarriesARecipientSeparator() {
-        // ContactsContract has no per-account write ACL, so any app holding WRITE_CONTACTS can set
-        // this value. Chips are joined with "," on the wire and the relay additionally rewrites ";"
-        // to "," before parsing the address list, so a separator inside one contact's address turns
-        // a single picked chip into two SMTP recipients — while the chip still shows only the
-        // contact's display name.
+        // Any app with WRITE_CONTACTS can set this; a separator splits one chip into two.
         val comma = ContactEntity(
             uid = "1",
             rev = 1,

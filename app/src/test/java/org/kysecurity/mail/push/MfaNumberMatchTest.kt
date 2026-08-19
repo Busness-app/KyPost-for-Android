@@ -20,11 +20,6 @@ class MfaNumberMatchTest {
         assertEquals("choices must be distinct", options.size, options.distinct().size)
     }
 
-    /**
-     * The whole control. A challenge without a full choice set cannot be approved, so the caller
-     * gets null and must offer Deny only — not a bare Approve that sends no number, which the
-     * server refuses while spending one of the challenge's three attempts.
-     */
     @Test
     fun returnsNullWithoutACompleteServerSuppliedChoiceSet() {
         assertNull("no digits at all", MfaNumberMatch.optionsFor("", listOf("17", "83")))
@@ -34,8 +29,6 @@ class MfaNumberMatchTest {
         assertNull("too many decoys", MfaNumberMatch.optionsFor("42", listOf("17", "83", "91")))
     }
 
-    /** The client never invents a wrong answer. Decoys derived on-device from the challenge id were
-     *  computable by anyone who knew the id. */
     @Test
     fun doesNotFabricateMissingDecoys() {
         assertNull(MfaNumberMatch.optionsFor("42", listOf("17")))
@@ -50,11 +43,6 @@ class MfaNumberMatchTest {
         assertEquals(setOf("42", "17", "83"), options.toSet())
     }
 
-    /**
-     * Width comes from the server, not a client constant. Two digits is only 100 values, so
-     * widening it is the obvious next hardening — and pinning the width here would have made every
-     * deployed client silently discard the field the moment the server did.
-     */
     @Test
     fun acceptsWhateverDigitWidthTheServerUsed() {
         assertNotNull(MfaNumberMatch.optionsFor("047", listOf("128", "935")))
@@ -65,8 +53,6 @@ class MfaNumberMatchTest {
         )
     }
 
-    /** Mixed widths are a malformed choice set, not a partial one — a tile that is visibly a
-     *  different shape from the others is a free elimination. */
     @Test
     fun rejectsDecoysOfADifferentWidth() {
         assertNull(MfaNumberMatch.optionsFor("42", listOf("173", "83")))
@@ -77,8 +63,6 @@ class MfaNumberMatchTest {
         assertNull(MfaNumberMatch.optionsFor("4a", listOf("17", "83")))
     }
 
-    /** The answer must not sit in a predictable slot; that is a free guess for anyone who has seen
-     *  the screen once. */
     @Test
     fun randomisesWhereTheAnswerLands() {
         val positions = (1..200)

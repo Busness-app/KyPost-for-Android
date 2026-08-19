@@ -20,8 +20,6 @@ sealed class ContactSyncOutcome {
     data class Retry(val message: String) : ContactSyncOutcome()
 }
 
-/** Mirrors [ContactSyncOutcome]'s shape; kept as a parallel type (rather than a variant of
- * [ContactSyncOutcome]) because `Success` here needs to carry the dedupe report. */
 sealed class ContactDedupeOutcome {
     data class Success(val report: ContactDedupeReportDto) : ContactDedupeOutcome()
     object NotPaired : ContactDedupeOutcome()
@@ -30,11 +28,6 @@ sealed class ContactDedupeOutcome {
     data class Retry(val message: String) : ContactDedupeOutcome()
 }
 
-/**
- * Orchestrates contact sync: decides pull-vs-push based on the offline change queue, applies the
- * server delta (upsert changed, remove deleted, reconcile locally-created uids), and handles
- * tooOld by discarding the cursor and wiping the local cache for a full re-pull.
- */
 class ContactSyncRepository(
     private val db: AppDatabase,
     private val client: ContactSyncClient,
@@ -43,12 +36,7 @@ class ContactSyncRepository(
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
-    /** Guards the whole contacts table against concurrent sync writers: this repository and
-     *  [org.kysecurity.mail.contacts.device.DeviceContactRepository] run on independent coroutine
-     *  scopes with no other ordering between them, and [org.kysecurity.mail.data.ContactDao.upsertAll]
-     *  replaces whole rows — so an interleaved read-modify-write from one side can silently
-     *  overwrite a field (e.g. `isSelf`) the other side just wrote. Held by [sync] here and by
-     *  `DeviceContactRepository.syncAll`. */
+    /** Guards the contacts table against the other sync writer, `DeviceContactRepository.syncAll`. */
     val syncMutex = Mutex()
 
     fun observeContacts(): Flow<List<ContactEntity>> = db.contactDao().observeAll()
@@ -85,11 +73,7 @@ class ContactSyncRepository(
         }
     }
 
-    /**
-     * Calls the server-side dedupe endpoint. Deliberately does NOT call [sync] itself — mirrors
-     * [sync]'s single-purpose shape; the caller is responsible for triggering a follow-up sync so
-     * the merge's tombstones/survivor land locally.
-     */
+    /** Deliberately does not call [sync]; the caller must trigger the follow-up sync itself. */
     suspend fun dedupe(): ContactDedupeOutcome = resolveDedupeOutcome(pairingProvider) { pairing ->
         val deviceId = pairing.deviceId
         val deviceSecret = pairing.deviceSecret
@@ -119,10 +103,7 @@ class ContactSyncRepository(
         return localUid
     }
 
-    /**
-     * [verifiedInPerson] is passed only by the PGP QR flow, where the user has just compared this
-     * fingerprint out-of-band.
-     */
+    /** [verifiedInPerson] is set only by the PGP QR flow, after an out-of-band comparison. */
     suspend fun queueUpdate(
         contact: ContactDto,
         identityChanged: Boolean,
@@ -173,9 +154,7 @@ class ContactSyncRepository(
         flushedChanges: List<PendingContactChangeEntity>,
     ) {
         if (response.tooOld) {
-            // Non-destructive: reset the cursor so the next pull starts from 0 and rebuilds the
-            // mirror from a full snapshot, but do NOT clear first. Clearing here used to return
-            // before clearFlushed below, so the acknowledged pending changes were replayed — and
+            // Non-destructive: reset the cursor but do NOT clear, or flushed changes get replayed.
             db.withTransaction {
                 cursorStore.resetCursor(subscriberId)
                 if (flushedChanges.isNotEmpty()) {
@@ -189,10 +168,7 @@ class ContactSyncRepository(
             val pendingCreates = flushedChanges.filter { it.changeType == CHANGE_CREATE }
             val reconciled = ContactSyncReconciliation.reconcile(pendingCreates, response.changed)
             if (reconciled.isNotEmpty()) {
-                // The device link row keys on uid, so it has to follow this rename. Without it the
-                // server-assigned uid looks unlinked, pushRoomChangesToDevice inserts a SECOND raw
-                // contact, and the temp-uid link is orphaned forever (getByUid on a dead uid returns
-                // null, so pullDeviceChangesForOwnAccount can never reclaim the first row).
+                // The device link row keys on uid, so it has to follow this rename.
                 reconciled.forEach { (localUid, serverUid) ->
                     db.deviceContactLinkDao().remapUid(localUid, serverUid)
                 }
@@ -219,14 +195,6 @@ class ContactSyncRepository(
     }
 }
 
-/**
- * Decides [ContactSyncRepository.dedupe]'s outcome: [ContactDedupeOutcome.NotPaired] if
- * [pairingProvider] yields no pairing, otherwise delegates to [dedupeCall] and maps its result via
- * [contactDedupeOutcomeOf]. Kept as a standalone function, independent of
- * [ContactSyncRepository]'s `AppDatabase`/`ContactCursorStore` dependencies, so it's testable in a
- * plain JVM unit test — mirrors [org.kysecurity.mail.mail.reconcileFetchResult]'s extraction for the
- * same reason.
- */
 internal suspend fun resolveDedupeOutcome(
     pairingProvider: suspend () -> PairingData?,
     dedupeCall: suspend (PairingData) -> ContactDedupeResult,
@@ -235,9 +203,6 @@ internal suspend fun resolveDedupeOutcome(
     return contactDedupeOutcomeOf(dedupeCall(pairing))
 }
 
-/** Pure mapping from [ContactDedupeResult] to [ContactDedupeOutcome]; `BadRequest` folds into
- * [ContactDedupeOutcome.Retry], matching how [ContactSyncRepository.sync] folds
- * `ContactSyncResult.BadRequest` into `ContactSyncOutcome.Retry`. */
 internal fun contactDedupeOutcomeOf(result: ContactDedupeResult): ContactDedupeOutcome = when (result) {
     is ContactDedupeResult.Success -> ContactDedupeOutcome.Success(result.report)
     is ContactDedupeResult.Unauthorized -> ContactDedupeOutcome.Unauthorized

@@ -28,8 +28,6 @@ class MfaChallengePayloadParserTest {
         assertEquals(listOf("17", "83"), payload.decoyDigits)
     }
 
-    /** A server that has not been updated must keep working — the screen degrades to naming what
-     *  it does not know, rather than the challenge being rejected. */
     @Test
     fun parse_toleratesAPayloadWithNoContextAtAll() {
         val payload = MfaChallengePayloadParser.parse(
@@ -43,9 +41,6 @@ class MfaChallengePayloadParserTest {
         assertEquals(emptyList<String>(), payload.decoyDigits)
     }
 
-    /** matchDigits drives a tap target, so nobody who can reach the push channel gets to put
-     *  arbitrary text on a button. Width is the server's choice within a sane range — see
-     *  [MfaChallengePayloadParser.MATCH_DIGITS_MAX_LENGTH]. */
     @Test
     fun parse_dropsMalformedMatchDigits() {
         fun digitsFor(value: String) = MfaChallengePayloadParser.parse(
@@ -58,9 +53,6 @@ class MfaChallengePayloadParserTest {
         assertEquals("42", digitsFor("42"))
     }
 
-    /** A server that widens its value space must not have its digits silently discarded by an
-     *  already-shipped client — that would disable approval outright, since there is no longer a
-     *  bare Approve button to fall back to. */
     @Test
     fun parse_acceptsWiderMatchDigitsThanTheServerCurrentlySends() {
         val payload = MfaChallengePayloadParser.parse(
@@ -126,13 +118,6 @@ class MfaChallengePayloadParserTest {
         assertNull(payload)
     }
 
-    /**
-     * The challenge id becomes a key in a SharedPreferences XML file, written with a synchronous
-     * `commit()` on the push-delivery thread, and every display field around it was already
-     * length-capped. `isBlank()` was the only check standing between a hostile relay and an
-     * arbitrary-length one — a disk-fill and a delivery-thread stall through an input path that was
-     * being validated for the fields that only reach a TextView.
-     */
     @Test
     fun parse_oversizedChallengeId_returnsNull() {
         val payload = MfaChallengePayloadParser.parse(

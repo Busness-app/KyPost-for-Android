@@ -6,11 +6,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
-/**
- * The port's contract, not the Keystore. `AndroidVaultOpener` needs hardware and is covered by the
- * instrumented suite; what a JVM test can pin is the property the whole design rests on: an
- * [OpenOutcome] never carries key material, so no key can travel back through the orchestrator.
- */
+/** The port's contract, not the Keystore: an [OpenOutcome] never carries key material. */
 class VaultOpenerContractTest {
 
     @After fun cleanup() = EnrollmentSession.clear()

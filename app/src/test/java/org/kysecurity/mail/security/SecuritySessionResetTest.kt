@@ -12,19 +12,7 @@ import java.util.concurrent.Executors
 
 class SecuritySessionResetTest {
 
-    /**
-     * The load-bearing case: the caller's scope dies mid-change, and the reset must still run.
-     *
-     * This is the Hostile Location Protection toggle being interrupted by a Back press or a
-     * rotation. The destructive work and the flag commit were already protected; the *reset* was
-     * not, so the setting committed while the previous session's decrypted attachments and draft
-     * stayed in the process.
-     *
-     * The outer scope deliberately uses a different dispatcher from the work context, because that
-     * is what makes the continuation resume cancellably — the real pairing is
-     * `Dispatchers.Main.immediate` outside and `Dispatchers.Default` inside. With one shared
-     * dispatcher this bug is invisible.
-     */
+    /** The outer scope needs a different dispatcher from workContext, or the bug hides. */
     @Test
     fun theResetRunsEvenWhenTheCallerIsCancelled() {
         val outerDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
@@ -61,7 +49,6 @@ class SecuritySessionResetTest {
         }
     }
 
-    /** The ordinary path still works, and the reset runs after the change rather than beside it. */
     @Test
     fun theResetRunsAfterTheChangeOnTheUninterruptedPath() = runBlocking {
         val order = mutableListOf<String>()

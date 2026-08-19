@@ -1,10 +1,6 @@
 package org.kysecurity.mail.pgp
 
-/** A disposable ed25519 key generated with `gpg --quick-generate-key`, purely as a test fixture.
- *  [FINGERPRINT] is gpg's own reported fingerprint for it, so tests built on this pair confirm
- *  [PgpFingerprint.compute] agrees with a real, independent OpenPGP implementation rather than just
- *  round-tripping through the same Bouncy Castle code it is built on. Shared by every test that
- *  needs a genuinely parseable armored key. */
+/** A disposable ed25519 key from `gpg`; [FINGERPRINT] is gpg's own reported fingerprint for it. */
 internal object TestPgpKey {
     const val FINGERPRINT = "164D 5B83 4E7F E927 2DC7 293B 6D78 ABF3 D917 9534"
 

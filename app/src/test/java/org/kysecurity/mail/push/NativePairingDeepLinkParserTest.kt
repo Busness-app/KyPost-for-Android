@@ -27,9 +27,7 @@ class NativePairingDeepLinkParserTest {
 
     @Test
     fun parse_ignoresLegacyHashParamIfPresent() {
-        // A stale cached QR image from before the per-device-secret migration may still carry a
-        // hash= param; it must simply be ignored, not rejected, since it's harmless and the
-        // pairingToken alone is what actually gates registration.
+        // A stale QR from before the per-device-secret migration may carry hash=; ignore it.
         val result = NativePairingDeepLinkParser.parse(
             "kypost://native-pair?sub=subscriber-123&hash=stale-hash&srv=https%3A%2F%2Fserver.example.com&pt=token",
         )

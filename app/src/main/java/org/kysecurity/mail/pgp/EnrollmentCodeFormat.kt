@@ -1,17 +1,8 @@
 package org.kysecurity.mail.pgp
 
-/**
- * Group sizes for the displayed code: `5R9K-6FW-A18A-8YP`, not `5R9K6FW-A18A8YP`.
- */
 private val CODE_GROUPS = intArrayOf(4, 3, 4, 3)
 
-/**
- * The code as the user reads it aloud.
- *
- * **Safe on the wire:** the browser's `normalizeEnrollmentCode` strips all whitespace and hyphens
- * (`/[\s-]/g`) and applies Crockford's decode rules before comparing, so grouping never reaches the
- * hash. The browser's `formatEnrollmentCode` groups identically; the two must move together.
- */
+/** Display grouping only — the browser strips it before comparing, but the two must agree. */
 internal fun formatEnrollmentCode(code: String): String {
     val parts = mutableListOf<String>()
     var index = 0

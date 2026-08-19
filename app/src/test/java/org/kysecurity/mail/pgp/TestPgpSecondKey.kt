@@ -1,12 +1,7 @@
 package org.kysecurity.mail.pgp
 
 /**
- * A second disposable, passphrase-free ed25519/cv25519 pair produced by `gpg`, so multi-recipient
- * tests can prove that *each* recipient can open the message rather than just the first.
- *
- * [TestPgpKey] cannot serve this purpose: it is a signing-only EdDSA key with no encryption subkey,
- * so it is not a usable encryption recipient at all.
- *
+ * A second disposable ed25519/cv25519 pair; [TestPgpKey] is signing-only and cannot be a recipient.
  * Never a real key. Regenerate with:
  * `gpg --batch --passphrase "" --quick-generate-key "SecondRecipientTest <second@example.invalid>" default default 0`
  */

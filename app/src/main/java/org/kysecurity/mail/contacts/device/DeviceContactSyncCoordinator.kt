@@ -12,13 +12,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class DeviceContactSyncCoordinator(
     private val repository: DeviceContactRepository,
     private val settings: DeviceContactSyncSettings,
-    /**
-     * Hostile Location Protection makes Room in-memory so nothing reaches disk — but device
-     * contact sync writes names, email addresses, phone numbers and PGP keys into the OS contacts
-     * provider, which is not this app's storage and is not in-memory. Syncing while protection is
-     * on published exactly the data the feature exists to withhold, so it is refused outright
-     * rather than merely defaulted off.
-     */
+    // Device sync writes into the OS contacts provider, which the in-memory database does not cover.
     private val hostileLocationEnabled: () -> Boolean = { false },
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)

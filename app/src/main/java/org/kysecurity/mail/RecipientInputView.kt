@@ -28,12 +28,7 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-/**
- * One TO/CC/BCC recipient field: an [AutoCompleteTextView] backed by a local-contact [Filter],
- * plus a [ChipGroup] of already-added recipient pills. ComposeActivity creates three instances.
- * Implements ContactAutocomplete.md sections 1, 2, and the "invalid formats"/"duplicate
- * prevention" parts of section 4 (the address-book modal itself is [org.kysecurity.mail.contacts.AddressBookSheet]).
- */
+/** One TO/CC/BCC recipient field; see ContactAutocomplete.md sections 1, 2 and 4. */
 class RecipientInputView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
@@ -45,9 +40,7 @@ class RecipientInputView @JvmOverloads constructor(
     private val chipGroup: ChipGroup
     private val recipients = mutableListOf<String>()
 
-    /** Fires after a recipient is actually added or removed — i.e. once per committed change to
-     *  [recipientEmails], never per keystroke. ComposeActivity uses this to re-run the encrypt
-     *  preflight when the committed address set changes while Encrypt is checked. */
+    /** Fires once per committed change to [recipientEmails], never per keystroke. */
     var onRecipientsChanged: (() -> Unit)? = null
 
     /** The in-flight suggestion lookup, cancelled by the next keystroke. See [debounceAndSearch]. */
@@ -85,10 +78,7 @@ class RecipientInputView @JvmOverloads constructor(
         labelView.text = text
     }
 
-    /** Wires local-contact search into the dropdown. Pass [onOpenAddressBook] on exactly one of
-     *  the three TO/CC/BCC instances (ComposeActivity uses the TO row) — the address-book modal
-     *  itself offers TO/CC/BCC actions per contact, so a single entry point covers all three
-     *  fields; showing the icon on every field would just be three doors to the same room. */
+    /** Pass [onOpenAddressBook] on exactly one instance; the modal covers TO/CC/BCC itself. */
     fun configure(search: suspend (String) -> List<RecipientCandidate>, onOpenAddressBook: (() -> Unit)? = null) {
         val adapter = SuggestionAdapter(context)
         field.setAdapter(adapter)
@@ -108,9 +98,7 @@ class RecipientInputView @JvmOverloads constructor(
             .forEach { addRecipient(it) }
     }
 
-    /** Adds [email] as a chip if it isn't already present in this field. Returns false (and shows
-     *  a duplicate toast) otherwise — [org.kysecurity.mail.contacts.AddressBookSheet] uses the return
-     *  value to decide whether to flip its per-row checkmark. */
+    /** Adds [email] as a chip; false (plus a duplicate toast) if it is already present. */
     fun addRecipient(email: String, displayName: String? = null): Boolean {
         if (isDuplicateRecipient(recipients, email)) {
             Toast.makeText(context, context.getString(R.string.recipient_duplicate_toast, email), Toast.LENGTH_SHORT).show()
@@ -141,8 +129,6 @@ class RecipientInputView @JvmOverloads constructor(
     /** Matches [org.kysecurity.mail.mail.MailDraft]'s to/cc/bcc wire shape. */
     fun commaJoinedRecipients(): String = recipients.joinToString(",")
 
-    /** Re-tints existing chips after a theme switch — call from the host Activity's onResume,
-     *  alongside its other applyXTheme() calls. */
     fun applyTheme() {
         for (i in 0 until chipGroup.childCount) {
             (chipGroup.getChildAt(i) as? Chip)?.let { applyPillChipTheme(context, it) }
@@ -159,12 +145,7 @@ class RecipientInputView @JvmOverloads constructor(
         addRecipient(typed)
     }
 
-    /**
-     * Dropdown adapter. **No [Filterable], and no [Filter].**
-     *
-     * [debounceAndSearch] does it in the coroutine world instead, where cancelling the previous
-     * job actually cancels it and the query never runs at all.
-     */
+    /** Dropdown adapter only; the search lives in [debounceAndSearch], not in a [Filter]. */
     private inner class SuggestionAdapter(
         context: Context,
     ) : BaseAdapter(), Filterable {
@@ -211,15 +192,7 @@ class RecipientInputView @JvmOverloads constructor(
             notifyDataSetChanged()
         }
 
-        /**
-         * [AutoCompleteTextView.setAdapter] requires a [Filterable], so one is provided — but it
-         * does no work.
-         *
-         * All this does is hand back whatever [submit] last published, so the dropdown can size
-         * itself. The searching happens in [debounceAndSearch], on a cancellable coroutine, because
-         * `Filter`'s single serialised worker thread is the wrong place for a debounce and the
-         * worst place for a blocking database call.
-         */
+        /** [AutoCompleteTextView] demands a [Filterable]; this only republishes [submit]'s results. */
         override fun getFilter(): Filter = object : Filter() {
             override fun performFiltering(constraint: CharSequence?): FilterResults =
                 FilterResults().apply {
@@ -233,14 +206,7 @@ class RecipientInputView @JvmOverloads constructor(
         }
     }
 
-    /**
-     * A real debounce: the pending job is cancelled outright by the next keystroke, so a superseded
-     * query never reaches the database.
-     *
-     * Scoped to the view's lifecycle via [findViewTreeLifecycleOwner], so a search in flight when
-     * the screen goes away is cancelled with it rather than resuming against a closed database —
-     * which the old `runBlocking` on a `Filter` thread had no way to avoid.
-     */
+    /** Real debounce: the next keystroke cancels the job, and so does the view's lifecycle. */
     private fun debounceAndSearch(
         adapter: SuggestionAdapter,
         search: suspend (String) -> List<RecipientCandidate>,

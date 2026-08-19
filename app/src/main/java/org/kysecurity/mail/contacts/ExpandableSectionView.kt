@@ -1,4 +1,3 @@
-// app/src/main/java/org/kysecurity/mail/contacts/ExpandableSectionView.kt
 package org.kysecurity.mail.contacts
 
 import android.content.Context
@@ -9,13 +8,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import org.kysecurity.mail.R
 
-/**
- * Collapsible section container: a tappable header (title + item-count badge + chevron) that
- * toggles [body]'s visibility. Any children declared in XML inside this tag are automatically
- * moved into [body] (see [onFinishInflate]) so callers can populate a section's static fields
- * declaratively in the layout file; list-typed fields are added to [body] at runtime instead, via
- * [RepeatableFieldList]. Purely a layout primitive — knows nothing about contact fields.
- */
+// Children declared in XML inside this tag are moved into [body] by [onFinishInflate].
 class ExpandableSectionView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
@@ -71,8 +64,6 @@ class ExpandableSectionView @JvmOverloads constructor(
         headerChevron.text = if (expanded) "▾" else "▸"
     }
 
-    /** Test-only: [onFinishInflate] is protected and only invoked by the inflater; this lets
-     *  [ExpandableSectionViewTest] exercise the same move-children-into-body logic for a view built
-     *  programmatically instead of from XML. */
+    /** Test-only: [onFinishInflate] is protected and only the inflater ever calls it. */
     internal fun onFinishInflateForTest() = onFinishInflate()
 }

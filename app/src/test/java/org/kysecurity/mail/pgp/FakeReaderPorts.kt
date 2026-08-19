@@ -20,14 +20,7 @@ internal class FakePayloadSource(var result: PgpPayloadResult) : PayloadSource {
     }
 }
 
-/** `PgpPayloadResult.Success` has no default values for any field, so every fixture that stands in
- *  for a fetched payload goes through here rather than constructing `Success` directly. `sender` and
- *  `resolvedSender` default to the same address the tests' own `read()` helper defaults `sender` to,
- *  since production always has the server compute both from the same message.
- *
- *  Defaults to [TestPgpPrivateKey.ARMORED_MIME_MESSAGE], not [TestPgpPrivateKey.ARMORED_MESSAGE]:
- *  the latter's plaintext is bare text with no MIME headers, so [PgpMimeReader] can never parse it
- *  and every test that needs the reader to actually reach `Decrypted` would fail past decryption. */
+/** Defaults to ARMORED_MIME_MESSAGE: ARMORED_MESSAGE's plaintext has no MIME headers to parse. */
 internal fun successPayload(
     encrypted: String = TestPgpPrivateKey.ARMORED_MIME_MESSAGE,
     signerKeys: List<SignerKey> = emptyList(),
@@ -42,13 +35,7 @@ internal fun successPayload(
     resolvedSender = resolvedSender,
 )
 
-/** A signed-but-not-encrypted payload: `encryptedPayload` blank, `body` readable,
- *  `signaturePayload` a detached signature over it — the shape `PgpPayloadClient` returns for
- *  RFC 3156 clear-signed mail. Defaults to [TestPgpPrivateKey.DETACHED_SIGNATURE_BODY] signed by
- *  [TestPgpPrivateKey.ARMORED_DETACHED_SIGNATURE], both verified independently with `gpg --verify`
- *  before being wired in here, so `EncryptedMessageReader`'s `payload.encryptedPayload.isBlank()`
- *  branch has a real fixture to run against instead of never executing at all (it previously had
- *  none — `successPayload` always sets a non-blank `encryptedPayload`). */
+/** Signed but not encrypted: blank `encryptedPayload`, readable `body`, a detached signature. */
 internal fun detachedSignedPayload(
     body: String = TestPgpPrivateKey.DETACHED_SIGNATURE_BODY,
     signaturePayload: String = TestPgpPrivateKey.ARMORED_DETACHED_SIGNATURE,

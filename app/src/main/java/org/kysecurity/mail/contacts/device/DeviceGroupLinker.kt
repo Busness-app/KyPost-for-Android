@@ -9,28 +9,14 @@ import org.kysecurity.mail.data.GroupLinkEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/**
- * Bridges Room's local group cache ([org.kysecurity.mail.data.GroupEntity]) to Android's
- * `ContactsContract.Groups` rows scoped to this app's sync account, mirroring the remote-ID <->
- * local-row-ID bridging [org.kysecurity.mail.data.DeviceContactLinkEntity] already solves for contacts
- * themselves. Only ever materializes a *backend* group onto the device (find-or-create + rename
- * in place) — it never creates a backend group from a device-side one, matching
- * `Client_Contact_Update.md` Part 2 point 3's explicit one-direction (backend -> device) scoping
- * for group sync.
- */
+// One direction only: a backend group is materialized onto the device, never the reverse.
 class DeviceGroupLinker(
     private val context: Context,
     private val db: AppDatabase,
 ) {
     private val contentResolver = context.contentResolver
 
-    /**
-     * Returns the Android `Groups._ID` row for [groupId]/[groupName]: reuses an existing
-     * [GroupLinkEntity] if present (renaming the on-device `TITLE` in place if [groupName]
-     * changed since the link was created), otherwise finds an existing on-device `Groups` row
-     * matching by `TITLE == groupName` to avoid duplicating a group the user already has, and
-     * only creates a new row as a last resort.
-     */
+    /** Reuses the link, else matches an on-device group by TITLE, and only then creates a row. */
     suspend fun ensureAndroidGroupRowId(groupId: String, groupName: String): Long? = withContext(Dispatchers.IO) {
         val existingLink = db.groupLinkDao().getByGroupId(groupId)
         if (existingLink != null) {
@@ -82,14 +68,7 @@ class DeviceGroupLinker(
         return resultUri.lastPathSegment?.toLongOrNull()
     }
 
-    /**
-     * Renames the on-device `Groups.TITLE` for [androidGroupRowId] to [groupName] in place, if
-     * it differs from the current on-device title. Public (not just called from
-     * [ensureAndroidGroupRowId]) so [org.kysecurity.mail.contacts.GroupSyncRepository]'s regular
-     * full-refresh sync cycle can also invoke it for every *already-linked* group -- the plan's
-     * Part 2 point 4 requires a backend group rename to reach the device on the next sync, not
-     * only when a brand-new not-yet-linked contact happens to reference that group.
-     */
+    /** Public so the full-refresh cycle can rename already-linked groups, not just new ones. */
     suspend fun renameIfNeeded(androidGroupRowId: Long, groupName: String) = withContext(Dispatchers.IO) {
         val currentTitle = contentResolver.query(
             ContactsContract.Groups.CONTENT_URI,
@@ -113,23 +92,12 @@ class DeviceGroupLinker(
     }
 }
 
-/**
- * Pure join: for every [links] entry whose backend group still exists in the freshly-synced
- * [groups] cache, resolves the (androidGroupRowId, freshName) pair that should be passed to
- * [DeviceGroupLinker.renameIfNeeded]. A link whose group was deleted from the backend (and thus
- * dropped from [groups] by [org.kysecurity.mail.contacts.GroupSyncRepository]'s full refresh) is
- * skipped -- there's no fresh name to rename to. Extracted as a standalone pure function so the
- * "which already-linked groups need a rename pass" decision is unit-testable without a real
- * `ContentResolver`; the actual current-title comparison and write happen inside
- * [DeviceGroupLinker.renameIfNeeded] itself.
- */
+/** A link whose backend group is gone is skipped — there is no fresh name to rename to. */
 internal fun groupRenameTargets(links: List<GroupLinkEntity>, groups: List<GroupEntity>): List<Pair<Long, String>> {
     val groupsById = groups.associateBy { it.id }
     return links.mapNotNull { link -> groupsById[link.groupId]?.let { link.androidGroupRowId to it.name } }
 }
 
-/** Pure find-or-create decision: does any existing on-device group (scoped to our account)
- *  already have this exact title? Extracted so the matching rule is unit-testable without a real
- *  `ContentResolver`. */
+/** Does any existing on-device group, scoped to our account, already have this exact title? */
 internal fun findExistingGroupRowId(existingGroups: List<Pair<Long, String>>, groupName: String): Long? =
     existingGroups.firstOrNull { it.second == groupName }?.first

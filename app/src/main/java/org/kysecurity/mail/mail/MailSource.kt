@@ -25,18 +25,10 @@ sealed class MailOutcome<out T> {
      *  fall back to trusting it. */
     data class CertificateMismatch(val message: String) : MailOutcome<Nothing>()
 
-    /** Relay 409 on /api/mail/send with `clientSideNeeded` — the account's PGP key is
-     *  end-to-end protected, so the server refuses to sign or encrypt on its behalf rather
-     *  than silently sending in the clear. This app holds no private key, so the only ways
-     *  forward are sending unencrypted or using webmail. Distinct from [BadRequest] because
-     *  nothing about the request was malformed. */
+    /** Relay 409 `clientSideNeeded` — the account's PGP key is client-held; this app has none. */
     data class ClientSideNeeded(val message: String) : MailOutcome<Nothing>()
 
-    /** Relay 409 on /api/mail/send carrying `keylessRecipients` — one or more recipients have no
-     *  usable PGP key, and the server refused rather than quietly falling back to a one-time link
-     *  that stores this message's plaintext on the server for seven days. **Nothing was
-     *  delivered:** the refusal happens before any SMTP, so re-sending the same draft with
-     *  [MailDraft.allowPickupFallback] once the user has confirmed is safe and cannot duplicate. */
+    /** Relay 409 `keylessRecipients`. Nothing was delivered; re-sending with the opt-in is safe. */
     data class PickupFallbackNeeded(
         val keylessRecipients: List<String>,
         val message: String,
@@ -66,8 +58,6 @@ fun MailOutcome<*>.userFacingMessage(): String? = when (this) {
         ?: "Too many failed attempts — try again later"
 }
 
-/** Whole minutes once past a minute, because a Retry-After of 900 read as "900 seconds" is
- *  not something a user can act on. */
 internal fun formatRetryAfter(seconds: Long): String = when {
     seconds < 60 -> "$seconds seconds"
     seconds < 120 -> "a minute"
@@ -82,11 +72,7 @@ data class MailFetchResult(
     val isDelta: Boolean = false,
     val updatedMessageIds: Set<String> = emptySet(),
     val removedMessageIds: List<String> = emptyList(),
-    // True when this response describes the server's entire window rather than just what changed
-    // (i.e. we sent since=0). A relay predating the matching server fix labels such a response
-    // `delta: true` all the same, so this — not the wire flag — is what tells us `messages` is
-    // complete enough to prune the folder against. See [reconcileFetchResult], which needs it to
-    // self-heal a removal we were never told about.
+    // True when we sent since=0. Older relays label such a response `delta: true`, so trust this.
     val isFullWindow: Boolean = false,
 )
 data class FolderInfo(val path: String, val deletable: Boolean)
@@ -107,19 +93,14 @@ data class MailDraft(
     /** Server-side PGP signing. Requires the account to have a PGP identity; the relay answers
      *  400 (plain text) if asked to sign without one. */
     val sign: Boolean = false,
-    /** Server-side PGP encryption. */
     val encrypt: Boolean = false,
-    /** Opt in to the one-time pickup link for recipients with no usable key. Meaningful only when
-     *  [encrypt] is true, and only ever set after the user confirmed the dialog naming them: the
-     *  fallback stores this message's plaintext on the server, unencrypted, for up to seven days.
-     *  Per-message by design — never persisted as a preference. */
+    /** Per-message opt-in: the fallback stores this plaintext on the server for up to seven days. */
     val allowPickupFallback: Boolean = false,
 ) {
     /** Redacted: the body is the user's outgoing message. Enforced by `SourceRulesTest`. */
     override fun toString(): String = "MailDraft(redacted)"
 }
 
-/** An attachment the user picked to send: raw base64 payload plus display metadata. */
 data class OutgoingAttachment(
     val name: String,
     val mimeType: String,
@@ -129,18 +110,9 @@ data class OutgoingAttachment(
 
 data class MailSendOutcome(val sentSaved: Boolean, val warning: String)
 
-/** One pre-built PGP/MIME message and the SMTP recipients it goes to. */
 data class ClientEncryptedDelivery(val recipients: List<String>, val ciphertext: String)
 
-/**
- * A send whose PGP work already happened on this device, for `POST /api/mail/send-pgp`.
- *
- * [deliveries] is a list rather than one message because each BCC recipient needs their own
- * ciphertext — a shared one puts every BCC recipient's key id where the others can read it.
- *
- * [to]/[cc]/[bcc] stay in the clear deliberately: SMTP needs them, they are already the envelope,
- * and the Sent listing is unusable without them. Only the body and the real subject are protected.
- */
+// One delivery per BCC recipient: a shared ciphertext exposes every BCC recipient's key id.
 data class ClientEncryptedMessage(
     val from: String,
     val to: List<String>,
@@ -167,18 +139,9 @@ data class MailMessageBody(
 /** One received attachment's metadata (no content), from GET /api/mail/attachments. */
 data class AttachmentInfo(val index: Int, val name: String, val mimeType: String, val size: Int)
 
-/** A downloaded attachment's bytes plus the metadata needed to save it. */
-/**
- * **Not a `data class`.** The generated `equals`/`hashCode` would compare [bytes] by identity while
- * looking structural, so a `Set<DownloadedAttachment>` or an `==` would silently never match — and
- * these are the values a de-duplicating forward cache is most likely to be built over.
- */
+/** Not a `data class`: the generated equals/hashCode would compare [bytes] by identity. */
 class DownloadedAttachment(val name: String, val mimeType: String, val bytes: ByteArray)
 
-/**
- * Blocking (non-suspend) by design: callers already run on a background executor thread,
- * so there is no need to introduce coroutines into the mail path just for this abstraction.
- */
 interface MailSource {
     /** [forceFullResync] requests since=0 (full re-fetch reported in delta shape) regardless of
      *  any persisted cursor — the documented self-heal for a missed removal notification. */
@@ -196,9 +159,7 @@ interface MailSource {
     fun saveDraft(draft: MailDraft): MailOutcome<Unit>
     fun sendMail(draft: MailDraft): MailOutcome<MailSendOutcome>
 
-    /** Relays ciphertext this device already built. Separate from [sendMail] rather than a flag on
-     *  it: the request body, the endpoint and the failure modes all differ, and the two must not be
-     *  able to drift into each other. */
+    /** Relays ciphertext this device already built; a different endpoint and failure set. */
     fun sendClientEncrypted(message: ClientEncryptedMessage): MailOutcome<MailSendOutcome>
     fun fetchMessageBody(messageId: String, folder: String): MailOutcome<MailMessageBody>
     fun listAttachments(messageId: String, folder: String): MailOutcome<List<AttachmentInfo>>

@@ -31,12 +31,7 @@ class EnrollmentStateTest {
         assertEquals(EnrollmentStatus.NO_BLOB, probeEnrollment(vault))
     }
 
-    /**
-     * The load-bearing case: a healthy, merely-locked key must report ENROLLED **without any user
-     * authentication**, because this probe runs from a background worker where nothing can show a
-     * prompt. If this fails, the spec's decision 4 needs revisiting before the reporting path is
-     * trusted — see the note in this task.
-     */
+    /** The probe runs from a background worker, so it must report ENROLLED with no prompt. */
     @Test
     fun healthyLockedKeyReportsEnrolledWithoutAPrompt() {
         vault.ensureKey()
@@ -55,17 +50,7 @@ class EnrollmentStateTest {
         assertEquals(EnrollmentStatus.NO_KEY, probeEnrollment(vault))
     }
 
-    /**
-     * The regression that matters: a fresh key must never coexist with a blob it cannot open.
-     *
-     * Cipher.init on GCM touches no ciphertext, so it succeeds against ANY key — the probe therefore
-     * cannot tell "this key opens this blob" from "a key exists and a blob exists". Before the fix,
-     * the OS destroying the vault key (which a user removing and re-adding their lock screen is
-     * enough to do) followed by any re-seal left a new key beside the old blob, and the probe
-     * reported ENROLLED for a device that could decrypt nothing. The server renders that to the user
-     * as "this device can read your encrypted mail" — the exact lie the marker exists to prevent,
-     * in the unsafe direction.
-     */
+    /** Cipher.init on GCM succeeds against any key, so a fresh key must never keep an old blob. */
     @Test
     fun regeneratingTheKeyDiscardsABlobItCannotOpen() {
         vault.ensureKey()

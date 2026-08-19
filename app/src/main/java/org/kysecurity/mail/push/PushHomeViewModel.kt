@@ -48,10 +48,7 @@ class PushHomeViewModel(application: Application) : AndroidViewModel(application
         scope.launch {
             val state = graph.repository.state.first()
             if (state.pairing != null) {
-                // The pairing token is single-use: once a sync has already succeeded, resending it
-                // on every app open only re-triggers the backend's "expired" rejection and scares
-                // the user, even though delivery is already configured and working. Only retry here
-                // to recover a pairing whose initial sync never completed.
+                // The pairing token is single-use; only retry a pairing whose initial sync never completed.
                 if (state.lastTokenSyncAtEpochMs == null) {
                     graph.syncCoordinator.resyncActiveTransport()
                 }
@@ -65,9 +62,7 @@ class PushHomeViewModel(application: Application) : AndroidViewModel(application
         localMessage.value = null
     }
 
-    /** Applies a pairing (from a deep link or a QR scan) that PushPairingActivity has already
-     *  parsed and, per its own confirmation rules, either confirmed with the user or determined
-     *  didn't need confirmation. */
+    /** Applies a pairing PushPairingActivity has already parsed and confirmed. */
     fun applyPairing(pairing: PairingData) {
         scope.launch {
             isWorking.value = true
@@ -116,13 +111,7 @@ class PushHomeViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    /**
-     * Switches this device to UnifiedPush: triggers the distributor picker (via
-     * [UnifiedPushRegistrar]) and requests registration. The endpoint itself arrives
-     * asynchronously via KyPostUnifiedPushService.onNewEndpoint, which completes the
-     * server registration — this call only starts that flow and reports whether it
-     * was successfully kicked off.
-     */
+    /** Starts the flow only; the endpoint arrives via KyPostUnifiedPushService.onNewEndpoint. */
     fun switchToUnifiedPush(activity: Activity) {
         isWorking.value = true
         UnifiedPushRegistrar.beginRegistration(activity) { success, error ->

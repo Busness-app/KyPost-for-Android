@@ -4,10 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
-/** [TEST_KEY] is a disposable ed25519 key generated with `gpg --quick-generate-key` purely as a
- *  fixture — [TEST_KEY_FINGERPRINT] is gpg's own reported fingerprint for it, letting these tests
- *  confirm [PgpFingerprint.compute] agrees with a real, independent OpenPGP implementation rather
- *  than just round-tripping through the same Bouncy Castle code it's built on. */
+/** [TEST_KEY_FINGERPRINT] is gpg's own reported fingerprint for [TEST_KEY] — an independent oracle. */
 class PgpFingerprintTest {
 
     @Test
@@ -22,12 +19,7 @@ class PgpFingerprintTest {
         assertEquals(PgpFingerprint.compute(TEST_KEY), PgpFingerprint.compute(TEST_KEY))
     }
 
-    /**
-     * Callers persist the WHOLE armored blob, so a fingerprint that describes only part of it cannot
-     * be meaningfully confirmed by a human comparing one string. Bouncy Castle's key-ring stream
-     * constructor stops at a second PUBLIC_KEY packet, which made an appended ring invisible here
-     * while still being saved and uploaded — the user verified one key and stored two.
-     */
+    /** Callers persist the whole blob; Bouncy Castle's ring constructor stops at a second key packet. */
     @Test
     fun compute_trailingSecondKeyRing_returnsNull() {
         // Has to be a packet-level append inside ONE armor block, which is what Bouncy Castle's

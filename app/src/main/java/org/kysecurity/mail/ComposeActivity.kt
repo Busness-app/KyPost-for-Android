@@ -79,30 +79,22 @@ class ComposeActivity : LockedActivity() {
     private val pgpController by lazy { ComposePgpController.from(this) }
     private var sendMenuItem: MenuItem? = null
 
-    /** True once the PGP bootstrap has reported this account's key is held only by the user *and*
-     *  this device is not enrolled. The Send action is withdrawn while it holds — see
-     *  [applyPgpComposeState]. An enrolled device can encrypt locally, so this stays false there. */
+    /** Key held only by the user and this device not enrolled: Send is withdrawn while it holds. */
     private var handoffOnlyAccount = false
 
     /** True when the encryption happens on this device and the send goes to `/api/mail/send-pgp`
      *  rather than `/api/mail/send`. From [PgpComposeState.clientSide]. */
     private var clientSideAccount = false
 
-    /** The in-flight client-encrypted send, if any. Guards against a double-tap starting two sends
-     *  — the crypto plus the round trip leaves a wide window. Mirrors EmailDetailActivity's
-     *  decryptJob. */
+    /** The in-flight client-encrypted send; guards a double-tap from starting two sends. */
     private var sendJob: Job? = null
     private val ioExecutor = Executors.newSingleThreadExecutor()
     private val attachments = mutableListOf<OutgoingAttachment>()
 
-    /** The in-flight preflight check, if any. Cancelled whenever a newer one supersedes it (a
-     *  recipient change while Encrypt is checked) or Encrypt is switched off, so a late result
-     *  can never re-show the "no key on file" warning after the toggle has already gone off. */
+    /** The in-flight preflight; cancelled so a late result cannot re-show a dismissed warning. */
     private var preflightJob: Job? = null
 
-    /** The draft as it was actually sent, kept so the post-409 re-send reuses it byte-for-byte
-     *  with only allowPickupFallback flipped. Re-exporting the editor HTML or re-encoding the
-     *  attachments could produce a subtly different message. */
+    /** The draft as sent, so the post-409 re-send reuses it byte-for-byte with one flag flipped. */
     private var sentDraft: MailDraft? = null
 
     /** Set once the relay confirms delivery, so [onStop] does not re-cache a message that has
@@ -116,14 +108,9 @@ class ComposeActivity : LockedActivity() {
     /** Encrypt/Sign as a restored draft left them, until [applyRestoredPgpToggles] can apply them. */
     private var restoredPgpToggles: Pair<Boolean, Boolean>? = null
 
-    /** Set by [applyPgpComposeState], which is where the chips' listeners are installed. The draft
-     *  restore and that call can land in either order — `composeState()` only actually suspends on a
-     *  cold bootstrap — so whichever is second is what applies the toggles. */
+    /** The draft restore and [applyPgpComposeState] land in either order; the second applies. */
     private var pgpChipListenersReady = false
 
-    /**
-     * Restores the Encrypt/Sign toggles a fold destroyed, once both halves are ready.
-     */
     private fun applyRestoredPgpToggles() {
         if (!pgpChipListenersReady) return
         val (encrypt, sign) = restoredPgpToggles ?: return
@@ -143,11 +130,7 @@ class ComposeActivity : LockedActivity() {
         // Resolved by id, not by cast: layout-w600dp/activity_compose.xml uses a different root
         // element than the phone layout.
         rootView = findViewById(R.id.composeRoot)
-        // Keeps the composition out of the saved-state Bundle, exactly as ContactEditActivity does
-        // for the contact form. composeSubjectField and the recipient inputs freeze their own text,
-        // so the framework's default view-hierarchy save would hand the subject and every address
-        // to system_server, outside the app lock and outside SecurityWipe. ComposeDraftCache is
-        // what carries the composition across a recreate instead.
+        // Keeps the composition out of the saved-state Bundle, which system_server owns.
         rootView.isSaveFromParentEnabled = false
         applyTopInsetWithHeader(this, findViewById<View?>(R.id.composeContent) ?: rootView)
 
@@ -159,15 +142,7 @@ class ComposeActivity : LockedActivity() {
 
         subjectField = findViewById(R.id.composeSubjectField)
         bodyEditor = findViewById(R.id.composeBodyEditor)
-        // The editor ships with JavaScript on and a bound @JavascriptInterface, and it quotes
-        // sender-authored markup. QuotedHtmlSanitizer is the primary control; these are the
-        // independent second layer, and they close the leak that needs no script at all: without
-        // blockNetworkLoads, merely pressing Reply or Forward fetched every remote image, iframe
-        // and stylesheet the sender embedded, defeating the reader's "Show images" opt-in.
-        //
-        // Safe for the editor itself: its chrome is loaded from an inlined template, not over the
-        // network, and on minSdk 31 file:///android_asset stays reachable regardless of
-        // allowFileAccess.
+        // blockNetworkLoads: without it, pressing Reply fetched every remote image the sender embedded.
         bodyEditor.settings.apply {
             blockNetworkLoads = true
             allowContentAccess = false
@@ -213,10 +188,7 @@ class ComposeActivity : LockedActivity() {
         ccInput.configure(searchContacts)
         bccInput.configure(searchContacts)
 
-        // Re-run the preflight whenever the committed recipient set changes, but only while
-        // Encrypt is on — otherwise toggling Encrypt before any recipient is entered means
-        // splitAddresses() sees an empty list, the initial check short-circuits, and the warning
-        // never appears again no matter how many keyless addresses are added afterward.
+        // Only while Encrypt is on: an empty recipient list short-circuits the initial check.
         val onRecipientsChanged = { if (encryptChip.isChecked) runPreflight() }
         toInput.onRecipientsChanged = onRecipientsChanged
         ccInput.onRecipientsChanged = onRecipientsChanged
@@ -355,10 +327,7 @@ class ComposeActivity : LockedActivity() {
         listOf(boldChip, italicChip, underlineChip, linkChip, attachButton, encryptChip, signChip, webmailChip).forEach {
             applyPillChipTheme(this, it)
         }
-        // applyThemeToViewTree paints every ViewGroup (root included) flat `panel`-colored by
-        // default, so root and the cards below would otherwise be indistinguishable. Repaint the
-        // root `bg`-colored (mirrors InboxActivity's recyclerView.setBackgroundColor(bg)) so the
-        // rounded `panel` cards actually pop against it instead of blending in.
+        // applyThemeToViewTree paints every ViewGroup flat `panel`; repaint root `bg` so cards pop.
         rootView.setBackgroundColor(Color.parseColor(getStoredThemePalette(this).bg))
         // Rounded panel cards behind each section — shared STYLE_GUIDE.md §3 Card/panel radius,
         // same applyPanelBackground precedent as Inbox's keyword-chip bar.
@@ -375,18 +344,7 @@ class ComposeActivity : LockedActivity() {
         encryptChip.visibility = if (state.canEncrypt) View.VISIBLE else View.GONE
         signChip.visibility = if (state.canSign) View.VISIBLE else View.GONE
         webmailChip.visibility = if (state.handoffToWebmail) View.VISIBLE else View.GONE
-        // On an UNENROLLED client-custody account the key is held only by the user, so this app
-        // cannot encrypt or sign — and because both chips are GONE, sendEmail's
-        // `isChecked && visibility == VISIBLE` computes both wire flags as false. The relay's own
-        // client-custody guard is nested inside `if (sign || encrypt)`, so a flagless send skipped
-        // it entirely and went out as plain MIME: a silent downgrade to cleartext on the one account
-        // type configured for end-to-end encryption. Refuse instead, exactly as the web client does
-        // ("quietly sending in the clear instead would be worse than failing") and route the user to
-        // the handoff.
-        //
-        // On an ENROLLED one this no longer applies: the chips are VISIBLE, so the same expression
-        // now computes a real user choice, and both unchecked is a deliberate plaintext send rather
-        // than a silent downgrade. Send therefore stays available.
+        // Unenrolled client-custody: hidden chips send both flags false, a silent cleartext downgrade.
         handoffOnlyAccount = state.handoffToWebmail
         clientSideAccount = state.clientSide
         applySendAvailability()
@@ -401,10 +359,7 @@ class ComposeActivity : LockedActivity() {
                 // superseded preflight must never overwrite the newer (in this case: hidden) state.
                 preflightJob?.cancel()
                 hideKeylessWarning()
-                // Sign-only is impossible on this path: the relay accepts multipart/encrypted and
-                // rejects multipart/signed, so a signed-but-unencrypted delivery is refused
-                // outright. Coupling the chips says so honestly; the web client papers over it by
-                // silently encrypting anyway.
+                // Sign-only is impossible: the relay accepts multipart/encrypted and rejects multipart/signed.
                 // ponytail: lift this once the relay accepts a multipart/signed delivery — needs a
                 // server change first.
                 if (clientSideAccount) signChip.isChecked = false
@@ -421,14 +376,7 @@ class ComposeActivity : LockedActivity() {
         applyRestoredPgpToggles()
     }
 
-    /** Runs when Encrypt is switched on, and again on every committed recipient change while it
-     *  stays on (see the onRecipientsChanged wiring in onCreate). Not debounced per keystroke:
-     *  recipients are committed as chips by RecipientInputView rather than typed continuously, so
-     *  this fires on a settled address list, never mid-keystroke.
-     *
-     *  Cancels any still-running preflight before starting a new one, so a recipient added a
-     *  moment after a slow check started can't have its result clobbered by the earlier one
-     *  landing late. */
+    /** Cancels any running preflight first, so a slow earlier check cannot clobber a newer one. */
     private fun runPreflight() {
         val addresses = splitAddresses(
             toInput.commaJoinedRecipients(),
@@ -452,16 +400,7 @@ class ComposeActivity : LockedActivity() {
         keylessWarning.visibility = View.GONE
     }
 
-    /** Injects the active palette into the editor's WebView content so it doesn't render as a
-     *  fixed light/dark WebView default regardless of the in-app theme. Passing the same [id] on
-     *  every call replaces the previous tag rather than accumulating one per theme switch.
-     *
-     *  Also sets a floor on the document's own height: the editor watches
-     *  `document.documentElement`'s resize and reports that height back to Android, which then
-     *  becomes the WebView's *explicit* height (see the library's define_listeners.js /
-     *  updateWebViewHeight) — overriding any Android-side match_parent/minHeight. Without a
-     *  min-height here, an empty document reports only ~1rem, and the WebView shrinks to a single
-     *  line no matter how much space its parent layout gives it. */
+    /** Also sets a min-height: the editor reports document height back as the WebView's height. */
     private fun applyEditorThemeCss() {
         val palette = getStoredThemePalette(this)
         val css = """
@@ -506,13 +445,7 @@ class ComposeActivity : LockedActivity() {
         return TextUtils.htmlEncode(text).replace("\n", "<br>")
     }
 
-    /**
-     * Adds the picked documents, one at a time.
-     *
-     * Sequential rather than a `forEach` of independent jobs: each one is checked against the
-     * remaining budget, and concurrent checks would all see the same "before" total and every one
-     * of them would pass.
-     */
+    /** Sequential, not concurrent: each is checked against the remaining budget before adding. */
     private fun addAttachments(uris: List<Uri>) {
         lifecycleScope.launch {
             for (uri in uris) {
@@ -522,18 +455,7 @@ class ComposeActivity : LockedActivity() {
         }
     }
 
-    /**
-     * Reads one picked document on [Dispatchers.IO], enforces the 25 MB total cap (matching the
-     * backend) **before** the bytes are in the heap, and renders a removable chip.
-     *
-     * Three things were wrong here. `OpenableColumns.SIZE` was read and then never used — the cap
-     * was applied to `bytes.size`, i.e. after `readBytes()` had already materialised the entire
-     * document, so picking a multi-gigabyte file from a cloud provider was an `OutOfMemoryError`
-     * (which `runCatching` does not catch, so: a hard crash with an unsent message in flight, before
-     * `onStop` could cache the draft). The read, the 33 MB base64 `String` and the whole thing again
-     * for every file in a multi-select all ran on the main thread, from the picker callback — an ANR
-     * on any real attachment. And the KDoc said "off the UI thread", which is where it was.
-     */
+    /** Reads on IO and enforces the 25 MB cap from the declared size, before the bytes are heap. */
     private suspend fun addAttachment(uri: Uri) {
         val resolver = contentResolver
         val budget = MAX_ATTACHMENT_BYTES - attachments.sumOf { it.size.toLong() }
@@ -628,10 +550,7 @@ class ComposeActivity : LockedActivity() {
         sendMenuItem?.isEnabled = false
 
         bodyEditor.exportHtml { html ->
-            // exportHtml's callback runs on the main looper and can still fire after onDestroy has
-            // called ioExecutor.shutdownNow() (e.g. app lock finishing this screen while the
-            // export was pending) — dispatchSend below would then hit a shut-down executor and
-            // throw RejectedExecutionException.
+            // exportHtml's main-looper callback can fire after onDestroy shut ioExecutor down.
             if (isFinishing || isDestroyed) return@exportHtml
             val draft = MailDraft(
                 to = to, cc = cc, bcc = bcc, subject = subject, body = html, mode = "html",
@@ -643,9 +562,7 @@ class ComposeActivity : LockedActivity() {
                 allowPickupFallback = false,
             )
             sentDraft = draft
-            // A client-custody account encrypts here, not on the relay. Both chips unchecked is a
-            // deliberate plaintext send and still goes down the ordinary path — which is what the
-            // web client does, and what restores a capability the old withdraw-Send behaviour
+            // A client-custody account encrypts here, not on the relay; both chips unchecked is deliberate.
             if (clientSideAccount && (draft.sign || draft.encrypt)) {
                 dispatchClientSend(draft)
             } else {
@@ -654,14 +571,7 @@ class ComposeActivity : LockedActivity() {
         }
     }
 
-    /**
-     * The client-custody send: encrypt and sign on this device, then hand ciphertext to the relay.
-     *
-     * Threading mirrors [EmailDetailActivity]'s decrypt path. The sender is built on IO because the
-     * pairing lookup reads Keystore-backed storage, and [ClientEncryptedSender.send] runs on
-     * Default because Bouncy Castle is CPU-bound — on the main thread it is ANR-class. The biometric
-     * prompt inside [AndroidVaultOpener] owns its own hop back to Main, so it must not be wrapped.
-     */
+    /** Sender built on IO (Keystore), crypto on Default (Bouncy Castle); the prompt hops to Main. */
     private fun dispatchClientSend(draft: MailDraft) {
         if (sendJob?.isActive == true) return
         sendMenuItem?.isEnabled = false
@@ -726,33 +636,18 @@ class ComposeActivity : LockedActivity() {
         else -> getString(R.string.compose_pgp_encrypt_failed, "")
     }
 
-    /**
-     * A pinned key's fingerprint no longer matches what discovery returned.
-     *
-     * Deliberately louder and more specific than the missing-key case, and never merged into it:
-     * this is what a key rotation looks like *and* what an interception attempt looks like, so the
-     * user has to be told which it might be rather than "no key on file".
-     */
+    /** Never merged into the missing-key case: rotation and interception look identical. */
     private fun warnKeyChanged(addresses: List<String>) {
         activeDialog = AlertDialog.Builder(this)
             .setTitle(R.string.compose_pgp_key_changed_title)
             .setMessage(getString(R.string.compose_pgp_key_changed_body, addresses.joinToString(", ")))
             .setPositiveButton(android.R.string.ok, null)
-            // FLAG_SECURE on the dialog's own window: it enumerates recipient addresses, and the
-            // Activity's own flag does not extend to a separate dialog window. Same precedent as
-            // confirmPickupFallback.
+            // FLAG_SECURE on the dialog's own window: the Activity's flag does not cover a separate window.
             .create()
             .showSecurely()
     }
 
-    /**
-     * No usable key for at least one recipient, and nothing was sent.
-     *
-     * There is no pickup fallback here and there must not be: the server-side one works by storing
-     * the message plaintext, which is the thing client-side protection exists to prevent. So the
-     * honest options are to add the key, or to continue in webmail — which has the browser-sealed
-     * pickup path this app deliberately does not build.
-     */
+    /** No pickup fallback here: the server-side one stores plaintext, which this exists to prevent. */
     private fun explainMissingKeys(addresses: List<String>) {
         activeDialog = AlertDialog.Builder(this)
             .setTitle(R.string.compose_pgp_no_key_title)
@@ -784,22 +679,12 @@ class ComposeActivity : LockedActivity() {
         ioExecutor.execute {
             val outcome = MailRuntime.graph(this).repository.send(draft)
             runOnUiThread {
-                // The round trip above can outlive the Activity: LockedActivity.onStart finishes
-                // this screen outright if the app lock engages while a send is in flight, and
-                // Activity.runOnUiThread still runs its Runnable after finish(). Building an
-                // AlertDialog on a finishing/destroyed Activity throws BadTokenException (or, on a
-                // merely-finishing one, succeeds and leaks the window) — bail before either dialog
-                // branch runs.
+                // runOnUiThread still runs after finish(); an AlertDialog on a finishing Activity throws.
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 when (outcome) {
                     is MailOutcome.Success -> {
                         val warning = outcome.value.warning
-                        // The send already succeeded even when sentSaved is false or a pickup link
-                        // failed — surface the warning as a notice, never as a failure, and never
-                        // offer a retry that would duplicate the message. A non-blank warning (e.g.
-                        // "failed to deliver a pickup link to 1 of 3 recipient(s)") is longer than
-                        // the plain success message and shown right before finish(), so it needs
-                        // LENGTH_LONG to have any chance of being read.
+                        // The send already succeeded: surface the warning as a notice, never as a failure or a retry.
                         val message = warning.ifBlank { getString(R.string.compose_send_success) }
                         val length = if (warning.isBlank()) Toast.LENGTH_SHORT else Toast.LENGTH_LONG
                         Toast.makeText(this, message, length).show()
@@ -824,13 +709,7 @@ class ComposeActivity : LockedActivity() {
         }
     }
 
-    /**
-     * Nothing was delivered when this fires — the relay refuses before any SMTP — so the re-send
-     * cannot duplicate the message.
-     *
-     * The copy is the spec's, verbatim, because it is what makes the opt-in meaningful. Cancel is
-     * the negative button and the dialog stays cancelable, so dismissing keeps the composition.
-     */
+    /** Nothing was delivered when this fires - the relay refuses before any SMTP. */
     private fun confirmPickupFallback(keylessRecipients: List<String>) {
         val draft = sentDraft ?: return
         activeDialog = AlertDialog.Builder(this)
@@ -843,34 +722,14 @@ class ComposeActivity : LockedActivity() {
                 // no re-encoded attachments, no second preflight.
                 dispatchSend(draft.copy(allowPickupFallback = true))
             }
-            // FLAG_SECURE on the dialog's own window. This one enumerates recipient addresses and is
-            // the consent gate for storing the message plaintext on the server for seven days; the
-            // Activity's own flag does not extend to a separate dialog window.
+            // FLAG_SECURE: this dialog names recipients and gates storing plaintext on the server.
             .create()
             .showSecurely()
     }
 
-    /**
-     * Saves the composition as a draft and hands the Drafts URL to the **system**, so an installed
-     * PWA or the user's browser opens it with the session it already has. Never an in-app WebView:
-     * that shares no session and would put an account-password field inside this app.
-     *
-     * **Consent comes first.** `/api/mail/draft` writes plain MIME into the relay's IMAP store, so
-     * this is the moment the message leaves the device unencrypted — on the one account type whose
-     * configuration exists to stop exactly that. Saving first and asking afterwards, as this used to
-     * do, meant the plaintext was already on the server before the dialog was drawn and Cancel
-     * removed nothing (there is no delete path). The dialog now names the cost and the save only
-     * happens if the user accepts it.
-     *
-     * The draft is saved without the PGP flags, since [MailDraft]'s sign/encrypt only apply to
-     * /api/mail/send, not the plain /api/mail/draft endpoint.
-     */
+    /** Consent first: /api/mail/draft writes plain MIME to the relay and there is no delete path. */
     private fun handOffToWebmail() {
-        // Disabled for the whole in-flight window, starting before the async exportHtml/saveDraft
-        // round trip even begins: a double-tap in that window would park two drafts and overwrite
-        // activeDialog with the second dialog, orphaning the first. Re-enabled on every path that
-        // doesn't end in finish() — the two failure toasts below, and the dialog's dismiss
-        // listener, which covers Cancel and the no-handler case alike.
+        // Disabled for the whole in-flight window: a double-tap would park two drafts.
         webmailChip.isEnabled = false
         bodyEditor.exportHtml { html ->
             // Same rationale as sendEmail's guard: this callback can fire after onDestroy has torn
@@ -937,9 +796,7 @@ class ComposeActivity : LockedActivity() {
     }
 
     private fun openHandoffTarget(serverUrl: String, url: String) {
-        // Prefers the installed PWA, then any browser — either way the browser session webmail
-        // already holds comes with it, so the user is not asked to log in again just to press
-        // send. Both land in another app's task, never this one's; see WebmailTab. Still no
+        // Prefers the installed PWA, then any browser, so the existing session comes with it.
         if (openWebmail(this, serverUrl, url)) {
             finish()
         } else {
@@ -948,16 +805,7 @@ class ComposeActivity : LockedActivity() {
         }
     }
 
-    /**
-     * Stashes the composition so the app lock cannot discard it.
-     *
-     * `onStop` (not `onDestroy`) because [bodyEditor]'s HTML export is asynchronous and needs a
-     * live WebView to answer: the Activity is still fully alive here, and the lock's `finish()`
-     * does not land until the following `onStart`.
-     *
-     * Only when the screen is going away for a reason the user did not choose. Pressing Back is a
-     * deliberate discard, and resurrecting a message someone threw away is its own bug.
-     */
+    /** `onStop`, not `onDestroy`: [bodyEditor]'s HTML export is async and needs a live WebView. */
     override fun onStop() {
         super.onStop()
         // onCreate bailed before assigning any view: there is no composition to stash, and
@@ -976,9 +824,7 @@ class ComposeActivity : LockedActivity() {
         val encrypt = encryptChip.isChecked
         val sign = signChip.isChecked
         bodyEditor.exportHtml { html ->
-            // Guarded like every other exportHtml callback in this file — this one had been missed,
-            // and it is the one that writes into a process-scoped static. A security wipe clears
-            // ComposeDraftCache as its first step on an IO thread; a callback already queued on the
+            // Guarded like every other exportHtml callback: this one writes into a process-scoped static.
             if (isDestroyed) return@exportHtml
             ComposeDraftCache.save(
                 CachedDraft(
@@ -1029,19 +875,9 @@ internal class AttachmentTooLargeException : IOException("Attachment exceeds the
  *  enough that the refusal below happens long before the heap notices. */
 private const val ATTACHMENT_COPY_BUFFER_BYTES = 64 * 1024
 
-/**
- * Reads [input] fully, or throws [AttachmentTooLargeException] as soon as it has produced more than
- * [limit] bytes — never allocating the whole of an oversized source.
- *
- * `internal` rather than private so it is reachable from a plain JVM test — the bound is the whole
- * point of this function and the old code had none.
- */
+/** Reads [input] fully, or throws [AttachmentTooLargeException] past [limit] bytes. */
 internal fun readAtMost(input: InputStream, limit: Long, expectedSize: Long = -1L): ByteArray {
-    // Pre-sized when the provider told us how big the document is, because ByteArrayOutputStream
-    // grows by doubling and then `toByteArray()` copies the whole thing again. For a 25 MB
-    // attachment that is ~32 MB of internal buffer plus a 25 MB copy, on the way to a ~34 MB base64
-    // String — roughly triple the peak of a function whose entire purpose is bounding the heap.
-    // Clamped to the budget so a provider that over-reports cannot make us allocate past it.
+    // Pre-sized to avoid ByteArrayOutputStream's doubling plus copy; clamped against over-reports.
     val initial = expectedSize.takeIf { it in 0..limit }?.toInt() ?: ATTACHMENT_COPY_BUFFER_BYTES
     val out = ByteArrayOutputStream(initial)
     val buffer = ByteArray(ATTACHMENT_COPY_BUFFER_BYTES)

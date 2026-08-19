@@ -10,43 +10,20 @@ import kotlinx.serialization.json.Json
 import okhttp3.Call
 import okhttp3.Request
 
-/**
- * Outcome of `GET /api/pgp/bootstrap`.
- *
- * Two cases, not one per status code: the caller's response to *every* failure is identical — hide
- * the PGP controls, because couldn't-check is not "no" — so distinguishing 401 from 503 from a
- * malformed body would be a distinction nothing acts on.
- */
 sealed class PgpBootstrapResult {
-    /** [protection] is `"server"`, `"client"`, or `""` for an account with no identity. Passed
-     *  through as the raw string; [pgpComposeStateOf] decides what it means, and treats anything
-     *  unrecognized as "not server". [publicKey] is the account's own armored public key, `""`
-     *  when it has no identity — the only device-reachable source for it, and what
-     *  [ownFingerprintFromBootstrap] hashes to show the user their own fingerprint. */
+    /** [protection] is `"server"`, `"client"`, or `""` for an account with no identity. */
     data class Success(
         val hasIdentity: Boolean,
         val protection: String,
         val publicKey: String,
-        /** The account's own mail address, and the only device-reachable source for it —
-         *  `GET /api/mail/send-as` is session-authenticated, so a paired device cannot ask.
-         *
-         *  Every client-encrypted delivery's `From` header must equal this exactly or the relay
-         *  answers 403, and it is authoritative rather than inferred: the server builds
-         *  `suggestedUserIDs[0]` from the same `strings.TrimSpace(payload.Username)` expression that
-         *  `handleMailSendPGP` hands to `resolveMailFrom`. Blank when no mail account is configured,
-         *  which means no valid `From` can be built at all. */
+        /** Delivery `From` must equal this exactly or the relay answers 403. */
         val accountAddress: String = "",
     ) : PgpBootstrapResult()
 
     data class Failed(val message: String) : PgpBootstrapResult()
 }
 
-/** The three fields this app needs. The endpoint returns considerably more — wrappedPrivateKey,
- *  unlockRequired, signerPublicKeys, payloadEndpoint — all of it for the browser, none of it
- *  usable here, which is why the [Json] instance ignores unknown keys. The response's own
- *  `fingerprint` field is deliberately NOT among them: it is a claim sitting beside `publicKey`
- *  with no cryptographic tie to it, and [PgpFingerprint] exists precisely so the app hashes the
- *  key bytes itself instead of rendering a server-supplied label. */
+/** The response's `fingerprint` is deliberately unused — [PgpFingerprint] hashes the key bytes. */
 @Serializable
 private data class PgpBootstrapDto(
     val hasIdentity: Boolean = false,
@@ -56,11 +33,6 @@ private data class PgpBootstrapDto(
     val suggestedUserIDs: List<String> = emptyList(),
 )
 
-/**
- * Reads the account's PGP key-custody mode. Pairing-authenticated with
- * X-Kypost-Device-Id/X-Kypost-Device-Secret exactly like every other relay call this app makes —
- * there is no mobile login and no session cookie. Kept parallel to [PgpQrClient].
- */
 class PgpBootstrapClient(
     private val json: Json = Json { ignoreUnknownKeys = true },
     // Injected Call.Factory; see PairingAuthHeaders.kt for why every credentialed client takes one.

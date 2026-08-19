@@ -1,7 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- fitsSystemWindows because this screen applies no insets of its own: under edge-to-edge the
-     approve/deny buttons would otherwise sit under the navigation bar, and a partly obscured Deny
-     is not an acceptable state for an authentication prompt. -->
+<!-- fitsSystemWindows: without it, edge-to-edge puts Deny under the navigation bar. -->
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
@@ -44,10 +42,7 @@
             android:padding="12dp"
             android:layout_marginBottom="20dp" />
 
-        <!-- Number matching is the ONLY way to approve. The server always mints the value it
-             displays in the browser plus two decoys; a challenge that does not carry all three
-             can be denied but never approved, so there is no bare Approve button to fall back
-             to. See MfaNumberMatch. -->
+        <!-- Number matching is the only way to approve. See MfaNumberMatch. -->
         <LinearLayout
             android:id="@+id/mfaMatchGroup"
             android:layout_width="match_parent"

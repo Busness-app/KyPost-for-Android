@@ -5,13 +5,7 @@ import androidx.startup.Initializer
 import androidx.window.embedding.RuleController
 import org.kysecurity.mail.R
 
-/**
- * Loads the split rules before the first Activity is created.
- *
- * Rules must be registered before the pair they describe is launched, and androidx.startup runs
- * this from the content-provider phase — earlier than Application.onCreate's own work and earlier
- * than any screen. On API 31, where embedding is unsupported, the rules are simply never applied.
- */
+// Rules must be registered before the pair they describe launches; androidx.startup runs earliest.
 class SplitInitializer : Initializer<RuleController> {
 
     override fun create(context: Context): RuleController =

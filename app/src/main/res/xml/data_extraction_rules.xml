@@ -1,23 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!--
-  Restores the exclusions removed by be65d75, which assumed `allowBackup="false"` covered
-  device-to-device transfer as well as cloud backup. It does not, for anything targeting
-  API 31+: AOSP's BackupEligibilityRules ignores allowBackup for BackupDestination.DEVICE_TRANSFER
-  via the IGNORE_ALLOW_BACKUP_IN_D2D compat change (@EnabledSince(S)), and per the Auto Backup
-  docs a MISSING <device-transfer> section means that mode is "fully enabled for all content".
-  So omitting this file opted the app INTO transferring everything — including the unencrypted
-  kypost_mail.db (full plaintext message bodies, contacts, PGP keys) and the plaintext
-  push_state DataStore (last 30 sender/subject pairs). `adb backup` cannot detect that gap,
-  which is why the original verification step passed.
-
-  Both sections must be present and explicit; an absent section is permissive, not restrictive.
-
-  Excluding everything from device-transfer also fixes the converse bug: a legitimate transfer
-  to the user's own new phone used to carry the plaintext app_lock_tripwire marker alongside an
-  undecryptable app_lock_secure (its Keystore key cannot leave the source device), which made
-  tripwireBroken() fire and silently wipe the app — including the OS contact rows the transfer
-  had just copied — on first launch. With nothing transferred, the new install is simply unpaired.
--->
+<!-- allowBackup="false" does not cover device transfer on API 31+; an absent section is open. -->
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="root" path="." />

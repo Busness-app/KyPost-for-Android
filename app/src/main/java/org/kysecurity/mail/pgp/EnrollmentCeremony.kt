@@ -12,34 +12,10 @@ private const val BUCKET_SECONDS = 120L
  *  mechanism this protocol has. */
 private const val POLL_INTERVAL_MS = 3_000L
 
-/**
- * How long one polling window lasts.
- *
- * **A background completion is impossible, not merely undesirable:** the re-seal uses a key with
- * `setUserAuthenticationRequired(true)` and per-use auth, so it needs a live `BiometricPrompt`. The
- * ceremony's tail requires the user present and the app foregrounded, which means an unbounded loop
- * would be a screen holding a published key and a spoken-aloud code until the process dies. Five
- * minutes also means the code has rotated at least twice, so the screen has had to refresh it anyway.
- */
+/** One polling window. Bounded: the tail needs a live BiometricPrompt and the user present. */
 private const val POLL_WINDOW_MS = 5 * 60 * 1_000L
 
-/**
- * The device-enrollment state machine.
- *
- * **No Android imports, and none may be added.** The ceremony has more branches than any existing
- * call site in this app — identity missing, publish rejected, poll timeout, envelope 404, GCM open
- * failure, biometric cancelled, no lock screen, re-seal failure, report failure, user abandons — and
- * every one of them is something the user must be told about. Audit run-6's one unfixable finding
- * was that logic living in an Activity is logic no unit test can reach; splitting this out is what
- * makes each branch above a JVM test.
- *
- * [hostileLocationEnabled] and [hasSecureLockScreen] are lambdas rather than a port, following the
- * `elapsedRealtimeMs: () -> Long = SystemClock::elapsedRealtime` precedent in `AppLockManager`.
- *
- * [onState] rather than an owned `StateFlow`: the ViewModel owns the flow (it is what survives
- * rotation), and a callback lets a JVM test record the full transcript rather than sampling a
- * conflating flow.
- */
+/** The device-enrollment state machine. No Android imports, and none may be added. */
 internal class EnrollmentCeremony(
     private val identity: IdentitySource,
     private val transport: EnrollmentTransport,
@@ -61,21 +37,10 @@ internal class EnrollmentCeremony(
 
     private fun emit(state: EnrollmentUiState) = onState(state)
 
-    /**
-     * True whenever no polling window is running — the ceremony is finished, blocked, timed out, or
-     * waiting for the user after a cancelled prompt.
-     *
-     * The Activity offers "Check again" on this, rather than on the state alone: `ShowingCode` means
-     * two different things depending on whether a window is still open behind it.
-     */
+    /** True whenever no polling window is running; the Activity offers "Check again" on this. */
     var isIdle: Boolean = true
         private set
 
-    /**
-     * Runs the ceremony from the gate to a terminal state.
-     *
-     * Every path out of this function is one row of the spec's exit table.
-     */
     suspend fun run() {
         isIdle = false
         try {
@@ -137,7 +102,6 @@ internal class EnrollmentCeremony(
 
         // Mints a FRESH keypair, destroying any previous one. A key that outlives a ceremony is a
         // standing unauthenticated path to every envelope the relay has retained.
-        //
         keyPairLive = true
         if (!keys.newKeyPair()) {
             failAndDestroy(FailureReason.NO_DEVICE_KEY)
@@ -165,13 +129,7 @@ internal class EnrollmentCeremony(
         poll()
     }
 
-    /**
-     * Reopens a five-minute window against the **same** keypair.
-     *
-     * The key is not republished and `newKeyPair()` is not called again: a restart would rotate the
-     * key, invalidating the code the user may already have typed into the browser. Leaving the
-     * screen and re-entering is the restart, and that path does rotate.
-     */
+    /** Reopens a five-minute window against the **same** keypair: rotating would kill the code. */
     suspend fun checkAgain() {
         if (!keyPairLive) return
         isIdle = false
@@ -183,14 +141,7 @@ internal class EnrollmentCeremony(
     }
 
     private suspend fun poll() {
-        // Every window opens on a freshly derived code. [shownBucket] is instance state that
-        // survives each exit from the loop below, so without this reset a window reopened after a
-        // timeout — or after a cancelled prompt — would find the bucket unchanged, emit nothing, and
-        // leave whatever code was last on screen sitting there while the browser has already moved
-        // on to the next bucket. A code that outlived its bucket is not an inconvenience: the
-        // browser refuses to seal on a mismatch, and a mismatch is this feature's one alarm, so a
-        // stale code turns an entirely honest enrollment into the signal reserved for an attack.
-        // Re-deriving costs one keystore read against a key that has not changed.
+        // Every window opens on a freshly derived code: a stale one fires this feature's one alarm.
         shownBucket = Long.MIN_VALUE
 
         val deadline = clock.elapsedRealtimeMs() + POLL_WINDOW_MS
@@ -219,10 +170,7 @@ internal class EnrollmentCeremony(
                 // 401 is the one polling answer that cannot improve: the credential this device
                 // holds is not accepted, and no amount of waiting changes that.
                 is EnrollmentCallResult.Unauthorized -> return failAndDestroy(FailureReason.UNAUTHORIZED)
-                // 404 covers "never sealed" and "expired", indistinguishable by design and both
-                // meaning keep waiting. A 429 or a dropped connection mid-window is not a reason to
-                // tear down a ceremony the user is halfway through typing. `Ok` cannot occur on this
-                // route.
+                // 404 covers "never sealed" and "expired": keep waiting. 429 and drops are not teardown reasons.
                 is EnrollmentCallResult.NotFound,
                 is EnrollmentCallResult.RateLimited,
                 is EnrollmentCallResult.Failed,
@@ -251,10 +199,7 @@ internal class EnrollmentCeremony(
             return
         }
 
-        // The AAD is built from this device's id and the fingerprint the identity check returned —
-        // never from anything in the envelope. deviceEnvelopeAad normalises and validates the
-        // fingerprint itself; a throw here is a programming error, not a user condition, but it is
-        // caught rather than crashed because the alternative is a crash on a security screen.
+        // The AAD comes from this device's id and the checked fingerprint — never from the envelope.
         val aad = runCatching {
             deviceEnvelopeAad(requireNotNull(deviceId), requireNotNull(fingerprint))
         }.getOrNull()
@@ -310,59 +255,24 @@ internal class EnrollmentCeremony(
             return
         }
 
-        // NonCancellable around this one call, not around sealAndReport or openAndSeal: once
-        // sealer.seal hands plaintext to a background thread (the Activity's own executor, which
-        // this file cannot see and does not control), that thread reads it until doFinal returns.
-        // Back, finish(), and the app lock all cancel viewModelScope, and — on
-        // Dispatchers.Main.immediate — a cancellation while suspended here would resume inline and
-        // unwind straight through openAndSeal's finally, running plaintext.fill(0) on the same
-        // array the background thread may still be mid-read on: a blob built from partly-zeroed
-        // plaintext would then get stored, and probeEnrollment cannot tell it apart from a real
-        // one — Cipher.init on GCM touches no ciphertext — so EnrollmentStateWorker would report
-        // encryptionEnrolled = true for a key nothing can open. See
-        // SecuritySettingsActivity.SecurityWork for the same fix applied to the same class of bug.
-        // The poll loop and report() stay outside this, and stay cancellable.
+        // NonCancellable around this call only: a cancel here would zero plaintext mid-read on the sealer.
         when (withContext(NonCancellable) { sealer.seal(plaintext) }) {
             is SealOutcome.Sealed -> {
-                // Zeroed here rather than waiting for openAndSeal's outer finally: it is durably
-                // sealed by now and has no further reader, and report() is a suspending network
-                // round trip that can run to a full timeout. Zeroing again in that finally is
-                // harmless — it just covers the failure, cancel and throw paths this branch doesn't
-                // take.
+                // Sealed and durable by now; zero before report()'s network round trip rather than after.
                 plaintext.fill(0)
-                // Before report(), which is a network round trip that can run to a full timeout or
-                // fail outright. This device has just stopped depending on the server being able to
-                // read this account's mail; anything cached that the server decrypted is plaintext
-                // the new threat model does not account for, and queueing its removal behind a call
-                // that may never succeed would leave it there for the 24 hours until the next full
-                // snapshot — the delta path preserves bodies, so deltas never clear it.
+                // Before report(): server-decrypted plaintext must not outlive this, and deltas never clear it.
                 mailCache.clearServerDecryptedBodies()
                 report()
             }
             is SealOutcome.NoSecureLockScreen -> failAndDestroy(FailureReason.NO_SECURE_LOCK_SCREEN)
             is SealOutcome.Failed -> failAndDestroy(FailureReason.SEAL_FAILED)
             is SealOutcome.Cancelled ->
-                // NOT back to the code. Reaching here means fetchEnvelope already returned one, so
-                // the browser has read the code and sealed: re-showing it would instruct a step the
-                // user has finished, and would show a value that dies on the next bucket boundary
-                // with no window left running to refresh it — a stale code is this feature's one
-                // alarm fired at an entirely honest enrollment.
-                //
-                // The envelope stays on the relay for seven days, so "Check again" picks it straight
-                // back up. Re-prompting from inside the poll loop instead would put the dialog back
-                // three seconds after the user dismissed it, over and over, for the rest of the
-                // window.
+                // NOT back to the code: it would go stale with no window to refresh it. The envelope waits 7 days.
                 emit(EnrollmentUiState.ReadyToFinish)
         }
     }
 
-    /**
-     * Tells the server this device is enrolled, and stops depending on the answer.
-     *
-     * A failed report is **not** a failed enrollment: the local seal is real, only the marker is
-     * stale, and `EnrollmentStateWorker` re-probes live state and retries. The agreement key is spent
-     * either way — its life is one ceremony.
-     */
+    /** Tells the server this device is enrolled. A failed report is not a failed enrollment. */
     private suspend fun report() {
         if (transport.reportEnrolled(true) !is EnrollmentCallResult.Ok) {
             transport.enqueueDurableReport()
@@ -371,13 +281,7 @@ internal class EnrollmentCeremony(
         emit(EnrollmentUiState.Enrolled)
     }
 
-    /**
-     * Destroys the agreement key, whatever state the ceremony was in.
-     *
-     * Called from the ViewModel's `onCleared` — the user leaving the screen, the app locking
-     * mid-ceremony and the Activity being destroyed all land here. Idempotent: leaving a screen that
-     * never minted anything must not report a deletion.
-     */
+    /** Destroys the agreement key, whatever state the ceremony was in. Idempotent. */
     fun teardown() {
         if (!keyPairLive) return
         keys.deleteKeyPair()

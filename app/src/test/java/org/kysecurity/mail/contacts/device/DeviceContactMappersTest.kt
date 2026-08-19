@@ -13,16 +13,6 @@ import org.kysecurity.mail.contacts.toEntity
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
-/**
- * [DeviceContactMappers.ContactEntity.toDto] is the merge base for both directions of device
- * sync ([DeviceContactRepository.pullDeviceChangesForOwnAccount]'s `roomDto.copy(...)` and
- * [DeviceContactRepository.pushRoomChangesToDevice]'s `entity.toDto()`). It used to be its own
- * partial re-implementation that silently dropped every Task-2-added field — this test guards
- * against that regression by asserting the fields this task's device provider wiring never
- * touches (`pgpKey`/`pronouns`/`customFields`/`groupIDs`/`photoRef`) still survive the
- * `ContactEntity -> ContactDto` conversion used on every device sync pass, per
- * `Client_Contact_Update.md`'s Part 5 checklist item.
- */
 class DeviceContactMappersTest {
 
     private val fullDto = ContactDto(

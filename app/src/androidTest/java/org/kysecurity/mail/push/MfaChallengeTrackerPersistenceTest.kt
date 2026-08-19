@@ -7,12 +7,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/**
- * The tracker's storage half. It used to be a process-lifetime `ConcurrentHashMap`, which was
- * usually already gone by the time the user tapped the notification: FCM delivers to a
- * freshly-started process and Android kills it again moments later, so a legitimate tap fell
- * through to the inbox with no explanation while the sign-in timed out.
- */
+/** Persisted, not in-memory: the FCM process usually dies before the user taps. */
 @RunWith(AndroidJUnit4::class)
 class MfaChallengeTrackerPersistenceTest {
     private val context = ApplicationProvider.getApplicationContext<android.content.Context>()
@@ -64,16 +59,7 @@ class MfaChallengeTrackerPersistenceTest {
         assertFalse(newTracker().isPending(id, nowEpochMs = now))
     }
 
-    /**
-     * A concurrent delivery must not resurrect a challenge that was just cleared.
-     *
-     * [MfaChallengeTracker.markDelivered] is a read-modify-write that rebuilds the whole file from
-     * a snapshot, and [MfaChallengeTracker.clear] removes one key. Unserialised, a `clear` landing
-     * between another thread's read and its rewrite was silently undone — which resurrects a
-     * challenge the user burned by mis-tapping the number, or one the server has already accepted
-     * an answer for, breaking "answered once, answerable once". It fires exactly during a challenge
-     * flood, i.e. during the MFA-fatigue attack the whole feature resists.
-     */
+    /** markDelivered rebuilds the whole file, so an unserialised clear can be silently undone. */
     @Test
     fun aClearedChallengeIsNotResurrectedByAConcurrentDelivery() {
         repeat(30) { round ->
@@ -99,11 +85,7 @@ class MfaChallengeTrackerPersistenceTest {
         }
     }
 
-    /**
-     * The alert cooldown shares this file so it survives process death — the reason the challenge
-     * records are persisted in the first place. Held in a process-scoped `var`, it reset on every
-     * FCM-driven process churn, so under a real flood every challenge alerted at IMPORTANCE_HIGH.
-     */
+    /** The cooldown shares this file so it survives the FCM-driven process churn. */
     @Test
     fun theAlertCooldownSurvivesANewTrackerInstanceAndOtherDeliveries() {
         val cooldownMs = 5 * 60 * 1000L
@@ -117,11 +99,6 @@ class MfaChallengeTrackerPersistenceTest {
         assertTrue(newTracker().shouldSuppressAlert(cooldownMs).suppress)
     }
 
-    /**
-     * A delivery that posted no notification must not spend the cooldown, or a single revoked
-     * POST_NOTIFICATIONS (or a SecurityException on the way out) silences the next five minutes of
-     * sign-in prompts the user *would* have seen.
-     */
     @Test
     fun restoringTheCooldownReopensTheAlertWindow() {
         val cooldownMs = 5 * 60 * 1000L

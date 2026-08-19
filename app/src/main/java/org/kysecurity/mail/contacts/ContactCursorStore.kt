@@ -10,11 +10,7 @@ import org.kysecurity.mail.data.ContactSyncStateEntity
 
 private val Context.contactsDataStore by preferencesDataStore(name = "contacts_state")
 
-/**
- * Durable per-subscriber sync cursor, scoped to the subscriber so re-pairing as someone else
- * starts clean. The first read imports the legacy DataStore value; later updates stay in Room so
- * they can commit with the contact outbox acknowledgement.
- */
+// Kept in Room so it commits with the outbox ack; the first read imports the legacy DataStore value.
 class ContactCursorStore(context: Context, private val db: AppDatabase) {
     private val legacyCursor = ScopedValue(
         dataStore = context.contactsDataStore,

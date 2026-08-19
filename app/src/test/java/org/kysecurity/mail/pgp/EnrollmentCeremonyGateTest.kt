@@ -5,20 +5,10 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * Everything that must happen — or must NOT happen — before a keypair exists.
- *
- * The shared claim under all of these: a blocked ceremony leaves nothing behind. `newKeyPair()`
- * destroys any previous key and mints a fresh one, so calling it speculatively and giving up is not
- * free; and publishing a key the user then cannot use leaves the account's device row advertising an
- * enrollment key for a device that has none.
- */
+/** A blocked ceremony leaves nothing behind: `newKeyPair()` destroys any previous key. */
 class EnrollmentCeremonyGateTest {
 
-    /**
-     * Hostile Location Protection's contract is that no envelope exists on this device. Enrolling
-     * under it would create exactly the artefact its teardown destroys.
-     */
+    /** Hostile Location Protection's contract is that no envelope exists on this device. */
     @Test
     fun hostileLocationProtectionBlocksBeforeAnyKeyIsMinted() = runBlocking {
         val ports = FakePorts(hostileLocation = true)
@@ -34,11 +24,7 @@ class EnrollmentCeremonyGateTest {
         assertEquals("nothing may be published", 0, ports.transport.publishedKeys.size)
     }
 
-    /**
-     * `EnrollmentVault.ensureKey()` returns false without a secure lock screen, by design — the
-     * envelope's protection *is* the lock screen. Saying so at the entry beats a biometric prompt
-     * that cannot be satisfied after the user has already read a code aloud.
-     */
+    /** `EnrollmentVault.ensureKey()` returns false without a secure lock screen, by design. */
     @Test
     fun noSecureLockScreenBlocksBeforeAnyKeyIsMinted() = runBlocking {
         val ports = FakePorts(secureLockScreen = false)
@@ -53,12 +39,7 @@ class EnrollmentCeremonyGateTest {
         assertTrue("no identity request may be made", ports.identity.checkCalls == 0)
     }
 
-    /**
-     * Test 8 from the original 2b handoff — enrollment before an identity exists.
-     *
-     * There is nothing for the browser to seal, so a ceremony started here would show the user a
-     * code and poll for five minutes against an envelope that can never arrive.
-     */
+    /** With no identity there is nothing for the browser to seal. */
     @Test
     fun anAccountWithNoIdentityIsUnavailableAndMintsNothing() = runBlocking {
         val ports = FakePorts(identityResult = IdentityCheck.NoIdentity)
@@ -86,11 +67,7 @@ class EnrollmentCeremonyGateTest {
         assertEquals(0, ports.keys.newKeyPairCalls)
     }
 
-    /**
-     * The distinction decision 10 exists to protect. A failed check must not collapse into
-     * [UnavailableReason.NO_IDENTITY]: those two render as different sentences to the user, and one
-     * of them tells a user with a perfectly good identity to go and make another.
-     */
+    /** Decision 10: the two render as different sentences to the user. */
     @Test
     fun aFailedCheckIsCouldNotCheckAndNotNoIdentity() = runBlocking {
         val ports = FakePorts(identityResult = IdentityCheck.CouldNotCheck)
@@ -126,11 +103,7 @@ class EnrollmentCeremonyGateTest {
         assertEquals(EnrollmentUiState.CheckingIdentity, ports.states.first())
     }
 
-    /**
-     * Ordering matters, not just outcomes. Hostile Location Protection is a local declaration that
-     * this network is hostile, so answering it must not require a request to a server on that
-     * network first.
-     */
+    /** Answering a local declaration must not require a request to the hostile network. */
     @Test
     fun hostileLocationIsCheckedBeforeTheIdentityRequest() = runBlocking {
         val ports = FakePorts(hostileLocation = true, identityResult = IdentityCheck.ClientProtected("AA"))

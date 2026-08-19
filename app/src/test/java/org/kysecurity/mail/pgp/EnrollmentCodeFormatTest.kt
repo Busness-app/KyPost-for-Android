@@ -3,16 +3,7 @@ package org.kysecurity.mail.pgp
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
-/**
- * The code is transcribed by a human across two devices, which is the failure the grouping exists
- * to prevent. Four groups of at most four is the pattern people already read off bank cards; two
- * groups of seven are long runs that are easy to lose your place in, and an omitted character in a
- * long run is silently wrong rather than visibly a wrong-length group.
- *
- * The browser's `formatEnrollmentCode` must group identically — see
- * `kypost-server/frontend/src/lib/deviceEnrollment.ts`. Grouping never reaches the hash:
- * `normalizeEnrollmentCode` strips `/[\s-]/g` before comparing.
- */
+/** The browser's `formatEnrollmentCode` must group identically; grouping never reaches the hash. */
 class EnrollmentCodeFormatTest {
 
     @Test
@@ -20,12 +11,7 @@ class EnrollmentCodeFormatTest {
         assertEquals("5R9K-6FW-A18A-8YP", formatEnrollmentCode("5R9K6FWA18A8YP"))
     }
 
-    /**
-     * The guard the browser's own suite already carries, for the same reason: a hardcoded slice
-     * silently TRUNCATED the code when its width grew from 10 to 14 — and because the short code is
-     * a prefix of the long one, the truncated form looked entirely plausible while dropping the four
-     * characters carrying the extra 20 bits.
-     */
+    /** The short code is a prefix of the long one, so a truncating slice looks entirely plausible. */
     @Test
     fun neverDropsCharacters() {
         val rawKey = ByteArray(65).also {

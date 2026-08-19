@@ -156,10 +156,7 @@
     <string name="compose_handoff_draft_failed">Couldn\'t save the draft, so webmail wouldn\'t have your message: %1$s</string>
     <string name="compose_handoff_no_webmail">Couldn\'t work out this server\'s web address — open your drafts in your browser.</string>
     <string name="compose_handoff_no_handler">No app on this device can open that link — open your drafts in your browser.</string>
-    <!-- Client-custody send from an enrolled device: this app holds the key and does the crypto.
-         There is deliberately no pickup-link fallback on this path — the server-side one works by
-         storing the message plaintext for 7 days, which is exactly what client-side protection
-         exists to prevent. So a missing key is a dead end, and the copy says so plainly. -->
+    <!-- Client-custody send: no pickup-link fallback, which stores plaintext for 7 days. -->
     <string name="compose_pgp_no_key_title">No key for some recipients</string>
     <string name="compose_pgp_no_key_body">We don\'t have a usable PGP key for %1$s, so nothing was sent.\n\nOn this account your key never leaves your devices, so your server can\'t send them a link on your behalf. Add their key in Contacts, or continue in webmail.</string>
     <string name="compose_pgp_no_key_webmail">Continue in webmail</string>
@@ -470,13 +467,11 @@
     <string name="mfa_respond_denied">Sign-in denied</string>
     <string name="mfa_respond_failed">Couldn\'t reach your server: %1$s. The request is still open — try again.</string>
 
-    <!-- PIN policy feedback. A rejected PIN used to silently revert the toggle with no message. -->
     <string name="security_pin_too_short">PIN must be at least %1$d digits</string>
     <string name="security_pin_too_long">PIN can be at most %1$d digits</string>
     <string name="security_pin_not_numeric">PIN must be digits only</string>
     <string name="security_pin_too_common">That PIN is too easy to guess — the app wipes after 10 wrong attempts, so pick something outside the obvious sequences</string>
 
-    <!-- Hostile Location Protection interactions with device contact sync -->
     <string name="contacts_device_sync_blocked_hostile_location">Device contact sync is unavailable while Hostile Location Protection is on — synced contacts are stored by the system, outside this app\'s protected storage</string>
     <plurals name="security_lock_grace_seconds">
         <item quantity="one">%1$d second</item>
@@ -487,13 +482,7 @@
          setText(Int) overload stays consistent with every other branch. -->
     <string name="empty_string" translatable="false"></string>
 
-    <!-- Device enrollment.
-
-         EVERY STRING HERE DESCRIBES CAPABILITY, NEVER BEHAVIOUR. A user who completes this
-         ceremony gets a device that HOLDS a key it does not yet USE: reading mail with the
-         enrolled key is deferred (see the 2026-07-29 on-device-decryption spec, gated on a
-         measurement nobody has taken). Saying "you can now read encrypted mail on this device"
-         would be false until that lands. -->
+    <!-- Enrollment strings describe capability, never behaviour: the key is held, not yet used. -->
     <string name="enrollment_title">Set up encrypted mail</string>
     <string name="enrollment_checking">Checking your account…</string>
     <string name="enrollment_publishing">Preparing this device…</string>
@@ -507,25 +496,12 @@
     <!-- WaitingTimedOut's own headline: the five-minute window closed, so "Waiting for your
          browser…" would claim something is still in flight when nothing is. -->
     <string name="enrollment_waiting_timed_out">Nothing has arrived yet</string>
-    <!-- Must NOT promise the code above stays valid: codes roll every two minutes, and this state
-         has no live window refreshing the one on screen. A user told "the code above is still the
-         right one" who acts on it after the bucket rolls produces a browser-side mismatch — this
-         feature's one alarm — from an entirely honest enrollment. "Check again" reopens a window,
-         which re-derives the code, so that is what the copy points at. -->
+    <!-- Must not promise the code above is still valid: codes roll every two minutes. -->
     <string name="enrollment_timed_out">Nothing has arrived in the last five minutes. Codes change every couple of minutes, so choose “Check again” for a current one, then type that in your browser.</string>
-    <!-- Shown when a message would otherwise render as a completely blank screen. Deliberately does
-         NOT claim the message is encrypted: pgpEncrypted is omitempty server-side and defaults to
-         false, so an encrypted message the server has not warmed yet is indistinguishable from an
-         ordinary one, and asserting the stronger property on that evidence is the mistake
-         BODY_UNAVAILABLE exists to prevent. It says what is true — there is nothing to show — and
-         names the most likely reason without claiming it. -->
+    <!-- Must not claim the message is encrypted: pgpEncrypted defaults to false server-side. -->
     <string name="email_no_content">There\'s nothing to show for this message. If your account uses encrypted mail, the server may not have finished preparing it — refresh your inbox and open it again.</string>
     <string name="enrollment_check_again">Check again</string>
-    <!-- Shown after the user dismisses the confirmation prompt. Must NOT show the code or ask for it
-         to be typed again: this state is only reachable because the browser already read the code and
-         sent the key, so repeating that instruction sends the user to redo a finished step — and the
-         code it would display goes stale on the next bucket with no window left refreshing it.
-         Describes capability, not behaviour: the key is held, not yet used to read anything. -->
+    <!-- Must not show the code again: the browser has already read it and sent the key. -->
     <string name="enrollment_ready_to_finish">Almost done</string>
     <string name="enrollment_ready_to_finish_detail">Your browser has already sent the key to this device. Choose “Check again” and confirm it\'s you to finish setting it up.</string>
     <string name="enrollment_opening">Opening the key that was sent to this device…</string>
@@ -555,10 +531,7 @@
     <string name="enrollment_failed_rate_limited">Your server is asking this device to slow down. Try again in a few minutes.</string>
     <string name="enrollment_failed_no_lock_screen">Your screen lock was removed while this was running. Set one again, then try again.</string>
     <string name="enrollment_failed_no_device_key">This device couldn\'t create the key it needs. Nothing was saved.</string>
-    <!-- The ONE failure with its own copy: the only point where this device can detect the
-         substitution the ceremony exists to prevent. It DESCRIBES rather than ACCUSES, because a
-         key rotation mid-ceremony is indistinguishable by construction from a hostile one — both
-         produce exactly this — and an alarm that cries wolf is one users learn to dismiss. -->
+    <!-- Describes, never accuses: a mid-ceremony rotation looks identical to a hostile swap. -->
     <string name="enrollment_failed_could_not_open">This device could not open the key that was sent to it. That happens if your account\'s encryption key changed while you were setting this up — or if the key didn\'t come from your account. Nothing was saved on this device. Start again to try once more.</string>
 
     <!-- The Security page's encrypted-mail entry. Capability, never behaviour — see the enrollment
@@ -588,15 +561,7 @@
     <string name="security_encryption_removed">Removed from this device</string>
     <string name="security_encryption_webmail_failed">Couldn\'t open webmail on this device</string>
 
-    <!-- The pairing screen's pointer at enrollment.
-
-         Worded conditionally ("If your account uses encrypted mail") rather than as a promise,
-         because this line is NOT gated on hasPgpIdentity and never will be. Gating it would add an
-         authenticated request to the pairing flow to answer a question the browser has usually
-         already settled at first login — and hasPgpIdentity returns Boolean?, so a network failure
-         would leave the app guessing anyway. Conditional wording also means it never goes stale: a
-         user who creates their identity a week after pairing still finds the entry where this said
-         it would be. -->
+    <!-- Worded conditionally rather than gated on hasPgpIdentity, so it cannot go stale. -->
     <string name="push_pairing_encryption_hint">If your account uses encrypted mail, you can set this device up for it in Settings → Security.</string>
     <plurals name="security_wipe_threshold_attempts">
         <item quantity="one">%1$d wrong PIN</item>

@@ -29,12 +29,7 @@ sealed class DeregisterResult {
     data class Error(val message: String) : DeregisterResult()
 }
 
-/**
- * Talks to `POST /api/notifications/native/deregister` — lets this device remove itself from
- * the account's paired-devices list server-side, using its own X-Kypost-Device-Id/
- * X-Kypost-Device-Secret credentials, no session cookie. Kept parallel to [MfaResponseClient] —
- * same okhttp/serialization stack and status-code-to-result mapping shape.
- */
+/** `POST /api/notifications/native/deregister` using device credentials, no session cookie. */
 class DeregisterClient(
     private val json: Json = Json { ignoreUnknownKeys = true },
     // Injected Call.Factory; see PairingAuthHeaders.kt for why every credentialed client takes one.

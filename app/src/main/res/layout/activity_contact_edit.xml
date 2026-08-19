@@ -1,5 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- app/src/main/res/layout/activity_contact_edit.xml -->
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/contactEditRoot"
     android:layout_width="match_parent"

@@ -3,16 +3,6 @@ package org.kysecurity.mail.contacts
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
-/**
- * Covers [mergedContactDto] — the pure piece pulled out of [ContactEditActivity.save] (mirrors
- * [ContactSyncRepositoryTest]'s extraction approach for the same reason: unit-testable without a
- * Context-backed Room/Activity). Regression test for a real data-loss bug: `save()` used to build a
- * brand-new [ContactDto] from only the fields this single-screen editor exposes, so saving any edit
- * (even just fixing a phone number) silently wiped every other field — locally immediately, and on
- * the server too, since both the local upsert and the server's PUT/push handlers fully replace the
- * stored contact rather than merging. [mergedContactDto] must `.copy()` off the loaded contact
- * instead.
- */
 class ContactEditActivityTest {
 
     private val loaded = ContactDto(

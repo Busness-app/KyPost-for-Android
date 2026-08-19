@@ -29,9 +29,7 @@ class DeviceContactAccountManager(private val context: Context) {
 
     suspend fun removeAccount(): Boolean = removeAccountBlocking()
 
-    /** Same work as [removeAccount] without the `suspend` marker, for callers already inside a
-     *  non-suspending block — see [org.kysecurity.mail.security.SecurityWipe.removeSyncedDeviceContacts].
-     *  `removeAccountExplicitly` is a synchronous AccountManager call either way. */
+    /** Removing the account is what makes CP2 hard-delete its raw contacts; false must reach callers. */
     fun removeAccountBlocking(): Boolean {
         val account = DeviceContactAccount.account()
         return try {

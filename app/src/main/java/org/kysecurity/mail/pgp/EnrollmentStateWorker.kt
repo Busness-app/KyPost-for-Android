@@ -17,25 +17,10 @@ import java.util.concurrent.TimeUnit
  *  decision can be asserted on the JVM, without a device. */
 internal enum class EnrollmentReportOutcome { DONE, RETRY, GIVE_UP }
 
-/**
- * How many times a report may be retried before it is abandoned.
- *
- * WorkManager imposes no ceiling of its own — it only clamps the exponential backoff at five hours —
- * so a RETRY with no bound is a work item that never terminates. With the 30-second base delay this
- * spans roughly a day and a half of real attempts, which is generous for "the network came back"
- * and finite for "this relay is never answering again".
- */
+/** WorkManager imposes no retry ceiling of its own, so an unbounded RETRY never terminates. */
 internal const val MAX_REPORT_ATTEMPTS = 8
 
-/**
- * Whether a failed report is worth another attempt.
- *
- * Retry is the answer whenever the server's marker is wrong in the *unsafe* direction — the
- * Security page telling the user this device can read their mail after the envelope is gone. Give
- * up only where another attempt cannot change the answer: a credential the server refuses will not
- * start working, a device row that is gone will not come back, and past [MAX_REPORT_ATTEMPTS] the
- * evidence is that nothing is going to.
- */
+/** Retry whenever the server's marker is wrong in the unsafe direction; give up otherwise. */
 internal fun enrollmentReportOutcome(
     result: EnrollmentCallResult,
     runAttemptCount: Int = 0,
@@ -51,14 +36,7 @@ internal fun enrollmentReportOutcome(
         is EnrollmentCallResult.Envelope -> EnrollmentReportOutcome.GIVE_UP
     }
 
-/**
- * Reports enrollment state durably.
- *
- * Enqueued before Hostile Location Protection's flag flips, so an interrupted teardown still
- * corrects the server: the Security page would otherwise show this device as protected in the
- * window between, which is the specific lie the marker exists to prevent. Offline is the expected
- * case — the user just declared they are somewhere hostile — so this retries rather than dropping.
- */
+/** Reports enrollment state durably; offline is expected, so it retries rather than drops. */
 internal class EnrollmentStateWorker(
     context: Context,
     params: WorkerParameters,
@@ -75,26 +53,19 @@ internal class EnrollmentStateWorker(
 
         // Read at run time, never carried in inputData: WorkManager writes input to its own
         // database in plaintext, and this is the credential every authenticated call uses.
-        //
         val pairing = PushRuntime.graph(applicationContext).repository.pairingForAuthenticatedCall()
             // Unpaired: there is no device row left to correct. SecurityWipe's path lands here.
             ?: return Result.success()
         val deviceId = pairing.deviceId
         val deviceSecret = pairing.deviceSecret
         if (deviceId.isNullOrBlank() || deviceSecret.isNullOrBlank()) {
-            // Gated and currently locked, so the secret cannot be unwrapped in this run. Retrying
-            // cannot help — only a PIN unlock can, and the unlock path re-enqueues us (see
-            // UnlockActivity). Succeeding here releases the work slot instead of occupying it with
-            // a job that can never make progress.
+            // Gated and locked: only a PIN unlock helps, and UnlockActivity re-enqueues us. Do not retry.
             return Result.success()
         }
 
         val enrolled = probeEnrollment(EnrollmentVault(applicationContext)).isEnrolled()
 
-        // The pinned factory, exactly as every other client that carries the device credential does.
-        // The bare default was unpinned, which made this the only credentialed request in the app
-        // outside the TOFU pin — and the only thing that triggers it is the user declaring the
-        // network hostile, which is the worst possible moment to be trusting the system CA set.
+        // The pinned factory, as every client carrying the device credential uses; the default is unpinned.
         val clients = EnrollmentClients(callFactory = pinnedPairingCallFactory(applicationContext))
         val result = clients.reportState(pairing.serverUrl, deviceId, deviceSecret, enrolled)
         return when (enrollmentReportOutcome(result, runAttemptCount)) {

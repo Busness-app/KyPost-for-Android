@@ -7,13 +7,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayInputStream
 
-/**
- * These run on the JVM against a gpg-produced vector. `isReturnDefaultValues = true` is project-wide,
- * so a decryptor that reached for an Android framework class would silently resolve to a stub and
- * these would pass against an implementation that does nothing — which is exactly how
- * `parseDeviceEnvelope` once returned null for every input under three passing tests. Hence
- * [PgpDecryptor] uses Bouncy Castle's lightweight `Bc*` operators and no Android imports at all.
- */
+/** `isReturnDefaultValues = true` is project-wide, so [PgpDecryptor] uses no Android imports. */
 class PgpDecryptorTest {
 
     @Test
@@ -52,10 +46,7 @@ class PgpDecryptorTest {
         assertEquals(MAX_DECRYPTED_PLAINTEXT_BYTES, read!!.size)
     }
 
-    /** The signer keys the reader will pass in production: [TestPgpPrivateKey.ARMORED_PUBLIC] is
-     *  the same key pair's public half, exported separately by `gpg`, exactly the shape a real
-     *  caller holds — [SignerBinding] only ever supplies keys the address book bound to the
-     *  displayed sender, never the sender's own message. */
+    /** ARMORED_PUBLIC is the same pair's public half — the shape a real caller holds. */
     private val signerKeys = listOf(TestPgpPrivateKey.ARMORED_PUBLIC)
 
     @Test
@@ -118,11 +109,7 @@ class PgpDecryptorTest {
 
     @Test
     fun failsClosedOnAnUnprotectedMessage() {
-        // ARMORED_UNPROTECTED_MESSAGE is a legacy Symmetrically Encrypted Data (tag 9) packet, made
-        // with `gpg --rfc2440 --disable-mdc` — not the Sym. Encrypted Integrity Protected Data
-        // (tag 18) packet every other fixture here uses. Accepting it would mean a tampered
-        // ciphertext could render as an ordinary message: this is the one case the reader can never
-        // trust the server not to have produced.
+        // A legacy Symmetrically Encrypted Data (tag 9) packet, not the integrity-protected tag 18.
         val result = PgpDecryptor.decrypt(
             TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray(), TestPgpPrivateKey.ARMORED_UNPROTECTED_MESSAGE, signerKeys,
         )

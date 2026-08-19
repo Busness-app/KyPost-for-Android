@@ -3,14 +3,7 @@ package org.kysecurity.mail.security
 import android.widget.EditText
 import java.util.Arrays
 
-/**
- * Reads a PIN out of an [EditText] as a [CharArray] and clears the widget, so no `String` copy is
- * ever made.
- *
- * **Honest limit.** `Editable.clear()` truncates the widget's buffer, it does not scrub the
- * `char[]` behind it, and `TextView` keeps its own copies for layout and the IME. This removes the
- * copies this app makes; it cannot remove the ones the toolkit makes.
- */
+/** Clearing the Editable cannot scrub the TextView/IME copies, only the ones this app makes. */
 internal fun EditText.consumePin(): CharArray {
     val editable = text
     val pin = CharArray(editable.length)
@@ -19,7 +12,6 @@ internal fun EditText.consumePin(): CharArray {
     return pin
 }
 
-/** Runs [block] with this PIN and zeroes it afterwards, whatever happens. */
 internal suspend fun <T> CharArray.usePin(block: suspend (CharArray) -> T): T =
     try {
         block(this)

@@ -45,7 +45,5 @@ object DeviceContactsRuntime {
 
     fun graph(context: Context): DeviceContactsGraph = holder.get(context)
 
-    /** See [org.kysecurity.mail.SingletonGraph.invalidate] — used by
-     *  [org.kysecurity.mail.security.AppRestart]. */
     fun invalidate() = holder.invalidate()
 }
