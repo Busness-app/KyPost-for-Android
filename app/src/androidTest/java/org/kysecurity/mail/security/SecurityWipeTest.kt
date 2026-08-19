@@ -102,10 +102,23 @@ class SecurityWipeTest {
         val survivors = sharedPrefsDir.listFiles { file -> file.name.endsWith(".xml") }
             .orEmpty()
             .map { it.name.removeSuffix(".xml") }
-            // The wipe's own bookkeeping is the one thing that may outlive it.
-            .filterNot { it == "org.kysecurity.mail.wipe_state" }
 
-        assertTrue("shared_prefs must be empty after a wipe, but held $survivors", survivors.isEmpty())
+        // Asserted as a SUBSET, not as "the directory is empty". Emptiness is not the contract and
+        // asserting it deleted the downloaded-attachment ledger, which is the only record of
+        // plaintext that escaped the sandbox — see PREFS_NAMES_RETAINED_FINAL. What must hold is
+        // that destruction still owed may stay, and nothing else.
+        val mayOutliveAWipe = setOf(
+            "org.kysecurity.mail.wipe_state",
+            "org.kysecurity.mail.downloaded_attachments",
+        )
+        assertTrue(
+            "only destruction still owed may outlive a wipe, but shared_prefs held $survivors",
+            mayOutliveAWipe.containsAll(survivors),
+        )
+        // Named explicitly as well as covered by the subset above: these four are the encrypted
+        // stores, and a new one added without being swept is the regression that matters.
+        listOf("push_pairing_secure", "app_lock_secure", "db_key_secure", "device_envelope_secure")
+            .forEach { assertFalse("$it must not survive a wipe", it in survivors) }
     }
 
     private fun keystoreAliasExists(alias: String): Boolean =
