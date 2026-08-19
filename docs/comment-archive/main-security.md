@@ -625,8 +625,8 @@ Replaced in source by: `// The process survives, so process-scoped state needs a
 
 ### `enum class AttachmentAction { VIEW_EPHEMERAL, SAVE_TO_DOWNLOADS }`
 ```
-/** Whether a tapped attachment should be viewed ephemerally (no disk write at all) or saved to the
- *  public Downloads collection — see "Attachments" under Hostile Location Protection in the
+/** Whether a tapped attachment should be viewed ephemerally (no disk write at all) or saved to
+ *  the public Downloads collection — see "Attachments" under Hostile Location Protection in the
  *  2026-07-22 security-hardening spec. */
 ```
 
@@ -634,8 +634,11 @@ Replaced in source by: `// The process survives, so process-scoped state needs a
 Replaced in source by: `/** A tap always views ephemerally; saving is a separate, separately confirmed action. */`
 ```
 /**
- * What a *tap* on an attachment does: always an ephemeral view, whatever the protection setting.
- * Saving is a deliberate second action with its own confirmation, not the meaning of a single tap.
+ * What a *tap* on an attachment does. Always an ephemeral view, whatever the protection setting.
+ *
+ * Saving is still available, as [AttachmentAction.SAVE_TO_DOWNLOADS], but it is now a deliberate
+ * second action with its own confirmation rather than the meaning of a single tap. The protection
+ * setting decides whether saving is *offered at all*, which is the decision it was always for.
  */
 ```
 
@@ -1405,15 +1408,10 @@ Replaced in source by: `/** Zeroes rather than merely dropping: dropped plaintex
 ```
 
 ### `fun register(bytes: ByteArray, mimeType: String, displayName: String): Uri? {`
-Replaced in source by: `/** Takes ownership of [bytes] on every path, refusals included; callers must not reuse it. */`
 ```
     /**
      * Parks [bytes] for a single ephemeral read, or returns null when doing so would push the
      * held-plaintext total past [MAX_PENDING_BYTES].
-     *
-     * **Takes ownership of [bytes] on every path, including the refusals**, so callers must not
-     * reuse the array. A refused attachment left unzeroed is readable in a heap dump until the
-     * collector runs, and possibly after if the buffer was promoted.
      */
 ```
 
@@ -1549,8 +1547,8 @@ Replaced in source by: `/** UNREADABLE answers true: callers decide where bytes 
      */
 ```
 
-### `fun setEnabled(enabled: Boolean) {`
-Replaced in source by: `/** Key first when enabling, marker first when disabling, so an interruption leaves it ON. */`
+### `fun setEnabled(enabled: Boolean) = synchronized(LOCK) {`
+Replaced in source by: `/** Key first when enabling, marker first when disabling, so an interruption leaves it ON. Under [LOCK] because minting the key is slow: a read landing mid-enable used to resolve DISABLED and cache it for the life of the process. */`
 ```
     /**
      * Writes the flag, minting or destroying [KeystoreHlpKey] to match.
@@ -1573,7 +1571,19 @@ Replaced in source by: `/** Key first when enabling, marker first when disabling
      */
 ```
 
-### `@Volatile`
+### `private val LOCK = Any()`
+Replaced in source by: `/** Guards [cached] and every posture write, so no read sees a half-applied change. */`
+```
+        /**
+         * Guards [cached] and every posture write, so no read can observe a half-applied change.
+         *
+         * Minting the Keystore key takes long enough to be hit: a read landing between `cached =
+         * null` and the key existing saw "no key" -- the fresh-install path -- resolved DISABLED
+         * and cached it for the life of the process, while the UI went on showing protection ON.
+         */
+```
+
+### `private var cached: HostileLocationState? = null`
 Replaced in source by: `/** Process-wide: one shared file. UNREADABLE is transient and never cached. */`
 ```
         /**
@@ -2005,20 +2015,24 @@ Replaced in source by: `/** FLAG_SECURE is per-window: a Dialog needs its own, a
 ```
 /**
  * Shows [this] with `FLAG_SECURE` set and overlays suppressed, so it is excluded from screenshots
- * and screen recordings exactly as the Activity behind it is, and cannot have its buttons covered by
- * another app.
+ * and screen recordings exactly as the Activity behind it is, and cannot have its buttons covered
+ * by another app.
  *
- * **`FLAG_SECURE` is per-window and a Dialog creates its own.** Setting it on the Activity protects
- * the Activity's window and nothing else, so every PIN this app asks for through an `AlertDialog`
- * was capturable while the identical field inlined in [UnlockActivity] was not. The same applies to
- * [applyOverlayProtection], which is the half that matters for a prompt asking the user to approve
- * something: a consent dialog whose accept button can be covered is not a consent dialog.
+ * **`FLAG_SECURE` is a per-window flag and a Dialog creates its own window.** Setting it on the
+ * Activity in [LockedActivity], [UnlockActivity] and
+ * [org.kysecurity.mail.push.MfaApprovalActivity] therefore protects the Activity's window and nothing
+ * else — every PIN this app asks for through an `AlertDialog` (set PIN, confirm PIN, change PIN,
+ * disable lock, the credential-gate prompt, and the MFA fallback) was capturable by a screen
+ * recorder or an overlay-capable app, while the identical field inlined in [UnlockActivity] was not.
  *
- * The touch filter is re-applied in `setOnShowListener` because the content view does not exist
- * until then.
+ * The same is true of [applyOverlayProtection], and it is the half that matters for a dialog that
+ * asks the user to approve something: a consent prompt whose accept button can be covered is not a
+ * consent prompt. The touch filter is re-applied to the dialog's whole view tree in
+ * `setOnShowListener`, because the content view does not exist until then.
  *
- * Works for both `android.app.AlertDialog` and `androidx.appcompat.app.AlertDialog`. Use it for
- * anything that renders a secret or asks for a decision; there is no cost to using it elsewhere.
+ * Applies to both `android.app.AlertDialog` and `androidx.appcompat.app.AlertDialog`, which share
+ * [Dialog] as a supertype. Use it for anything that renders a secret or asks for a decision; there
+ * is no cost to using it for anything else.
  */
 ```
 
@@ -2118,7 +2132,8 @@ Replaced in source by: `/** Reset must run inside the NonCancellable block; code
  * Runs a destructive security change and the session reset that completes it as **one**
  * non-cancellable unit.
  *
- * Splitting the two is a silent correctness hole that reads as obviously fine:
+ * This exists because splitting the two is a silent correctness hole, and the split reads as
+ * obviously fine:
  *
  * ```
  * lifecycleScope.launch {
@@ -2127,19 +2142,23 @@ Replaced in source by: `/** Reset must run inside the NonCancellable block; code
  * }
  * ```
  *
- * `NonCancellable` protects the *block*, so the destruction and the flag commit both complete. But
- * the statement after `withContext` is an ordinary cancellable continuation: it resumes through
- * `resumeCancellableWith`, sees the cancelled parent `Job`, and throws. The setting is committed and
- * the reset is skipped — leaving the outgoing session's decrypted attachment bytes, compose draft
- * and notification bookkeeping resident in a live process, under a Hostile Location Protection
- * switch reading ON.
+ * `NonCancellable` protects the *block*, so the destruction and the flag commit both complete even
+ * if the Activity is destroyed mid-operation. But the statement after `withContext` is an ordinary
+ * cancellable continuation: it resumes through `resumeCancellableWith`, sees the cancelled parent
+ * `Job`, and throws instead of running. The setting is committed and the reset is skipped.
  *
- * It depends on the dispatchers, which is what makes it easy to reason about wrongly: with the same
- * interceptor on both sides the continuation resumes undispatched and does run. `lifecycleScope` is
- * `Dispatchers.Main.immediate` and the security context is `Dispatchers.Default`, so the failing
- * case is the one that applied.
+ * The behaviour depends on the dispatchers, which is what makes it easy to reason about wrongly —
+ * with the *same* interceptor on both sides the continuation resumes undispatched and does run.
+ * `lifecycleScope` is `Dispatchers.Main.immediate` and the security context is `Dispatchers.Default`,
+ * so the failing case is the one that applied.
  *
- * [NonCancellable] is added here rather than taken from [workContext] so a caller cannot forget it.
+ * What was actually skipped is [org.kysecurity.mail.ProcessState.resetAll] — the only call to it on that
+ * path — leaving the outgoing session's decrypted attachment bytes, compose draft and notification
+ * bookkeeping resident in a live process, under a Hostile Location Protection switch reading ON and
+ * a confirmation dialog that had just promised nothing from before the toggle survives.
+ *
+ * [NonCancellable] is added here rather than taken from [workContext] so a caller cannot forget it
+ * and quietly reintroduce the hole.
  */
 ```
 
@@ -2890,14 +2909,6 @@ Replaced in source by: `// BEFORE the sharedPrefs sweep: clearPairing() writes, 
         // stale pairing read before the file was deleted.
 ```
 
-### `step("deviceContactAccount") {`
-Replaced in source by: `// Removing the account is what makes CP2 hard-delete the raw contacts under it.`
-```
-        // Checked, like every other teardown step here. Removing the account is what makes CP2
-        // hard-delete the raw contacts under it, so this is the last thing standing between a wipe
-        // and an address book left in ContactsContract, outside this sandbox.
-```
-
 ### `if (hostileLocationWasEnabled) {`
 Replaced in source by: `// Re-assert the posture the deletions erased; after sharedPrefs or it is deleted again.`
 ```
@@ -3158,10 +3169,9 @@ Replaced in source by: `// Via DeviceContactPurge: building a graph here would r
 ### `if (deleted < 0) {`
 Replaced in source by: `// Negative means the rows could not be reached; zero is legitimate, not assumed.`
 ```
-        // A negative count means the rows could not be reached — the provider refused, or the
-        // contacts permission is gone while the sync account (and so its rows) is still here. Zero
-        // is legitimate (no account, so no rows can exist), so it is not an error — but it must not
-        // be *assumed*, which is what discarding the return value did.
+        // A negative count is the provider reporting it did not act. Zero is legitimate (sync was
+        // never enabled), so it is not an error — but it must not be *assumed*, which is what
+        // discarding the return value did.
 ```
 
 ### `suspend fun enforceTripwire(context: Context): WipeResult? {`
