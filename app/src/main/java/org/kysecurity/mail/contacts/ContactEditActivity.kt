@@ -64,7 +64,8 @@ class ContactEditActivity : LockedActivity() {
     /** [save] must `.copy()` off this — the local upsert and the server push both replace the row. */
     private var loadedDto: ContactDto = ContactDto()
 
-    override fun onCreateUnlocked(savedInstanceState: Bundle?) {        setContentView(R.layout.activity_contact_edit)
+    override fun onCreateUnlocked(savedInstanceState: Bundle?) {
+        setContentView(R.layout.activity_contact_edit)
         applyThemeToActivity(this)
         val formRoot = findViewById<View>(R.id.contactEditRoot)
         // Keeps this form out of the saved-state Bundle; with this cleared the subtree is skipped.

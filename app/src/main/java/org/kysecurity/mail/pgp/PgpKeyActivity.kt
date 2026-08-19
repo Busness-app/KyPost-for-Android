@@ -65,7 +65,8 @@ class PgpKeyActivity : LockedActivity() {
         }
     }
 
-    override fun onCreateUnlocked(savedInstanceState: Bundle?) {        setContentView(R.layout.activity_pgp_key)
+    override fun onCreateUnlocked(savedInstanceState: Bundle?) {
+        setContentView(R.layout.activity_pgp_key)
         setTitle(R.string.pgp_key_signing_title)
         applyThemeToActivity(this)
         applyTopInsetWithHeader(this, findViewById(R.id.pgpKeyRoot))

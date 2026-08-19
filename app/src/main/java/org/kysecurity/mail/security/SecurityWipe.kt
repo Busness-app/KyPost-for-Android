@@ -43,6 +43,10 @@ private const val KEY_WIPE_ABANDONED = "wipe_abandoned"
  *  every later launch rather than only on the run that gave up. */
 private const val KEY_WIPE_FAILED_STEPS = "wipe_failed_steps"
 
+/** How many saved attachments the sweep could not remove from shared Downloads. Reported to the
+ *  user once and then acknowledged; it is NOT a failed step — see the sweep's call site. */
+private const val KEY_STRANDED_DOWNLOADS = "stranded_downloads"
+
 /** Captured at wipe start: the sweep deletes the flag's own file, so a resume reads it here. */
 private const val KEY_HOSTILE_LOCATION_WAS_ENABLED = "hostile_location_was_enabled"
 
@@ -139,10 +143,23 @@ object SecurityWipe {
                 if (file.exists()) throw IOException("Failed to delete unifiedpush.connector preferences")
             }
         }
-        step("downloadedAttachments") {
-            // Outside the sandbox, so no sandbox deletion reaches them — but this routine tells the
-            // user their local data has been erased, and it has to be true of these too.
-            DownloadedAttachmentLedger.deleteAll(appContext)
+        // NOT a `step`, deliberately. These rows live in shared storage, in a provider this app
+        // does not own; a row it can never delete would otherwise fail this wipe on every resume
+        // until MAX_WIPE_RESUMES bricked the app permanently, over a file the user can remove
+        // themselves in ten seconds. Reported instead — see [WipeResult.Complete]'s scope.
+        val strandedDownloads = runCatching { DownloadedAttachmentLedger.deleteAll(appContext) }
+            .onFailure { android.util.Log.e(TAG, "Downloads sweep threw", it) }
+            .getOrDefault(listOf("<sweep failed>"))
+        if (strandedDownloads.isNotEmpty()) {
+            android.util.Log.e(
+                TAG,
+                "Local wipe could not remove ${strandedDownloads.size} saved attachment(s) from " +
+                    "shared Downloads; they are outside the sandbox and must be deleted by hand",
+            )
+            // Persisted, not returned: the wipe always relaunches, so the screen that could read a
+            // return value is gone by the time there is one to read. Same shape as
+            // `credentialResetsPending`, and in the retained prefs file so it outlives the sweep.
+            recordStrandedDownloads(appContext, strandedDownloads.size)
         }
         // Before the sharedPrefs sweep: creating the store would recreate its file and keyset.
         step("enrollmentTeardown") {
@@ -191,6 +208,19 @@ object SecurityWipe {
             check(leftBehind.isEmpty()) { "app lock teardown left $leftBehind" }
         }
 
+        // AFTER `appLock`, which is the last thing that can still need to evaluate the verifier.
+        // The peppers are useless once the hash and the wrapped secret are gone, but "useless" is
+        // not "absent": two aliases named `kypost_*` surviving in the Keymaster blob store are a
+        // durable, attributable record that this app was installed and a PIN was configured, on a
+        // device this routine has just told the user is clean.
+        step("credentialPeppers") {
+            val leftBehind = listOfNotNull(
+                "deleteCredentialPepper".takeIf { !KeystoreCredentialPepper.destroy() },
+                "deletePinPepper".takeIf { !KeystorePinPepper.destroy() },
+            )
+            check(leftBehind.isEmpty()) { "credential peppers left $leftBehind" }
+        }
+
         // Re-assert the posture the deletions erased; after sharedPrefs or it is deleted again.
         if (hostileLocationWasEnabled) {
             step("restoreHostileLocationProtection") { HostileLocationSettings(appContext).setEnabled(true) }
@@ -198,15 +228,28 @@ object SecurityWipe {
 
         // Everything below touches the network; nothing below it destroys local data.
 
-        // Network, so it belongs below that line; withTimeoutOrNull does bound Task.await().
-        step("fcmToken") {
-            val settled = withTimeoutOrNull(FCM_TEARDOWN_TIMEOUT_MS) {
+        // NOT a `step`, for the same reason the downloads sweep above is not one and the deregister
+        // call below is not either: this needs a reachable Firebase, and nothing the user can do
+        // makes one appear. As a step it failed the wipe on every resume of an offline device until
+        // MAX_WIPE_RESUMES marked it abandoned, at which point LockedActivity blocks the app for
+        // good — bricking the client because the network was down during a wipe. The local half of
+        // the token is already gone with the sandbox; what survives is a server-side subscription,
+        // which is exactly what the deregister below reports rather than fails on.
+        // withTimeoutOrNull does bound Task.await().
+        val fcmTornDown = runCatching {
+            withTimeoutOrNull(FCM_TEARDOWN_TIMEOUT_MS) {
                 com.google.firebase.messaging.FirebaseMessaging.getInstance().deleteToken().await()
                 // The token is not the installation. Leaving the Fid behind keeps this device
                 // linkable across the wipe and a later re-pair.
                 com.google.firebase.installations.FirebaseInstallations.getInstance().delete().await()
-            }
-            if (settled == null) throw IOException("FCM teardown did not finish within ${FCM_TEARDOWN_TIMEOUT_MS}ms")
+            } != null
+        }.onFailure { android.util.Log.e(TAG, "FCM teardown threw", it) }.getOrDefault(false)
+        if (!fcmTornDown) {
+            android.util.Log.e(
+                TAG,
+                "Local wipe finished but FCM teardown did not complete within ${FCM_TEARDOWN_TIMEOUT_MS}ms; " +
+                    "this device may stay subscribed and linkable until it is removed server-side",
+            )
         }
 
         // Network LAST, bounded by the client's own callTimeout; not folded into `failed`.
@@ -277,6 +320,26 @@ object SecurityWipe {
 
     /** Refuse-everything check for non-Activity entry points; one boolean, no graph or Keystore. */
     fun blockedByAbandonedWipe(context: Context): Boolean = abandonedWipe(context) != null
+
+    /** How many saved attachments the last wipe could not remove from shared Downloads; zero when
+     *  there is nothing to report. Survives the wipe's own sweep — see [PREFS_NAMES_RETAINED]. */
+    fun strandedDownloadsPending(context: Context): Int =
+        context.applicationContext
+            .getSharedPreferences(WIPE_STATE_PREFS, Context.MODE_PRIVATE)
+            .getInt(KEY_STRANDED_DOWNLOADS, 0)
+
+    fun acknowledgeStrandedDownloads(context: Context) {
+        context.applicationContext
+            .getSharedPreferences(WIPE_STATE_PREFS, Context.MODE_PRIVATE)
+            .edit().remove(KEY_STRANDED_DOWNLOADS).commit()
+    }
+
+    /** Accumulates across resumes: a second sweep that strands a different row must not hide the
+     *  first. commit(), like every other write here. */
+    private fun recordStrandedDownloads(appContext: Context, count: Int) {
+        val prefs = appContext.getSharedPreferences(WIPE_STATE_PREFS, Context.MODE_PRIVATE)
+        prefs.edit().putInt(KEY_STRANDED_DOWNLOADS, maxOf(prefs.getInt(KEY_STRANDED_DOWNLOADS, 0), count)).commit()
+    }
 
     /** commit(): the process may be killed at any point during a wipe. */
     private fun recordFailedSteps(appContext: Context, failed: List<String>, abandoned: Boolean) {

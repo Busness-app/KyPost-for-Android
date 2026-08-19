@@ -122,8 +122,15 @@ internal class EncryptedMessageReader(
             is DecryptResult.Failed -> return ReadOutcome.DecryptFailed(result.message)
         }
 
-        val body = PgpMimeReader.read(decrypted.plaintext)
-            ?: return ReadOutcome.DecryptFailed("this message could not be read once decrypted")
+        // Zeroed on every path out. The parsed body survives as Strings that cannot be wiped — they
+        // are on their way to a WebView — but the raw decrypted MIME buffer is the largest copy of
+        // the message in this process and it is trivially wipeable, so leaving it for the collector
+        // (and for a heap dump taken any time before that) is a choice, not a constraint.
+        val body = try {
+            PgpMimeReader.read(decrypted.plaintext)
+        } finally {
+            java.util.Arrays.fill(decrypted.plaintext, 0)
+        } ?: return ReadOutcome.DecryptFailed("this message could not be read once decrypted")
 
         return ReadOutcome.Decrypted(
             body,

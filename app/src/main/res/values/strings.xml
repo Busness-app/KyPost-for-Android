@@ -125,6 +125,7 @@
     <string name="attachment_too_many_open">Too many attachments are still open. Close one and try again.</string>
     <string name="forward_fetching_attachments">Fetching attachments to forward…</string>
     <string name="forward_attachments_failed">Couldn\'t fetch %1$d attachment(s) — they won\'t be forwarded</string>
+    <string name="forward_attachments_too_large">%1$d attachment(s) are too large to forward from this device — they won\'t be attached</string>
     <string name="cancel">Cancel</string>
     <string name="compose_format_bold">Bold</string>
     <string name="compose_format_italic">Italic</string>
@@ -210,6 +211,15 @@
     <string name="push_pairing_unpair">Unpair device</string>
     <string name="push_pairing_unpair_confirm_title">Unpair this device?</string>
     <string name="push_pairing_unpair_confirm_message">This removes the device from your account\'s paired devices on the server and clears its local pairing. You\'ll need to scan a new QR code to pair again.</string>
+    <string name="push_pairing_reconnect">Reconnect to server (keep mail)</string>
+    <string name="push_pairing_reconnect_confirm_title">Reconnect to the server?</string>
+    <string name="push_pairing_reconnect_confirm_message">Use this if syncing stopped working after the server\'s certificate was renewed, or after a PIN change. It clears this device\'s stored credential and certificate pin so you can scan a fresh QR code. Your downloaded mail, contacts and keys are kept.</string>
+    <string name="push_pairing_reconnect_done">Credential cleared — scan the pairing QR code to reconnect.</string>
+    <!-- Pairing outcomes. Assembled in PushHomeViewModel; %1$s is the reason from the relay. -->
+    <string name="push_pairing_result_missing_server">Pairing QR is missing a server URL.</string>
+    <string name="push_pairing_result_paired">Device paired and token synced.</string>
+    <string name="push_pairing_result_failed">Pairing failed: %1$s</string>
+    <string name="push_pairing_result_failed_rescan">Pairing failed: %1$s — rescan the pairing QR code.</string>
     <string name="push_pairing_latest_title">Latest push preview</string>
     <string name="push_pairing_history_title">Notification history</string>
     <string name="push_pairing_history_empty">No push notifications received yet</string>
@@ -431,6 +441,12 @@
     <string name="security_wipe_threshold_intro">What happens after repeated wrong PINs. Erasing protects a lost or stolen phone; turning it off protects you from someone who just wants to cause damage.</string>
     <string name="security_credential_reset_title">Stored credentials were reset</string>
     <string name="security_credential_reset_message_mail_lost">This device’s secure storage could no longer be read, so KyPost had to reset it. This usually happens after a change to the device’s screen lock or a system update.\n\nThe key to the local mail database was stored there, so the cached copy of your mail and contacts could no longer be opened and has been deleted. Nothing on the server was touched — sync again to restore it.\n\nYou may also need to pair this device again, set your KyPost PIN again, and re-enrol this device for encrypted mail.</string>
+    <string name="security_stranded_downloads_title">Some saved files remain</string>
+    <plurals name="security_stranded_downloads_message">
+        <item quantity="one">KyPost erased its own data, but %1$d attachment you had saved to Downloads could not be removed. Files in Downloads are outside the app and only you can delete them.\n\nOpen your Files app and delete it from the Downloads folder.</item>
+        <item quantity="other">KyPost erased its own data, but %1$d attachments you had saved to Downloads could not be removed. Files in Downloads are outside the app and only you can delete them.\n\nOpen your Files app and delete them from the Downloads folder.</item>
+    </plurals>
+    <string name="security_stranded_downloads_toast">Some attachments you saved to Downloads could not be removed. Delete them from the Downloads folder yourself.</string>
     <string name="security_tripwire_unreadable_title">Secure storage is unavailable</string>
     <string name="security_tripwire_unreadable_message">KyPost cannot consult this device’s secure key store, so it cannot confirm whether its app lock is still intact. It will not open your mail until it can.\n\nThis is usually temporary. Restart the device and open KyPost again.</string>
     <string name="security_credential_reset_message">This device’s secure storage could no longer be read, so KyPost had to reset it. This usually happens after a change to the device’s screen lock or a system update.\n\nAnything that was stored there is gone: you may need to pair this device again, set your KyPost PIN again, and re-enrol this device for encrypted mail. No mail or contacts were deleted.</string>

@@ -38,13 +38,19 @@ class NativePairingDeepLinkParserTest {
     }
 
     @Test
-    fun parse_missingReg_leavesRegistrationUrlBlank() {
+    /** A blank `registrationUrl` is meaningless downstream — the store reads it as "no pairing"
+     *  and registration rejects it — so an absent `reg` is resolved here rather than emitted blank
+     *  for each consumer to remember to patch up. */
+    fun parse_missingReg_resolvesTheDefaultRegistrationUrl() {
         val result = NativePairingDeepLinkParser.parse(
             "kypost://native-pair?sub=subscriber-123&srv=https%3A%2F%2Fserver.example.com&pt=token",
         )
 
         val pairing = (result as PairingParseResult.Success).pairing
-        assertEquals("", pairing.registrationUrl)
+        assertEquals(
+            "https://server.example.com/api/notifications/native/register",
+            pairing.registrationUrl,
+        )
     }
 
     @Test

@@ -62,6 +62,22 @@ class PushHomeViewModel(application: Application) : AndroidViewModel(application
         localMessage.value = null
     }
 
+    /** Resources, not concatenated English: these reach a Toast like every other user-facing string. */
+    private fun string(resId: Int, vararg args: Any): String =
+        getApplication<Application>().getString(resId, *args)
+
+    /** Clears the stored credential and TLS pin, keeping mail. The recovery for a rotated server
+     *  certificate or a device secret stranded by an interrupted PIN change — neither of which is
+     *  a reason to delete the mailbox. See [PushRepository.resetPairingCredential]. */
+    fun reconnectToServer() {
+        scope.launch {
+            isWorking.value = true
+            graph.repository.resetPairingCredential()
+            localMessage.value = string(org.kysecurity.mail.R.string.push_pairing_reconnect_done)
+            isWorking.value = false
+        }
+    }
+
     /** Applies a pairing PushPairingActivity has already parsed and confirmed. */
     fun applyPairing(pairing: PairingData) {
         scope.launch {
@@ -71,28 +87,32 @@ class PushHomeViewModel(application: Application) : AndroidViewModel(application
     }
 
     private suspend fun applyParsedPairing(pairing: PairingData) {
-        val resolution = NativeRegistrationEndpointResolver.resolve(
-            qrReg = pairing.registrationUrl.takeIf { it.isNotBlank() },
-            qrServerUrl = pairing.serverUrl,
-        )
-        when (resolution) {
-            is NativeRegistrationEndpointResolver.Resolution.MissingServerUrl -> {
-                localMessage.value = "Pairing QR is missing a server URL"
+        // No re-resolution here: [NativePairingDeepLinkParser] emits an already-resolved
+        // registrationUrl, so this is a `PairingData` that is valid by construction. The coordinator
+        // still re-derives it for *stored* pairings, which is a different concern — a host
+        // divergence written by an older build left those clients unpinned.
+        when {
+            pairing.serverUrl.isBlank() -> {
+                localMessage.value = string(org.kysecurity.mail.R.string.push_pairing_result_missing_server)
                 isWorking.value = false
             }
-            is NativeRegistrationEndpointResolver.Resolution.Resolved -> {
-                val pending = pairing.copy(registrationUrl = resolution.registrationUrl)
-                val result = graph.syncCoordinator.attemptPairing(pending)
+            else -> {
+                val result = graph.syncCoordinator.attemptPairing(pairing)
                 if (result is NativeRegistrationResult.Success) {
                     // If the server put this user in pull mode, start fetching immediately.
                     graph.pullCoordinator.pullNowAsync()
                 }
                 localMessage.value = when (result) {
-                    is NativeRegistrationResult.Success -> "Device paired and token synced"
-                    is NativeRegistrationResult.Error -> {
-                        val suffix = if (result.expiredPairingToken) " — rescan the pairing QR code" else ""
-                        "Pairing failed: ${result.message}$suffix"
-                    }
+                    is NativeRegistrationResult.Success ->
+                        string(org.kysecurity.mail.R.string.push_pairing_result_paired)
+                    is NativeRegistrationResult.Error -> string(
+                        if (result.expiredPairingToken) {
+                            org.kysecurity.mail.R.string.push_pairing_result_failed_rescan
+                        } else {
+                            org.kysecurity.mail.R.string.push_pairing_result_failed
+                        },
+                        result.message,
+                    )
                 }
                 isWorking.value = false
             }

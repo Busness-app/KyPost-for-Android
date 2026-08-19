@@ -183,7 +183,7 @@ class PgpMimeWriterTest {
                 OutgoingMimeAttachment(
                     name = "notes.txt",
                     mimeType = "text/plain",
-                    dataBase64 = Base64.getEncoder().encodeToString(payload.toByteArray(Charsets.UTF_8)),
+                    bytes = payload.toByteArray(Charsets.UTF_8),
                 ),
             ),
         )

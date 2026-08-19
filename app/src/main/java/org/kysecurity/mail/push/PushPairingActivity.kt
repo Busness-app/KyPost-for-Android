@@ -46,6 +46,7 @@ class PushPairingActivity : LockedActivity() {
     private lateinit var historyAdapter: PushHistoryAdapter
     private lateinit var btnResyncToken: Button
     private lateinit var btnUnpairDevice: Button
+    private lateinit var btnReconnectServer: Button
     private lateinit var btnScanQr: Button
     private lateinit var chipUseUnifiedPush: Chip
     private lateinit var chipUseFirebase: Chip
@@ -91,7 +92,8 @@ class PushPairingActivity : LockedActivity() {
         permissionLauncher = contactPermissionLauncher,
     )
 
-    override fun onCreateUnlocked(savedInstanceState: Bundle?) {        setContentView(R.layout.activity_push_pairing)
+    override fun onCreateUnlocked(savedInstanceState: Bundle?) {
+        setContentView(R.layout.activity_push_pairing)
         setTitle(R.string.push_pairing_title)
 
         PushNotificationDispatcher.ensureChannel(this)
@@ -108,6 +110,7 @@ class PushPairingActivity : LockedActivity() {
 
         btnResyncToken.setOnClickListener { viewModel.resyncToken() }
         btnUnpairDevice.setOnClickListener { confirmAndUnpairDevice() }
+        btnReconnectServer.setOnClickListener { confirmAndReconnect() }
         btnScanQr.setOnClickListener { onScanQrClicked() }
         chipUseUnifiedPush.setOnClickListener { viewModel.switchToUnifiedPush(this) }
         chipUseFirebase.setOnClickListener { viewModel.switchToFirebase() }
@@ -127,6 +130,7 @@ class PushPairingActivity : LockedActivity() {
         applyThemeToActivity(this)
         applyPrimaryButtonTheme(this, btnResyncToken)
         applyDangerButtonTheme(this, btnUnpairDevice)
+        applyPrimaryButtonTheme(this, btnReconnectServer)
         applyPrimaryButtonTheme(this, btnScanQr)
         applyPillChipTheme(this, chipUseUnifiedPush)
         applyPillChipTheme(this, chipUseFirebase)
@@ -161,6 +165,7 @@ class PushPairingActivity : LockedActivity() {
         historyEmptyText = findViewById(R.id.pushPairingHistoryEmpty)
         btnResyncToken = findViewById(R.id.btnResyncToken)
         btnUnpairDevice = findViewById(R.id.btnUnpairDevice)
+        btnReconnectServer = findViewById(R.id.btnReconnectServer)
         chipUseUnifiedPush = findViewById(R.id.chipUseUnifiedPush)
         chipUseFirebase = findViewById(R.id.chipUseFirebase)
     }
@@ -210,6 +215,8 @@ class PushPairingActivity : LockedActivity() {
         val isUnifiedPush = state.transport == PushTransport.UNIFIED_PUSH
         btnResyncToken.isEnabled = !state.isWorking
         btnUnpairDevice.isEnabled = !state.isWorking
+        // Only meaningful once something is stored to reset.
+        btnReconnectServer.isEnabled = !state.isWorking && paired
         btnScanQr.isEnabled = !state.isWorking
         chipUseUnifiedPush.isChecked = isUnifiedPush
         chipUseFirebase.isChecked = !isUnifiedPush
@@ -314,6 +321,17 @@ class PushPairingActivity : LockedActivity() {
             .setTitle(R.string.push_pairing_unpair_confirm_title)
             .setMessage(R.string.push_pairing_unpair_confirm_message)
             .setPositiveButton(R.string.push_pairing_unpair) { _, _ -> viewModel.unpairDevice() }
+            .setNegativeButton(R.string.cancel, null)
+            .create()
+            .showSecurely()
+    }
+
+    /** Non-destructive, but it still ends the current pairing, so it confirms like the rest. */
+    private fun confirmAndReconnect() {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.push_pairing_reconnect_confirm_title)
+            .setMessage(R.string.push_pairing_reconnect_confirm_message)
+            .setPositiveButton(R.string.push_pairing_reconnect) { _, _ -> viewModel.reconnectToServer() }
             .setNegativeButton(R.string.cancel, null)
             .create()
             .showSecurely()

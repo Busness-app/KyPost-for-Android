@@ -68,6 +68,43 @@ class SourceRulesTest {
         )
     }
 
+    /** A statement wedged onto the same line as the brace that opens its function. Sixteen of these
+     *  existed across every Activity in the app — the residue of a mechanical refactor nobody read
+     *  afterwards. There is no formatter on the build (adding one means regenerating the pinned
+     *  dependency-verification metadata, which CI deliberately refuses), so this is the check. */
+    @Test
+    fun noStatementHidesOnAFunctionsOpeningBraceLine() {
+        val offenders = mainSources().flatMap { file ->
+            file.readText().lineSequence().withIndex()
+                .filter { (_, line) -> STATEMENT_ON_BRACE_LINE.containsMatchIn(line) }
+                .map { (index, line) -> "${file.path}:${index + 1}: ${line.trim().take(80)}" }
+                .toList()
+        }
+        assertEquals(
+            emptyList(), offenders,
+            "Put the statement on its own line. A refactor left 16 of these and no formatter caught it.",
+        )
+    }
+
+    /** Every write in the security package uses `commit()`, and every one of them says why. The
+     *  exception that mattered was the ledger row that makes an out-of-sandbox attachment
+     *  wipeable: it used `apply()`, in a file whose own comment stated the rule. */
+    @Test
+    fun securityPackageWritesArePersistedSynchronously() {
+        val offenders = mainSources()
+            .filter { "/security/" in it.relativePath || it.relativePath.startsWith("security/") }
+            .flatMap { file ->
+                file.readText().lineSequence().withIndex()
+                    .filter { (_, line) -> ASYNC_PREFS_WRITE.containsMatchIn(line) }
+                    .map { (index, line) -> "${file.path}:${index + 1}: ${line.trim().take(80)}" }
+                    .toList()
+            }
+        assertEquals(
+            emptyList(), offenders,
+            "Use commit(): an async flush that has not landed when the process dies loses the write.",
+        )
+    }
+
     private class Source(val path: String, val relativePath: String, private val file: File) {
         fun readText(): String = file.readText()
     }
@@ -148,6 +185,13 @@ class SourceRulesTest {
         /** How far past a top-level comma a `val` may sit and still be that parameter's — covers
          *  annotations and modifiers (`@SerialName("x") val ...`, `internal val ...`). */
         const val LOOKAHEAD_CHARS = 200
+
+        /** `) {   stmt` — a function body opening and its first statement on one line. Two or more
+         *  spaces, so a legitimate one-line body and `{ it.y }` lambdas are not hits. */
+        val STATEMENT_ON_BRACE_LINE = Regex("""\bfun\s+[^\n]*\)\s*(?::[^\n{]*)?\{ {2,}\S""")
+
+        /** SharedPreferences writes that may not have landed when the process dies. */
+        val ASYNC_PREFS_WRITE = Regex("""\.edit\(\)[^\n]*\.apply\(\)|^\s*\.apply\(\)\s*$""")
 
         val DATA_CLASS_HEADER = Regex("""\bdata class\s+(\w+)\s*\(""")
         val PROPERTY_DECL = Regex("""\bval\s+(\w+)\s*:""")

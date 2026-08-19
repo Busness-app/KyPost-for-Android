@@ -38,7 +38,7 @@ class PinnedOrFallbackCallFactoryTest {
         val fallback = RecordingFactory()
         val factory = PinnedOrFallbackCallFactory(
             pinnedProvider = { pinned },
-            pinStateProvider = { TlsPinState.Pinned(TlsPin("relay.example", "sha256/x")) },
+            pinStateProvider = { TlsPinState.Pinned(TlsPin("relay.example", setOf("sha256/x"))) },
             fallback = fallback,
         )
 

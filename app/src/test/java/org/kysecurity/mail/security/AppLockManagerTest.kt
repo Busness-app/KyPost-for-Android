@@ -56,7 +56,8 @@ private class FakeAppLockState(
     override fun wipeAfterAttempts() = wipeThreshold
     override fun setWipeAfterAttempts(attempts: Int?) { wipeThreshold = attempts }
     override fun credentialSalt() = credentialSalt
-    override fun setCredentialSalt(salt: ByteArray) { credentialSalt = salt }
+    override fun putCredentialSaltIfAbsent(candidate: ByteArray): ByteArray =
+        credentialSalt ?: candidate.also { credentialSalt = it }
     override fun reset() {
         lockEnabled = false; pin = null; biometricEnabled = false; credentialGateEnabled = false
         failedAttempts = 0; lockoutUntilElapsed = 0L; lockoutDuration = 0L
@@ -423,7 +424,7 @@ class AppLockManagerTest {
 
     @Test
     fun resealForBiometric_sealsTheKeysOfTheNewPin() = runBlocking {
-        state.setCredentialSalt(CredentialCipher.randomSalt())
+        state.putCredentialSaltIfAbsent(CredentialCipher.randomSalt())
 
         manager.resealForBiometric("112233".toCharArray())
 

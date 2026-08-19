@@ -14,10 +14,12 @@ class MainActivity : LockedActivity() {
 
     private var routed = false
 
-    override fun onCreateUnlocked(savedInstanceState: Bundle?) {        routed = savedInstanceState?.getBoolean(STATE_ROUTED, false) ?: false
+    override fun onCreateUnlocked(savedInstanceState: Bundle?) {
+        routed = savedInstanceState?.getBoolean(STATE_ROUTED, false) ?: false
     }
 
-    override fun onStartUnlocked() {        // LockedActivity.onStart finishes us and shows UnlockActivity when the app is locked.
+    override fun onStartUnlocked() {
+        // LockedActivity.onStart finishes us and shows UnlockActivity when the app is locked.
         if (isFinishing || routed) return
         routed = true
         handleIntent(intent)

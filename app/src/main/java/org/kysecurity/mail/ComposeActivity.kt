@@ -5,7 +5,6 @@ import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.text.TextUtils
-import android.util.Base64
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
@@ -124,7 +123,8 @@ class ComposeActivity : LockedActivity() {
         ActivityResultContracts.OpenMultipleDocuments(),
     ) { uris -> if (!uris.isNullOrEmpty()) addAttachments(uris) }
 
-    override fun onCreateUnlocked(savedInstanceState: Bundle?) {        setContentView(R.layout.activity_compose)
+    override fun onCreateUnlocked(savedInstanceState: Bundle?) {
+        setContentView(R.layout.activity_compose)
         applyThemeToActivity(this)
 
         // Resolved by id, not by cast: layout-w600dp/activity_compose.xml uses a different root
@@ -226,7 +226,19 @@ class ComposeActivity : LockedActivity() {
             // an Intent extra — see [ForwardAttachmentHandoff].
             val forwarded = ForwardAttachmentHandoff.take()
             if (forwarded.isNotEmpty()) {
-                attachments.addAll(forwarded)
+                // Re-checked HERE, not only in addAttachment: that guard covers files the user
+                // picks, and a forward walked straight past it with attachment sizes the relay
+                // chose. The producer bounds these too; this is the boundary that must hold.
+                var held = 0L
+                val accepted = forwarded.takeWhile { held += it.size; held <= MAX_ATTACHMENT_BYTES }
+                if (accepted.size < forwarded.size) {
+                    Toast.makeText(
+                        this,
+                        getString(R.string.forward_attachments_too_large, forwarded.size - accepted.size),
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+                attachments.addAll(accepted)
                 renderAttachmentChips()
             }
         }
@@ -491,11 +503,12 @@ class ComposeActivity : LockedActivity() {
             } ?: return@withContext PickedAttachment.Unreadable(name)
 
             PickedAttachment.Ready(
+                // Decoded bytes, not base64: the encode happens once at the wire boundary rather
+                // than being retained for the life of this screen. See [OutgoingAttachment].
                 OutgoingAttachment(
                     name = name,
                     mimeType = resolver.getType(uri) ?: "application/octet-stream",
-                    dataBase64 = Base64.encodeToString(bytes, Base64.NO_WRAP),
-                    size = bytes.size,
+                    bytes = bytes,
                 ),
             )
         }
@@ -864,8 +877,10 @@ class ComposeActivity : LockedActivity() {
 
         private const val TAG = "ComposeActivity"
 
-        // Mirror of the backend maxMailAttachmentBytes (25 MB total decoded).
-        private const val MAX_ATTACHMENT_BYTES = 25L * 1024 * 1024
+        /** Mirror of the backend maxMailAttachmentBytes (25 MB total decoded). Named in
+         *  [MemoryBudget] rather than here, because what this admits decides what a send costs —
+         *  see `SEND_SCENARIO_PEAK_BYTES`. */
+        private const val MAX_ATTACHMENT_BYTES = MemoryBudget.OUTBOUND_ATTACHMENT_BYTES
         private const val MENU_SEND = 1
     }
 }

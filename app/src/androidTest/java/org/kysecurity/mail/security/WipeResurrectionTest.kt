@@ -31,14 +31,6 @@ class WipeResurrectionTest {
     private fun ledgerFile() =
         File(File(context.dataDir, "shared_prefs"), "org.kysecurity.mail.downloaded_attachments.xml")
 
-    /** True once the ledger's apply()-backed write has reached disk, or false after ~2s. */
-    private fun awaitLedgerFile(): Boolean {
-        repeat(40) {
-            if (ledgerFile().exists()) return true
-            Thread.sleep(50)
-        }
-        return false
-    }
 
     @Before
     fun clean() {
@@ -193,9 +185,14 @@ class WipeResurrectionTest {
         )
     }
 
-    /** The ledger must survive the sharedPrefs sweep, or a promised retry has nothing to retry. */
+    /** A row in shared storage that this app cannot delete must NOT fail the wipe.
+     *
+     *  It used to be a `step`, so an undeletable Downloads row failed the wipe on every resume
+     *  until MAX_WIPE_RESUMES marked it abandoned and blocked the app permanently — over a file
+     *  the user can delete in ten seconds, in a provider this app does not own. The wipe now
+     *  completes, keeps the ledger so a later sweep can retry, and reports the count. */
     @Test
-    fun wipe_keepsTheAttachmentLedgerWhenItsStepFailed(): Unit = runBlocking {
+    fun wipe_completesButReportsAttachmentsItCouldNotRemove(): Unit = runBlocking {
         DownloadedAttachmentLedger.record(
             context,
             android.net.Uri.parse("content://org.kysecurity.mail.no.such.provider/1"),
@@ -204,17 +201,28 @@ class WipeResurrectionTest {
         val result = SecurityWipe.wipeAndResetApp(context)
 
         assertTrue(
-            "precondition: the attachment step must have failed, got $result",
-            result is WipeResult.Incomplete && result.failedSteps.contains("downloadedAttachments"),
+            "an unreachable shared-storage row must not fail the wipe, got $result",
+            result is WipeResult.Complete,
         )
         assertTrue(
-            "the ledger must survive so the promised retry has work",
+            "and the user must be told, or the wipe notice is a false claim",
+            SecurityWipe.strandedDownloadsPending(context) > 0,
+        )
+        assertTrue(
+            "the ledger must survive so a later sweep has work",
             ledgerFile().exists(),
         )
         assertTrue(
             "the undeleted URI must still be recorded",
             context.getSharedPreferences("org.kysecurity.mail.downloaded_attachments", android.content.Context.MODE_PRIVATE)
                 .getStringSet("uris", emptySet()).orEmpty().isNotEmpty(),
+        )
+
+        SecurityWipe.acknowledgeStrandedDownloads(context)
+        assertEquals(
+            "acknowledging must clear it, or the notice repeats forever",
+            0,
+            SecurityWipe.strandedDownloadsPending(context),
         )
     }
 
@@ -228,10 +236,10 @@ class WipeResurrectionTest {
             context,
             android.net.Uri.parse("content://media/external/downloads/999999999"),
         )
-        // record() uses apply(), so the file appears on a background thread. Wait for it rather
-        // than racing it — otherwise the assertion below could pass against a file that was never
-        // written in the first place.
-        assertTrue("precondition: ledger written", awaitLedgerFile())
+        // record() uses commit(), so the file is on disk by the time it returns — no await. That
+        // durability is the point: the row has to outlive a process death that happens between
+        // saving an attachment and the wipe that is supposed to delete it.
+        assertTrue("precondition: ledger written synchronously", ledgerFile().exists())
 
         DownloadedAttachmentLedger.deleteAll(context)
 
@@ -262,6 +270,32 @@ class WipeResurrectionTest {
             "sealed envelope survived the wipe",
             org.kysecurity.mail.pgp.EnrollmentVault(context).hasBlob(),
         )
+    }
+
+    /** Two Keystore aliases had no teardown at all and no comment saying why, so a wipe reported
+     *  Complete over `kypost_credential_pepper` and `kypost_pin_pepper` still sitting in the
+     *  Keymaster blob store — a durable, attributable record that this app was installed and a
+     *  PIN was configured, on a device the routine had just called clean. */
+    @Test
+    fun wipe_destroysTheCredentialPeppers(): Unit = runBlocking {
+        KeystoreCredentialPepper.ensureExists()
+        KeystorePinPepper.ensureExists()
+        val ks = java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        assertTrue("precondition: peppers present", ks.containsAlias(KeystoreCredentialPepper.ALIAS))
+        assertTrue("precondition: peppers present", ks.containsAlias(KeystorePinPepper.ALIAS))
+
+        val result = SecurityWipe.wipeAndResetApp(context)
+
+        val after = java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        assertFalse(
+            "credential pepper survived the wipe",
+            after.containsAlias(KeystoreCredentialPepper.ALIAS),
+        )
+        assertFalse(
+            "pin pepper survived the wipe",
+            after.containsAlias(KeystorePinPepper.ALIAS),
+        )
+        assertTrue("and the wipe must not have reported a failure, got $result", result is WipeResult.Complete)
     }
 
     /** The datastore holding the last 30 sender/subject pairs must actually be gone. */

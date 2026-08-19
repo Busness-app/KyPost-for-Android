@@ -101,12 +101,30 @@ data class MailDraft(
     override fun toString(): String = "MailDraft(redacted)"
 }
 
-data class OutgoingAttachment(
+/** One attachment on its way out, held as DECODED bytes.
+ *
+ *  It used to carry base64 in a `String`, which was the wire form, retained for as long as the
+ *  compose screen lived. That cost ~2.67x the file — base64 is 4/3, and ART stores `String` as
+ *  UTF-16 — and, worse, a `String` cannot be zeroed, so a security wipe could drop the reference
+ *  and nothing more. Encoding now happens at the two wire boundaries that need it
+ *  (`RelayMailSource.toWireDto` and `buildProtectedContent`) and nowhere else.
+ *
+ *  Not a `data class`: the generated `equals`/`hashCode` over [bytes] would be identity behind a
+ *  structural-looking API, and the generated `toString` would print decrypted mail. Enforced by
+ *  `SourceRulesTest`. */
+class OutgoingAttachment(
     val name: String,
     val mimeType: String,
-    val dataBase64: String,
-    val size: Int,
-)
+    val bytes: ByteArray,
+) {
+    val size: Int get() = bytes.size
+
+    /** Overwrites the plaintext in place. Only for a session boundary — see [ComposeDraftCache]. */
+    fun wipe() = java.util.Arrays.fill(bytes, 0)
+
+    /** Redacted: the bytes are an attachment the user is sending. Enforced by `SourceRulesTest`. */
+    override fun toString(): String = "OutgoingAttachment(redacted)"
+}
 
 data class MailSendOutcome(val sentSaved: Boolean, val warning: String)
 

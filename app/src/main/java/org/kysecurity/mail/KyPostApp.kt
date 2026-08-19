@@ -27,6 +27,7 @@ class KyPostApp : Application(), DefaultLifecycleObserver {
 
     override fun onCreate() {
         super<Application>.onCreate()
+        installStrictModeInDebug()
         PushNotificationDispatcher.ensureChannel(this)
 
         appScope.launch {
@@ -110,6 +111,25 @@ class KyPostApp : Application(), DefaultLifecycleObserver {
         } else {
             appLockManager.cancelScheduledLock()
         }
+    }
+
+    /** Debug only, and log-only rather than penaltyDeath.
+     *
+     *  This app opens Keystore-backed EncryptedSharedPreferences in a dozen places and is careful
+     *  to keep every one off the main thread — carefully enough that the comments say so, and not
+     *  carefully enough that they all did. A reviewer found the exceptions by reading. This finds
+     *  the next one. `penaltyLog`, because a hard failure on a device the user is holding is a
+     *  worse outcome than the jank it is reporting. */
+    private fun installStrictModeInDebug() {
+        if (!BuildConfig.DEBUG) return
+        android.os.StrictMode.setThreadPolicy(
+            android.os.StrictMode.ThreadPolicy.Builder()
+                .detectDiskReads()
+                .detectDiskWrites()
+                .detectNetwork()
+                .penaltyLog()
+                .build(),
+        )
     }
 
     /** [level] is load-bearing: TRIM_MEMORY_UI_HIDDEN fires on every picker trip, not real pressure. */

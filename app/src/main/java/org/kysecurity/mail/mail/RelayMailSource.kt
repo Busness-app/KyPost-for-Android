@@ -1,6 +1,7 @@
 package org.kysecurity.mail.mail
 
 import org.kysecurity.mail.Email
+import org.kysecurity.mail.executeDecoding
 import org.kysecurity.mail.executeSync
 import org.kysecurity.mail.pairingAuthHeaders
 import org.kysecurity.mail.pgp.OUTER_PLACEHOLDER_SUBJECT
@@ -68,10 +69,11 @@ class RelayMailSource(
         val request = Request.Builder().url(url).get()
             .authed(pairing)
             .build()
-        return execute(request) { code, body ->
-            if (code != 200) return@execute mapErrorCode(code, body)
-            val parsed = runCatching { json.decodeFromString<RelayInboxResponseDto>(body) }.getOrNull()
-                ?: return@execute MailOutcome.UpstreamFailure("Malformed inbox response")
+        // Streamed, not `.string()` + decodeFromString: this is the largest JSON this app reads,
+        // and materialising it as a UTF-16 String held a second copy alive beside the DTOs.
+        return executeStreaming(request, RelayInboxResponseDto.serializer()) { code, parsed, errorBody ->
+            if (code != 200) return@executeStreaming mapErrorCode(code, errorBody)
+            if (parsed == null) return@executeStreaming MailOutcome.UpstreamFailure("Malformed inbox response")
             if (parsed.cursor.isNotBlank()) {
                 cursorProvider.saveCursor(pairing.subscriberId, mailbox, parsed.cursor)
             }
@@ -269,6 +271,8 @@ class RelayMailSource(
             .build()
         val request = Request.Builder().url(url).get()
             .authed(pairing)
+            // The one route allowed past the JSON-sized default; see [BodyLimit].
+            .tag(org.kysecurity.mail.BodyLimit::class.java, org.kysecurity.mail.BodyLimit(MAX_ATTACHMENT_DOWNLOAD_BYTES))
             .build()
         // Binary response: read bytes and metadata headers inside the use block, not execute()'s
         // string() path.
@@ -346,6 +350,24 @@ class RelayMailSource(
         else -> MailOutcome.UpstreamFailure("Mail relay request failed ($code)")
     }
 
+    /** [execute]'s shape for a body large enough that materialising it as a `String` matters.
+     *  `parsed` is null on a malformed 200; `errorBody` carries the bounded failure text. */
+    private fun <D, T> executeStreaming(
+        request: Request,
+        deserializer: kotlinx.serialization.DeserializationStrategy<D>,
+        onResponse: (code: Int, parsed: D?, errorBody: String) -> MailOutcome<T>,
+    ): MailOutcome<T> {
+        val result = effectiveCallFactory().executeDecoding(request, json, deserializer, HEADER_RETRY_AFTER)
+        val exception = result.exceptionOrNull()
+        if (exception is javax.net.ssl.SSLPeerUnverifiedException) {
+            return MailOutcome.CertificateMismatch(exception.message ?: "Certificate pin mismatch")
+        }
+        val response = result.getOrNull()
+            ?: return MailOutcome.UpstreamFailure(exception?.message ?: "Network error")
+        if (response.code == 429) return rateLimited(response.errorBody, response.retryAfter)
+        return onResponse(response.code, response.decoded, response.errorBody)
+    }
+
     private fun <T> execute(request: Request, onResponse: (code: Int, body: String) -> MailOutcome<T>): MailOutcome<T> {
         val result = effectiveCallFactory().executeSync(request) { response ->
             Triple(response.code, response.body?.string().orEmpty(), response.header(HEADER_RETRY_AFTER))
@@ -371,19 +393,56 @@ class RelayMailSource(
  *  `MaxInboundMessageBytes`, so no legitimate attachment is refused. */
 private const val MAX_ATTACHMENT_DOWNLOAD_BYTES = 25L * 1024 * 1024
 
-/** Reads at most [limit] bytes, throwing if there was more; never allocates an oversized body. */
+/** Growth step for the unknown-length path; the first read usually settles it. */
+private const val READ_BOUNDED_INITIAL_BYTES = 64 * 1024
+
+/** Reads at most [limit] bytes, throwing if there was more; never allocates an oversized body.
+ *
+ *  Allocates the result ONCE, at the declared size, and reads straight into it. The previous shape
+ *  filled an `okio.Buffer` and then called `readByteArray()`, which allocates a second array of the
+ *  full size and copies — both live at that instant, so the true peak was 2 x limit (50 MB) while
+ *  [org.kysecurity.mail.MemoryBudget] counted it as one 32 MB response. `Content-Length` is present
+ *  on every attachment this relay serves, so the exact path below is the one that runs. */
 internal fun readBounded(body: okhttp3.ResponseBody, limit: Long): ByteArray {
+    val declared = body.contentLength()
+    // Refused before a byte is read, rather than after reading `limit` of them.
+    if (declared > limit) {
+        throw IOException("Attachment is larger than the $limit byte download limit (declared $declared)")
+    }
     val source = body.source()
-    val buffer = okio.Buffer()
-    while (buffer.size < limit) {
-        if (source.read(buffer, limit - buffer.size) == -1L) return buffer.readByteArray()
+
+    if (declared >= 0) {
+        val bytes = ByteArray(declared.toInt())
+        source.readFully(bytes)
+        // A body longer than it declared is a framing lie, not an attachment.
+        if (!source.exhausted()) {
+            throw IOException("Attachment sent more than the $declared bytes it declared")
+        }
+        return bytes
     }
-    // Stopped on the bound, not on end-of-stream. One more byte available means the body was larger
-    // than the limit and everything read so far is a prefix, not the attachment.
-    if (!source.exhausted()) {
-        throw IOException("Attachment is larger than the $limit byte download limit")
+
+    // Chunked, so the size is unknown until EOF. Grows in place and doubles, capped at [limit]:
+    // still one array rather than a chunk list plus a join, but a growth or the final trim briefly
+    // holds two. This path does not run against the relay; it exists so a server that omits
+    // Content-Length is handled rather than trusted.
+    var bytes = ByteArray(minOf(READ_BOUNDED_INITIAL_BYTES.toLong(), limit).toInt())
+    var size = 0
+    while (true) {
+        if (size == bytes.size) {
+            if (size.toLong() >= limit) {
+                // At the ceiling: one more readable byte means this was a prefix, not the body.
+                if (!source.exhausted()) {
+                    throw IOException("Attachment is larger than the $limit byte download limit")
+                }
+                return bytes
+            }
+            bytes = bytes.copyOf(minOf(bytes.size.toLong() * 2, limit).toInt())
+        }
+        val read = source.read(bytes, size, bytes.size - size)
+        if (read == -1) break
+        size += read
     }
-    return buffer.readByteArray()
+    return if (size == bytes.size) bytes else bytes.copyOf(size)
 }
 
 private fun filenameFromDisposition(header: String?): String {
@@ -413,7 +472,16 @@ private fun MailDraft.toWireDto(): RelayMailRequestDto =
         subject = subject,
         body = body,
         mode = mode,
-        attachments = attachments.map { RelayAttachmentDto(name = it.name, mimeType = it.mimeType, dataBase64 = it.dataBase64) },
+        // The one place the outbound bytes become base64: the wire shape, built per send rather
+        // than retained for the life of the compose screen. java.util.Base64, not android.util —
+        // this file is JVM-unit-tested and the Android one returns stubs there (SourceRulesTest).
+        attachments = attachments.map {
+            RelayAttachmentDto(
+                name = it.name,
+                mimeType = it.mimeType,
+                dataBase64 = java.util.Base64.getEncoder().encodeToString(it.bytes),
+            )
+        },
     )
 
 /** Send-only mapping. [toWireDto] stays flagless because /api/mail/draft ignores these fields —

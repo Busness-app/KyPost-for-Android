@@ -88,11 +88,22 @@ object NativePairingDeepLinkParser {
             return PairingParseResult.Error("Registration URL must be on the same server as the server URL")
         }
 
+        // Resolved here, not left blank for callers to patch up. A blank `registrationUrl` is
+        // meaningless — `readPairing` reads it as "no pairing at all" and `register` rejects it —
+        // so emitting one made correctness depend on every consumer remembering to resolve it.
+        val resolvedReg = when (val resolution = NativeRegistrationEndpointResolver.resolve(reg, srv)) {
+            is NativeRegistrationEndpointResolver.Resolution.Resolved -> resolution.registrationUrl
+            // Unreachable: `srv` is checked non-blank and https above. Kept as a refusal rather than
+            // an `error()`, since the alternative is emitting the blank this change exists to remove.
+            NativeRegistrationEndpointResolver.Resolution.MissingServerUrl ->
+                return PairingParseResult.Error("Missing server URL")
+        }
+
         return PairingParseResult.Success(
             PairingData(
                 subscriberId = sub,
                 serverUrl = srv,
-                registrationUrl = reg.orEmpty(),
+                registrationUrl = resolvedReg,
                 pairingToken = pt,
                 deviceId = null,
                 deviceSecret = null,

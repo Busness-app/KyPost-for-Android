@@ -108,7 +108,11 @@ internal object PgpDecryptor {
         val (plaintext, signature) = literal
 
         // Integrity is mandatory; `||` short-circuits verify(), which throws on a tag-9 packet.
+        // BC requires the whole stream to have been read before verify() can answer, so by here
+        // the plaintext already exists — zero it on the failing path rather than handing an
+        // unauthenticated decryption to the collector.
         if (!encrypted.isIntegrityProtected || !encrypted.verify()) {
+            java.util.Arrays.fill(plaintext, 0)
             return DecryptResult.Failed("this message failed its integrity check")
         }
 
@@ -182,27 +186,26 @@ internal object PgpDecryptor {
 
     /** Peak is 2x [limit]; [org.kysecurity.mail.MemoryBudget.PGP_PLAINTEXT_PEAK_BYTES] must match. */
     internal fun readAllWithLimit(input: InputStream, limit: Int): ByteArray? {
-        val chunks = ArrayList<ByteArray?>()
-        var total = 0
+        // One array, grown in place. The previous shape accumulated a chunk list and then joined
+        // it into a full-size result, so at the first copy the chunks AND the result were both
+        // live — a guaranteed 2 x plaintext, on every message. Doubling holds two arrays only
+        // during a growth (old + new, at most 1.5 x the cap) or a final trim.
+        var bytes = ByteArray(minOf(DEFAULT_BUFFER_SIZE, limit))
+        var size = 0
         while (true) {
-            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-            val count = input.read(buffer)
+            if (size == bytes.size) {
+                if (size >= limit) {
+                    // At the ceiling. One more readable byte means the message is over the limit,
+                    // and the caller must not be handed a prefix as if it were the whole thing.
+                    return if (input.read() < 0) bytes else null
+                }
+                bytes = bytes.copyOf(minOf(bytes.size.toLong() * 2, limit.toLong()).toInt())
+            }
+            val count = input.read(bytes, size, bytes.size - size)
             if (count < 0) break
-            if (count > limit - total) return null
-            chunks += if (count == buffer.size) buffer else buffer.copyOf(count)
-            total += count
+            size += count
         }
-        val result = ByteArray(total)
-        var offset = 0
-        for (index in chunks.indices) {
-            val chunk = chunks[index] ?: continue
-            chunk.copyInto(result, offset)
-            offset += chunk.size
-            // Released here rather than when the loop ends: the accumulated bytes and `result`
-            // are both live only until the first chunk is copied.
-            chunks[index] = null
-        }
-        return result
+        return if (size == bytes.size) bytes else bytes.copyOf(size)
     }
 
     private fun verifyOnePass(

@@ -7,12 +7,17 @@ import java.time.format.DateTimeFormatter
 
 /** Hand-assembled, not `jakarta.mail`: the goal is the exact bytes the relay's validator takes. */
 
-/** One outgoing attachment, already base64-encoded — the form `OutgoingAttachment` already holds. */
-internal data class OutgoingMimeAttachment(
+/** One outgoing attachment as DECODED bytes; [buildProtectedContent] encodes it.
+ *
+ *  Not a `data class`, and not base64: see `OutgoingAttachment`, whose bytes these are. */
+internal class OutgoingMimeAttachment(
     val name: String,
     val mimeType: String,
-    val dataBase64: String,
-)
+    val bytes: ByteArray,
+) {
+    /** Redacted: the bytes are an attachment the user is sending. */
+    override fun toString(): String = "OutgoingMimeAttachment(redacted)"
+}
 
 /** No `bcc` field on purpose: the relay refuses a `Bcc` header and each BCC gets its own send. */
 internal data class OutgoingEnvelope(
@@ -105,9 +110,9 @@ internal fun buildProtectedContent(
         lines += "Content-Transfer-Encoding: base64"
         lines += "Content-Disposition: attachment; filename=\"$name\""
         lines += ""
-        // The app stores attachment bytes NO_WRAP, i.e. one unbroken line. RFC 2045 caps an encoded
-        // line at 76 characters, and a parser that enforces it would otherwise reject the part.
-        lines += wrapBase64(attachment.dataBase64)
+        // RFC 2045 caps an encoded line at 76 characters and a parser that enforces it would
+        // reject an unbroken one, so the encoder does the wrapping rather than a second pass.
+        lines += encodeBase64Mime(attachment.bytes)
         lines += ""
     }
     lines += "--$boundary--"
@@ -115,10 +120,11 @@ internal fun buildProtectedContent(
     return lines.joinToString(CRLF)
 }
 
-private fun wrapBase64(data: String): String =
-    data.filterNot { it == '\r' || it == '\n' }
-        .chunked(BASE64_LINE_LENGTH)
-        .joinToString(CRLF)
+/** java.util.Base64, not android.util: this file is JVM-unit-tested and the Android one returns
+ *  stubs there. The MIME encoder emits RFC 2045 line breaks itself, with no trailing separator. */
+private fun encodeBase64Mime(bytes: ByteArray): String =
+    java.util.Base64.getMimeEncoder(BASE64_LINE_LENGTH, CRLF.toByteArray(Charsets.US_ASCII))
+        .encodeToString(bytes)
 
 /** Do NOT swap for `ofPattern(...)`: it renders through the default locale, e.g. "Ağu" on tr_TR. */
 internal fun rfc5322Date(at: OffsetDateTime): String =

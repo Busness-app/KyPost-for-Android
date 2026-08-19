@@ -108,13 +108,16 @@ object PushNotificationDispatcher : org.kysecurity.mail.ProcessScopedState {
         manager.createNotificationChannel(channel)
     }
 
-    /** Posts a new-mail notification; lock-screen redaction is delegated to setPublicVersion. */
+    /** Posts a new-mail notification. Ordinary lock-screen redaction is delegated to
+     *  setPublicVersion; [contentSuppressed] is the stronger gate that withholds content from the
+     *  notification altogether. */
     fun show(context: Context, payload: PushPayload) {
         ensureChannel(context)
         if (!notificationsAllowed(context)) return
 
-// The redacted form as the WHOLE notification: the framework's swap keys off the keyguard only.
-        if (contentSuppressedWhileLocked(context)) {
+        // The redacted form as the WHOLE notification: the framework's setPublicVersion swap keys
+        // off the keyguard, and neither reason below is the keyguard. See [contentSuppressed].
+        if (contentSuppressed(context)) {
             postNotification(
                 context,
                 uniqueNotificationId("mail-${payload.messageId}"),
@@ -166,7 +169,7 @@ object PushNotificationDispatcher : org.kysecurity.mail.ProcessScopedState {
     }
 
     /** That something arrived, and nothing about what. Used as the lock-screen public version
-     *  always, and as the entire notification when [contentSuppressedWhileLocked]. */
+     *  always, and as the entire notification when [contentSuppressed]. */
     private fun redactedNotification(context: Context, payload: PushPayload): android.app.Notification {
         val notificationId = uniqueNotificationId("mail-${payload.messageId}")
         return NotificationCompat.Builder(context, CHANNEL_ID)
@@ -179,13 +182,21 @@ object PushNotificationDispatcher : org.kysecurity.mail.ProcessScopedState {
             .build()
     }
 
-    /** True when the app lock is engaged. Gated on the app lock, not the credential gate. */
-    private fun contentSuppressedWhileLocked(context: Context): Boolean = runCatching {
+    /** Whether sender and subject must be withheld from the notification entirely.
+     *
+     *  Two independent reasons, and the second is NOT a lock check. Posting a notification hands
+     *  its title and text to system_server, which persists them in Notification History and echoes
+     *  them in `dumpsys notification` — an on-disk record in another UID that no wipe step here can
+     *  reach. Under Hostile Location Protection the app promises nothing about this mail touches
+     *  disk, so the content may not be posted at all, locked or not, foregrounded or not. */
+    private fun contentSuppressed(context: Context): Boolean = runCatching {
         val graph = org.kysecurity.mail.security.SecurityRuntime.graph(context)
+        // Checked first and unconditionally: this one does not depend on the lock's state.
+        if (graph.hostileLocationSettings.isEnabled()) return@runCatching true
         val gated = graph.appLockStore.isLockEnabled() || graph.appLockStore.isCredentialPinGateEnabled()
         gated && graph.appLockManager.isLockedNow()
     }.getOrElse {
-        android.util.Log.e("PushNotificationDispatcher", "Could not read the credential gate; redacting", it)
+        android.util.Log.e("PushNotificationDispatcher", "Could not read the notification posture; redacting", it)
         true
     }
 
@@ -321,27 +332,29 @@ object PushNotificationDispatcher : org.kysecurity.mail.ProcessScopedState {
         override fun removeEldestEntry(eldest: Map.Entry<Int, String>): Boolean = size > MAX_TRACKED_CHALLENGES * 8
     }
 
+    /** How many times [uniqueNotificationId] re-probes before accepting a collision. */
+    private const val MAX_ID_PROBES = 8
+
     /** Records [key] against [id] and returns an id no other live key is using. */
     private fun uniqueNotificationId(key: String): Int = synchronized(assignedIds) {
-        var id = stableNotificationId(key)
-        var attempt = 0
-        while (true) {
+        // A bounded loop, not `while (true)`: the latter needed an unreachable expression and a
+        // @Suppress to typecheck, which is a compiler argument standing in for a terminating bound.
+        for (attempt in 0..MAX_ID_PROBES) {
+            // Deterministic probe, so the same key keeps resolving to the same id for as long as
+            // the colliding one is still tracked — cancelling a notification has to find it again.
+            val id = if (attempt == 0) stableNotificationId(key) else stableNotificationId("$key#$attempt")
             val existing = assignedIds[id]
             if (existing == null || existing == key) {
                 assignedIds[id] = key
                 return id
             }
-            // Deterministic probe, so the same key keeps resolving to the same id for as long as
-            // the colliding one is still tracked — cancelling a notification has to find it again.
-            attempt++
-            id = stableNotificationId("$key#$attempt")
-            if (attempt > 8) {
-                android.util.Log.e("PushNotificationDispatcher", "Could not find a free notification id for $key")
-                return id
-            }
         }
-        @Suppress("UNREACHABLE_CODE")
-        id
+        // Every probe collided with a different live key. Reuse the last one rather than inventing
+        // an unbounded search: the row it replaces is one this process posted and still tracks.
+        val fallback = stableNotificationId("$key#$MAX_ID_PROBES")
+        android.util.Log.e("PushNotificationDispatcher", "Could not find a free notification id for $key")
+        assignedIds[fallback] = key
+        fallback
     }
 
     internal fun stableNotificationId(key: String): Int {

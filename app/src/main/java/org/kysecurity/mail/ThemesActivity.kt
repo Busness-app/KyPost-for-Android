@@ -12,7 +12,8 @@ import org.kysecurity.mail.security.LockedActivity
 
 class ThemesActivity : LockedActivity() {
 
-    override fun onCreateUnlocked(savedInstanceState: Bundle?) {        setContentView(R.layout.activity_themes)
+    override fun onCreateUnlocked(savedInstanceState: Bundle?) {
+        setContentView(R.layout.activity_themes)
         setTitle(R.string.themes_title)
         applyThemeToActivity(this)
 

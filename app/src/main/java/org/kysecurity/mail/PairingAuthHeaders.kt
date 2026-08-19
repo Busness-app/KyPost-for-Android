@@ -22,7 +22,8 @@ fun Request.Builder.pairingAuthHeaders(deviceId: String, deviceSecret: String): 
 
 /** No default posture: `grep TofuWindow` is the complete audit of the unpinned surface. */
 sealed interface PinPosture {
-    data class Pinned(val host: String, val spkiSha256: String) : PinPosture
+    /** [spkiSha256] is the whole observed chain, not just the leaf — see [org.kysecurity.mail.push.TlsPin]. */
+    data class Pinned(val host: String, val spkiSha256: Set<String>) : PinPosture
 
     /** Only legitimate before any pairing completes; a pin that existed and is gone fails closed. */
     object TofuWindow : PinPosture
@@ -41,9 +42,18 @@ private val basePairingClient: OkHttpClient by lazy {
 fun pairingHttpClient(posture: PinPosture, callTimeoutMillis: Long? = null): OkHttpClient {
     val builder = basePairingClient.newBuilder()
     when (posture) {
-        is PinPosture.Pinned -> builder.certificatePinner(
-            CertificatePinner.Builder().add(posture.host, posture.spkiSha256).build(),
-        )
+        // `add` is vararg per host: every chain pin is registered, and CertificatePinner passes on
+        // the first match, so a renewed leaf under an already-pinned issuer still validates.
+        is PinPosture.Pinned -> {
+            // Empty would configure no pin for the host, which CertificatePinner passes vacuously.
+            // TlsPin makes that unrepresentable; this is the second half of the same guarantee.
+            require(posture.spkiSha256.isNotEmpty()) { "Refusing to build a client that pins nothing" }
+            builder.certificatePinner(
+                CertificatePinner.Builder()
+                    .apply { posture.spkiSha256.forEach { add(posture.host, it) } }
+                    .build(),
+            )
+        }
         PinPosture.TofuWindow -> Unit
     }
     if (callTimeoutMillis != null) {
@@ -52,14 +62,21 @@ fun pairingHttpClient(posture: PinPosture, callTimeoutMillis: Long? = null): OkH
     return builder.build()
 }
 
-/** Applied to every response; throws rather than truncating, so callers see UpstreamFailure. */
-private const val MAX_RESPONSE_BYTES = MemoryBudget.RESPONSE_BYTES
+/** Raises [BodySizeLimitInterceptor]'s ceiling for one request.
+ *
+ *  The default is sized for a JSON reply. Two routes legitimately carry far more — an attachment
+ *  download and an armored OpenPGP payload — and before this existed a single constant had to be
+ *  large enough for those, which meant every small JSON endpoint was also allowed to return tens
+ *  of megabytes. Attach with `.tag(BodyLimit::class.java, BodyLimit(n))`. */
+class BodyLimit(val maxBytes: Long)
 
 internal class BodySizeLimitInterceptor(
-    private val maxBytes: Long = MAX_RESPONSE_BYTES,
+    private val defaultMaxBytes: Long = MemoryBudget.JSON_RESPONSE_BYTES,
 ) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
-        val response = chain.proceed(chain.request())
+        val request = chain.request()
+        val maxBytes = request.tag(BodyLimit::class.java)?.maxBytes ?: defaultMaxBytes
+        val response = chain.proceed(request)
         val body = response.body ?: return response
         // Content-Length, when the server bothers to send one, lets us refuse before reading a
         // single byte. An absent or lying header falls through to the streaming counter below.

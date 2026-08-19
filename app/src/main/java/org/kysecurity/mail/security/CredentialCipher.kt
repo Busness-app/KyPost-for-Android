@@ -42,14 +42,24 @@ fun interface CredentialPepper {
 
 /** [mix] reads only and throws if the key is gone; creation is [ensureExists]. */
 object KeystoreCredentialPepper : CredentialPepper {
-    override fun mix(derived: ByteArray): ByteArray = keystoreHmac(PEPPER_KEY_ALIAS, derived)
-    fun ensureExists() { createPepperKeyIfAbsent(PEPPER_KEY_ALIAS) }
+    const val ALIAS = PEPPER_KEY_ALIAS
+    override fun mix(derived: ByteArray): ByteArray = keystoreHmac(ALIAS, derived)
+    fun ensureExists() { createPepperKeyIfAbsent(ALIAS) }
+
+    /** Whether it is actually gone. An alias outliving a wipe is a durable, attributable artefact
+     *  on a device the user was told is clean — the same reason [KeystoreTripwireKey],
+     *  [org.kysecurity.mail.security.AuthGateKey] and [BiometricUnlockVault] all report theirs. */
+    fun destroy(): Boolean = deleteKeystoreKey(ALIAS)
 }
 
 /** A separate alias from [KeystoreCredentialPepper]'s: verifier and wrapping key must differ. */
 object KeystorePinPepper : CredentialPepper {
-    override fun mix(derived: ByteArray): ByteArray = keystoreHmac(PIN_PEPPER_KEY_ALIAS, derived)
-    fun ensureExists() { createPepperKeyIfAbsent(PIN_PEPPER_KEY_ALIAS) }
+    const val ALIAS = PIN_PEPPER_KEY_ALIAS
+    override fun mix(derived: ByteArray): ByteArray = keystoreHmac(ALIAS, derived)
+    fun ensureExists() { createPepperKeyIfAbsent(ALIAS) }
+
+    /** See [KeystoreCredentialPepper.destroy]. */
+    fun destroy(): Boolean = deleteKeystoreKey(ALIAS)
 }
 
 /** The alias's mere existence is the tripwire's durable half; a file marker can be forged. */

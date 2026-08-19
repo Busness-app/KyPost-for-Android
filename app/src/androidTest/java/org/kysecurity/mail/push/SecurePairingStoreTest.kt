@@ -47,12 +47,12 @@ class SecurePairingStoreTest {
         val store = SecurePairingStore(context)
         assertNull(store.currentTlsPin())
 
-        val pin = TlsPin(host = "server.example.com", spkiSha256 = "sha256/AAAA")
+        val pin = TlsPin(host = "server.example.com", spkiSha256 = setOf("sha256/AAAA"))
         store.saveTlsPin(pin)
         assertEquals(pin, store.currentTlsPin())
         assertEquals(pin, SecurePairingStore(context).currentTlsPin())
 
-        val rotated = TlsPin(host = "other.example.com", spkiSha256 = "sha256/BBBB")
+        val rotated = TlsPin(host = "other.example.com", spkiSha256 = setOf("sha256/BBBB"))
         store.saveTlsPin(rotated)
         assertEquals(rotated, store.currentTlsPin())
 
@@ -60,6 +60,35 @@ class SecurePairingStoreTest {
         assertNull(store.currentTlsPin())
         assertNull(SecurePairingStore(context).currentTlsPin())
     }
+
+    /** Installs written before chain pinning hold one leaf pin under the old single-String key.
+     *  Dropping it on upgrade would read as "pin lost" and refuse every call; carrying it forward
+     *  keeps the device connected until the next successful call captures the full chain. */
+    @Test
+    fun aLegacySingleLeafPinIsCarriedForwardThenReplacedByTheChain() = runBlocking {
+        val store = SecurePairingStore(context)
+        store.clearPairing()
+
+        // Exactly what an older build left behind: the pre-set keys, written directly.
+        openEncryptedPrefsForTest().edit()
+            .putString("pair_tls_spki_pin", "sha256/legacy-leaf")
+            .putString("pair_tls_spki_pin_host", "server.example.com")
+            .commit()
+
+        val migrated = SecurePairingStore(context).currentTlsPin()
+        assertEquals(setOf("sha256/legacy-leaf"), migrated?.spkiSha256)
+        assertEquals("server.example.com", migrated?.host)
+
+        // The first successful call re-pins the chain, and the legacy key must not outlive it —
+        // left behind it would win the fallback read again on the next reload.
+        val chain = TlsPin("server.example.com", setOf("sha256/leaf", "sha256/issuer"))
+        SecurePairingStore(context).saveTlsPin(chain)
+        assertEquals(chain, SecurePairingStore(context).currentTlsPin())
+        assertNull(openEncryptedPrefsForTest().getString("pair_tls_spki_pin", null))
+    }
+
+    private fun openEncryptedPrefsForTest() =
+        org.kysecurity.mail.security.openEncryptedPrefs(context, "push_pairing_secure") {}
 
     @Test
     fun clearPairing_removesPersistedData() = runBlocking {

@@ -100,8 +100,31 @@ abstract class LockedActivity : AppCompatActivity() {
         }
 
         reportCredentialResets()
+        reportStrandedDownloads()
         window.decorView.visibility = View.VISIBLE
         return true
+    }
+
+    /** A wipe that finished cleanly can still have left decrypted attachments in shared Downloads,
+     *  which the app cannot delete and the user can. Saying so is the whole point: the alternative
+     *  is a "your data has been erased" notice that is not true. */
+    private fun reportStrandedDownloads() {
+        val stranded = SecurityWipe.strandedDownloadsPending(this)
+        if (stranded <= 0 || !strandedDownloadsReported.compareAndSet(false, true)) return
+        android.util.Log.e("LockedActivity", "Wipe left $stranded attachment(s) in shared Downloads")
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle(org.kysecurity.mail.R.string.security_stranded_downloads_title)
+            .setMessage(
+                resources.getQuantityString(
+                    org.kysecurity.mail.R.plurals.security_stranded_downloads_message,
+                    stranded,
+                    stranded,
+                ),
+            )
+            .setPositiveButton(android.R.string.ok) { _, _ -> SecurityWipe.acknowledgeStrandedDownloads(this) }
+            .setCancelable(false)
+            .create()
+            .showSecurely()
     }
 
     private fun reportCredentialResets() {
@@ -184,5 +207,8 @@ abstract class LockedActivity : AppCompatActivity() {
 
         /** Likewise for the credential-reset notice — one dialog per process, not one per screen. */
         val credentialResetReported = java.util.concurrent.atomic.AtomicBoolean(false)
+
+        /** And for the stranded-downloads notice, for the same reason. */
+        val strandedDownloadsReported = java.util.concurrent.atomic.AtomicBoolean(false)
     }
 }

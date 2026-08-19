@@ -30,15 +30,34 @@ private const val KEY_DEVICE_SECRET_CIPHERTEXT = "pair_device_secret_ciphertext"
 private const val KEY_DEVICE_SECRET_SALT = "pair_device_secret_salt"
 private const val KEY_DEVICE_SECRET_IV = "pair_device_secret_iv"
 private const val KEY_DEVICE_SECRET_VERSION = "pair_device_secret_version"
+
+/** The staged half of a PIN change; see [SecurePairingStore.stagePendingSecret]. Always written
+ *  under the current (peppered) scheme, so it carries no version of its own. */
+private const val KEY_DEVICE_SECRET_PENDING_CIPHERTEXT = "pair_device_secret_pending_ciphertext"
+private const val KEY_DEVICE_SECRET_PENDING_IV = "pair_device_secret_pending_iv"
+/** Legacy: a single leaf pin. Read-only now — [readTlsPin] carries it forward, nothing writes it. */
 private const val KEY_TLS_PIN = "pair_tls_spki_pin"
+private const val KEY_TLS_PINS = "pair_tls_spki_pins"
 private const val KEY_TLS_PIN_HOST = "pair_tls_spki_pin_host"
 
 /** Plain companion file; see [SecurePairingStore.tlsPinState]. */
 internal const val TLS_PIN_TRIPWIRE_PREFS = "push_tls_pin_tripwire"
 private const val KEY_TLS_PIN_EVER_CAPTURED = "tls_pin_ever_captured"
 
-/** A TOFU certificate pin together with the host it was actually observed on. */
-data class TlsPin(val host: String, val spkiSha256: String)
+/** A TOFU certificate pin together with the host it was actually observed on.
+ *
+ *  [spkiSha256] holds a pin per certificate in the observed chain, not just the leaf.
+ *  `CertificatePinner` passes when ANY chain member matches ANY configured pin, so pinning the
+ *  issuers alongside the leaf is what lets a routine certificate renewal — which mints a new leaf
+ *  key — keep validating. Pinning the leaf alone made every renewal a hard outage recoverable only
+ *  by unpairing, and unpairing destroys the local mailbox. */
+data class TlsPin(val host: String, val spkiSha256: Set<String>) {
+    init {
+        // An empty pin set is not "unpinned", it is worse: CertificatePinner passes vacuously when
+        // no pin is configured for the host, so this must be unrepresentable rather than checked.
+        require(spkiSha256.isNotEmpty()) { "A TlsPin with no pins would pin nothing" }
+    }
+}
 
 /** Why a request is or is not pinned: "never paired" must not be answered like "pin is gone". */
 sealed interface TlsPinState {
@@ -142,12 +161,28 @@ class SecurePairingStore(context: Context) {
     /** Unwraps `deviceSecret`; null if wrapped and [credentialKeys] is wrong. Never throws. */
     fun pairingSnapshot(credentialKeys: CredentialKeys?): PairingData? = readPairing(credentialKeys)
 
-    /** True when the stored secret is not wrapped under the current scheme while the gate is on. */
+    /** True when the stored secret is not wrapped under the current scheme while the gate is on.
+     *
+     *  Scheme only. A secret wrapped under the current scheme but a *different key* is not
+     *  re-wrappable — there is no plaintext to re-wrap — so it is [deviceSecretIsStranded]'s
+     *  question, not this one. Conflating the two gave a repair loop that silently did nothing. */
     fun needsCredentialRewrap(): Boolean {
         // No pairing means no secret to wrap; cheapest possible check before the rewrap dance.
         if (prefs.getString(KEY_SUBSCRIBER_ID, null).isNullOrBlank()) return false
         if (!prefs.contains(KEY_DEVICE_SECRET_CIPHERTEXT)) return true
         return prefs.getInt(KEY_DEVICE_SECRET_VERSION, SECRET_VERSION_LEGACY) < SECRET_VERSION_PEPPERED
+    }
+
+    /** True when a wrapped secret exists and [credentialKeys] cannot open it.
+     *
+     *  The secret is then unrecoverable: every authenticated call will go out uncredentialed and
+     *  the relay will answer 409. Detecting it is what lets the app offer a reconnect instead of
+     *  leaving the user to conclude, from a 409, that they must unpair — which deletes the mailbox.
+     *  Returns false when the keys are absent, since "locked" is not "stranded". */
+    fun deviceSecretIsStranded(credentialKeys: CredentialKeys?): Boolean {
+        if (credentialKeys == null) return false
+        if (!prefs.contains(KEY_DEVICE_SECRET_CIPHERTEXT)) return false
+        return resolveDeviceSecret(credentialKeys).isNullOrBlank()
     }
 
     /** Persists the TOFU pin with its host; never overwritten except on a fresh pairing. */
@@ -157,7 +192,9 @@ class SecurePairingStore(context: Context) {
             // The plain marker, so losing the encrypted file cannot look like "never pinned".
             tlsPinTripwire.edit().putBoolean(KEY_TLS_PIN_EVER_CAPTURED, true).commit()
             prefs.edit()
-                .putString(KEY_TLS_PIN, pin.spkiSha256)
+                .putStringSet(KEY_TLS_PINS, pin.spkiSha256)
+                // Superseded by the set above; left behind it would win on the next legacy read.
+                .remove(KEY_TLS_PIN)
                 .putString(KEY_TLS_PIN_HOST, pin.host)
                 .commit()
         }
@@ -179,9 +216,14 @@ class SecurePairingStore(context: Context) {
     }
 
     private fun readTlsPin(): TlsPin? {
-        val pin = prefs.getString(KEY_TLS_PIN, null) ?: return null
         val host = prefs.getString(KEY_TLS_PIN_HOST, null) ?: return null
-        return TlsPin(host = host, spkiSha256 = pin)
+        // Copied: SharedPreferences hands back its live cached set, which must not be retained.
+        // The legacy single-pin key is the fallback so an upgrade stays connected on its existing
+        // leaf; the next successful call re-pins the full chain. See [PushSyncCoordinator].
+        val pins = prefs.getStringSet(KEY_TLS_PINS, null)?.let { LinkedHashSet(it) }?.takeIf { it.isNotEmpty() }
+            ?: prefs.getString(KEY_TLS_PIN, null)?.let { linkedSetOf(it) }
+            ?: return null
+        return TlsPin(host = host, spkiSha256 = pins)
     }
 
     suspend fun clearPairing() {
@@ -196,6 +238,7 @@ class SecurePairingStore(context: Context) {
                 .remove(KEY_DEVICE_ID)
                 .remove(KEY_PAIRED_AT)
                 .remove(KEY_TLS_PIN)
+                .remove(KEY_TLS_PINS)
                 .remove(KEY_TLS_PIN_HOST)
                 .commit()
             // Deliberate unpair: there genuinely is no pin any more, so the marker goes too and the
@@ -211,6 +254,28 @@ class SecurePairingStore(context: Context) {
             .remove(KEY_DEVICE_SECRET_SALT)
             .remove(KEY_DEVICE_SECRET_IV)
             .remove(KEY_DEVICE_SECRET_VERSION)
+            .clearPendingSecret()
+
+    private fun SharedPreferences.Editor.clearPendingSecret(): SharedPreferences.Editor =
+        remove(KEY_DEVICE_SECRET_PENDING_CIPHERTEXT).remove(KEY_DEVICE_SECRET_PENDING_IV)
+
+    /** Wraps [secret] under [keys] as a SECOND copy, leaving the live one untouched.
+     *
+     *  A PIN change has to re-wrap the device secret, and the verifier and the wrapping live in
+     *  different preference files, so no single `commit()` can swap both. Whichever order they are
+     *  written in, a process death between them strands the secret under a key no surviving PIN
+     *  derives. Staging removes the window instead of narrowing it: for the duration of the change
+     *  BOTH wrappings are on disk, [resolveDeviceSecret] tries each, and so the secret is readable
+     *  whether the old or the new PIN ends up authoritative. */
+    suspend fun stagePendingSecret(secret: String, keys: CredentialKeys) {
+        withContext(Dispatchers.IO + NonCancellable) {
+            val wrapped = CredentialCipher.wrap(secret, keys.current)
+            prefs.edit()
+                .putString(KEY_DEVICE_SECRET_PENDING_CIPHERTEXT, Base64.encodeToString(wrapped.ciphertext, Base64.NO_WRAP))
+                .putString(KEY_DEVICE_SECRET_PENDING_IV, Base64.encodeToString(wrapped.iv, Base64.NO_WRAP))
+                .commit()
+        }
+    }
 
     private fun readPairing(credentialKeys: CredentialKeys?): PairingData? {
         val subId = prefs.getString(KEY_SUBSCRIBER_ID, null).orEmpty()
@@ -240,6 +305,22 @@ class SecurePairingStore(context: Context) {
         val wrappedCiphertext = prefs.getString(KEY_DEVICE_SECRET_CIPHERTEXT, null)
             ?: return prefs.getString(KEY_DEVICE_SECRET, null)
         val keys = credentialKeys ?: return null
+        // The live wrapping first; the staged one only if that fails. During a PIN change exactly
+        // one of them opens under the PIN that is currently authoritative, and which one depends on
+        // where the change was interrupted — so trying both is the whole point. See [stagePendingSecret].
+        return unwrapLive(wrappedCiphertext, keys) ?: unwrapPending(keys)
+    }
+
+    private fun unwrapPending(keys: CredentialKeys): String? {
+        val ciphertext = prefs.getString(KEY_DEVICE_SECRET_PENDING_CIPHERTEXT, null) ?: return null
+        val iv = prefs.getString(KEY_DEVICE_SECRET_PENDING_IV, null) ?: return null
+        return CredentialCipher.unwrap(
+            WrappedSecret(Base64.decode(iv, Base64.NO_WRAP), Base64.decode(ciphertext, Base64.NO_WRAP)),
+            keys.current,
+        )
+    }
+
+    private fun unwrapLive(wrappedCiphertext: String, keys: CredentialKeys): String? {
         val iv = prefs.getString(KEY_DEVICE_SECRET_IV, null)?.let { Base64.decode(it, Base64.NO_WRAP) } ?: return null
         val ciphertext = Base64.decode(wrappedCiphertext, Base64.NO_WRAP)
         // The salt (KEY_DEVICE_SECRET_SALT) isn't read here — the keys were already derived from

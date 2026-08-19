@@ -82,7 +82,8 @@ class InboxActivity : LockedActivity() {
         }
     }
 
-    override fun onCreateUnlocked(savedInstanceState: Bundle?) {        savedInstanceState?.let { state ->
+    override fun onCreateUnlocked(savedInstanceState: Bundle?) {
+        savedInstanceState?.let { state ->
             currentFolder = state.getString(STATE_FOLDER, currentFolder)
             selectedTab = state.getString(STATE_TAB, selectedTab)
             pendingScrollPosition = state.getInt(STATE_SCROLL, 0)
@@ -142,7 +143,8 @@ class InboxActivity : LockedActivity() {
         }
     }
 
-    override fun onStartUnlocked() {        refreshInbox()
+    override fun onStartUnlocked() {
+        refreshInbox()
         scheduleNextRefresh()
     }
 

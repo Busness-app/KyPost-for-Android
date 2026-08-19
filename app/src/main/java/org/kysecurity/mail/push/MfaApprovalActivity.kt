@@ -232,13 +232,23 @@ class MfaApprovalActivity : AppCompatActivity() {
         denyButton.isEnabled = true
     }
 
+    /** The app-lock flags this screen branches on. Snapshotted once, off Main: reading either one
+     *  forces the Keystore-backed EncryptedSharedPreferences open, and every place that used to
+     *  read them was a BiometricPrompt callback running on the main thread. Passed down rather
+     *  than held in a field so no branch can reach a posture that was never read. */
+    private class LockPosture(val lockEnabled: Boolean, val credentialGateEnabled: Boolean)
+
     /** Gates both buttons behind an authentication that produces the key the decision needs. */
     private fun requireAuthentication() {
         authInFlight = true
         lifecycleScope.launch {
-            // Keystore and disk, so never on Main. Null means nothing is sealed on this device.
-            val unlock = withContext(Dispatchers.IO) {
-                SecurityRuntime.graph(this@MfaApprovalActivity).biometricUnlockVault.prepareUnlock()
+            // Keystore and disk, so never on Main. Null unlock means nothing is sealed on this device.
+            val (unlock, posture) = withContext(Dispatchers.IO) {
+                val graph = SecurityRuntime.graph(this@MfaApprovalActivity)
+                graph.biometricUnlockVault.prepareUnlock() to LockPosture(
+                    lockEnabled = graph.appLockStore.isLockEnabled(),
+                    credentialGateEnabled = graph.appLockStore.isCredentialPinGateEnabled(),
+                )
             }
             // The user left while the vault was being read: leave the decision unmade and let
             // [onStart] start over on the way back.
@@ -246,12 +256,19 @@ class MfaApprovalActivity : AppCompatActivity() {
                 authInFlight = false
                 return@launch
             }
-            if (unlock != null) authenticateWithSealedKeys(unlock) else authenticateWithoutSealedKeys()
+            if (unlock != null) {
+                authenticateWithSealedKeys(unlock, posture)
+            } else {
+                authenticateWithoutSealedKeys(posture)
+            }
         }
     }
 
     /** The good path: the fingerprint opens the app's own credential keys. */
-    private fun authenticateWithSealedKeys(unlock: org.kysecurity.mail.security.BiometricUnlock) {
+    private fun authenticateWithSealedKeys(
+        unlock: org.kysecurity.mail.security.BiometricUnlock,
+        posture: LockPosture,
+    ) {
         val promptInfo = BiometricPrompt.PromptInfo.Builder()
             .setTitle(getString(R.string.mfa_auth_title))
             .setSubtitle(getString(R.string.mfa_auth_subtitle))
@@ -269,7 +286,7 @@ class MfaApprovalActivity : AppCompatActivity() {
                     if (keys == null) {
                         // The blob and the key are out of step; the PIN both authenticates and
                         // re-seals, so route there rather than failing the screen.
-                        authenticateWithoutSealedKeys()
+                        authenticateWithoutSealedKeys(posture)
                         return
                     }
                     authInFlight = false
@@ -283,8 +300,8 @@ class MfaApprovalActivity : AppCompatActivity() {
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
                     // Includes "Use PIN". The app-lock PIN is the one fallback that still produces
                     // the credential, so offer it rather than ending the screen.
-                    if (SecurityRuntime.graph(this@MfaApprovalActivity).appLockStore.isLockEnabled()) {
-                        promptAppLockPin()
+                    if (posture.lockEnabled) {
+                        promptAppLockPin(posture)
                         return
                     }
                     authInFlight = false
@@ -296,9 +313,9 @@ class MfaApprovalActivity : AppCompatActivity() {
     }
 
     /** App PIN first when a lock is configured; [AuthGateKey] makes the success callback evidence. */
-    private fun authenticateWithoutSealedKeys() {
-        if (SecurityRuntime.graph(this).appLockStore.isLockEnabled()) {
-            promptAppLockPin()
+    private fun authenticateWithoutSealedKeys(posture: LockPosture) {
+        if (posture.lockEnabled) {
+            promptAppLockPin(posture)
             return
         }
 
@@ -374,22 +391,21 @@ class MfaApprovalActivity : AppCompatActivity() {
 
     /** The credential gate is on and this process has no PIN-derived key, so only the app-lock PIN
      *  can make this challenge answerable. */
-    private fun credentialGateNeedsPin(): Boolean {
-        val graph = SecurityRuntime.graph(this)
-        if (!graph.appLockStore.isLockEnabled()) return false
-        if (!graph.appLockStore.isCredentialPinGateEnabled()) return false
-        return graph.appLockManager.cachedCredentialKeys() == null
+    private fun credentialGateNeedsPin(posture: LockPosture): Boolean {
+        if (!posture.lockEnabled || !posture.credentialGateEnabled) return false
+        // In-memory only: a volatile field plus a monotonic clock read, safe on Main.
+        return SecurityRuntime.graph(this).appLockManager.cachedCredentialKeys() == null
     }
 
     /** Throttled through AppLockManager; the dialog is held and dismissed in [onStop]. */
-    private fun promptAppLockPin() {
+    private fun promptAppLockPin(posture: LockPosture) {
         pinDialog?.dismiss()
         val pinField = android.widget.EditText(this).apply {
             inputType = android.text.InputType.TYPE_CLASS_NUMBER or
                 android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD
             hint = getString(R.string.unlock_pin_hint)
         }
-        val gateNeedsPin = credentialGateNeedsPin()
+        val gateNeedsPin = credentialGateNeedsPin(posture)
         pinDialog = android.app.AlertDialog.Builder(this)
             .setTitle(R.string.mfa_auth_title)
             .setMessage(if (gateNeedsPin) R.string.mfa_auth_subtitle_pin_required else R.string.mfa_auth_subtitle)

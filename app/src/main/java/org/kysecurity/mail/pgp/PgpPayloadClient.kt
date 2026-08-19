@@ -1,6 +1,6 @@
 package org.kysecurity.mail.pgp
 
-import org.kysecurity.mail.executeSync
+import org.kysecurity.mail.executeDecoding
 import org.kysecurity.mail.pairingAuthHeaders
 import org.kysecurity.mail.push.pairingEndpoint
 import kotlinx.coroutines.Dispatchers
@@ -88,20 +88,28 @@ internal class PgpPayloadClient(
             .build()
         val request = Request.Builder().url(url).get()
             .pairingAuthHeaders(deviceId, deviceSecret)
+            // Armored ciphertext inside JSON is the one reply that legitimately dwarfs the
+            // JSON-sized default. See [org.kysecurity.mail.BodyLimit].
+            .tag(
+                org.kysecurity.mail.BodyLimit::class.java,
+                org.kysecurity.mail.BodyLimit(org.kysecurity.mail.MemoryBudget.PGP_PAYLOAD_BYTES),
+            )
             .build()
 
+        // Streamed rather than read into a String first: `encryptedPayload` is the single largest
+        // field this app decodes, and `.string()` held a UTF-16 copy of the whole body beside it.
         val result = withContext(Dispatchers.IO) {
-            callFactory.executeSync(request) { response -> response.code to response.body?.string().orEmpty() }
+            callFactory.executeDecoding(request, JSON, PgpPayloadDto.serializer())
         }
-        val (code, rawBody) = result.getOrNull()
+        val response = result.getOrNull()
             ?: return PgpPayloadResult.Failed(result.exceptionOrNull()?.message ?: "Network error")
 
-        return when (code) {
+        return when (response.code) {
             409 -> PgpPayloadResult.NotClientProtected
             413 -> PgpPayloadResult.TooLarge
             404 -> PgpPayloadResult.NoPayload
             200 -> {
-                val parsed = runCatching { JSON.decodeFromString<PgpPayloadDto>(rawBody) }.getOrNull()
+                val parsed = response.decoded
                     ?: return PgpPayloadResult.Failed("Malformed PGP payload response")
                 PgpPayloadResult.Success(
                     encryptedPayload = parsed.encryptedPayload,
@@ -114,7 +122,7 @@ internal class PgpPayloadClient(
                     resolvedSender = parsed.resolvedSender,
                 )
             }
-            else -> PgpPayloadResult.Failed("PGP payload fetch failed ($code)")
+            else -> PgpPayloadResult.Failed("PGP payload fetch failed (${response.code})")
         }
     }
 }

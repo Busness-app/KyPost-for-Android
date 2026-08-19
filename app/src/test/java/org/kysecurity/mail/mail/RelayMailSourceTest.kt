@@ -440,6 +440,23 @@ class RelayMailSourceTest {
         }
     }
 
+    /** The declared length now refuses the body before a byte is read, rather than reading `limit`
+     *  of them and then discovering there was more. */
+    @Test
+    fun readBounded_refusesAnOversizedBodyWithoutReadingIt() {
+        val oversized = ByteArray(10_001) { (it % 251).toByte() }
+        val response = streamingResponse(
+            Request.Builder().url("https://relay.example.com/a").build(),
+            oversized,
+        )
+        try {
+            readBounded(response.body!!, 10_000L)
+            fail("expected an IOException for a body past the limit")
+        } catch (expected: java.io.IOException) {
+            assertTrue(expected.message.orEmpty().contains("declared"))
+        }
+    }
+
     @Test
     fun readBounded_acceptsABodyExactlyAtTheLimit() {
         // The boundary the truncation check must not over-reject: a body of exactly the limit is
