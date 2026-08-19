@@ -58,8 +58,9 @@ class HostileLocationSettings(context: Context) {
      * *directions they fail in are deliberately opposite* and a shared implementation would invite
      * someone to unify that away.
      */
-    fun state(): HostileLocationState =
+    fun state(): HostileLocationState = synchronized(LOCK) {
         cached ?: readState().also { if (it != HostileLocationState.UNREADABLE) cached = it }
+    }
 
     private fun readState(): HostileLocationState {
         val claimed = prefs.getBoolean(KEY_ENABLED, false)
@@ -123,21 +124,33 @@ class HostileLocationSettings(context: Context) {
      * anything: "no key, no marker" already IS the disabled state, and it is the same state a fresh
      * install is in.
      */
-    fun setEnabled(enabled: Boolean) {
-        cached = null
-        if (enabled) {
-            KeystoreHlpKey.ensureExists()
-            writeMarker(true)
-            return
+    fun setEnabled(enabled: Boolean) = synchronized(LOCK) {
+        try {
+            if (enabled) {
+                KeystoreHlpKey.ensureExists()
+                writeMarker(true)
+            } else {
+                prefs.edit().clear().commit()
+                KeystoreHlpKey.destroy()
+            }
+        } finally {
+            cached = null
         }
-        prefs.edit().clear().commit()
-        KeystoreHlpKey.destroy()
     }
 
     /** One byte, so the MAC covers the value and not merely the fact that a marker exists. */
     private fun payload(enabled: Boolean): ByteArray = byteArrayOf(if (enabled) 1 else 0)
 
     private companion object {
+        /**
+         * Guards [cached] and every posture write, so no read can observe a half-applied change.
+         *
+         * Minting the Keystore key takes long enough to be hit: a read landing between `cached =
+         * null` and the key existing saw "no key" — the fresh-install path — resolved DISABLED and
+         * cached it for the life of the process, while the UI went on showing protection ON.
+         */
+        private val LOCK = Any()
+
         /**
          * The resolved posture, cached **for the process**, not per instance.
          *
@@ -161,7 +174,6 @@ class HostileLocationSettings(context: Context) {
          * condition, and holding it would keep the app blocked past the keystore2 restart that
          * caused it.
          */
-        @Volatile
         private var cached: HostileLocationState? = null
     }
 

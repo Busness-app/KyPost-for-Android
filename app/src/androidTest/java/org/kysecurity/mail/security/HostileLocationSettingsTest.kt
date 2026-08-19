@@ -11,6 +11,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.concurrent.thread
 
 /**
  * The flag that decides whether the user's mail exists on disk at all.
@@ -131,5 +133,30 @@ class HostileLocationSettingsTest {
         // block on first launch behind LockedActivity's unreadable-marker notice.
         markerPrefs().edit().clear().commit()
         assertEquals(HostileLocationState.DISABLED, HostileLocationSettings(context).state())
+    }
+
+    /** Enabling mints a Keystore key, which is slow. A posture read landing inside that window
+     *  cached DISABLED for the life of the process, while the UI went on showing protection ON. */
+    @Test
+    fun aReadRacingEnableDoesNotLeaveProtectionOff() {
+        repeat(10) { attempt ->
+            HostileLocationSettings(context).setEnabled(false)
+            val stop = AtomicBoolean(false)
+            val reader = thread {
+                while (!stop.get()) {
+                    HostileLocationSettings(context).isEnabled()
+                    Thread.yield()
+                }
+            }
+
+            HostileLocationSettings(context).setEnabled(true)
+            stop.set(true)
+            reader.join()
+
+            assertTrue(
+                "attempt $attempt: protection read as OFF after setEnabled(true)",
+                HostileLocationSettings(context).isEnabled(),
+            )
+        }
     }
 }
