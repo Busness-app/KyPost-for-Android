@@ -17,7 +17,10 @@ val keystoreProperties = Properties().apply {
 
 // providers.environmentVariable, never System.getenv: the latter reads the daemon's stale env.
 fun signingValue(env: String, property: String): String? =
-    providers.environmentVariable(env).orNull ?: keystoreProperties[property] as String?
+    providers.environmentVariable(env).orNull
+        ?: providers.gradleProperty(env).orNull
+        ?: providers.gradleProperty(property).orNull
+        ?: keystoreProperties[property] as String?
 
 val SECRET_PROPERTY_KEYS = listOf("storePassword", "keyPassword")
 
@@ -76,8 +79,8 @@ android {
         applicationId = "org.kysecurity.mail"
         minSdk = 31
         targetSdk = 36
-        versionCode = 8
-        versionName = "0.3.2"
+        versionCode = 9
+        versionName = "0.3.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
