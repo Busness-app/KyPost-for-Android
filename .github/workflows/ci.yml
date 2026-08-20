@@ -346,6 +346,20 @@ jobs:
             # re-raises the failure at the end, so nothing is silenced.
             ./gradlew connectedDebugAndroidTest || echo failed > /tmp/testfail.txt
 
+            # READ THE KEYGUARD AGAIN. Everything above proves it was down when the suite STARTED
+            # and never looks again, so a re-arm partway through arrives as a pile of app-looking
+            # lifecycle failures -- "Activity never becomes requested state [RESUMED]", the same
+            # string this leg was `continue-on-error` for. That is how the run after #70 read: eight
+            # red UI tests on a tree whose only change was to encrypted-prefs recovery, green on a
+            # rerun of the identical commit. The mechanism is still unproven, and this does not fix
+            # it; it names it, so the next occurrence costs a glance instead of a rerun.
+            #
+            # Diagnostic only. It never fails the job on its own -- the marker file below already
+            # does that -- so an API level that names the field differently cannot fail a leg here.
+            adb shell dumpsys activity activities > /tmp/acts-after.txt 2>/dev/null || true
+            if grep -q "mKeyguardShowing=true" /tmp/acts-after.txt; then echo "THE KEYGUARD CAME BACK UP DURING THE RUN: it was verified down before the suite started. No Activity can reach RESUMED behind it, so any lifecycle failure above is this and not the app." >&2; fi
+            if ! grep -q "mKeyguardShowing=true" /tmp/acts-after.txt; then echo "keyguard still down after the suite; lifecycle failures above are not the keyguard."; fi
+
             adb logcat -d > /tmp/logcat.txt 2>/dev/null || true
             echo "===== crashes and ANRs ====="
             grep -nE "FATAL EXCEPTION|AndroidRuntime|ANR in|Process .* has died" /tmp/logcat.txt | head -40 || true
