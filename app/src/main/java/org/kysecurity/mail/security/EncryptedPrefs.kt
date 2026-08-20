@@ -10,6 +10,9 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import java.security.GeneralSecurityException
 import java.security.KeyStore
+import javax.crypto.Cipher
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
 
 private const val TAG = "EncryptedPrefs"
 
@@ -43,8 +46,8 @@ class EncryptedStoreUnavailableException(fileName: String, cause: Throwable) :
  *
  * "Provably" is the whole contract. Deleting an encrypted store is destruction of user data and
  * [AppLockStore.tripwireBroken] turns an empty app-lock store into a full device wipe, so the bar
- * for it is positive evidence — a keyset that will not parse, or a master key alias that is
- * confirmed absent — and never merely "an exception came out of Tink". Everything else throws
+ * for it is positive evidence — the three proofs [isUnrecoverableKeyset] accepts — and never
+ * merely "an exception came out of Tink". Everything else throws
  * [EncryptedStoreUnavailableException] and the app blocks until the next launch.
  */
 internal fun openEncryptedPrefs(
@@ -77,28 +80,72 @@ internal fun openEncryptedPrefs(
 
 /** True only on positive evidence that nothing can ever open this store again.
  *
- *  Two proofs are accepted, and no others. A keyset that will not parse is destroyed by
- *  definition, and a master key alias the Keystore CONFIRMS is absent can never decrypt one. A
- *  Keystore that merely refuses to answer proves nothing and is not one of them — the previous
- *  version of this function answered true for every [GeneralSecurityException], which made it a
- *  tautology over the branch that called it. */
-internal fun isUnrecoverableKeyset(failure: Throwable): Boolean {
+ *  Three proofs are accepted, and no others. A keyset that will not parse is destroyed by
+ *  definition; a master key alias the Keystore CONFIRMS is absent can never decrypt one; and a
+ *  master key that demonstrably still encrypts and decrypts, under a store that still will not
+ *  yield key material, locates the fault in the stored keyset rather than in the Keystore.
+ *
+ *  A Keystore that merely refuses to answer proves nothing and is not one of them — the version
+ *  of this function before the retry loop answered true for every [GeneralSecurityException],
+ *  which made it a tautology over the branch that called it. */
+internal fun isUnrecoverableKeyset(failure: Throwable): Boolean =
+    isUnrecoverableKeyset(failure, masterKeyState())
+
+/** Split from the Keystore lookup only so the whole truth table can be asserted off a device;
+ *  there is no AndroidKeyStore on the JVM, and this decision is too load-bearing to leave to
+ *  the one row an emulator suite happens to reach. */
+internal fun isUnrecoverableKeyset(failure: Throwable, keyState: MasterKeyState): Boolean {
     // Bounded: a cause chain does not legitimately nest this deep, and a cyclic one would hang
     // app startup, since this decides whether LockedActivity can build the security graph at all.
-    val chain = generateSequence(failure) { it.cause }.take(MAX_CAUSE_DEPTH)
+    val chain = generateSequence(failure) { it.cause }.take(MAX_CAUSE_DEPTH).toList()
     if (chain.any { it.isProtobufParseFailure() }) return true
-    return masterKeyAliasPresent() == false
+    return when (keyState) {
+        MasterKeyState.ABSENT -> true
+        // Only a crypto failure. An IOException under a healthy key is the disk — no space, not
+        // mounted yet — and the disk comes back; the keyset it could not read is still intact.
+        MasterKeyState.WORKING -> chain.any { it is GeneralSecurityException }
+        MasterKeyState.UNKNOWN -> false
+    }
 }
 
 private const val MAX_CAUSE_DEPTH = 16
 
-/** Null when the Keystore itself could not be consulted — never confused with "the alias is gone". */
-private fun masterKeyAliasPresent(): Boolean? = runCatching {
-    KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-        .containsAlias(ENCRYPTED_PREFS_MASTER_KEY_ALIAS)
+/** What the Keystore says about the one key every encrypted store in this app is sealed under.
+ *  [UNKNOWN] is the answer that destroys nothing, and every uncertainty collapses into it. */
+internal enum class MasterKeyState { ABSENT, WORKING, UNKNOWN }
+
+/** Asks the Keystore, rather than inferring from whatever exception Tink chose.
+ *
+ *  The round trip is the point. Tink hides real corruption behind bare [GeneralSecurityException]s
+ *  — a keyset carrying no key material reads as "empty keyset", and a keyset whose ciphertext no
+ *  longer verifies reads as an unattributed decrypt failure — and neither is distinguishable from
+ *  a Keystore that is briefly unwell, WHICH IS THE FAULT THAT MUST NOT DELETE ANYTHING. Proving
+ *  the key itself still works separates them: past this, the bytes on disk are the only suspect. */
+private fun masterKeyState(): MasterKeyState = runCatching {
+    val keystore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+    if (!keystore.containsAlias(ENCRYPTED_PREFS_MASTER_KEY_ALIAS)) return@runCatching MasterKeyState.ABSENT
+    val key = keystore.getKey(ENCRYPTED_PREFS_MASTER_KEY_ALIAS, null) as? SecretKey
+        ?: return@runCatching MasterKeyState.UNKNOWN
+    if (key.roundTripsAProbe()) MasterKeyState.WORKING else MasterKeyState.UNKNOWN
 }.getOrElse {
-    Log.e(TAG, "Could not ask the Keystore whether the master key is still there", it)
-    null
+    Log.e(TAG, "Could not establish whether the master key still works", it)
+    MasterKeyState.UNKNOWN
+}
+
+private const val GCM_TAG_BITS = 128
+
+/** The master key's own scheme, AES256_GCM with randomized encryption: no IV may be supplied. */
+private fun SecretKey.roundTripsAProbe(): Boolean = runCatching {
+    val probe = "keystore round trip".toByteArray()
+    val seal = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, this@roundTripsAProbe) }
+    val sealed = seal.doFinal(probe)
+    val open = Cipher.getInstance("AES/GCM/NoPadding").apply {
+        init(Cipher.DECRYPT_MODE, this@roundTripsAProbe, GCMParameterSpec(GCM_TAG_BITS, seal.iv))
+    }
+    open.doFinal(sealed).contentEquals(probe)
+}.getOrElse {
+    Log.e(TAG, "The Keystore master key would not complete a round trip", it)
+    false
 }
 
 /** Walks the hierarchy: subclasses have their own simpleName, and the type is in shaded Tink. */

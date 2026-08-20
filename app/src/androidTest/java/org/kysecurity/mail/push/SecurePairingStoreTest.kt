@@ -7,6 +7,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.After
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -27,8 +28,12 @@ class SecurePairingStoreTest {
         pairedAtEpochMs = 1_000L,
     )
 
+    // Also @After: this class corrupts the store on purpose, and TlsPinNarrowingTest and
+    // UnpairEnrollmentTeardownTest open the same file. One failure here used to arrive as twelve.
     @Before
+    @After
     fun clearAnyExistingState() {
+        context.deleteSharedPreferences("push_pairing_secure")
         runBlocking { SecurePairingStore(context).clearPairing() }
     }
 
