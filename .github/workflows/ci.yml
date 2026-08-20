@@ -341,6 +341,20 @@ jobs:
             # Clear the buffer so the dump below is this run's work, not the emulator's boot.
             adb logcat -c || true
 
+            # POLL THE KEYGUARD THROUGH THE RUN. The check after the suite proved the keyguard is
+            # genuinely back up -- verified down before, true after -- but an end state names the
+            # fault without dating it, and "it comes back sometimes" is not a cause anyone can fix.
+            # This records WHEN, so the next occurrence can be lined up against the logcat either
+            # side of it. Runs on every leg on purpose: a passing 31 or 34 trace is the control.
+            #
+            # Bounded rather than killed. 220 polls at 10s is ~37 minutes against a 45-minute job
+            # timeout, so it retires on its own and there is no pkill racing the next step for a
+            # process name. Output goes to a file, never the step's stdout, so nothing holds the
+            # pipe open behind the runner.
+            printf '%s\n' '#!/bin/sh' 'for i in $(seq 1 220); do printf "%s %s\n" "$(date -u +%H:%M:%S)" "$(adb shell dumpsys activity activities 2>/dev/null | grep -o "mKeyguardShowing=[a-zA-Z]*" | head -1)"; sleep 10; done' > /tmp/kgwatch.sh
+            chmod +x /tmp/kgwatch.sh
+            nohup /tmp/kgwatch.sh > /tmp/keyguard-watch.txt 2>&1 &
+
             # `|| echo` rather than letting gradle fail the line: each line here is its own sh -c,
             # so a bare non-zero exit ends the script and the dump never runs. The marker file
             # re-raises the failure at the end, so nothing is silenced.
@@ -357,6 +371,10 @@ jobs:
             # Diagnostic only. It never fails the job on its own -- the marker file below already
             # does that -- so an API level that names the field differently cannot fail a leg here.
             adb shell dumpsys activity activities > /tmp/acts-after.txt 2>/dev/null || true
+            echo "===== keyguard through the run (transitions only; blank state = adb did not answer) ====="
+            awk '{ if ($2 != prev) { print; prev = $2 } }' /tmp/keyguard-watch.txt 2>/dev/null || true
+            echo "===== last five polls ====="
+            tail -5 /tmp/keyguard-watch.txt 2>/dev/null || true
             if grep -q "mKeyguardShowing=true" /tmp/acts-after.txt; then echo "THE KEYGUARD CAME BACK UP DURING THE RUN: it was verified down before the suite started. No Activity can reach RESUMED behind it, so any lifecycle failure above is this and not the app." >&2; fi
             if ! grep -q "mKeyguardShowing=true" /tmp/acts-after.txt; then echo "keyguard still down after the suite; lifecycle failures above are not the keyguard."; fi
 
