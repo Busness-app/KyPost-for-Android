@@ -32,7 +32,8 @@ class PushGraph(context: Context) {
     )
     val syncCoordinator = PushSyncCoordinator(
         repository = repository,
-        // First pairing is correctly TOFU-unpinned; every resync afterward pins.
+        // First pairing pins to the link's `pin` when the relay published one, TOFU otherwise;
+        // every resync afterward pins to the captured leaf.
         registrationClient = NativeRegistrationClient(callFactory = pinnedOrFallbackCallFactory),
         // A replacement that cannot prove the previous account's data is gone leaves rows no query
         // can attribute to an account. Erasing the device is the only state that is not "both".

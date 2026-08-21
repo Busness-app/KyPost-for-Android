@@ -15,6 +15,10 @@ data class PairingData(
     val deviceId: String?,
     val deviceSecret: String?,
     val pairedAtEpochMs: Long,
+    /** Leaf SPKI pin from the pairing link, in OkHttp's `sha256/<base64>` form, when the relay
+     *  published one. Pins the registration call itself; see [org.kysecurity.mail.LinkPin].
+     *  Not persisted: once registration succeeds the captured handshake pin supersedes it. */
+    val spkiPin: String? = null,
 ) {
     /** Redacted: carries the device secret and pairing token. Enforced by `SourceRulesTest`. */
     override fun toString(): String = "PairingData(redacted)"
@@ -77,6 +81,7 @@ object NativePairingDeepLinkParser {
         val srv = query["srv"].orEmpty().trim()
         val reg = query["reg"].orEmpty().trim().takeIf { it.isNotBlank() }
         val pt = query["pt"].orEmpty().trim()
+        val pin = query["pin"].orEmpty().trim().takeIf { it.isNotBlank() }
 
         if (sub.isBlank()) return PairingParseResult.Error("Missing sub parameter")
         if (pt.isBlank()) return PairingParseResult.Error("Missing pairing token")
@@ -91,6 +96,12 @@ object NativePairingDeepLinkParser {
         // https alone is not enough: the dialog shows srv, so reg has to be the same server.
         if (reg != null && !sameOrigin(reg, srv)) {
             return PairingParseResult.Error("Registration URL must be on the same server as the server URL")
+        }
+        // Refuse rather than ignore. Dropping an unparseable pin would silently reopen the TOFU
+        // window on the one request that carries the pairing token.
+        val normalizedPin = pin?.let { org.kysecurity.mail.normalizeSpkiPin(it) }
+        if (pin != null && normalizedPin == null) {
+            return PairingParseResult.Error("Certificate pin is not a base64 SHA-256 SPKI hash")
         }
 
         // Resolved here, not left blank for callers to patch up. A blank `registrationUrl` is
@@ -113,6 +124,7 @@ object NativePairingDeepLinkParser {
                 deviceId = null,
                 deviceSecret = null,
                 pairedAtEpochMs = nowEpochMs,
+                spkiPin = normalizedPin,
             ),
         )
     }

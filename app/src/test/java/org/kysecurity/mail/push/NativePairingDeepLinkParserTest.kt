@@ -1,6 +1,7 @@
 package org.kysecurity.mail.push
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -158,5 +159,64 @@ class NativePairingDeepLinkParserTest {
 
         assertTrue(result is PairingParseResult.Success)
         assertEquals("second", (result as PairingParseResult.Success).pairing.subscriberId)
+    }
+
+    @Test
+    fun pin_isNormalizedOntoThePairing() {
+        val raw = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        val result = NativePairingDeepLinkParser.parse(
+            "kypost://native-pair?sub=s&srv=https%3A%2F%2Frelay.example&pt=tok&pin=$raw",
+        )
+
+        assertTrue(result is PairingParseResult.Success)
+        assertEquals("sha256/$raw", (result as PairingParseResult.Success).pairing.spkiPin)
+    }
+
+    @Test
+    fun noPin_leavesTheTofuWindowOpen() {
+        val result = NativePairingDeepLinkParser.parse(
+            "kypost://native-pair?sub=s&srv=https%3A%2F%2Frelay.example&pt=tok",
+        )
+
+        assertTrue(result is PairingParseResult.Success)
+        assertNull((result as PairingParseResult.Success).pairing.spkiPin)
+    }
+
+    /** A real `CertificatePinner.pin()` value off a live leaf, which happens to contain BOTH of
+     *  base64's awkward characters. `/` survives the query string raw; `+` does NOT -- URLDecoder
+     *  turns a bare `+` into a space -- so the relay must percent-encode the pin it publishes.
+     *  This case is the wire-format fixture for that. */
+    @Test
+    fun aRealPercentEncodedPin_survivesTheRoundTrip() {
+        val pin = "sha256/A/8Tbwpsi7a5kM1oSL0mge8ce7V1tL+orlCtOCDaDWw="
+        val encoded = "sha256%2FA%2F8Tbwpsi7a5kM1oSL0mge8ce7V1tL%2BorlCtOCDaDWw%3D"
+
+        val result = NativePairingDeepLinkParser.parse(
+            "kypost://native-pair?sub=s&srv=https%3A%2F%2Frelay.example&pt=tok&pin=$encoded",
+        )
+
+        assertTrue("$result", result is PairingParseResult.Success)
+        assertEquals(pin, (result as PairingParseResult.Success).pairing.spkiPin)
+    }
+
+    /** The failure the relay will hit if it publishes the pin unencoded: `+` arrives as a space. */
+    @Test
+    fun anUnencodedPlusInThePin_isRefusedRatherThanMangledIntoATofuPairing() {
+        val result = NativePairingDeepLinkParser.parse(
+            "kypost://native-pair?sub=s&srv=https%3A%2F%2Frelay.example" +
+                "&pt=tok&pin=A/8Tbwpsi7a5kM1oSL0mge8ce7V1tL+orlCtOCDaDWw%3D",
+        )
+
+        assertTrue(result is PairingParseResult.Error)
+    }
+
+    /** Refuse, do not ignore: a dropped pin silently reopens the window it exists to close. */
+    @Test
+    fun malformedPin_failsThePairing() {
+        val result = NativePairingDeepLinkParser.parse(
+            "kypost://native-pair?sub=s&srv=https%3A%2F%2Frelay.example&pt=tok&pin=nope",
+        )
+
+        assertTrue(result is PairingParseResult.Error)
     }
 }

@@ -123,11 +123,19 @@ class PushHomeViewModel(application: Application) : AndroidViewModel(application
         scope.launch {
             isWorking.value = true
             val result = graph.repository.unpairDevice(graph.deregisterClient)
-            localMessage.value = when (result) {
+            localMessage.value = when (val network = result.deregister) {
                 is DeregisterResult.Success -> "Device unpaired"
-                is DeregisterResult.Error -> "Unpaired locally (server update failed: ${result.message})"
+                is DeregisterResult.Error -> "Unpaired locally (server update failed: ${network.message})"
             }
             isWorking.value = false
+            // Pairing proof is already gone, so nothing downstream can tell that this account's
+            // data outlived it. Same escalation the account-replacement path makes: erase rather
+            // than leave the device pairable with another account's mail and contacts on it.
+            if (result.cleanupIncomplete) {
+                android.util.Log.e("PushHome", "Wiping: unpair could not purge ${result.residue}")
+                localMessage.value = "Could not remove this account's data (${result.residue}); erasing this device instead"
+                org.kysecurity.mail.security.SecurityWipe.wipeAndResetApp(getApplication())
+            }
         }
     }
 

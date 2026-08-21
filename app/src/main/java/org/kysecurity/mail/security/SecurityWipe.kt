@@ -297,7 +297,9 @@ object SecurityWipe {
                     "no TLS pin was captured before the wipe; refusing to send the device secret unpinned",
                 )
             } else {
-                PushRuntime.graph(appContext).repository.unpairDevice(client, pairingForDeregister)
+                // Residue is deliberately ignored here: this IS the wipe, and purgeAccountScopedData
+                // already logs survivors. Escalating would recurse back into wipeAndResetApp.
+                PushRuntime.graph(appContext).repository.unpairDevice(client, pairingForDeregister).deregister
             }
         }.getOrElse { org.kysecurity.mail.push.DeregisterResult.Error(it.message ?: "deregister threw") }
         if (deregistered is org.kysecurity.mail.push.DeregisterResult.Error) {

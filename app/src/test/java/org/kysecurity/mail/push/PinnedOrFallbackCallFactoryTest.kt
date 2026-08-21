@@ -3,6 +3,7 @@ package org.kysecurity.mail.push
 import okhttp3.Call
 import okhttp3.Request
 import okhttp3.Response
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -45,6 +46,53 @@ class PinnedOrFallbackCallFactoryTest {
         factory.newCall(request)
 
         assertSame(1, pinned.calls)
+        assertSame(0, fallback.calls)
+    }
+
+    /** A `pin` in the pairing link narrows the TOFU window to one key for the one request that
+     *  discloses the pairing token, so the fallback must not see it at all. */
+    @Test
+    fun aLinkPinReplacesTheUnpinnedFallbackBeforeTheFirstPairing() {
+        val fallback = RecordingFactory()
+        val factory = PinnedOrFallbackCallFactory(
+            pinnedProvider = { null },
+            pinStateProvider = { TlsPinState.NeverPaired },
+            fallback = fallback,
+        )
+        val pinnedRequest = Request.Builder()
+            .url("https://relay.example/api/register")
+            .tag(
+                org.kysecurity.mail.LinkPin::class.java,
+                org.kysecurity.mail.LinkPin("relay.example", "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="),
+            )
+            .build()
+
+        val call = factory.newCall(pinnedRequest)
+
+        assertSame(0, fallback.calls)
+        // A refusal is the private FailedCall; a real OkHttp client hands back RealCall.
+        assertEquals("RealCall", call.javaClass.simpleName)
+        assertSame(pinnedRequest, call.request())
+    }
+
+    /** A link cannot re-authorise a server whose captured pin has gone missing. */
+    @Test
+    fun aLinkPinDoesNotRescueALostPin() {
+        val fallback = RecordingFactory()
+        val factory = PinnedOrFallbackCallFactory(
+            pinnedProvider = { null },
+            pinStateProvider = { TlsPinState.Lost },
+            fallback = fallback,
+        )
+        val pinnedRequest = Request.Builder()
+            .url("https://relay.example/api/register")
+            .tag(
+                org.kysecurity.mail.LinkPin::class.java,
+                org.kysecurity.mail.LinkPin("relay.example", "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="),
+            )
+            .build()
+
+        assertThrows(SSLPeerUnverifiedException::class.java) { factory.newCall(pinnedRequest).execute() }
         assertSame(0, fallback.calls)
     }
 

@@ -45,8 +45,10 @@ class PinnedOrFallbackCallFactory(
         pinnedProvider()?.let { return it.newCall(request) }
         return when (pinStateProvider()) {
             // The legitimate TOFU window: nothing has ever been pinned, so there is nothing to
-            // downgrade from.
-            TlsPinState.NeverPaired -> fallback.newCall(request)
+            // downgrade from. A pin carried in the pairing link narrows it to one key for the one
+            // request that discloses the pairing token. Deliberately NOT consulted for
+            // TlsPinState.Lost: a link cannot re-authorise a server whose stored pin is gone.
+            TlsPinState.NeverPaired -> linkPinnedCall(request) ?: fallback.newCall(request)
             // A pin existed and no longer does: refuse rather than silently downgrade. Re-pair to fix.
             TlsPinState.Lost -> FailedCall(
                 request,
@@ -62,6 +64,19 @@ class PinnedOrFallbackCallFactory(
             )
         }
     }
+
+    /** Null when the request carries no link pin, so the caller falls back to the TOFU window. */
+    private fun linkPinnedCall(request: Request): Call? {
+        val linkPin = request.tag(org.kysecurity.mail.LinkPin::class.java) ?: return null
+        val client = linkPinnedClients.getOrPut(linkPin) {
+            pairingHttpClient(PinPosture.Pinned(host = linkPin.host, spkiSha256 = setOf(linkPin.spkiSha256)))
+        }
+        return client.newCall(request)
+    }
+
+    /** Keyed by the whole pin, so a client is never reused against a different one. Bounded in
+     *  practice by how many distinct relays a device pairs with before one succeeds. */
+    private val linkPinnedClients = java.util.concurrent.ConcurrentHashMap<org.kysecurity.mail.LinkPin, Call.Factory>()
 }
 
 /** A [Call] that fails with [cause] the moment it is executed or enqueued, so a refusal reaches

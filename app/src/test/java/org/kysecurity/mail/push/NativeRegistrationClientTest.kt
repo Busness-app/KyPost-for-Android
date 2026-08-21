@@ -25,6 +25,29 @@ class NativeRegistrationClientTest {
     private val success =
         """{"ok":true,"synced":true,"deviceId":"dev-1","deviceSecret":"secret-2"}"""
 
+    /** The tag is what makes PinnedOrFallbackCallFactory pin the request that discloses the
+     *  pairing token, so its absence is the whole bug, not a detail. */
+    @Test
+    fun aLinkPinIsTaggedOntoTheRegistrationRequest() = runBlocking {
+        val pin = "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        val factory = FakeCallFactory { req -> response(req, success, 200) }
+
+        NativeRegistrationClient(callFactory = factory)
+            .register(paired.copy(deviceId = null, deviceSecret = null, spkiPin = pin), token = "fcm-token")
+
+        val tag = factory.requests.single().tag(org.kysecurity.mail.LinkPin::class.java)
+        assertEquals(org.kysecurity.mail.LinkPin("relay.example.com", pin), tag)
+    }
+
+    @Test
+    fun withNoLinkPin_theRequestCarriesNoTag() = runBlocking {
+        val factory = FakeCallFactory { req -> response(req, success, 200) }
+
+        NativeRegistrationClient(callFactory = factory).register(paired, token = "fcm-token")
+
+        assertNull(factory.requests.single().tag(org.kysecurity.mail.LinkPin::class.java))
+    }
+
     @Test
     fun aReRegistrationCarriesTheCurrentDeviceCredential() = runBlocking {
         val factory = FakeCallFactory { req -> response(req, success, 200) }

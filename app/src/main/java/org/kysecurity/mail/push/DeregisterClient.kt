@@ -29,6 +29,12 @@ sealed class DeregisterResult {
     data class Error(val message: String) : DeregisterResult()
 }
 
+/** [residue] is account-scoped data that survived the unpair purge; non-empty means the device
+ *  must be wiped rather than left pairable, or the next account can read what is left. */
+data class UnpairOutcome(val deregister: DeregisterResult, val residue: List<String>) {
+    val cleanupIncomplete: Boolean get() = residue.isNotEmpty()
+}
+
 /** `POST /api/notifications/native/deregister` using device credentials, no session cookie. */
 class DeregisterClient(
     private val json: Json = Json { ignoreUnknownKeys = true },

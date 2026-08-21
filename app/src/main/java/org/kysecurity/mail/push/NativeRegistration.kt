@@ -149,6 +149,16 @@ class NativeRegistrationClient(
                     pairingAuthHeaders(deviceId, deviceSecret)
                 }
             }
+            // Pins THIS request when the pairing link published a leaf SPKI. Without it the
+            // pairing token, endpoint and WebPush keys go out inside the TOFU window, and the
+            // certificate is only trusted after they have already been disclosed.
+            .apply {
+                val linkPin = pairing.spkiPin
+                val host = pairing.registrationUrl.toHttpUrlOrNull()?.host
+                if (linkPin != null && host != null) {
+                    tag(org.kysecurity.mail.LinkPin::class.java, org.kysecurity.mail.LinkPin(host, linkPin))
+                }
+            }
             .build()
         // The host this call's handshake will be with — the pin below is only meaningful together
         // with it, since it is this URL, not pairing.serverUrl, that the certificate belongs to.
