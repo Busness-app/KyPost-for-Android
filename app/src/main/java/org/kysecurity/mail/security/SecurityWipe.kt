@@ -219,7 +219,10 @@ object SecurityWipe {
         step("deviceContactWorker") { org.kysecurity.mail.contacts.device.DeviceContactSyncScheduler.cancelPeriodic(appContext) }
 
         // BEFORE the sharedPrefs sweep: clearPairing() writes, and would recreate the files.
-        step("clearPairingState") { PushRuntime.graph(appContext).repository.clearPairing() }
+        step("clearPairingState") {
+            val residue = PushRuntime.graph(appContext).repository.clearPairing()
+            check(residue.isEmpty()) { "account-scoped purge left $residue" }
+        }
 
         // After the connector teardown above, which needs `unifiedpush.connector` to still hold the
         // distributor selection that `UnifiedPush.unregister` reads.

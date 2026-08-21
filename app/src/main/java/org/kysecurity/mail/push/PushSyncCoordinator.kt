@@ -1,66 +1,108 @@
 package org.kysecurity.mail.push
 
 import com.google.firebase.messaging.FirebaseMessaging
-import org.kysecurity.mail.security.SpkiPinner
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withContext
 
 /** Every registration here mints a new `deviceSecret` and invalidates the previous one. */
 class PushSyncCoordinator(
-    private val repository: PushRepository,
+    private val repository: PushStore,
     private val registrationClient: NativeRegistrationClient,
+    /** Called when an account replacement cannot prove the previous account's data is gone; see
+     *  [attemptPairing]. Injected rather than called directly so the refusal is testable and so
+     *  this class keeps needing no `Context`. */
+    private val wipeOnIncompletePurge: suspend (List<String>) -> Unit,
+    /** The FCM token, or null when it cannot be fetched. Injected for the same reason as
+     *  [wipeOnIncompletePurge]: `FirebaseMessaging.getInstance()` needs a live FirebaseApp, so
+     *  leaving it inline put every ordering rule in this class out of a unit test's reach. */
+    private val fetchFcmToken: suspend () -> String? = {
+        runCatching { FirebaseMessaging.getInstance().token.await() }.getOrNull()
+    },
 ) {
+    /** ONE registration at a time, process-wide.
+     *
+     *  Registration is triggered independently by Firebase token rotation, UnifiedPush endpoint
+     *  changes, foreground resync, transport switches and the pairing screen. Each successful call
+     *  invalidates the secret the previous one minted, so two in flight interleave like this:
+     *  A mints secret A, B mints secret B (invalidating A), B persists B, then A's late reply
+     *  persists A — and the installation is left holding a secret the server rejects, with no path
+     *  back except a re-pair. `NonCancellable` never addressed this: it protects a persist from
+     *  cancellation, not from a competing registration. */
+    private val registrationGate = Mutex()
+
     /** The error every deferred registration reports, so the pairing screen shows one explanation
      *  rather than a transport-specific one per entry point. */
     private fun credentialGateDeferral() = NativeRegistrationResult.Error(
         "Unlock with your PIN to sync push registration",
     )
 
-    suspend fun attemptPairing(pairing: PairingData): NativeRegistrationResult {
-        // A pairing for a different account is a REPLACEMENT; purge before the call, not after.
+    suspend fun attemptPairing(pairing: PairingData): NativeRegistrationResult = registrationGate.withLock {
+        // Read INSIDE the gate: a registration that finished while this one queued may have
+        // changed which account is current, and so whether this is a replacement at all.
         val existing = repository.state.first().pairing
-        if (existing != null &&
+        val isReplacement = existing != null &&
             (existing.subscriberId != pairing.subscriberId || existing.serverUrl != pairing.serverUrl)
-        ) {
-            repository.clearPairing()
-        }
 
         // Taken BEFORE the network call and reused after it: the app can lock while it is in flight.
         val credentialState = repository.currentCredentialState()
         if (credentialState is PushRepository.PairingCredentialState.Unavailable) return credentialGateDeferral()
 
-        val token = fetchFcmTokenOrNull()
+        val token = fetchFcmToken()
             ?: return NativeRegistrationResult.Error("Unable to fetch FCM token")
 
         // NonCancellable: the server has already invalidated the previous secret by the time it answers.
-        return kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+        withContext(NonCancellable) {
             val result = registrationClient.register(pairing = pairing, token = token)
-            if (result is NativeRegistrationResult.Success) {
-                repository.savePairing(
-                    pairing.copy(deviceId = result.deviceId ?: pairing.deviceId, deviceSecret = result.deviceSecret),
-                    credentialState,
-                )
-                // TOFU: capture the pin only on the pairing call, never on routine resyncs.
-                result.tlsPin?.let { repository.saveTlsPin(it) }
-                persistDelivery(pairing, result)
-                repository.updateTransport(result.transport)
-                repository.updateSyncState(lastSyncAtEpochMs = result.syncedAtEpochMs, syncError = null)
+            if (result !is NativeRegistrationResult.Success) return@withContext result
+
+            // NOTHING is destroyed until the replacement is proven. Purging first meant a
+            // replacement that failed at the FCM token fetch — offline, say — had already deleted
+            // the mail, contacts, keys and pairing of the account that was working a moment ago.
+            if (isReplacement) {
+                val residue = repository.clearPairing()
+                if (residue.isNotEmpty()) {
+                    // No table carries a subscriber column, so survivors are readable by whoever
+                    // pairs next. Refuse the new account and wipe rather than leave the two mixed.
+                    wipeOnIncompletePurge(residue)
+                    return@withContext NativeRegistrationResult.Error(
+                        "Could not remove the previous account's data ($residue); erasing this device instead",
+                    )
+                }
             }
+
+            persistSuccess(pairing, result, credentialState)
+            // TOFU: capture the pin only on the pairing call, never on routine resyncs.
+            result.tlsPin?.let { repository.saveTlsPin(it) }
             result
         }
     }
 
-    suspend fun syncCurrentPairingToken(): NativeRegistrationResult {
-        val state = repository.state.first()
-        val pairing = state.pairing ?: return NativeRegistrationResult.Error("Device is not paired")
+    private suspend fun persistSuccess(
+        pairing: PairingData,
+        result: NativeRegistrationResult.Success,
+        credentialState: PushRepository.PairingCredentialState,
+    ) {
+        repository.savePairing(
+            pairing.copy(deviceId = result.deviceId ?: pairing.deviceId, deviceSecret = result.deviceSecret),
+            credentialState,
+        )
+        persistDelivery(pairing, result)
+        repository.updateTransport(result.transport)
+        repository.updateSyncState(lastSyncAtEpochMs = result.syncedAtEpochMs, syncError = null)
+    }
 
-        val token = fetchFcmTokenOrNull()
+    suspend fun syncCurrentPairingToken(): NativeRegistrationResult {
+        val token = fetchFcmToken()
             ?: run {
                 repository.updateSyncState(lastSyncAtEpochMs = null, syncError = "Unable to fetch FCM token")
                 return NativeRegistrationResult.Error("Unable to fetch FCM token")
             }
 
-        return syncAndPersist(rawPairing = pairing, token = token)
+        return syncAndPersist(token = token)
     }
 
     suspend fun syncProvidedToken(
@@ -68,11 +110,7 @@ class PushSyncCoordinator(
         transport: PushTransport? = null,
         p256dh: String? = null,
         auth: String? = null,
-    ): NativeRegistrationResult {
-        val state = repository.state.first()
-        val pairing = state.pairing ?: return NativeRegistrationResult.Error("Device is not paired")
-        return syncAndPersist(rawPairing = pairing, token = token, transport = transport, p256dh = p256dh, auth = auth)
-    }
+    ): NativeRegistrationResult = syncAndPersist(token = token, transport = transport, p256dh = p256dh, auth = auth)
 
     /** Resyncs on the active transport; to force FCM call [syncCurrentPairingToken] directly. */
     suspend fun resyncActiveTransport(): NativeRegistrationResult {
@@ -80,9 +118,7 @@ class PushSyncCoordinator(
         val endpoint = state.unifiedPushEndpoint
         // Set only after a successful unifiedpush registration, and cleared on any other sync.
         return if (endpoint != null) {
-            val pairing = state.pairing ?: return NativeRegistrationResult.Error("Device is not paired")
             syncAndPersist(
-                rawPairing = pairing,
                 token = endpoint,
                 transport = PushTransport.UNIFIED_PUSH,
                 p256dh = state.unifiedPushP256dh,
@@ -94,12 +130,17 @@ class PushSyncCoordinator(
     }
 
     private suspend fun syncAndPersist(
-        rawPairing: PairingData,
         token: String,
         transport: PushTransport? = null,
         p256dh: String? = null,
         auth: String? = null,
-    ): NativeRegistrationResult {
+    ): NativeRegistrationResult = registrationGate.withLock {
+        // Read INSIDE the gate, not by the caller before it: a registration that completed while
+        // this one queued replaced the deviceSecret, and re-registering with the stale one is the
+        // request the server rejects.
+        val rawPairing = repository.state.first().pairing
+            ?: return NativeRegistrationResult.Error("Device is not paired")
+
         // Re-derive the registration URL every use: a stored host divergence left clients unpinned.
         val resolution = NativeRegistrationEndpointResolver.resolve(
             rawPairing.registrationUrl,
@@ -124,7 +165,7 @@ class PushSyncCoordinator(
         }
 
         // NonCancellable as in attemptPairing: the replacement secret is already minted by now.
-        return kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+        withContext(NonCancellable) {
             registerAndPersist(pairing, token, transport, p256dh, auth, credentialState)
         }
     }
@@ -146,62 +187,44 @@ class PushSyncCoordinator(
         )
         when (result) {
             is NativeRegistrationResult.Success -> {
-                repository.savePairing(
-                    pairing.copy(deviceId = result.deviceId ?: pairing.deviceId, deviceSecret = result.deviceSecret),
-                    credentialState,
-                )
-                // Still TOFU, now with continuity. This call already validated against the stored
-                // pins, so its chain is the same server and refreshing is not a downgrade — it is
-                // what keeps a pin current across certificate renewals, and what upgrades installs
-                // still carrying a single legacy leaf pin onto the full chain. Capturing once and
-                // never again meant the stored pin went stale and bricked the pairing.
-                refreshTlsPin(result.tlsPin)
-                persistDelivery(pairing, result)
-                repository.updateTransport(result.transport)
+                persistSuccess(pairing, result, credentialState)
+                narrowLegacyTlsPin(result.tlsPin)
                 // Gate on the transport we requested: older servers return null and would wipe what we set.
                 if (transport == PushTransport.UNIFIED_PUSH) {
                     repository.updateUnifiedPushRegistration(endpoint = token, p256dh = p256dh, auth = auth)
                 } else {
                     repository.updateUnifiedPushRegistration(endpoint = null, p256dh = null, auth = null)
                 }
-                repository.updateSyncState(lastSyncAtEpochMs = result.syncedAtEpochMs, syncError = null)
             }
             is NativeRegistrationResult.Error -> repository.updateSyncState(lastSyncAtEpochMs = null, syncError = result.message)
         }
         return result
     }
 
-    /** Rolls [fresh] to the front of the accepted leaf pins, for the host already pinned.
+    /** Narrows a legacy whole-chain pin set to the leaf [fresh] was observed on. Once.
      *
-     *  This is the continuity that makes leaf-only pinning survive certificate renewal. The call
-     *  that produced [fresh] ALREADY validated against the stored pins, so its chain is the same
-     *  server: adopting its leaf is not a downgrade, it is how the pin stays current. The window
-     *  is [SpkiPinner.MAX_PINNED_LEAVES] wide so a rotation landing between two resyncs is carried
-     *  rather than fatal.
+     *  This is NOT a renewal mechanism and there is no longer one pretending to be. Installs
+     *  pinned under the old rule hold the whole chain, which admits every certificate the issuer
+     *  signs; the first resync that validates against such a set replaces it with the single leaf
+     *  actually presented. On an already leaf-only set there is nothing to do: the call validated
+     *  because that leaf was in the chain, so the leaf it observed is the leaf already stored.
      *
-     *  A set written before the leaf-only rule may contain a public CA intermediate, which admits
-     *  every certificate that CA issues — so it is REPLACED rather than merged, exactly once.
+     *  A renewal that mints a new key therefore breaks the pin, on purpose, and the user recovers
+     *  through [PushHomeViewModel.reconnectToServer], which reopens the TOFU window and keeps the
+     *  mailbox. See [org.kysecurity.mail.security.SpkiPinner.pinsForChain].
      *
      *  The host guard is not ceremony: a pin is only meaningful against the host it was observed
-     *  on, and moving one silently would leave the old host unpinned. A differing host is a
-     *  re-pairing, which goes through [attemptPairing] and its unconditional capture instead. */
-    private suspend fun refreshTlsPin(fresh: TlsPin?) {
+     *  on, and moving one silently would leave the old host unpinned. */
+    private suspend fun narrowLegacyTlsPin(fresh: TlsPin?) {
         if (fresh == null) return
+        if (repository.tlsPinIsLeafOnly()) return
         val stored = repository.currentTlsPin()
         if (stored != null && stored.host != fresh.host) return
-        val leafOnly = repository.tlsPinIsLeafOnly()
-        val history = if (leafOnly) stored?.spkiSha256.orEmpty() else emptySet()
-        val merged = SpkiPinner.rollingPins(fresh.spkiSha256, history)
-        if (leafOnly && stored?.spkiSha256 == merged) return
-        repository.saveTlsPin(TlsPin(host = fresh.host, spkiSha256 = merged))
+        repository.saveTlsPin(fresh)
     }
 
     private suspend fun persistDelivery(pairing: PairingData, result: NativeRegistrationResult.Success) {
         val endpoint = resolvePullEndpoint(pairing.serverUrl, result.pullEndpoint)
         repository.updateDelivery(result.deliveryMode, endpoint)
-    }
-
-    private suspend fun fetchFcmTokenOrNull(): String? {
-        return runCatching { FirebaseMessaging.getInstance().token.await() }.getOrNull()
     }
 }

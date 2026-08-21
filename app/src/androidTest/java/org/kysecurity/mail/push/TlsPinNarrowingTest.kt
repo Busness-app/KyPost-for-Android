@@ -15,8 +15,9 @@ import org.junit.runner.RunWith
  * The stored pin set used to hold every certificate in the observed chain except its trust anchor,
  * which for the ordinary deployment meant a public CA intermediate — a pin that admits every
  * certificate that CA issues. Sets written before the leaf-only rule must therefore be REPLACED on
- * the next capture, not merged into, or an install whose certificate happens not to rotate would
- * carry the intermediate in its rolling window forever.
+ * the next capture, never merged into, or the intermediate would outlive the rule that retired it.
+ *
+ * There is no rolling window to merge into any more: see [PushSyncCoordinator.narrowLegacyTlsPin].
  */
 @RunWith(AndroidJUnit4::class)
 class TlsPinNarrowingTest {
@@ -47,41 +48,18 @@ class TlsPinNarrowingTest {
         assertEquals(setOf(pin(1)), store.currentTlsPin()?.spkiSha256)
     }
 
-    /** The rolling window, which is what replaced pinning the issuers: a leaf rotated between two
-     *  resyncs is carried alongside the fresh one so the renewal is not an outage. */
+    /** Narrowing is one-way and happens once. A legacy whole-chain set is REPLACED by the single
+     *  observed leaf, and the marker that records it must survive the next read. */
     @Test
-    fun aRotatedLeafIsCarriedAlongsideTheFreshOne() = runBlocking {
+    fun aLegacyWholeChainSetIsReplacedByTheLeafAndStaysThatWay() = runBlocking {
         val store = SecurePairingStore(context)
+        // The shape an install pinned under the old rule carries: leaf plus its issuers.
+        store.saveTlsPin(TlsPin(host, setOf(pin(1), pin(2), pin(3))))
+
         store.saveTlsPin(TlsPin(host, setOf(pin(1))))
 
-        val rolled = org.kysecurity.mail.security.SpkiPinner.rollingPins(
-            fresh = setOf(pin(2)),
-            history = store.currentTlsPin()!!.spkiSha256,
-        )
-        store.saveTlsPin(TlsPin(host, rolled))
-
-        assertEquals(listOf(pin(2), pin(1)), store.currentTlsPin()!!.spkiSha256.toList())
-    }
-
-    /** And the window is bounded, so pins cannot accumulate until every certificate the server has
-     *  ever presented — including a stolen one — stays valid forever. */
-    @Test
-    fun theWindowNeverGrowsPastTheCap() = runBlocking {
-        val store = SecurePairingStore(context)
-        store.saveTlsPin(TlsPin(host, setOf(pin(1))))
-
-        repeat(5) { round ->
-            val rolled = org.kysecurity.mail.security.SpkiPinner.rollingPins(
-                fresh = setOf(pin((round + 2).toByte())),
-                history = store.currentTlsPin()!!.spkiSha256,
-            )
-            store.saveTlsPin(TlsPin(host, rolled))
-        }
-
-        val stored = store.currentTlsPin()!!.spkiSha256
-        assertEquals(org.kysecurity.mail.security.SpkiPinner.MAX_PINNED_LEAVES, stored.size)
-        assertTrue("the freshest observation must survive", pin(6) in stored)
-        assertFalse("the original must have aged out", pin(1) in stored)
+        assertEquals(setOf(pin(1)), store.currentTlsPin()!!.spkiSha256)
+        assertTrue(SecurePairingStore(context).tlsPinIsLeafOnly())
     }
 
     @Test

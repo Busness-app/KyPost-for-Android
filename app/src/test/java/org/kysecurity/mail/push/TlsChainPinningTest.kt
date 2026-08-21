@@ -11,16 +11,15 @@ import kotlin.test.assertTrue
 /**
  * What a stored pin set means once it reaches OkHttp.
  *
- * The set holds LEAF pins only — at most [SpkiPinner.MAX_PINNED_LEAVES], the one in use and the
- * one it replaced. It briefly held the whole chain instead, to survive certificate renewal, and
- * that is the wrong fix for a real problem: `CertificatePinner` passes when ANY chain member
- * matches ANY configured pin, so pinning an issuer admits every certificate that issuer signs.
- * Renewal continuity comes from [PushSyncCoordinator.refreshTlsPin] rolling a freshly observed
- * leaf in on a connection that already validated, never from widening what a pin means.
+ * A set written today holds ONE leaf pin. It briefly held the whole chain instead, to survive
+ * certificate renewal, and that is the wrong fix for a real problem: `CertificatePinner` passes
+ * when ANY chain member matches ANY configured pin, so pinning an issuer admits every certificate
+ * that issuer signs. A window of previously observed leaves was the second wrong fix — a key this
+ * device has never seen cannot be learned from a connection the pin itself rejects. Renewal is
+ * handled by the user re-trusting the server, which does not cost them the mailbox.
  *
- * These pin down: every stored pin reaches the host, a rotated leaf still validates through the
- * carried-over one, and an empty pin set — which `CertificatePinner` would pass vacuously —
- * cannot be built at all.
+ * These pin down: every stored pin reaches the host, nothing unobserved is admitted, and an empty
+ * pin set — which `CertificatePinner` would pass vacuously — cannot be built at all.
  */
 class TlsChainPinningTest {
 
@@ -45,11 +44,11 @@ class TlsChainPinningTest {
         assertEquals(2, matched.size, "every stored leaf pin must be registered for the host")
     }
 
-    /** The rotation window, which is what replaced pinning the issuers. A leaf that rotated
-     *  between two resyncs still validates on the one carried over, and no certificate outside
-     *  this device's own observations is admitted by either. */
+    /** Multiple pins for one host are all honoured by OkHttp, and a certificate this device has
+     *  never observed is not among them. This is the shape a legacy whole-chain set has until
+     *  [PushSyncCoordinator.narrowLegacyTlsPin] replaces it with the single leaf. */
     @Test
-    fun aRotatedLeafStillMatchesThroughTheCarriedOverPin() {
+    fun onlyObservedCertificatesAreEverAdmitted() {
         val client = pairingHttpClient(PinPosture.Pinned(host, setOf(currentLeaf, previousLeaf)))
 
         // Pin.toString() is the "sha256/BASE64" form CertificatePinner.pin() produces.
@@ -58,16 +57,6 @@ class TlsChainPinningTest {
         assertTrue(pin(9) !in pinned, "a certificate this device never saw is genuinely unknown")
         assertTrue(previousLeaf in pinned, "the leaf being rotated away from must still validate")
         assertTrue(currentLeaf in pinned, "and so must the one rotated to")
-    }
-
-    /** The window is a window, not a bucket: pins accumulating without bound would mean every leaf
-     *  the server has ever presented stays valid forever, including a stolen one. */
-    @Test
-    fun theRotationWindowIsBounded() {
-        val rolled = SpkiPinner.rollingPins(setOf(pin(5)), setOf(currentLeaf, previousLeaf))
-
-        assertEquals(SpkiPinner.MAX_PINNED_LEAVES, rolled.size)
-        assertTrue(pin(5) in rolled, "the freshest observation must survive the cap")
     }
 
     @Test

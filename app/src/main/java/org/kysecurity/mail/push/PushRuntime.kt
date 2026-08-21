@@ -22,14 +22,24 @@ class PushGraph(context: Context) {
     )
 
     val pullCoordinator = PullSyncCoordinator(
-        appContext = appContext,
         repository = repository,
         pullClient = PullNotificationClient(callFactory = pinnedOrFallbackCallFactory),
+        notifier = { payload -> PushNotificationDispatcher.show(appContext, payload) },
+        schedule = { mode ->
+            if (mode == DeliveryMode.PULL) PullScheduler.ensurePeriodic(appContext)
+            else PullScheduler.cancelPeriodic(appContext)
+        },
     )
     val syncCoordinator = PushSyncCoordinator(
         repository = repository,
         // First pairing is correctly TOFU-unpinned; every resync afterward pins.
         registrationClient = NativeRegistrationClient(callFactory = pinnedOrFallbackCallFactory),
+        // A replacement that cannot prove the previous account's data is gone leaves rows no query
+        // can attribute to an account. Erasing the device is the only state that is not "both".
+        wipeOnIncompletePurge = { residue ->
+            android.util.Log.e("PushGraph", "Wiping: account replacement could not purge $residue")
+            org.kysecurity.mail.security.SecurityWipe.wipeAndResetApp(appContext)
+        },
     )
     val mfaResponseClient = MfaResponseClient(callFactory = pinnedOrFallbackCallFactory)
 
