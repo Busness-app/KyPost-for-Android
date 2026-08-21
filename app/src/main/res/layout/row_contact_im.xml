@@ -15,18 +15,27 @@
             android:id="@+id/rowImService"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="4dp" />
+            android:layout_marginBottom="4dp"
+            android:hint="@string/contacts_im_service_hint"
+            android:importantForAutofill="no"
+            android:inputType="text" />
 
         <EditText
             android:id="@+id/rowImLabel"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="4dp" />
+            android:layout_marginBottom="4dp"
+            android:hint="@string/contacts_im_label_hint"
+            android:importantForAutofill="no"
+            android:inputType="textCapWords" />
 
         <EditText
             android:id="@+id/rowImValue"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content" />
+            android:layout_height="wrap_content"
+            android:hint="@string/contacts_im_value_hint"
+            android:importantForAutofill="no"
+            android:inputType="text" />
 
     </LinearLayout>
 
@@ -36,7 +45,7 @@
         android:layout_height="40dp"
         android:layout_marginStart="8dp"
         android:gravity="center"
-        android:text="✕"
+        android:text="@string/contacts_field_remove_glyph"
         android:textSize="18sp"
         android:clickable="true"
         android:focusable="true"

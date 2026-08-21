@@ -10,6 +10,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:hint="@string/address_book_search_hint"
+        android:importantForAutofill="no"
         android:inputType="text"
         android:layout_marginBottom="12dp" />
 

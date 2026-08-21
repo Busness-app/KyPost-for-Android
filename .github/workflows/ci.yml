@@ -67,7 +67,7 @@ jobs:
       # checkout keystore.properties does not exist (it is gitignored) and the task is a no-op;
       # it fires only if one is ever committed with a password in it.
       - name: unit tests, lint and signing-secret check
-        run: ./gradlew checkSigningSecretsAreNotInTheTree testDebugUnitTest lint
+        run: ./gradlew checkSigningSecretsAreNotInTheTree checkExportedComponentsDebug testDebugUnitTest lint
 
       # The other half of the rule above, expressed as a check rather than a comment: if
       # anything in this job regenerated the metadata, the file is dirty and the job fails.

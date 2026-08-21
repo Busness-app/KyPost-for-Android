@@ -164,12 +164,6 @@ class ContactEditActivity : LockedActivity() {
                 val regionField = rowView.findViewById<EditText>(R.id.rowAddressRegion)
                 val postalField = rowView.findViewById<EditText>(R.id.rowAddressPostalCode)
                 val countryField = rowView.findViewById<EditText>(R.id.rowAddressCountry)
-                labelField.hint = getString(R.string.contacts_address_label_hint)
-                streetField.hint = getString(R.string.contacts_address_street_hint)
-                cityField.hint = getString(R.string.contacts_address_city_hint)
-                regionField.hint = getString(R.string.contacts_address_region_hint)
-                postalField.hint = getString(R.string.contacts_address_postal_code_hint)
-                countryField.hint = getString(R.string.contacts_address_country_hint)
                 labelField.setText(item.label.orEmpty())
                 streetField.setText(item.street.orEmpty())
                 cityField.setText(item.city.orEmpty())
@@ -211,6 +205,7 @@ class ContactEditActivity : LockedActivity() {
                 labelField.hint = getString(R.string.contacts_website_row_label_hint)
                 valueField.hint = getString(R.string.contacts_website_row_value_hint)
                 valueField.inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI
+                valueField.inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI
                 labelField.setText(item.label.orEmpty())
                 valueField.setText(item.value)
                 val emit: () -> Unit = {
@@ -237,9 +232,6 @@ class ContactEditActivity : LockedActivity() {
                 val serviceField = rowView.findViewById<EditText>(R.id.rowImService)
                 val labelField = rowView.findViewById<EditText>(R.id.rowImLabel)
                 val valueField = rowView.findViewById<EditText>(R.id.rowImValue)
-                serviceField.hint = getString(R.string.contacts_im_service_hint)
-                labelField.hint = getString(R.string.contacts_im_label_hint)
-                valueField.hint = getString(R.string.contacts_im_value_hint)
                 serviceField.setText(item.service.orEmpty())
                 labelField.setText(item.label.orEmpty())
                 valueField.setText(item.value)
@@ -271,8 +263,6 @@ class ContactEditActivity : LockedActivity() {
             bind = { rowView, item, onItemChanged ->
                 val labelField = rowView.findViewById<EditText>(R.id.rowEventLabel)
                 val dateField = rowView.findViewById<EditText>(R.id.rowEventDate)
-                labelField.hint = getString(R.string.contacts_event_label_hint)
-                dateField.hint = getString(R.string.contacts_event_date_hint)
                 labelField.setText(item.label.orEmpty())
                 dateField.setText(item.date)
                 // wireDatePicker sets the text before this fires, so the live read below is current.

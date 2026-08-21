@@ -16,14 +16,20 @@
             android:id="@+id/rowEventLabel"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="4dp" />
+            android:layout_marginBottom="4dp"
+            android:hint="@string/contacts_event_label_hint"
+            android:importantForAutofill="no"
+            android:inputType="textCapWords" />
 
         <EditText
             android:id="@+id/rowEventDate"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:focusable="false"
-            android:clickable="true" />
+            android:clickable="true"
+            android:hint="@string/contacts_event_date_hint"
+            android:importantForAutofill="no"
+            android:inputType="date" />
 
     </LinearLayout>
 
@@ -33,7 +39,7 @@
         android:layout_height="40dp"
         android:layout_marginStart="8dp"
         android:gravity="center"
-        android:text="✕"
+        android:text="@string/contacts_field_remove_glyph"
         android:textSize="18sp"
         android:clickable="true"
         android:focusable="true"

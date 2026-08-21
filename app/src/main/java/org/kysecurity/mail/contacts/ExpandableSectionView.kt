@@ -55,7 +55,7 @@ class ExpandableSectionView @JvmOverloads constructor(
 
     fun setItemCount(count: Int) {
         headerCount.visibility = if (count > 0) VISIBLE else GONE
-        headerCount.text = count.toString()
+        headerCount.text = java.text.NumberFormat.getIntegerInstance().format(count)
     }
 
     fun setExpanded(expanded: Boolean) {

@@ -40,7 +40,12 @@ class EmailAdapter(
                 pgpRowMarker(pgpState, signatureState),
                 if (email.hasAttachments) "📎" else null,
             )
-            subjectTextView.text = (markers + email.subject).joinToString(" ")
+            val context = itemView.context
+            subjectTextView.text = if (markers.isEmpty()) {
+                email.subject
+            } else {
+                context.getString(R.string.email_row_subject_marked, markers.joinToString(" "), email.subject)
+            }
             // Emoji markers are announced inconsistently by screen readers; spell the state out.
             subjectTextView.contentDescription = when {
                 signatureState == PgpSignatureState.INVALID ->

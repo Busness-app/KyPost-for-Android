@@ -49,7 +49,13 @@ class InboxActivity : LockedActivity() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private lateinit var mailRepository: MailRepository
     private lateinit var keywordSettings: KeywordSettings
-    private var currentFolder = "INBOX"
+    // Volatile: the IO executor reads it to decide whether its queued refresh is still wanted.
+    @Volatile private var currentFolder = "INBOX"
+
+    /** Null in production. Called from inside the deferred swipe action, on the worker thread and
+     *  at the moment it actually runs, so a test can see the folder that action really used. */
+    @androidx.annotation.VisibleForTesting
+    internal var rowActionObserverForTest: ((String, String) -> Unit)? = null
     private var lastAppliedThemeName: String = ""
     private var pendingScrollPosition: Int = 0
 
@@ -261,6 +267,10 @@ class InboxActivity : LockedActivity() {
         recyclerView.adapter = adapter
     }
 
+    /** The row's own mailbox, not the screen's. An IMAP UID is unique only within one folder, so
+     *  a deferred action that re-reads [currentFolder] can hit the same id in a different one. */
+    private fun Email.sourceFolder(): String = folder.ifBlank { currentFolder }
+
     private fun openEmailDetail(email: Email) {
         val intent = Intent(this, EmailDetailActivity::class.java)
         intent.putExtra("email_id", email.id)
@@ -268,7 +278,7 @@ class InboxActivity : LockedActivity() {
         intent.putExtra("email_sender", email.sender)
         intent.putExtra("email_preview", email.preview)
         intent.putExtra("email_body_mode", email.bodyMode)
-        intent.putExtra("email_folder", currentFolder)
+        intent.putExtra("email_folder", email.sourceFolder())
         intent.putExtra("email_has_attachments", email.hasAttachments)
         intent.putExtra("email_pgp_encrypted", email.pgpEncrypted)
         intent.putExtra("email_pgp_decrypt_error", email.pgpDecryptError)
@@ -348,45 +358,57 @@ class InboxActivity : LockedActivity() {
             loadingStatus.text = status
             cancelLoading.visibility = if (pendingMessageId != null) View.VISIBLE else View.GONE
         }
+        // Snapshotted here: this request belongs to the folder on screen now, and the executor
+        // may not reach it until the user has moved on. See [applyRefreshedEmails].
+        val requestedFolder = currentFolder
         ioExecutor.execute {
             // try/finally: cachedEmails and rememberKeywords both touch Room and can throw.
             try {
-                refreshInboxOnIo(showCacheFirst, forceFullResync)
+                refreshInboxOnIo(requestedFolder, showCacheFirst, forceFullResync)
             } finally {
                 runOnUiThread { swipeRefresh.isRefreshing = false }
             }
         }
     }
 
-    private fun refreshInboxOnIo(showCacheFirst: Boolean, forceFullResync: Boolean) {
+    private fun refreshInboxOnIo(folder: String, showCacheFirst: Boolean, forceFullResync: Boolean) {
+        // Already obsolete before it started: fetching a folder nobody is looking at buys nothing.
+        if (folder != currentFolder) return
         if (showCacheFirst) {
-            val cached = mailRepository.cachedEmails(currentFolder)
+            val cached = mailRepository.cachedEmails(folder)
             if (cached.isNotEmpty()) {
-                runOnUiThread {
-                    allEmails = cached
-                    rebuildTabs(cached)
-                    renderFilteredEmails()
-                    checkPendingMessage(cached, isFinal = false)
-                    if (pendingMessageId == null) {
-                        loadingOverlay.visibility = android.view.View.GONE
-                    }
-                }
+                runOnUiThread { applyRefreshedEmails(folder, cached, isFinal = false, errorMessage = null) }
             }
         }
         val outcome: MailOutcome<MailFetchResult> =
-            mailRepository.refreshFolder(currentFolder, forceFullResync = forceFullResync)
-        val emails = mailRepository.cachedEmails(currentFolder)
+            mailRepository.refreshFolder(folder, forceFullResync = forceFullResync)
+        val emails = mailRepository.cachedEmails(folder)
         val errorMessage = outcome.userFacingMessage()
         keywordSettings.rememberKeywords(emails.flatMap { it.keywords }.toSet())
-        runOnUiThread {
-            loadingOverlay.visibility = android.view.View.GONE
-            allEmails = emails
-            rebuildTabs(emails)
-            renderFilteredEmails()
-            checkPendingMessage(emails, isFinal = true)
-            if (errorMessage != null) {
-                Toast.makeText(this, errorMessage, Toast.LENGTH_LONG).show()
-            }
+        runOnUiThread { applyRefreshedEmails(folder, emails, isFinal = true, errorMessage = errorMessage) }
+    }
+
+    /** Paints only if [folder] is still the folder on screen. The IO executor is FIFO, but a
+     *  refresh queued before a folder switch still *completes* after it, and rendering its rows
+     *  would put one mailbox's mail under another's title — and under its swipe actions. */
+    @androidx.annotation.VisibleForTesting
+    internal fun applyRefreshedEmails(
+        folder: String,
+        emails: List<Email>,
+        isFinal: Boolean,
+        errorMessage: String?,
+    ) {
+        if (folder != currentFolder) return
+        allEmails = emails
+        rebuildTabs(emails)
+        renderFilteredEmails()
+        checkPendingMessage(emails, isFinal = isFinal)
+        // A cache-first pass leaves the overlay up while a deep link is still hunting its message.
+        if (isFinal || pendingMessageId == null) {
+            loadingOverlay.visibility = View.GONE
+        }
+        if (errorMessage != null) {
+            Toast.makeText(this, errorMessage, Toast.LENGTH_LONG).show()
         }
     }
 
@@ -606,29 +628,36 @@ class InboxActivity : LockedActivity() {
                 val position = viewHolder.bindingAdapterPosition
                 if (position < 0 || position >= adapter.itemCount) return
                 val email = adapter.getEmailAt(position)
-                // Remove the row immediately and let the IMAP call finish on its own; waiting for
-                // the network round trip before updating the list is what made swipes feel slow.
                 when (direction) {
-                    ItemTouchHelper.LEFT -> {
-                        allEmails = allEmails.filter { it.id != email.id }
-                        renderFilteredEmails()
-                        MailBackgroundExecutor.submitReporting(
-                            this@InboxActivity,
-                            getString(R.string.action_archive),
-                        ) { mailRepository.archive(email.id, currentFolder) }
-                    }
-                    ItemTouchHelper.RIGHT -> {
-                        allEmails = allEmails.filter { it.id != email.id }
-                        renderFilteredEmails()
-                        MailBackgroundExecutor.submitReporting(
-                            this@InboxActivity,
-                            getString(R.string.action_delete),
-                        ) { mailRepository.delete(email.id, currentFolder) }
-                    }
+                    ItemTouchHelper.LEFT ->
+                        submitRowAction(email, getString(R.string.action_archive), mailRepository::archive)
+                    ItemTouchHelper.RIGHT ->
+                        submitRowAction(email, getString(R.string.action_delete), mailRepository::delete)
                 }
             }
         })
         itemTouchHelper.attachToRecyclerView(recyclerView)
+    }
+
+    /** Drops the row now and lets the IMAP call finish on its own: waiting for the network round
+     *  trip before updating the list is what made swipes feel slow.
+     *
+     *  [sourceFolder] is read HERE rather than inside the closure. The worker runs after the swipe
+     *  returns, and by then the screen — and [currentFolder] with it — may be showing a different
+     *  mailbox, in which the same IMAP UID names a different message. */
+    private fun submitRowAction(
+        email: Email,
+        label: String,
+        mutate: (id: String, folder: String) -> MailOutcome<Unit>,
+    ) {
+        val sourceFolder = email.sourceFolder()
+        allEmails = allEmails.filter { it.id != email.id }
+        renderFilteredEmails()
+        MailBackgroundExecutor.submitReporting(this, label) {
+            rowActionObserverForTest?.invoke(email.id, sourceFolder)
+            // [mutate] takes the folder as an argument: it has no way to reach for currentFolder.
+            mutate(email.id, sourceFolder)
+        }
     }
 
     @androidx.annotation.VisibleForTesting
@@ -642,6 +671,22 @@ class InboxActivity : LockedActivity() {
 
     @androidx.annotation.VisibleForTesting
     internal fun currentFolderForTest(): String = currentFolder
+
+    @androidx.annotation.VisibleForTesting
+    internal fun allEmailsForTest(): List<Email> = allEmails
+
+    /** Seeds the list the way a refresh would. */
+    @androidx.annotation.VisibleForTesting
+    internal fun setEmailsForTest(emails: List<Email>) {
+        allEmails = emails
+        renderFilteredEmails()
+    }
+
+    /** The whole of what a right-swipe does. `onSwiped` above only resolves the row and picks a
+     *  direction; everything that can own the wrong mailbox lives in [submitRowAction]. */
+    @androidx.annotation.VisibleForTesting
+    internal fun submitDeleteForTest(email: Email) =
+        submitRowAction(email, getString(R.string.action_delete), mailRepository::delete)
 
     @androidx.annotation.VisibleForTesting
     internal fun selectedTabForTest(): String = selectedTab

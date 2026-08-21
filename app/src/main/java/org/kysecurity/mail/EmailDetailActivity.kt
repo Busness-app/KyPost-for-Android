@@ -159,7 +159,7 @@ class EmailDetailActivity : LockedActivity() {
         val loading = findViewById<ProgressBar>(R.id.emailBodyLoading)
 
         subjectView.text = emailSubject
-        fromView.text = getString(R.string.email_from) + " " + emailSender
+        fromView.text = getString(R.string.email_from, emailSender)
 
         mailRepository = MailRuntime.graph(this).repository
 
@@ -629,7 +629,7 @@ class EmailDetailActivity : LockedActivity() {
                 pgpSignatureState = verdict
                 // Show the mailbox the verdict is ABOUT, not the sender-written header beside it.
                 if (verdict != PgpSignatureState.NONE) {
-                    fromView.text = getString(R.string.email_from) + " " + outcome.resolvedSender
+                    fromView.text = getString(R.string.email_from, outcome.resolvedSender)
                 }
                 val notice = signatureNoticeFor(verdict)
                 if (notice != null) {
@@ -727,7 +727,7 @@ class EmailDetailActivity : LockedActivity() {
         val saveOffered = org.kysecurity.mail.security.attachmentSaveOffered(protectionEnabled)
         infos.forEach { info ->
             val chip = Chip(this).apply {
-                text = "\uD83D\uDC41 ${info.name}"
+                text = getString(R.string.attachment_chip_label, info.name)
                 // A tap views; saving outside the sandbox is a second, confirmed gesture.
                 setOnClickListener {
                     downloadAttachment(emailId, emailFolder, info, org.kysecurity.mail.security.AttachmentAction.VIEW_EPHEMERAL)
