@@ -309,7 +309,22 @@ jobs:
             # MENU to raise the bouncer.
             # Keep the screen on for the whole run: a -no-window AVD lets it fall asleep, and a
             # sleeping screen re-arms the keyguard behind every dismissal below.
+            #
+            # BOTH, because `stayon true` alone did not hold. The poller below dated the re-arm on
+            # leg 36 to ten seconds after the dismissal loop exited and two and a half minutes
+            # BEFORE the suite started -- a window in which nothing touches the device, which is
+            # what a display sleep looks like. `stayon` only keeps the screen on WHILE CHARGING, so
+            # it is a promise about the power source, not about the screen; the timeout is the part
+            # that does not depend on how the AVD reports its battery. 30 minutes against a ~10
+            # minute suite and a 45 minute job timeout.
+            adb shell settings put system screen_off_timeout 1800000
             adb shell svc power stayon true
+
+            # Proved, not assumed -- the same standard the PIN and the dismissal are already held
+            # to, and the absence of it here is why this cost three runs. Diagnostic only: a
+            # reading that cannot be taken must not fail a leg over a field name.
+            adb shell dumpsys power > /tmp/pwr.txt 2>/dev/null || true
+            grep -oE "mWakefulness=[a-zA-Z]+|mStayOnWhilePluggedInSetting=[0-9]+|mScreenOffTimeoutSetting=[0-9]+" /tmp/pwr.txt | head -5 || true
             adb shell input keyevent 224
             adb shell wm dismiss-keyguard
 
@@ -341,10 +356,53 @@ jobs:
             # Clear the buffer so the dump below is this run's work, not the emulator's boot.
             adb logcat -c || true
 
+            # WATCH THE KEYGUARD, AND PUT IT BACK DOWN. Everything above happens once, before the
+            # suite; the poller dated the re-arm on leg 36 to ten seconds after the dismissal loop
+            # exited and two and a half minutes BEFORE the first test ran, and it stayed up for the
+            # remaining eight minutes. Eight UI tests died behind it while ~120 store and crypto
+            # tests passed, because those never need a resumed Activity -- which is why this read as
+            # "degraded partway through the run" and is not that at all.
+            #
+            # The repair is deliberately mechanism-independent. Whether the display slept, whether
+            # `stayon` failed to hold because the AVD does not report itself charging, or whether
+            # something re-showed the keyguard on its own, the answer is the same: dismiss it again.
+            # A cause is still worth having, which is what the trace is for -- but the run should
+            # not have to wait for one.
+            #
+            # Input is injected ONLY when mKeyguardShowing=true. In that state every UI test is
+            # already doomed, so a swipe and a PIN cannot cost a test that was going to pass; on the
+            # ordinary run where the keyguard stays down, nothing is typed at all.
+            #
+            # Bounded rather than killed. 220 polls at 10s is ~37 minutes against a 45-minute job
+            # timeout, so it retires on its own and there is no pkill racing the next step for a
+            # process name. Output goes to a file, never the step's stdout, so nothing holds the
+            # pipe open behind the runner.
+            printf '%s\n' '#!/bin/sh' 'for i in $(seq 1 220); do' '  k=$(adb shell dumpsys activity activities 2>/dev/null | grep -o "mKeyguardShowing=[a-zA-Z]*" | head -1)' '  w=$(adb shell dumpsys power 2>/dev/null | grep -o "mWakefulness=[a-zA-Z][a-zA-Z]*" | head -1)' '  printf "%s %s %s\n" "$(date -u +%H:%M:%S)" "$k" "$w"' '  case "$k" in *=true) printf "%s REPAIRING: keyguard is up, dismissing again\n" "$(date -u +%H:%M:%S)"; adb shell input keyevent 224 >/dev/null 2>&1; adb shell wm dismiss-keyguard >/dev/null 2>&1; adb shell input swipe 540 1600 540 400 >/dev/null 2>&1; adb shell input text 1234 >/dev/null 2>&1; adb shell input keyevent 66 >/dev/null 2>&1 ;; esac' '  sleep 10' 'done' > /tmp/kgwatch.sh
+            chmod +x /tmp/kgwatch.sh
+            nohup /tmp/kgwatch.sh > /tmp/keyguard-watch.txt 2>&1 &
+
             # `|| echo` rather than letting gradle fail the line: each line here is its own sh -c,
             # so a bare non-zero exit ends the script and the dump never runs. The marker file
             # re-raises the failure at the end, so nothing is silenced.
             ./gradlew connectedDebugAndroidTest || echo failed > /tmp/testfail.txt
+
+            # READ THE KEYGUARD AGAIN. Everything above proves it was down when the suite STARTED
+            # and never looks again, so a re-arm partway through arrives as a pile of app-looking
+            # lifecycle failures -- "Activity never becomes requested state [RESUMED]", the same
+            # string this leg was `continue-on-error` for. That is how the run after #70 read: eight
+            # red UI tests on a tree whose only change was to encrypted-prefs recovery, green on a
+            # rerun of the identical commit. The mechanism is still unproven, and this does not fix
+            # it; it names it, so the next occurrence costs a glance instead of a rerun.
+            #
+            # Diagnostic only. It never fails the job on its own -- the marker file below already
+            # does that -- so an API level that names the field differently cannot fail a leg here.
+            adb shell dumpsys activity activities > /tmp/acts-after.txt 2>/dev/null || true
+            echo "===== keyguard and wakefulness through the run (transitions and repairs; blank field = adb did not answer) ====="
+            awk '{ s = $2 " " $3; if (s != prev || /REPAIRING/) { print; prev = s } }' /tmp/keyguard-watch.txt 2>/dev/null || true
+            echo "===== last five polls ====="
+            tail -5 /tmp/keyguard-watch.txt 2>/dev/null || true
+            if grep -q "mKeyguardShowing=true" /tmp/acts-after.txt; then echo "THE KEYGUARD CAME BACK UP DURING THE RUN: it was verified down before the suite started. No Activity can reach RESUMED behind it, so any lifecycle failure above is this and not the app." >&2; fi
+            if ! grep -q "mKeyguardShowing=true" /tmp/acts-after.txt; then echo "keyguard still down after the suite; lifecycle failures above are not the keyguard."; fi
 
             adb logcat -d > /tmp/logcat.txt 2>/dev/null || true
             echo "===== crashes and ANRs ====="
