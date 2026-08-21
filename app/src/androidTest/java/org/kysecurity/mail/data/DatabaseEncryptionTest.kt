@@ -123,7 +123,7 @@ class DatabaseEncryptionTest {
             db.emailDao().upsertAll(listOf(sampleEmail("e1", "hello")))
         }
         openEncrypted().useDb { db ->
-            assertEquals("hello", db.emailDao().getById("e1")?.body)
+            assertEquals("hello", db.emailDao().getById("e1", "INBOX")?.body)
         }
     }
 
@@ -143,8 +143,8 @@ class DatabaseEncryptionTest {
         assertFalse("the file must no longer be plaintext", startsWithSqliteHeader(dbFile()))
         openEncrypted().useDb { db ->
             assertEquals(versionBefore, db.openHelper.readableDatabase.version)
-            assertEquals("first body", db.emailDao().getById("e1")?.body)
-            assertEquals("second body", db.emailDao().getById("e2")?.body)
+            assertEquals("first body", db.emailDao().getById("e1", "INBOX")?.body)
+            assertEquals("second body", db.emailDao().getById("e2", "INBOX")?.body)
         }
     }
 
@@ -155,7 +155,7 @@ class DatabaseEncryptionTest {
 
         assertTrue(DatabaseMigration.encryptIfNeeded(context, dbName, passphrase))
 
-        openEncrypted().useDb { db -> assertEquals("body", db.emailDao().getById("e1")?.body) }
+        openEncrypted().useDb { db -> assertEquals("body", db.emailDao().getById("e1", "INBOX")?.body) }
     }
 
     @Test
@@ -185,7 +185,7 @@ class DatabaseEncryptionTest {
         assertFalse("with no orphan left behind", temp.exists())
         openEncrypted().useDb { db ->
             assertEquals(versionBefore, db.openHelper.readableDatabase.version)
-            assertEquals("unsent contact edit", db.emailDao().getById("e1")?.body)
+            assertEquals("unsent contact edit", db.emailDao().getById("e1", "INBOX")?.body)
         }
     }
 

@@ -20,6 +20,8 @@ class MailGraph(context: Context) {
     val repository = MailRepository(
         emailDao = DataRuntime.graph(appContext).database.emailDao(),
         relaySource = relaySource,
+        // The source reads the checkpoint to build `since`; only the repository advances it.
+        cursorProvider = mailCursorStore,
     )
 }
 

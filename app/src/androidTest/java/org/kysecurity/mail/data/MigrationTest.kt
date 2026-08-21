@@ -184,6 +184,41 @@ class MigrationTest {
         }
     }
 
+    @Test
+    fun migrate11To12_reKeysEmailsOnFolderAndMessageId_keepingCachedRows() {
+        helper.createDatabase(TEST_DB, 11).apply {
+            // Same UID in two mailboxes is exactly what the old single-column key could not hold —
+            // under v11 only one of these could exist at a time.
+            execSQL(insertV11Email(messageId = "42", folder = "INBOX", subject = "The inbox one"))
+            close()
+        }
+
+        val migrated = helper.runMigrationsAndValidate(TEST_DB, 12, true, AppDatabase.MIGRATION_11_12)
+
+        migrated.query("SELECT subject FROM emails WHERE folder = 'INBOX' AND messageId = '42'").use { cursor ->
+            assertEquals("the cached row survives the rebuild", 1, cursor.count)
+            assertEquals(true, cursor.moveToFirst())
+            assertEquals("The inbox one", cursor.getString(cursor.getColumnIndexOrThrow("subject")))
+        }
+
+        // The point of the migration: the same id in another folder is now a separate row.
+        migrated.execSQL(insertV11Email(messageId = "42", folder = "Archive", subject = "The archived one"))
+        migrated.query("SELECT folder, subject FROM emails WHERE messageId = '42' ORDER BY folder").use { cursor ->
+            assertEquals(2, cursor.count)
+            assertEquals(true, cursor.moveToFirst())
+            assertEquals("Archive", cursor.getString(cursor.getColumnIndexOrThrow("folder")))
+            assertEquals("The archived one", cursor.getString(cursor.getColumnIndexOrThrow("subject")))
+        }
+    }
+
+    private fun insertV11Email(messageId: String, folder: String, subject: String) =
+        "INSERT INTO emails " +
+            "(messageId, folder, sender, sentTo, cc, bcc, subject, preview, bodyMode, label, " +
+            "keywordsJson, status, hasAttachments, sourceMode, pgpEncrypted, pgpSigned, " +
+            "pgpVerified, pgpSignerFingerprint, pgpDecryptError) " +
+            "VALUES ('$messageId', '$folder', 'a@example.com', '', '', '', '$subject', '', '', '', " +
+            "'[]', 'unread', 0, 'relay', 0, 0, 0, '', '')"
+
     private companion object {
         const val TEST_DB = "migration-test"
     }

@@ -1,11 +1,20 @@
 package org.kysecurity.mail.data
 
 import androidx.room.Entity
-import androidx.room.PrimaryKey
 
-@Entity(tableName = "emails")
+/** Keyed by folder **and** [messageId]: the relay's id is an IMAP UID, unique only within one
+ *  mailbox, so INBOX and Archive can both hold `42`. A single-column key let a refresh of either
+ *  folder overwrite or relocate the other's row.
+ *
+ *  ponytail: still not UIDVALIDITY-aware — the relay does not expose it, and a client cannot
+ *  invent it. A UIDVALIDITY reset therefore leaves rows keyed to ids the server has reused; the
+ *  daily full resync (`MailFetchResult.isFullWindow`) rewrites the window and prunes the rest,
+ *  so the damage self-heals within a day. Upgrade path: have the relay return UIDVALIDITY (or a
+ *  stable opaque id) and add it to this key.
+ */
+@Entity(tableName = "emails", primaryKeys = ["folder", "messageId"])
 data class EmailEntity(
-    @PrimaryKey val messageId: String,
+    val messageId: String,
     val folder: String,
     val sender: String,
     val sentTo: String = "",

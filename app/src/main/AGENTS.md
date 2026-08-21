@@ -37,6 +37,32 @@ Owns production Android app code and resources.
   `mail/MailRepository` writes results into the Room cache (`data/AppDatabase`,
   `EmailDao.replaceFolderSnapshot`) and is what `InboxActivity`/`EmailDetailActivity`/
   `ComposeActivity` call.
+- **`MailRepository` is the one synchronization boundary: the source returns facts, the repository
+  decides when they become durable.** Two rules follow from that, and both were once broken.
+  1. `RelayMailSource.fetchInbox` READS the cursor (to build `since`) and returns the next one as
+     `MailFetchResult.checkpoint`; it must never write it. `MailRepository.refreshFolder`
+     reconciles into Room FIRST and commits the checkpoint SECOND. Room and DataStore cannot share
+     a transaction, so the ordering is the guarantee: a crash in between replays the window (upserts
+     and deletes are idempotent), whereas advancing first made the relay skip that mail until the
+     daily since=0 self-heal — a day of silently missing messages. The delta itself lands through
+     `EmailDao.applyFolderDelta`, one transaction, so it cannot half-apply.
+  2. HTTP 200 from `/api/inbox/actions` is transport success, not operation success: the relay
+     answers 200 with per-id `failed[]` (Mobile_Mail_Relay.md Part 2). `MailOutcome<MailActionOutcome>
+     .appliedTo(id)` is the only gate on touching the local row — archive/spam/delete/move drop the
+     cached row and `markRead` sets `status`, both **after** the relay confirms that id, never
+     before. A rejection becomes `MailOutcome.ActionRejected`, not `UpstreamFailure`: the request
+     did reach the server, and "Couldn't reach the mail server" sends the user to check a
+     connection that is fine. `processed` is a count rather than a list, so `processed < 1` with an
+     empty `failed[]` is also treated as rejected — an unconfirmed operation must not delete a
+     locally visible row. `markRead` is deliberately not optimistic: it already runs on `MailBackgroundExecutor`
+     and reports nothing, so a pre-emptive local write bought no responsiveness and left the row
+     lying about a state the server never reached.
+- **`emails` is keyed on (folder, messageId), not messageId.** The relay's id is an IMAP UID,
+  unique only within one mailbox, so INBOX and Archive can both hold `42`; under the old
+  single-column key a refresh of either folder overwrote or relocated the other's row, and a
+  removal in one folder deleted the other. Every per-message DAO statement takes the folder.
+  Still not UIDVALIDITY-aware — the relay does not expose it and a client cannot invent one; the
+  daily full resync rewrites the window, so id reuse self-heals within a day. See `EmailEntity`.
 - PGP state on relay inbox rows: `pgpEncrypted`, `pgpSigned`, `pgpVerified`, `pgpSignerFingerprint`,
   `pgpDecryptError`. All are `omitempty` server-side, so the Kotlin defaults (false/"") are the
   contract for a message with no OpenPGP content, not an unknown state. `pgp.PgpMessageState` is the
@@ -259,7 +285,15 @@ Owns production Android app code and resources.
   instrumentation tests in `app/src/androidTest/` using `Room.inMemoryDatabaseBuilder` (no
   Robolectric dependency in this project — don't add one for this).
 - The email `bodyMode` column is additive and requires `MIGRATION_10_11` plus a migration test when
-  the schema contract changes again.
+  the schema contract changes again. `MIGRATION_11_12` re-keys `emails` on (folder, messageId);
+  SQLite cannot alter a primary key, so it rebuilds the table and copies rows rather than dropping
+  the cache. `EmailDaoFolderScopeTest` is the authority on that key against real SQL — the JVM fake
+  in `MailRepositoryTest` mirrors it, and a fake keyed on the id alone reproduces the very bug the
+  key exists to prevent.
+- The mail failure contract has JVM regression tests in `MailRepositoryTest`: a failed reconcile
+  must leave the cursor where it was, an action returned in `failed[]` must not mutate Room, and
+  `markRead` must not mark a row read the server rejected. Adding a mail sync or action path
+  without one of these is how the contract rots back.
 - Add or update unit tests for contact-sync reconciliation/delta-merge logic and relay response
   mapping (HTTP status → `MailOutcome`/`ContactSyncOutcome`, and the `to`/`cc`/`bcc`
   comma-string-not-array request shape) under `app/src/test/`.

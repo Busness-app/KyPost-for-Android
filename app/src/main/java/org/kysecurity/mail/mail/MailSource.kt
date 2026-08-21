@@ -34,6 +34,11 @@ sealed class MailOutcome<out T> {
         val message: String,
     ) : MailOutcome<Nothing>()
 
+    /** The relay accepted the request and answered 200, but named this message in `failed[]` (or
+     *  processed nothing at all) — the mailbox is read-only, the UID is gone, IMAP refused. The
+     *  request reached the server, so this must never be worded as a connectivity problem. */
+    data class ActionRejected(val messageId: String, val message: String) : MailOutcome<Nothing>()
+
     /** Relay 429 with Retry-After — the server's per-device lockout after repeated bad
      *  credentials. [retryAfterSeconds] is null when the header was absent or unparseable;
      *  callers should still back off rather than retrying immediately. */
@@ -53,6 +58,9 @@ fun MailOutcome<*>.userFacingMessage(): String? = when (this) {
     is MailOutcome.ClientSideNeeded -> "This account's PGP key is end-to-end protected, so signing and encryption aren't available on mobile. Send without them, or use webmail."
     is MailOutcome.PickupFallbackNeeded ->
         "No PGP key on file for ${keylessRecipients.joinToString(", ")} — nothing was sent."
+    // The relay's own words for why this one message could not be actioned; the caller already
+    // prefixes the action ("Archive failed: ...").
+    is MailOutcome.ActionRejected -> message
     is MailOutcome.RateLimited -> retryAfterSeconds
         ?.let { "Too many failed attempts — try again in ${formatRetryAfter(it)}" }
         ?: "Too many failed attempts — try again later"
@@ -64,6 +72,19 @@ internal fun formatRetryAfter(seconds: Long): String = when {
     else -> "${seconds / 60} minutes"
 }
 
+/** Where the next fetch should resume from, carried back as a *fact* rather than written by the
+ *  fetch itself. [MailRepository] commits it only after the messages it describes are durable in
+ *  Room — advancing it first meant a failed reconcile made the relay skip that mail forever
+ *  (until the daily self-heal). [subscriberId] is the one the fetch actually authenticated as, so
+ *  a re-pair mid-fetch cannot scope the cursor to the wrong account. */
+data class MailCheckpoint(
+    val subscriberId: String,
+    /** Blank when the relay sent no cursor — nothing to advance. */
+    val cursor: String,
+    /** True when this fetch asked for since=0, so the daily full-resync stamp is due. */
+    val wasFullResync: Boolean,
+)
+
 data class MailFetchResult(
     val tabs: List<String>,
     val messages: List<Email>,
@@ -74,6 +95,8 @@ data class MailFetchResult(
     val removedMessageIds: List<String> = emptyList(),
     // True when we sent since=0. Older relays label such a response `delta: true`, so trust this.
     val isFullWindow: Boolean = false,
+    /** Null only for sources that have no cursor to keep (tests, non-relay sources). */
+    val checkpoint: MailCheckpoint? = null,
 )
 data class FolderInfo(val path: String, val deletable: Boolean)
 data class FolderListResult(val parent: String, val folders: List<FolderInfo>)
