@@ -9,28 +9,41 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** In-memory fake implementing the (Room-generated-at-build-time) [EmailDao] interface directly,
- *  matching this repo's hand-rolled-fake test style rather than a mocking framework or Robolectric. */
+ *  matching this repo's hand-rolled-fake test style rather than a mocking framework or Robolectric.
+ *
+ *  Keyed by (folder, messageId), exactly like the real table: a fake keyed on the id alone quietly
+ *  reproduces the folder-collision bug it is supposed to catch. `EmailDaoFolderScopeTest` is the
+ *  authority on the SQL itself. */
 private class FakeEmailDao : EmailDao {
-    val rows = linkedMapOf<String, EmailEntity>()
+    val rows = linkedMapOf<Pair<String, String>, EmailEntity>()
+
+    /** Throws on the next write, to stand in for "Room failed / storage filled / process died". */
+    var failNextWrite = false
+
+    private fun key(id: String, folder: String) = folder to id
 
     override fun getByFolder(folder: String): List<EmailEntity> = rows.values.filter { it.folder == folder }
-    override fun upsertAll(emails: List<EmailEntity>) { emails.forEach { rows[it.messageId] = it } }
-    override fun updateStatus(id: String, status: String) { rows[id]?.let { rows[id] = it.copy(status = status) } }
-    override fun updateFolder(id: String, folder: String) { rows[id]?.let { rows[id] = it.copy(folder = folder) } }
-    override fun deleteById(id: String) { rows.remove(id) }
+    override fun upsertAll(emails: List<EmailEntity>) {
+        if (failNextWrite) throw IllegalStateException("simulated Room failure")
+        emails.forEach { rows[key(it.messageId, it.folder)] = it }
+    }
+    override fun updateStatus(id: String, folder: String, status: String) {
+        rows[key(id, folder)]?.let { rows[key(id, folder)] = it.copy(status = status) }
+    }
+    override fun deleteById(id: String, folder: String) { rows.remove(key(id, folder)) }
     override fun clearAll() { rows.clear() }
-    override fun getBody(id: String): String? = rows[id]?.body
-    override fun getById(id: String): EmailEntity? = rows[id]
+    override fun getById(id: String, folder: String): EmailEntity? = rows[key(id, folder)]
     override fun pruneStaleInFolder(folder: String, keepIds: List<String>) {
         val keep = keepIds.toSet()
-        rows.values.filter { it.folder == folder && it.messageId !in keep }.forEach { rows.remove(it.messageId) }
+        rows.values.filter { it.folder == folder && it.messageId !in keep }
+            .forEach { rows.remove(key(it.messageId, it.folder)) }
     }
 
     /** Mirrors the real query's predicate. The authority on the SQL itself is
      *  `EmailDaoClearDecryptedTest`, which runs it against a real Room database. */
     override fun clearServerDecryptedBodies(): Int {
         val hits = rows.values.filter { it.pgpEncrypted && !it.body.isNullOrEmpty() }
-        hits.forEach { rows[it.messageId] = it.copy(body = "", preview = "") }
+        hits.forEach { rows[key(it.messageId, it.folder)] = it.copy(body = "", preview = "") }
         return hits.size
     }
 }
@@ -45,24 +58,95 @@ private fun email(id: String, body: String? = "body-$id", status: String = "unre
     sourceMode = "relay",
 )
 
+private fun row(id: String, folder: String, body: String? = null, status: String = "unread") = EmailEntity(
+    messageId = id,
+    folder = folder,
+    sender = "x",
+    subject = "subject-$folder-$id",
+    body = body,
+    status = status,
+    sourceMode = "relay",
+)
+
+private fun FakeEmailDao.put(entity: EmailEntity) {
+    rows[entity.folder to entity.messageId] = entity
+}
+
+/** Records what was asked for and answers with whatever the test set up. Unused endpoints throw
+ *  rather than returning a plausible-looking success. */
+private class FakeMailSource(
+    var fetchOutcome: MailOutcome<MailFetchResult> = MailOutcome.UpstreamFailure("not stubbed"),
+    var actionOutcome: MailOutcome<MailActionOutcome> = MailOutcome.Success(MailActionOutcome(1, emptyList())),
+) : MailSource {
+    val actions = mutableListOf<Triple<MailAction, List<String>, String>>()
+
+    override fun fetchInbox(mailbox: String, limit: Int, forceFullResync: Boolean) = fetchOutcome
+
+    override fun performAction(
+        action: MailAction,
+        messageIds: List<String>,
+        mailbox: String,
+        targetMailbox: String?,
+    ): MailOutcome<MailActionOutcome> {
+        actions += Triple(action, messageIds, mailbox)
+        return actionOutcome
+    }
+
+    override fun listFolders(parent: String?) = unsupported()
+    override fun createFolder(parent: String, name: String) = unsupported()
+    override fun renameFolder(folder: String, name: String) = unsupported()
+    override fun deleteFolder(folder: String) = unsupported()
+    override fun saveDraft(draft: MailDraft) = unsupported()
+    override fun sendMail(draft: MailDraft) = unsupported()
+    override fun sendClientEncrypted(message: ClientEncryptedMessage) = unsupported()
+    override fun fetchMessageBody(messageId: String, folder: String) = unsupported()
+    override fun listAttachments(messageId: String, folder: String) = unsupported()
+    override fun downloadAttachment(messageId: String, folder: String, index: Int) = unsupported()
+
+    private fun unsupported(): Nothing = throw UnsupportedOperationException("not used by these tests")
+}
+
+private class FakeCursorProvider : MailCursorProvider {
+    val saved = mutableListOf<Triple<String, String, String>>()
+    val fullResyncs = mutableListOf<Pair<String, String>>()
+
+    override fun cursor(subscriberId: String, folder: String): String? =
+        saved.lastOrNull { it.first == subscriberId && it.second == folder }?.third
+
+    override fun saveCursor(subscriberId: String, folder: String, cursor: String) {
+        saved += Triple(subscriberId, folder, cursor)
+    }
+
+    override fun shouldForceFullResync(subscriberId: String, folder: String) = false
+
+    override fun recordFullResync(subscriberId: String, folder: String) {
+        fullResyncs += subscriberId to folder
+    }
+}
+
+private fun repository(
+    dao: EmailDao,
+    source: MailSource,
+    cursors: MailCursorProvider = FakeCursorProvider(),
+) = MailRepository(emailDao = dao, relaySource = source, cursorProvider = cursors)
+
 class MailRepositoryTest {
 
     @Test
     fun nonDeltaResult_replacesFolderSnapshotWholesale() {
         val dao = FakeEmailDao()
-        dao.rows["stale"] = EmailEntity(messageId = "stale", folder = "INBOX", sender = "x", subject = "x", sourceMode = "relay")
+        dao.put(row("stale", "INBOX"))
 
         val result = MailFetchResult(tabs = listOf("Work"), messages = listOf(email("m1")), isDelta = false)
         reconcileFetchResult(dao, "INBOX", "relay", result)
 
-        assertEquals(setOf("m1"), dao.rows.keys)
+        assertEquals(setOf("INBOX" to "m1"), dao.rows.keys)
     }
 
     @Test
     fun fullWindowDeltaResult_prunesIdsAbsentFromTheResponse() {
         val dao = FakeEmailDao()
-        dao.rows["deleted-on-web"] =
-            EmailEntity(messageId = "deleted-on-web", folder = "INBOX", sender = "x", subject = "x", sourceMode = "relay")
+        dao.put(row("deleted-on-web", "INBOX"))
 
         val result = MailFetchResult(
             tabs = emptyList(),
@@ -73,18 +157,14 @@ class MailRepositoryTest {
         )
         reconcileFetchResult(dao, "INBOX", "relay", result)
 
-        assertEquals(setOf("m1"), dao.rows.keys)
+        assertEquals(setOf("INBOX" to "m1"), dao.rows.keys)
     }
 
     @Test
     fun fullWindowDeltaResult_prunesButPreservesCachedBodyOfUpdatedEntries() {
         val dao = FakeEmailDao()
-        dao.rows["m1"] = EmailEntity(
-            messageId = "m1", folder = "INBOX", sender = "x", subject = "old",
-            body = "cached-body", preview = "cached-preview", sourceMode = "relay",
-        )
-        dao.rows["gone"] =
-            EmailEntity(messageId = "gone", folder = "INBOX", sender = "x", subject = "x", sourceMode = "relay")
+        dao.put(row("m1", "INBOX", body = "cached-body").copy(preview = "cached-preview"))
+        dao.put(row("gone", "INBOX"))
 
         val result = MailFetchResult(
             tabs = emptyList(),
@@ -95,21 +175,20 @@ class MailRepositoryTest {
         )
         reconcileFetchResult(dao, "INBOX", "relay", result)
 
-        assertEquals(setOf("m1"), dao.rows.keys)
-        assertEquals("cached-body", dao.rows["m1"]?.body)
-        assertEquals("cached-preview", dao.rows["m1"]?.preview)
+        assertEquals(setOf("INBOX" to "m1"), dao.rows.keys)
+        assertEquals("cached-body", dao.getById("m1", "INBOX")?.body)
+        assertEquals("cached-preview", dao.getById("m1", "INBOX")?.preview)
     }
 
     @Test
     fun partialDeltaResult_doesNotPruneUnmentionedRows() {
         val dao = FakeEmailDao()
-        dao.rows["untouched"] =
-            EmailEntity(messageId = "untouched", folder = "INBOX", sender = "x", subject = "x", sourceMode = "relay")
+        dao.put(row("untouched", "INBOX"))
 
         val result = MailFetchResult(tabs = emptyList(), messages = listOf(email("m1")), isDelta = true)
         reconcileFetchResult(dao, "INBOX", "relay", result)
 
-        assertEquals(setOf("untouched", "m1"), dao.rows.keys)
+        assertEquals(setOf("INBOX" to "untouched", "INBOX" to "m1"), dao.rows.keys)
     }
 
     @Test
@@ -124,16 +203,13 @@ class MailRepositoryTest {
         )
         reconcileFetchResult(dao, "INBOX", "relay", result)
 
-        assertEquals("hello", dao.rows["m1"]?.body)
+        assertEquals("hello", dao.getById("m1", "INBOX")?.body)
     }
 
     @Test
     fun deltaResult_mergesUpdatedEntry_preservingCachedBodyAndPreview() {
         val dao = FakeEmailDao()
-        dao.rows["m2"] = EmailEntity(
-            messageId = "m2", folder = "INBOX", sender = "old@example.com", subject = "Old subject",
-            preview = "cached preview", body = "cached full body", status = "unread", sourceMode = "relay",
-        )
+        dao.put(row("m2", "INBOX", body = "cached full body").copy(preview = "cached preview"))
 
         // An "updated" entry never carries a body (Mobile_Mail_Relay.md Part 5) — only status changed.
         val result = MailFetchResult(
@@ -144,7 +220,7 @@ class MailRepositoryTest {
         )
         reconcileFetchResult(dao, "INBOX", "relay", result)
 
-        val merged = dao.rows.getValue("m2")
+        val merged = dao.getById("m2", "INBOX")!!
         assertEquals("cached full body", merged.body)
         assertEquals("cached preview", merged.preview)
         assertEquals("read", merged.status)
@@ -162,38 +238,13 @@ class MailRepositoryTest {
         )
         reconcileFetchResult(dao, "INBOX", "relay", result)
 
-        assertNull(dao.rows["m2"])
-    }
-
-    @Test
-    fun deltaResult_updatedEntryWithLocalCache_mergesPreservingBody() {
-        val dao = FakeEmailDao()
-        dao.rows["m2"] = EmailEntity(
-            messageId = "m2",
-            folder = "INBOX",
-            sender = "x",
-            subject = "x",
-            sourceMode = "relay",
-            body = "<p>cached</p>",
-            status = "unread",
-        )
-
-        val result = MailFetchResult(
-            tabs = listOf("Work"),
-            messages = listOf(email("m2", body = null, status = "read")),
-            isDelta = true,
-            updatedMessageIds = setOf("m2"),
-        )
-        reconcileFetchResult(dao, "INBOX", "relay", result)
-
-        assertEquals("<p>cached</p>", dao.rows.getValue("m2").body)
-        assertEquals("read", dao.rows.getValue("m2").status)
+        assertNull(dao.getById("m2", "INBOX"))
     }
 
     @Test
     fun deltaResult_deletesRemovedIds() {
         val dao = FakeEmailDao()
-        dao.rows["m3"] = EmailEntity(messageId = "m3", folder = "INBOX", sender = "x", subject = "x", sourceMode = "relay")
+        dao.put(row("m3", "INBOX"))
 
         val result = MailFetchResult(tabs = emptyList(), messages = emptyList(), isDelta = true, removedMessageIds = listOf("m3"))
         reconcileFetchResult(dao, "INBOX", "relay", result)
@@ -204,11 +255,8 @@ class MailRepositoryTest {
     @Test
     fun deltaResult_mixOfNewUpdatedAndRemoved_allApplyTogether() {
         val dao = FakeEmailDao()
-        dao.rows["m2"] = EmailEntity(
-            messageId = "m2", folder = "INBOX", sender = "x", subject = "x",
-            body = "cached body", preview = "cached preview", sourceMode = "relay",
-        )
-        dao.rows["m3"] = EmailEntity(messageId = "m3", folder = "INBOX", sender = "x", subject = "x", sourceMode = "relay")
+        dao.put(row("m2", "INBOX", body = "cached body").copy(preview = "cached preview"))
+        dao.put(row("m3", "INBOX"))
 
         val result = MailFetchResult(
             tabs = listOf("Work"),
@@ -219,8 +267,281 @@ class MailRepositoryTest {
         )
         reconcileFetchResult(dao, "INBOX", "relay", result)
 
-        assertEquals(setOf("m1", "m2"), dao.rows.keys)
-        assertEquals("new body", dao.rows.getValue("m1").body)
-        assertEquals("cached body", dao.rows.getValue("m2").body)
+        assertEquals(setOf("INBOX" to "m1", "INBOX" to "m2"), dao.rows.keys)
+        assertEquals("new body", dao.getById("m1", "INBOX")?.body)
+        assertEquals("cached body", dao.getById("m2", "INBOX")?.body)
+    }
+
+    // --- Folder-scoped identity: IMAP UIDs repeat across mailboxes -------------------------------
+
+    @Test
+    fun sameMessageIdInTwoFolders_areIndependentRows() {
+        val dao = FakeEmailDao()
+        dao.put(row("42", "Archive", body = "the archived one"))
+
+        val result = MailFetchResult(tabs = emptyList(), messages = listOf(email("42", body = "the inbox one")), isDelta = false)
+        reconcileFetchResult(dao, "INBOX", "relay", result)
+
+        assertEquals("the archived one", dao.getById("42", "Archive")?.body)
+        assertEquals("the inbox one", dao.getById("42", "INBOX")?.body)
+    }
+
+    @Test
+    fun removalInOneFolder_doesNotDeleteTheSameIdInAnother() {
+        val dao = FakeEmailDao()
+        dao.put(row("42", "INBOX"))
+        dao.put(row("42", "Archive"))
+
+        val result = MailFetchResult(tabs = emptyList(), messages = emptyList(), isDelta = true, removedMessageIds = listOf("42"))
+        reconcileFetchResult(dao, "INBOX", "relay", result)
+
+        assertNull(dao.getById("42", "INBOX"))
+        assertEquals(setOf("Archive" to "42"), dao.rows.keys)
+    }
+
+    @Test
+    fun deleteInOneFolder_doesNotTouchTheSameIdInAnother() {
+        val dao = FakeEmailDao()
+        dao.put(row("42", "INBOX"))
+        dao.put(row("42", "Archive"))
+        val repo = repository(dao, FakeMailSource())
+
+        assertTrue(repo.delete("42", "INBOX") is MailOutcome.Success)
+
+        assertEquals(setOf("Archive" to "42"), dao.rows.keys)
+    }
+
+    @Test
+    fun markReadInOneFolder_doesNotMarkTheSameIdReadInAnother() {
+        val dao = FakeEmailDao()
+        dao.put(row("42", "INBOX"))
+        dao.put(row("42", "Archive"))
+        val repo = repository(dao, FakeMailSource())
+
+        repo.markRead("42", "INBOX")
+
+        assertEquals("read", dao.getById("42", "INBOX")?.status)
+        assertEquals("unread", dao.getById("42", "Archive")?.status)
+    }
+
+    @Test
+    fun cachedBodyIsReadFromTheRequestedFolder_notWhicheverRowSharesTheId() {
+        val dao = FakeEmailDao()
+        dao.put(row("42", "INBOX", body = "inbox body"))
+        dao.put(row("42", "Archive", body = "archive body"))
+        val repo = repository(dao, FakeMailSource())
+
+        val outcome = repo.fetchBody("42", "Archive")
+
+        assertEquals("archive body", (outcome as MailOutcome.Success).value.html)
+    }
+
+    /** The documented mitigation for a UIDVALIDITY reset (see `EmailEntity`): the daily since=0
+     *  window rewrites every id it returns, so reused ids stop pointing at the old message. */
+    @Test
+    fun fullResyncOverwritesRowsWhoseIdsTheServerReused() {
+        val dao = FakeEmailDao()
+        dao.put(row("1", "INBOX", body = "pre-reset message"))
+
+        val result = MailFetchResult(
+            tabs = emptyList(),
+            messages = listOf(email("1", body = "post-reset message")),
+            isDelta = true,
+            isFullWindow = true,
+        )
+        reconcileFetchResult(dao, "INBOX", "relay", result)
+
+        assertEquals("post-reset message", dao.getById("1", "INBOX")?.body)
+    }
+
+    // --- Checkpoint durability -------------------------------------------------------------------
+
+    @Test
+    fun successfulRefresh_advancesTheCursorAndStampsTheFullResync() {
+        val dao = FakeEmailDao()
+        val cursors = FakeCursorProvider()
+        val source = FakeMailSource(
+            fetchOutcome = MailOutcome.Success(
+                MailFetchResult(
+                    tabs = emptyList(),
+                    messages = listOf(email("m1")),
+                    isDelta = true,
+                    isFullWindow = true,
+                    checkpoint = MailCheckpoint(subscriberId = "sub-1", cursor = "c-2", wasFullResync = true),
+                ),
+            ),
+        )
+
+        repository(dao, source, cursors).refreshFolder("INBOX")
+
+        assertEquals(listOf(Triple("sub-1", "INBOX", "c-2")), cursors.saved)
+        assertEquals(listOf("sub-1" to "INBOX"), cursors.fullResyncs)
+        assertEquals("body-m1", dao.getById("m1", "INBOX")?.body)
+    }
+
+    /** The whole point of the ordering: an acknowledged cursor the relay would honour, for mail
+     *  that never reached Room, means the server never sends those messages again. */
+    @Test
+    fun failedReconciliation_leavesTheCursorWhereItWas() {
+        val dao = FakeEmailDao()
+        dao.failNextWrite = true
+        val cursors = FakeCursorProvider()
+        cursors.saveCursor("sub-1", "INBOX", "c-1")
+        cursors.saved.clear()
+        val source = FakeMailSource(
+            fetchOutcome = MailOutcome.Success(
+                MailFetchResult(
+                    tabs = emptyList(),
+                    messages = listOf(email("m1")),
+                    isDelta = true,
+                    isFullWindow = true,
+                    checkpoint = MailCheckpoint(subscriberId = "sub-1", cursor = "c-2", wasFullResync = true),
+                ),
+            ),
+        )
+
+        runCatching { repository(dao, source, cursors).refreshFolder("INBOX") }
+
+        assertTrue("cursor must not advance past mail that never landed", cursors.saved.isEmpty())
+        assertTrue("the resync stamp must not postpone the self-heal either", cursors.fullResyncs.isEmpty())
+    }
+
+    @Test
+    fun failedFetch_doesNotTouchTheCursor() {
+        val cursors = FakeCursorProvider()
+        val source = FakeMailSource(fetchOutcome = MailOutcome.UpstreamFailure("IMAP is down"))
+
+        repository(FakeEmailDao(), source, cursors).refreshFolder("INBOX")
+
+        assertTrue(cursors.saved.isEmpty())
+        assertTrue(cursors.fullResyncs.isEmpty())
+    }
+
+    @Test
+    fun blankCursor_isNotPersistedOverAGoodOne() {
+        val cursors = FakeCursorProvider()
+        val source = FakeMailSource(
+            fetchOutcome = MailOutcome.Success(
+                MailFetchResult(
+                    tabs = emptyList(),
+                    messages = emptyList(),
+                    isDelta = true,
+                    checkpoint = MailCheckpoint(subscriberId = "sub-1", cursor = "", wasFullResync = false),
+                ),
+            ),
+        )
+
+        repository(FakeEmailDao(), source, cursors).refreshFolder("INBOX")
+
+        assertTrue(cursors.saved.isEmpty())
+    }
+
+    // --- processed/failed is the operation's result, HTTP 200 is not -----------------------------
+
+    @Test
+    fun actionRejectedPerMessage_reportsFailureAndKeepsTheLocalRow() {
+        val dao = FakeEmailDao()
+        dao.put(row("42", "INBOX"))
+        val source = FakeMailSource(
+            actionOutcome = MailOutcome.Success(
+                MailActionOutcome(processed = 0, failed = listOf("42" to "mailbox is read-only")),
+            ),
+        )
+
+        val outcome = repository(dao, source).archive("42", "INBOX")
+
+        assertEquals("mailbox is read-only", (outcome as MailOutcome.ActionRejected).message)
+        assertEquals("42", outcome.messageId)
+        // Worded as the server's refusal, never as "couldn't reach the mail server" — the request
+        // got there, and telling the user otherwise sends them to check their connection.
+        assertEquals("mailbox is read-only", outcome.userFacingMessage())
+        assertEquals(setOf("INBOX" to "42"), dao.rows.keys)
+    }
+
+    @Test
+    fun actionAcknowledgedButNothingProcessed_isAFailure() {
+        val dao = FakeEmailDao()
+        dao.put(row("42", "INBOX"))
+        val source = FakeMailSource(actionOutcome = MailOutcome.Success(MailActionOutcome(processed = 0, failed = emptyList())))
+
+        val outcome = repository(dao, source).delete("42", "INBOX")
+
+        assertTrue(outcome is MailOutcome.ActionRejected)
+        assertEquals(setOf("INBOX" to "42"), dao.rows.keys)
+    }
+
+    @Test
+    fun actionProcessed_deletesTheLocalRow() {
+        val dao = FakeEmailDao()
+        dao.put(row("42", "INBOX"))
+        val source = FakeMailSource(actionOutcome = MailOutcome.Success(MailActionOutcome(processed = 1, failed = emptyList())))
+
+        val outcome = repository(dao, source).delete("42", "INBOX")
+
+        assertTrue(outcome is MailOutcome.Success)
+        assertTrue(dao.rows.isEmpty())
+    }
+
+    @Test
+    fun transportFailure_keepsTheLocalRowAndPropagatesTheOutcome() {
+        val dao = FakeEmailDao()
+        dao.put(row("42", "INBOX"))
+        val source = FakeMailSource(actionOutcome = MailOutcome.Unauthorized("re-pair"))
+
+        val outcome = repository(dao, source).spam("42", "INBOX")
+
+        assertTrue(outcome is MailOutcome.Unauthorized)
+        assertEquals(setOf("INBOX" to "42"), dao.rows.keys)
+    }
+
+    @Test
+    fun moveForwardsTheTargetMailboxAndOnlyDropsTheRowWhenProcessed() {
+        val dao = FakeEmailDao()
+        dao.put(row("42", "INBOX"))
+        val source = FakeMailSource(
+            actionOutcome = MailOutcome.Success(MailActionOutcome(processed = 0, failed = listOf("42" to "no such mailbox"))),
+        )
+
+        val outcome = repository(dao, source).move("42", "INBOX", "Archive")
+
+        assertTrue(outcome is MailOutcome.ActionRejected)
+        assertEquals(MailAction.MOVE, source.actions.single().first)
+        assertEquals(setOf("INBOX" to "42"), dao.rows.keys)
+    }
+
+    @Test
+    fun markReadFailure_leavesTheRowUnread() {
+        val dao = FakeEmailDao()
+        dao.put(row("42", "INBOX"))
+        val source = FakeMailSource(
+            actionOutcome = MailOutcome.Success(MailActionOutcome(processed = 0, failed = listOf("42" to "no such message"))),
+        )
+
+        val outcome = repository(dao, source).markRead("42", "INBOX")
+
+        assertTrue(outcome is MailOutcome.ActionRejected)
+        assertEquals("unread", dao.getById("42", "INBOX")?.status)
+    }
+
+    @Test
+    fun markReadNetworkFailure_leavesTheRowUnread() {
+        val dao = FakeEmailDao()
+        dao.put(row("42", "INBOX"))
+        val source = FakeMailSource(actionOutcome = MailOutcome.ServiceUnavailable("relay is down"))
+
+        val outcome = repository(dao, source).markRead("42", "INBOX")
+
+        assertTrue(outcome is MailOutcome.ServiceUnavailable)
+        assertEquals("unread", dao.getById("42", "INBOX")?.status)
+    }
+
+    @Test
+    fun markReadSuccess_marksTheRowRead() {
+        val dao = FakeEmailDao()
+        dao.put(row("42", "INBOX"))
+        val source = FakeMailSource(actionOutcome = MailOutcome.Success(MailActionOutcome(processed = 1, failed = emptyList())))
+
+        assertTrue(repository(dao, source).markRead("42", "INBOX") is MailOutcome.Success)
+        assertEquals("read", dao.getById("42", "INBOX")?.status)
     }
 }

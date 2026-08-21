@@ -31,7 +31,10 @@ private fun testPairing() = PairingData(
     pairedAtEpochMs = 0L,
 )
 
-/** In-memory fake matching this repo's hand-rolled-fake test style (no mocking framework). */
+/** In-memory fake matching this repo's hand-rolled-fake test style (no mocking framework).
+ *
+ *  [RelayMailSource] only ever *reads* the checkpoint (to build `since`); advancing it is
+ *  MailRepository's job, after Room is durable. The write counters exist to keep it that way. */
 private class FakeMailCursorProvider(
     var storedCursor: String? = null,
     var forceDue: Boolean = false,
@@ -51,6 +54,9 @@ private class FakeMailCursorProvider(
         fullResyncRecorded = true
     }
 }
+
+private fun MailOutcome<MailFetchResult>.checkpoint(): MailCheckpoint =
+    requireNotNull((this as MailOutcome.Success).value.checkpoint) { "fetchInbox must report a checkpoint" }
 
 /** Fakes OkHttp's [Call.Factory] so RelayMailSource can be exercised without a real network call
  *  or a MockWebServer dependency — this repo has neither and prefers hand-rolled fakes. */
@@ -135,7 +141,8 @@ class RelayMailSourceTest {
 
         assertTrue(outcome is MailOutcome.Success)
         assertEquals("0", callFactory.requests.single().url.queryParameter("since"))
-        assertEquals("c1", cursorProvider.savedCursor)
+        assertEquals("c1", outcome.checkpoint().cursor)
+        assertEquals("sub-1", outcome.checkpoint().subscriberId)
     }
 
     @Test
@@ -173,6 +180,28 @@ class RelayMailSourceTest {
         assertEquals(false, (outcome as MailOutcome.Success).value.isFullWindow)
     }
 
+    /** Advancing the checkpoint here would acknowledge mail that has not reached Room yet; the
+     *  relay would then never resend it. MailRepository commits it after reconciliation instead. */
+    @Test
+    fun fetchInbox_reportsTheCheckpointWithoutPersistingIt() {
+        val cursorProvider = FakeMailCursorProvider(storedCursor = null, forceDue = true)
+        val callFactory = FakeCallFactory { request ->
+            jsonResponse(request, """{"tabs": [], "byTab": {}, "cursor": "c1", "delta": true, "removed": []}""")
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = cursorProvider,
+            callFactory = callFactory,
+        )
+
+        val outcome = source.fetchInbox("INBOX", 50)
+
+        assertEquals("c1", outcome.checkpoint().cursor)
+        assertTrue(outcome.checkpoint().wasFullResync)
+        assertNull("the source must not write the cursor", cursorProvider.savedCursor)
+        assertFalse("the source must not stamp the full resync", cursorProvider.fullResyncRecorded)
+    }
+
     @Test
     fun subsequentPoll_sendsPersistedCursor() {
         val cursorProvider = FakeMailCursorProvider(storedCursor = "cursor-42")
@@ -185,10 +214,10 @@ class RelayMailSourceTest {
             callFactory = callFactory,
         )
 
-        source.fetchInbox("INBOX", 50)
+        val outcome = source.fetchInbox("INBOX", 50)
 
         assertEquals("cursor-42", callFactory.requests.single().url.queryParameter("since"))
-        assertEquals("cursor-43", cursorProvider.savedCursor)
+        assertEquals("cursor-43", outcome.checkpoint().cursor)
     }
 
     @Test
@@ -224,7 +253,7 @@ class RelayMailSourceTest {
         assertEquals(2, result.messages.size)
         assertNull(result.messages.first { it.id == "m2" }.body)
         assertEquals("Full body", result.messages.first { it.id == "m1" }.body)
-        assertEquals("cursor-2", cursorProvider.savedCursor)
+        assertEquals("cursor-2", outcome.checkpoint().cursor)
     }
 
     @Test
@@ -239,10 +268,10 @@ class RelayMailSourceTest {
             callFactory = callFactory,
         )
 
-        source.fetchInbox("INBOX", 50, forceFullResync = true)
+        val outcome = source.fetchInbox("INBOX", 50, forceFullResync = true)
 
         assertEquals("0", callFactory.requests.single().url.queryParameter("since"))
-        assertTrue(cursorProvider.fullResyncRecorded)
+        assertTrue(outcome.checkpoint().wasFullResync)
     }
 
     @Test
@@ -257,10 +286,10 @@ class RelayMailSourceTest {
             callFactory = callFactory,
         )
 
-        source.fetchInbox("INBOX", 50)
+        val outcome = source.fetchInbox("INBOX", 50)
 
         assertEquals("0", callFactory.requests.single().url.queryParameter("since"))
-        assertTrue(cursorProvider.fullResyncRecorded)
+        assertTrue(outcome.checkpoint().wasFullResync)
     }
 
     @Test
@@ -284,7 +313,7 @@ class RelayMailSourceTest {
         val result = (outcome as MailOutcome.Success).value
         assertTrue(!result.isDelta)
         assertEquals(1, result.messages.size)
-        assertNull(cursorProvider.savedCursor)
+        assertEquals("", outcome.checkpoint().cursor)
     }
 
     @Test

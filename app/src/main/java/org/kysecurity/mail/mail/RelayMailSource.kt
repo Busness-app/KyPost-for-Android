@@ -74,12 +74,8 @@ class RelayMailSource(
         return executeStreaming(request, RelayInboxResponseDto.serializer()) { code, parsed, errorBody ->
             if (code != 200) return@executeStreaming mapErrorCode(code, errorBody)
             if (parsed == null) return@executeStreaming MailOutcome.UpstreamFailure("Malformed inbox response")
-            if (parsed.cursor.isNotBlank()) {
-                cursorProvider.saveCursor(pairing.subscriberId, mailbox, parsed.cursor)
-            }
-            if (since == FULL_RESYNC_SINCE) {
-                cursorProvider.recordFullResync(pairing.subscriberId, mailbox)
-            }
+            // The checkpoint is returned, not saved here: MailRepository commits it once the
+            // messages it covers are in Room. See [MailCheckpoint].
             // changeType is the source of truth for new-vs-updated, never whether `since` was sent
             // (Mobile_Mail_Relay.md Part 5) — read it straight off each entry, not derived state.
             val entries = parsed.byTab.flatMap { (tab, emails) -> emails.map { it.toUiEmail(tab) to it.changeType } }
@@ -91,6 +87,11 @@ class RelayMailSource(
                     updatedMessageIds = entries.filter { it.second == CHANGE_TYPE_UPDATED }.map { it.first.id }.toSet(),
                     removedMessageIds = parsed.removed,
                     isFullWindow = since == FULL_RESYNC_SINCE,
+                    checkpoint = MailCheckpoint(
+                        subscriberId = pairing.subscriberId,
+                        cursor = parsed.cursor,
+                        wasFullResync = since == FULL_RESYNC_SINCE,
+                    ),
                 ),
             )
         }

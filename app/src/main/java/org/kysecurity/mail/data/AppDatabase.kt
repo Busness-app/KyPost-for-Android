@@ -17,7 +17,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         GroupLinkEntity::class,
         ContactSyncStateEntity::class,
     ],
-    version = 11,
+    version = 12,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -127,6 +127,37 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_10_11 = object : Migration(10, 11) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE `emails` ADD COLUMN `bodyMode` TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        /** `emails` re-keyed on (folder, messageId) — see [EmailEntity]. SQLite cannot alter a
+         *  primary key, so the table is rebuilt. Copying is safe without a dedup pass: the old key
+         *  was `messageId` alone, so every (folder, messageId) pair is already unique. Cached rows
+         *  are carried over rather than dropped — a wipe would cost the user their offline mail to
+         *  fix a collision most mailboxes never hit. */
+        val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `emails_new` (" +
+                        "`messageId` TEXT NOT NULL, `folder` TEXT NOT NULL, `sender` TEXT NOT NULL, " +
+                        "`sentTo` TEXT NOT NULL, `cc` TEXT NOT NULL, `bcc` TEXT NOT NULL, " +
+                        "`subject` TEXT NOT NULL, `preview` TEXT NOT NULL, `body` TEXT, " +
+                        "`bodyMode` TEXT NOT NULL, `label` TEXT NOT NULL, `keywordsJson` TEXT NOT NULL, " +
+                        "`status` TEXT NOT NULL, `atUtc` TEXT, `hasAttachments` INTEGER NOT NULL, " +
+                        "`sourceMode` TEXT NOT NULL, `pgpEncrypted` INTEGER NOT NULL, " +
+                        "`pgpSigned` INTEGER NOT NULL, `pgpVerified` INTEGER NOT NULL, " +
+                        "`pgpSignerFingerprint` TEXT NOT NULL, `pgpDecryptError` TEXT NOT NULL, " +
+                        "PRIMARY KEY(`folder`, `messageId`))",
+                )
+                db.execSQL(
+                    "INSERT INTO `emails_new` SELECT `messageId`, `folder`, `sender`, `sentTo`, " +
+                        "`cc`, `bcc`, `subject`, `preview`, `body`, `bodyMode`, `label`, " +
+                        "`keywordsJson`, `status`, `atUtc`, `hasAttachments`, `sourceMode`, " +
+                        "`pgpEncrypted`, `pgpSigned`, `pgpVerified`, `pgpSignerFingerprint`, " +
+                        "`pgpDecryptError` FROM `emails`",
+                )
+                db.execSQL("DROP TABLE `emails`")
+                db.execSQL("ALTER TABLE `emails_new` RENAME TO `emails`")
             }
         }
     }

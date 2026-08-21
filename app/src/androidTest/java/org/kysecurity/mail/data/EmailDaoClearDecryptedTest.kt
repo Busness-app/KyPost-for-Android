@@ -61,15 +61,15 @@ class EmailDaoClearDecryptedTest {
 
         assertEquals("only the server-decrypted row", 1, dao.clearServerDecryptedBodies())
 
-        val cleared = dao.getById("decrypted")!!
+        val cleared = dao.getById("decrypted", "INBOX")!!
         assertEquals("", cleared.body)
         assertEquals("the preview is derived from the plaintext too", "", cleared.preview)
         assertEquals("the row itself must survive", "Subject decrypted", cleared.subject)
 
-        assertEquals("<p>lunch?</p>", dao.getById("plain")!!.body)
-        assertEquals("<p>lunch?</p>", dao.getById("plain")!!.preview)
-        assertEquals("", dao.getById("protected")!!.body)
-        assertEquals(null, dao.getById("nullbody")!!.body)
+        assertEquals("<p>lunch?</p>", dao.getById("plain", "INBOX")!!.body)
+        assertEquals("<p>lunch?</p>", dao.getById("plain", "INBOX")!!.preview)
+        assertEquals("", dao.getById("protected", "INBOX")!!.body)
+        assertEquals(null, dao.getById("nullbody", "INBOX")!!.body)
     }
 
     /** Idempotent: a second enrollment on the same device must not report work it did not do. */
