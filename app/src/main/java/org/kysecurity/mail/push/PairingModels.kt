@@ -66,7 +66,12 @@ object NativePairingDeepLinkParser {
             return PairingParseResult.Error("Unsupported deep link")
         }
 
-        val query = parseQuery(uri.rawQuery.orEmpty())
+        // `kypost://native-pair` is BROWSABLE, so this string is attacker-chosen. The URI
+        // constructor above rejects a malformed escape today, which is the only thing that keeps
+        // URLDecoder from throwing — a guarantee that lives in another class and can change. Own it
+        // here instead: this parser returns a refusal for every input, and never an exception.
+        val query = runCatching { parseQuery(uri.rawQuery.orEmpty()) }.getOrNull()
+            ?: return PairingParseResult.Error("Invalid deep link")
 
         val sub = query["sub"].orEmpty().trim()
         val srv = query["srv"].orEmpty().trim()

@@ -1,25 +1,35 @@
 package org.kysecurity.mail.push
 
-import android.content.Context
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /** Drives App Pull mode; the server's `deliveryMode` is authoritative and the cursor is durable. */
 class PullSyncCoordinator(
-    private val appContext: Context,
-    private val repository: PushRepository,
+    private val repository: PushStore,
     // No default. A no-arg PullNotificationClient() built the plain unpinned client, which is the
     // same "the security control's default is off" shape the eight clients below it had.
     private val pullClient: PullNotificationClient,
-    // Injectable so unit tests can observe rendering without an Android NotificationManager.
-    private val notifier: (Context, PushPayload) -> Unit = { ctx, payload ->
-        PushNotificationDispatcher.show(ctx, payload)
-    },
+    // The two Android edges, injected rather than reached through a stored Context. Without this
+    // the duplicate-notification rule below could only be exercised from an instrumented test,
+    // which is exactly where a concurrency bug hides.
+    private val notifier: (PushPayload) -> Unit,
+    private val schedule: (DeliveryMode) -> Unit,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** ONE pull at a time, process-wide.
+     *
+     *  App foreground, the pairing screen and [PullWorker] all enter [pullOnce] independently. The
+     *  cursor is read at the start and advanced at the end, so two overlapping runs read the same
+     *  cursor and both fetch, persist and NOTIFY the same batch. `appendPayload` dedupes history
+     *  by `messageId`; the system notification manager is handed each payload regardless, so the
+     *  user simply sees every message twice. */
+    private val pullGate = Mutex()
 
     /** Fire-and-forget pull, used on app foreground and after pairing. */
     fun pullNowAsync() {
@@ -27,7 +37,9 @@ class PullSyncCoordinator(
     }
 
     /** Safe to call when unpaired or in push mode; reports without touching the network. */
-    suspend fun pullOnce(): PullOutcome {
+    suspend fun pullOnce(): PullOutcome = pullGate.withLock { pullLocked() }
+
+    private suspend fun pullLocked(): PullOutcome {
         val state = repository.state.first()
         val pairing = repository.pairingForAuthenticatedCall() ?: return PullOutcome.NotPaired
         val deviceId = pairing.deviceId
@@ -79,7 +91,7 @@ class PullSyncCoordinator(
             // Persist to in-app history AND hand off to the system notification manager
             // BEFORE advancing the cursor, so a crash mid-batch re-fetches rather than drops.
             repository.appendPayload(payload)
-            notifier(appContext, payload)
+            notifier(payload)
         }
         repository.advancePullCursor(subscriberId, prepared.nextCursor)
         repository.updateSyncState(lastSyncAtEpochMs = System.currentTimeMillis(), syncError = null)
@@ -91,13 +103,7 @@ class PullSyncCoordinator(
         }
     }
 
-    private fun syncPeriodicSchedule(mode: DeliveryMode) {
-        if (mode == DeliveryMode.PULL) {
-            PullScheduler.ensurePeriodic(appContext)
-        } else {
-            PullScheduler.cancelPeriodic(appContext)
-        }
-    }
+    private fun syncPeriodicSchedule(mode: DeliveryMode) = schedule(mode)
 }
 
 /** Result of a pull cycle, primarily to let [PullWorker] decide retry vs. success. */

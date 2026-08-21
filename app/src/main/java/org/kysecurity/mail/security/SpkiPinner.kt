@@ -7,14 +7,6 @@ import java.security.cert.X509Certificate
 /** TOFU: the server cert pin is captured at pairing time and enforced on every later connect. */
 object SpkiPinner {
 
-    /** How many leaf pins may be accepted at once. Two: the one in use, and the one it replaced.
-     *
-     *  This is the renewal window. [org.kysecurity.mail.push.PushSyncCoordinator.refreshTlsPin]
-     *  rolls a fresh leaf in on every registration that ALREADY validated against a stored pin, so
-     *  a certificate rotation between two resyncs is carried rather than fatal. Larger would just
-     *  widen the set of keys a stolen one hides in. */
-    const val MAX_PINNED_LEAVES = 2
-
     fun pinFor(certificate: Certificate): String = CertificatePinner.pin(certificate)
 
     /** The pin to store for an observed handshake chain: THE LEAF, and nothing else.
@@ -32,11 +24,13 @@ object SpkiPinner {
      *    extra steps and a UI that claims otherwise.
      *  - A pinned LEAF is a pin. It names one key.
      *
-     *  Leaf-only was tried before and reverted because a renewal that mints a new key matches no
-     *  stored pin, and the only recovery was unpairing, which deletes the mailbox. That is a real
-     *  problem and it is NOT solved by weakening the pin. It is solved by continuity —
-     *  [MAX_PINNED_LEAVES] and `refreshTlsPin` — which keeps the pin current across renewals
-     *  without ever accepting a key this device has not seen on an already-validated connection.
+     *  The cost is real and is NOT papered over anywhere in this file: a renewal that mints a new
+     *  key matches no stored pin, and every credentialed call to that host fails until the user
+     *  re-trusts the server through [org.kysecurity.mail.push.PushHomeViewModel.reconnectToServer],
+     *  which reopens the TOFU window WITHOUT deleting the mailbox. That ceremony is the whole
+     *  renewal story. A window of previously observed leaves was tried instead and could not
+     *  work: a pin this device has never seen cannot be learned from a connection the pin itself
+     *  rejects, so the window never held more than the one leaf already in use.
      *
      *  An entirely self-issued chain is a single self-signed server certificate, the
      *  self-hosted-relay case, and its leaf is also its anchor: pinning it is both correct and the
@@ -47,12 +41,4 @@ object SpkiPinner {
     /** A root is self-issued. Position in the chain is presentation; this is the property. */
     internal fun isTrustAnchor(certificate: Certificate): Boolean =
         (certificate as? X509Certificate)?.let { it.issuerX500Principal == it.subjectX500Principal } == true
-
-    /** [fresh] first, then as much of [history] as the window allows.
-     *
-     *  Order is the policy: the newest observation is the one that must survive truncation. Both
-     *  entries are leaves this device saw on a connection that had already validated against a pin
-     *  it held, so widening to two never admits a key from outside that chain of custody. */
-    fun rollingPins(fresh: Set<String>, history: Set<String>): Set<String> =
-        (fresh + history).take(MAX_PINNED_LEAVES).toSet()
 }

@@ -180,10 +180,9 @@ class NativeRegistrationClient(
                         transport = PushTransport.fromWire(body.transport),
                         // THE LEAF, and only the leaf — see [SpkiPinner.pinsForChain]. Pinning an
                         // issuer admits every certificate that issuer signs, which for a public CA
-                        // is every certificate anyone can buy. Renewal continuity comes from
-                        // [PushSyncCoordinator.refreshTlsPin]'s rolling window, not from widening
-                        // what a pin means. Installs pinned under the old whole-chain rule keep
-                        // validating and narrow on the next successful resync.
+                        // is every certificate anyone can buy. Installs pinned under the old
+                        // whole-chain rule keep validating and narrow on the next successful
+                        // resync; renewal with a new key is a re-trust, not a widening.
                         tlsPin = registrationHost?.let { host ->
                             SpkiPinner.pinsForChain(handshake?.peerCertificates.orEmpty())
                                 .takeIf { it.isNotEmpty() }

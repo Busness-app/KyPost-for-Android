@@ -42,7 +42,7 @@ class PushRepository(
     private val context: Context,
     // Injected: PushGraph owns the single instance that holds the pairing StateFlow.
     private val securePairingStore: SecurePairingStore = SecurePairingStore(context),
-) {
+) : PushStore {
     private val json = Json { ignoreUnknownKeys = true }
     private val hostileLocationSettings = SecurityRuntime.graph(context).hostileLocationSettings
     private val pullCursorValue = ScopedValue(
@@ -54,7 +54,7 @@ class PushRepository(
     /** Push history while Hostile Location Protection is on: nothing may touch disk. */
     private val inMemoryHistory = MutableStateFlow<List<PushPayload>>(emptyList())
 
-    val state: Flow<PushState> = combine(
+    override val state: Flow<PushState> = combine(
         context.pushDataStore.data.catch { ex ->
             if (ex is IOException) emit(emptyPreferences()) else throw ex
         },
@@ -65,7 +65,7 @@ class PushRepository(
     /** Whether a pairing exists right now, read straight from the store — for cold-path callers. */
     fun isPairedNow(): Boolean = securePairingStore.pairing.value != null
 
-    fun pairingForAuthenticatedCall(): PairingData? =
+    override fun pairingForAuthenticatedCall(): PairingData? =
         securePairingStore.pairingSnapshot(SecurityRuntime.graph(context).appLockManager.cachedCredentialKeys())
 
     /** For [MfaApprovalActivity]: the app is legitimately still locked when the decision is sent. */
@@ -73,17 +73,18 @@ class PushRepository(
         securePairingStore.pairingSnapshot(keys)
 
     /** The TOFU TLS pin with its host, or null. Read fresh — it changes on re-pairing. */
-    fun currentTlsPin(): TlsPin? = securePairingStore.currentTlsPin()
+    override fun currentTlsPin(): TlsPin? = securePairingStore.currentTlsPin()
 
     /** See [SecurePairingStore.tlsPinState] — distinguishes "never pinned" from "pin lost". */
     fun tlsPinState(): TlsPinState = securePairingStore.tlsPinState()
 
     /** See [SecurePairingStore.tlsPinIsLeafOnly] — false means a legacy whole-chain set is stored. */
-    fun tlsPinIsLeafOnly(): Boolean = securePairingStore.tlsPinIsLeafOnly()
+    override fun tlsPinIsLeafOnly(): Boolean = securePairingStore.tlsPinIsLeafOnly()
 
-    /** Persist the TLS pin captured on a just-succeeded pairing call. Only
-     *  [PushSyncCoordinator.attemptPairing] calls this, not every routine registration resync. */
-    suspend fun saveTlsPin(pin: TlsPin) = securePairingStore.saveTlsPin(pin)
+    /** Persist a TLS pin observed on a just-succeeded call: the TOFU capture in
+     *  [PushSyncCoordinator.attemptPairing], and the one-way narrowing in
+     *  [PushSyncCoordinator.narrowLegacyTlsPin]. */
+    override suspend fun saveTlsPin(pin: TlsPin) = securePairingStore.saveTlsPin(pin)
 
     /** True when the stored `deviceSecret` still needs wrapping (or re-wrapping) under the current
      *  credential-key scheme; see [SecurePairingStore.needsCredentialRewrap]. */
@@ -107,7 +108,7 @@ class PushRepository(
     }
 
     /** Callers about to mint a secret must take this first and hand it back to [savePairing]. */
-    fun currentCredentialState(): PairingCredentialState {
+    override fun currentCredentialState(): PairingCredentialState {
         val securityGraph = SecurityRuntime.graph(context)
         if (!securityGraph.appLockStore.isCredentialPinGateEnabled()) return PairingCredentialState.NotGated
         val keys = securityGraph.appLockManager.cachedCredentialKeys() ?: return PairingCredentialState.Unavailable
@@ -116,9 +117,9 @@ class PushRepository(
     }
 
     /** Saves pairing data, wrapping `deviceSecret` when the credential gate is on. */
-    suspend fun savePairing(
+    override suspend fun savePairing(
         pairing: PairingData,
-        credentialState: PairingCredentialState = currentCredentialState(),
+        credentialState: PairingCredentialState,
     ) {
         when (credentialState) {
             is PairingCredentialState.Available ->
@@ -146,23 +147,38 @@ class PushRepository(
         }
     }
 
-    /** Drops everything scoped to the account we are leaving; no table carries a subscriber column. */
-    private suspend fun purgeAccountScopedData() {
+    /** Drops everything scoped to the account we are leaving; no table carries a subscriber column.
+     *
+     *  Returns the stores that could NOT be shown to be gone. Every failure below used to be a
+     *  `Log.e` the caller could not see, so an account replacement whose purge failed activated
+     *  the new account over the old one's mail. Naming the survivors is what lets
+     *  [PushSyncCoordinator] refuse. */
+    private suspend fun purgeAccountScopedData(): List<String> {
+        val residue = mutableListOf<String>()
+
+        /** Runs [body] and records [name] if it throws or reports incomplete. */
+        suspend fun step(name: String, body: suspend () -> Boolean) {
+            val ok = runCatching { body() }
+                .onFailure { android.util.Log.e(TAG, "Failed to purge $name", it) }
+                .getOrDefault(false)
+            if (!ok) residue += name
+        }
+
         // The OS contact rows go FIRST, while the link table that indexes them still exists.
         // DeviceContactPurge, not the graph: building that graph rebuilds the database during a wipe.
-        if (org.kysecurity.mail.contacts.device.DeviceContactPurge.deleteSyncedRows(context) < 0) {
-            android.util.Log.e(TAG, "Could not delete this app's raw contacts on unpair; they may remain")
+        step("deviceContactRows") {
+            org.kysecurity.mail.contacts.device.DeviceContactPurge.deleteSyncedRows(context) >= 0
         }
-        runCatching {
+        step("deviceContactAccount") {
             val accounts = org.kysecurity.mail.contacts.device.DeviceContactAccountManager(context)
-            if (accounts.accountExists() && !accounts.removeAccountBlocking()) {
-                android.util.Log.e(TAG, "Could not remove the device contacts account on unpair; its rows may remain")
-            }
-        }.onFailure { android.util.Log.e(TAG, "Failed to remove the device contacts account", it) }
-        runCatching { org.kysecurity.mail.contacts.device.DeviceContactSyncScheduler.cancelPeriodic(context) }
-            .onFailure { android.util.Log.e(TAG, "Failed to cancel the device contact worker", it) }
+            !accounts.accountExists() || accounts.removeAccountBlocking()
+        }
+        step("deviceContactWorker") {
+            org.kysecurity.mail.contacts.device.DeviceContactSyncScheduler.cancelPeriodic(context)
+            true
+        }
 
-        runCatching {
+        step("database") {
             // peek, not graph: building one during a wipe recreates the database, disk-backed.
             val db = org.kysecurity.mail.data.DataRuntime.peekGraph()?.database
             if (db != null) {
@@ -174,31 +190,41 @@ class PushRepository(
                 db.deviceContactLinkDao().deleteAll()
                 // The contact-sync cursor lives here now; without this a re-pair resumes from the old cursor.
                 db.contactSyncStateDao().clearAll()
+            } else {
+                // No graph in this process does NOT mean no data: the encrypted file is still on
+                // disk, and treating the null as "already purged" is how one account's cached mail
+                // reached the next one. Nothing holds the file open, so deleting it is both safe
+                // and the only proof available. Throws if the file survives.
+                org.kysecurity.mail.security.SecurityWipe.closeAndDeleteDatabase(context)
             }
-        }.onFailure {
-            android.util.Log.e(TAG, "Failed to purge account-scoped tables", it)
+            true
         }
+
         // Device-contact sync gates only on its own toggle and Hostile Location Protection, never
         // on having a pairing, so it has to be switched off explicitly here.
-        runCatching { org.kysecurity.mail.contacts.device.DeviceContactSyncSettings(context).setEnabled(false) }
-            .onFailure { android.util.Log.e(TAG, "Failed to disable device contact sync", it) }
-        runCatching { context.deleteSharedPreferences(org.kysecurity.mail.KeywordSettings.PREFS_NAME) }
-            .onFailure { android.util.Log.e(TAG, "Failed to delete keyword settings", it) }
+        step("deviceContactSyncSetting") {
+            org.kysecurity.mail.contacts.device.DeviceContactSyncSettings(context).setEnabled(false)
+            true
+        }
+        step("keywordSettings") {
+            context.deleteSharedPreferences(org.kysecurity.mail.KeywordSettings.PREFS_NAME)
+        }
         // Scoping makes a stale value unreadable, not absent — these files must actually be deleted.
         // contacts_state is legacy: kept in this list so older installs do not keep the old file.
         listOf("mail_sync_state", "contacts_state").forEach { name ->
-            runCatching { java.io.File(context.filesDir, "datastore/$name.preferences_pb").delete() }
-                .onFailure { android.util.Log.e(TAG, "Failed to delete datastore $name", it) }
+            step("datastore/$name") {
+                val file = java.io.File(context.filesDir, "datastore/$name.preferences_pb")
+                !file.exists() || file.delete()
+            }
         }
         // Every process-static holder at once via the registry, not by name — enumeration missed one.
-        val enrollmentResidue = org.kysecurity.mail.pgp.EnrollmentTeardown.destroy(context)
-        if (enrollmentResidue.isNotEmpty()) {
-            android.util.Log.e(TAG, "Enrollment teardown left $enrollmentResidue behind while unpairing")
+        step("enrollment") { org.kysecurity.mail.pgp.EnrollmentTeardown.destroy(context).isEmpty() }
+        step("processMemory") { org.kysecurity.mail.InMemoryPlaintext.clearAll().isEmpty() }
+
+        if (residue.isNotEmpty()) {
+            android.util.Log.e(TAG, "Account-scoped purge left $residue behind")
         }
-        val uncleared = org.kysecurity.mail.InMemoryPlaintext.clearAll()
-        if (uncleared.isNotEmpty()) {
-            android.util.Log.e(TAG, "Failed to clear process-scoped state: $uncleared")
-        }
+        return residue
     }
 
     /** Drops pairing proof and the TOFU pin, KEEPING account-scoped data.
@@ -221,8 +247,8 @@ class PushRepository(
         }
     }
 
-    suspend fun clearPairing() {
-        purgeAccountScopedData()
+    override suspend fun clearPairing(): List<String> {
+        val residue = purgeAccountScopedData()
         securePairingStore.clearPairing()
         inMemoryHistory.value = emptyList()
         context.pushDataStore.edit { prefs ->
@@ -238,6 +264,7 @@ class PushRepository(
             prefs.remove(KEY_UNIFIEDPUSH_P256DH)
             prefs.remove(KEY_UNIFIEDPUSH_AUTH)
         }
+        return residue
     }
 
     /** Best-effort deregister then unconditional clear; SecurityWipe passes a pre-captured pairing. */
@@ -277,7 +304,7 @@ class PushRepository(
     }
 
     /** Persist the authoritative delivery mode and (derived or server-provided) pull endpoint. */
-    suspend fun updateDelivery(mode: DeliveryMode, pullEndpoint: String?) {
+    override suspend fun updateDelivery(mode: DeliveryMode, pullEndpoint: String?) {
         context.pushDataStore.edit { prefs ->
             prefs[KEY_DELIVERY_MODE] = mode.wire
             if (pullEndpoint.isNullOrBlank()) prefs.remove(KEY_PULL_ENDPOINT) else prefs[KEY_PULL_ENDPOINT] = pullEndpoint
@@ -285,14 +312,14 @@ class PushRepository(
     }
 
     /** Persist the transport the server confirmed for the last successful registration. */
-    suspend fun updateTransport(transport: PushTransport?) {
+    override suspend fun updateTransport(transport: PushTransport?) {
         context.pushDataStore.edit { prefs ->
             if (transport == null) prefs.remove(KEY_TRANSPORT) else prefs[KEY_TRANSPORT] = transport.wire
         }
     }
 
     /** Persisted so a resync can resend them; they only ever arrive via onNewEndpoint. Null clears. */
-    suspend fun updateUnifiedPushRegistration(endpoint: String?, p256dh: String?, auth: String?) {
+    override suspend fun updateUnifiedPushRegistration(endpoint: String?, p256dh: String?, auth: String?) {
         context.pushDataStore.edit { prefs ->
             if (endpoint.isNullOrBlank()) prefs.remove(KEY_UNIFIEDPUSH_ENDPOINT) else prefs[KEY_UNIFIEDPUSH_ENDPOINT] = endpoint
             if (p256dh.isNullOrBlank()) prefs.remove(KEY_UNIFIEDPUSH_P256DH) else prefs[KEY_UNIFIEDPUSH_P256DH] = p256dh
@@ -301,21 +328,21 @@ class PushRepository(
     }
 
     /** The durable pull cursor for [subscriberId], scoped so a new subscriber starts clean. */
-    suspend fun pullCursor(subscriberId: String): Long = pullCursorValue.get(subscriberId) ?: 0L
+    override suspend fun pullCursor(subscriberId: String): Long = pullCursorValue.get(subscriberId) ?: 0L
 
     /** Advance the cursor to max(existing, [cursor]); resets when the subscriber changes. */
-    suspend fun advancePullCursor(subscriberId: String, cursor: Long) {
+    override suspend fun advancePullCursor(subscriberId: String, cursor: Long) {
         pullCursorValue.update(subscriberId) { current -> maxOf(current ?: 0L, cursor) }
     }
 
-    suspend fun updateSyncState(lastSyncAtEpochMs: Long?, syncError: String?) {
+    override suspend fun updateSyncState(lastSyncAtEpochMs: Long?, syncError: String?) {
         context.pushDataStore.edit { prefs ->
             if (lastSyncAtEpochMs == null) prefs.remove(KEY_LAST_SYNC_AT) else prefs[KEY_LAST_SYNC_AT] = lastSyncAtEpochMs
             if (syncError.isNullOrBlank()) prefs.remove(KEY_SYNC_ERROR) else prefs[KEY_SYNC_ERROR] = syncError
         }
     }
 
-    suspend fun appendPayload(payload: PushPayload) {
+    override suspend fun appendPayload(payload: PushPayload) {
         if (hostileLocationSettings.isEnabled()) {
             inMemoryHistory.update { current -> (listOf(payload) + current).distinctBy { it.messageId }.take(HISTORY_LIMIT) }
             return

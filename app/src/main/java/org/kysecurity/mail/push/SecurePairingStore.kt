@@ -52,12 +52,12 @@ private const val KEY_TLS_PIN_EVER_CAPTURED = "tls_pin_ever_captured"
 
 /** A TOFU certificate pin together with the host it was actually observed on.
  *
- *  [spkiSha256] holds LEAF pins only, at most [org.kysecurity.mail.security.SpkiPinner
- *  .MAX_PINNED_LEAVES] of them: the leaf in use and the one it replaced. `CertificatePinner`
+ *  [spkiSha256] holds ONE leaf pin for anything written under the current rule. `CertificatePinner`
  *  passes when ANY chain member matches ANY configured pin, so an issuer pin admits every
  *  certificate that issuer signs — see [org.kysecurity.mail.security.SpkiPinner.pinsForChain],
- *  which owns that policy, and [PushSyncCoordinator.refreshTlsPin], which owns the rotation that
- *  makes leaf-only survive renewal. */
+ *  which owns that policy, and [PushSyncCoordinator.narrowLegacyTlsPin], which retires the
+ *  whole-chain sets older installs still carry. Renewal with a new key breaks the pin on purpose;
+ *  the recovery is [PushHomeViewModel.reconnectToServer], which keeps the mailbox. */
 data class TlsPin(val host: String, val spkiSha256: Set<String>) {
     init {
         // An empty pin set is not "unpinned", it is worse: CertificatePinner passes vacuously when
@@ -234,8 +234,8 @@ class SecurePairingStore(context: Context) {
     fun currentTlsPin(): TlsPin? = cachedTlsPin
 
     /** False while the stored set still carries whole-chain pins from before the leaf-only rule.
-     *  [org.kysecurity.mail.push.PushSyncCoordinator.refreshTlsPin] replaces rather than merges
-     *  on false, so the narrowing happens exactly once and cannot be undone by a quiet server. */
+     *  [org.kysecurity.mail.push.PushSyncCoordinator.narrowLegacyTlsPin] acts only on false, so
+     *  the narrowing happens exactly once and cannot be undone by a quiet server. */
     fun tlsPinIsLeafOnly(): Boolean = prefs.getBoolean(KEY_TLS_PINS_ARE_LEAVES, false)
 
     /** The pin, or why there isn't one. "No pin yet" and "the pin is gone" must not be collapsed. */

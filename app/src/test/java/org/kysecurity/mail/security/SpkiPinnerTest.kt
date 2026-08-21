@@ -149,23 +149,22 @@ class SpkiPinnerTest {
         assertTrue("the fixture's root is genuinely self-issued", SpkiPinner.isTrustAnchor(root))
     }
 
+    /** What replaced `rollingPins`: nothing.
+     *
+     *  A window of previously observed leaves claimed to carry a certificate renewal, and could
+     *  not: the only way a fresh leaf reaches this code is on a connection that ALREADY validated
+     *  against a stored pin, and under leaf-only pinning that means the leaf it observed is the
+     *  leaf already stored. The window therefore never held a second entry, and a renewal with a
+     *  new key was as fatal with it as without. Renewal is handled by the user re-trusting the
+     *  server, which keeps the mailbox — see the KDoc on [SpkiPinner.pinsForChain]. */
     @Test
-    fun rollingPins_keepsTheFreshestAndCapsTheWindow() {
-        val fresh = setOf("sha256/A")
-        val history = setOf("sha256/B", "sha256/C")
+    fun pinsForChain_yieldsExactlyOnePin() {
+        val leaf = certificateOf(LEAF_CERT_PEM)
+        val intermediate = certificateOf(INTERMEDIATE_CERT_PEM)
+        val root = certificateOf(ROOT_CERT_PEM)
 
-        val rolled = SpkiPinner.rollingPins(fresh, history)
-
-        // Newest first and truncation from the back: the pin in use must survive the cap.
-        assertEquals(listOf("sha256/A", "sha256/B"), rolled.toList())
-        assertEquals(SpkiPinner.MAX_PINNED_LEAVES, rolled.size)
-    }
-
-    @Test
-    fun rollingPins_doesNotGrowWhenNothingRotated() {
-        val rolled = SpkiPinner.rollingPins(setOf("sha256/A"), setOf("sha256/A"))
-
-        assertEquals(setOf("sha256/A"), rolled)
+        assertEquals(1, SpkiPinner.pinsForChain(listOf(leaf, intermediate, root)).size)
+        assertEquals(1, SpkiPinner.pinsForChain(listOf(leaf)).size)
     }
 
     @Test
