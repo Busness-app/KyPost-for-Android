@@ -1,3 +1,4 @@
+import com.android.build.api.artifact.SingleArtifact
 import java.util.Properties
 
 plugins {
@@ -104,11 +105,15 @@ android {
     lint {
         abortOnError = true
         fatal += listOf(
-            // Attack surface reachable by other apps on the device.
-            "ExportedActivity",
+            // A fatal entry naming a check lint cannot resolve is a warning about itself, not a
+            // gate. "ExportedActivity" sat in this list and was one; this is what would have said so.
+            "UnknownIssueId",
+            // Attack surface reachable by other apps on the device. Exported *activities* have no
+            // lint check at all — see checkExportedComponents below, which gates them.
             "ExportedService",
             "ExportedReceiver",
             "ExportedContentProvider",
+            "ExportedPreferenceActivity",
             "GrantAllUris",
             "UnsafeIntentLaunch",
             // The mail renderer's posture. See EmailDetailActivity's WebView settings.
@@ -123,6 +128,15 @@ android {
             "WorldReadableFiles",
             "WorldWriteableFiles",
             "HardcodedDebugMode",
+            // Form semantics, at zero as of this list. Fatal because the pile they were in is how
+            // an email client ends up shipping controls TalkBack cannot name: 62 of these sat as
+            // warnings under 156 KTX suggestions, which is the same as not reporting them.
+            "Autofill",
+            "ContentDescription",
+            "HardcodedText",
+            "LabelFor",
+            "SetTextI18n",
+            "TextFields",
         )
         disable += listOf(
             // `commit()` over `apply()` is deliberate and load-bearing throughout the security
@@ -211,6 +225,72 @@ tasks.matching { it.name == "packageRelease" || it.name == "signReleaseBundle" }
     }
 }
 
+/** Every component the merged manifest is allowed to export, and why. Lint has no check for an
+ *  exported activity, and no lint check reads the *merged* manifest at all — where a dependency
+ *  bump can add an exported component this project's own manifest never mentions. */
+val allowedExportedComponents = setOf(
+    // The launcher.
+    "org.kysecurity.mail.MainActivity",
+    // The kypost://native-pair forwarder; deliberately thin. See PushPairingLinkActivity.
+    "org.kysecurity.mail.push.PushPairingLinkActivity",
+    // Third-party, and reachable only by a caller holding the platform permission each declares.
+    "androidx.work.impl.background.systemjob.SystemJobService",
+    "androidx.work.impl.diagnostics.DiagnosticsReceiver",
+    "androidx.profileinstaller.ProfileInstallReceiver",
+    "com.google.firebase.iid.FirebaseInstanceIdReceiver",
+    // UnifiedPush's distributor-facing surface: the route a distributor delivers a push through.
+    "org.unifiedpush.android.connector.internal.MessagingReceiverImpl",
+    "org.unifiedpush.android.connector.internal.RaiseToForegroundService",
+)
+
+androidComponents.onVariants { variant ->
+    val mergedManifest = variant.artifacts.get(SingleArtifact.MERGED_MANIFEST)
+    val allowed = allowedExportedComponents
+    val gate = tasks.register("checkExportedComponents${variant.name.replaceFirstChar { it.uppercase() }}") {
+        description = "Fails if the merged manifest exports a component outside the allowlist."
+        inputs.file(mergedManifest).withPropertyName("mergedManifest")
+        // No project references inside: this action has to survive configuration-cache serialization.
+        doLast {
+            val android = "http://schemas.android.com/apk/res/android"
+            val root = javax.xml.parsers.DocumentBuilderFactory.newInstance()
+                .apply { isNamespaceAware = true }
+                .newDocumentBuilder()
+                .parse(mergedManifest.get().asFile)
+                .documentElement
+            val exported = listOf("activity", "activity-alias", "service", "receiver", "provider")
+                .flatMap { tag ->
+                    val nodes = root.getElementsByTagName(tag)
+                    (0 until nodes.length).map { nodes.item(it) as org.w3c.dom.Element }
+                }
+                .filter { it.getAttributeNS(android, "exported") == "true" }
+                .map { it.getAttributeNS(android, "name") }
+                .toSortedSet()
+            val unexpected = exported - allowed
+            if (unexpected.isNotEmpty()) {
+                throw GradleException(
+                    "The merged manifest exports components that are not on the allowlist: " +
+                        "$unexpected. Every exported component is attack surface reachable by any " +
+                        "other app on the device. Set android:exported=\"false\", or add it to " +
+                        "allowedExportedComponents in app/build.gradle.kts with the reason it is safe.",
+                )
+            }
+            // A stale entry is a gate that has quietly stopped covering anything.
+            val vanished = allowed - exported
+            if (vanished.isNotEmpty()) {
+                throw GradleException(
+                    "allowedExportedComponents lists components the merged manifest no longer " +
+                        "exports: $vanished. Remove them.",
+                )
+            }
+        }
+    }
+    // Every task that can emit an installable artifact. NOT `check`: CI does not run it, so
+    // hanging this gate there alone would have been the same nothing the lint entry was.
+    val variantName = variant.name.replaceFirstChar { it.uppercase() }
+    listOf("assemble$variantName", "bundle$variantName").forEach { producer ->
+        tasks.matching { it.name == producer }.configureEach { dependsOn(gate) }
+    }
+}
 
 dependencies {
     implementation(libs.androidx.activity.ktx)

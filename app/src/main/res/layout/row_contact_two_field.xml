@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Reused for email, phone, website, relation and custom fields, so the hint and the
+     inputType are the caller's to set: ContactEditActivity gives every binding both.
+     LabelFor cannot see a hint assigned at bind time, which is what it is told here. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="horizontal"
@@ -16,12 +20,18 @@
             android:id="@+id/rowFieldA"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="4dp" />
+            android:layout_marginBottom="4dp"
+            android:importantForAutofill="no"
+            android:inputType="text"
+            tools:ignore="LabelFor" />
 
         <EditText
             android:id="@+id/rowFieldB"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content" />
+            android:layout_height="wrap_content"
+            android:importantForAutofill="no"
+            android:inputType="text"
+            tools:ignore="LabelFor" />
 
     </LinearLayout>
 
@@ -31,7 +41,7 @@
         android:layout_height="40dp"
         android:layout_marginStart="8dp"
         android:gravity="center"
-        android:text="✕"
+        android:text="@string/contacts_field_remove_glyph"
         android:textSize="18sp"
         android:clickable="true"
         android:focusable="true"

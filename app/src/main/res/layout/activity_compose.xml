@@ -63,6 +63,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginEnd="8dp"
                 android:gravity="center_vertical"
+                android:labelFor="@+id/composeSubjectField"
                 android:text="@string/compose_subject"
                 android:textSize="12sp" />
 
@@ -71,7 +72,9 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:hint="Email subject" />
+                android:importantForAutofill="no"
+                android:inputType="textCapSentences"
+                android:maxLines="1" />
 
         </LinearLayout>
 

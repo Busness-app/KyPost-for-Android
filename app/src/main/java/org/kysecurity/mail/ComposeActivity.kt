@@ -3,6 +3,8 @@ package org.kysecurity.mail
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.OpenableColumns
 import android.text.TextUtils
 import android.view.Menu
@@ -88,6 +90,29 @@ class ComposeActivity : LockedActivity() {
     /** The in-flight client-encrypted send; guards a double-tap from starting two sends. */
     private var sendJob: Job? = null
     private val ioExecutor = Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    /** The editor exports its HTML asynchronously, and a configuration change destroys this
+     *  Activity before the callback can land — while the replacement reads [ComposeDraftCache] in
+     *  `onCreate`, so a draft that arrives later is already too late. [onStop] therefore has to
+     *  *already hold* the body, which is what this mirror is for. */
+    private var mirroredBodyHtml: String = ""
+
+    /** What [ComposeDraftCache] handed this instance on the way in, so a test can assert that a
+     *  teardown did not throw the draft away. Holds no plaintext the cache did not already hold. */
+    @androidx.annotation.VisibleForTesting
+    internal var restoredDraftForTest: CachedDraft? = null
+        private set
+
+    @androidx.annotation.VisibleForTesting
+    internal fun mirroredBodyHtmlForTest(): String = mirroredBodyHtml
+
+    private val bodyMirror = object : Runnable {
+        override fun run() {
+            bodyEditor.exportHtml { mirroredBodyHtml = it }
+            mainHandler.postDelayed(this, BODY_MIRROR_INTERVAL_MS)
+        }
+    }
     private val attachments = mutableListOf<OutgoingAttachment>()
 
     /** The in-flight preflight; cancelled so a late result cannot re-show a dismissed warning. */
@@ -197,6 +222,7 @@ class ComposeActivity : LockedActivity() {
         // A draft the app lock destroyed on a previous entry wins over the intent's prefill: the
         // user typed it, and it is strictly newer than whatever Reply/Forward put there.
         val restored = ComposeDraftCache.take()
+        restoredDraftForTest = restored
         if (restored != null) {
             subjectField.setText(restored.subject)
             toInput.setInitialRecipients(restored.to)
@@ -282,6 +308,9 @@ class ComposeActivity : LockedActivity() {
         toInput.applyTheme()
         ccInput.applyTheme()
         bccInput.applyTheme()
+        // post, not postDelayed: the first mirror has to exist before the first teardown can.
+        mainHandler.removeCallbacks(bodyMirror)
+        mainHandler.post(bodyMirror)
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
@@ -824,10 +853,12 @@ class ComposeActivity : LockedActivity() {
     /** `onStop`, not `onDestroy`: [bodyEditor]'s HTML export is async and needs a live WebView. */
     override fun onStop() {
         super.onStop()
+        mainHandler.removeCallbacks(bodyMirror)
         // onCreate bailed before assigning any view: there is no composition to stash, and
         // touching the lateinit fields below would throw.
         if (redirectedToUnlock) return
         if (isFinishing) {
+            mirroredBodyHtml = ""
             ComposeDraftCache.clear()
             return
         }
@@ -839,26 +870,33 @@ class ComposeActivity : LockedActivity() {
         val currentAttachments = attachments.toList()
         val encrypt = encryptChip.isChecked
         val sign = signChip.isChecked
+        val snapshot = CachedDraft(
+            to = to,
+            cc = cc,
+            bcc = bcc,
+            subject = subject,
+            bodyHtml = mirroredBodyHtml,
+            attachments = currentAttachments,
+            encrypt = encrypt,
+            sign = sign,
+        )
+        // Synchronously, from the mirror: everything after this line is best effort.
+        ComposeDraftCache.save(snapshot)
+        // The upgrade to the very last keystrokes, when the export still lands in time. Still
+        // guarded: once destroyed, the replacement Activity has already taken the draft, and
+        // re-saving would put a stale copy back for whoever opens Compose next.
         bodyEditor.exportHtml { html ->
-            // Guarded like every other exportHtml callback: this one writes into a process-scoped static.
             if (isDestroyed) return@exportHtml
-            ComposeDraftCache.save(
-                CachedDraft(
-                    to = to,
-                    cc = cc,
-                    bcc = bcc,
-                    subject = subject,
-                    bodyHtml = html,
-                    attachments = currentAttachments,
-                    encrypt = encrypt,
-                    sign = sign,
-                ),
-            )
+            ComposeDraftCache.save(snapshot.copy(bodyHtml = html))
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        // Both hold message plaintext, and neither is reachable from InMemoryPlaintext.clearAll().
+        // Whatever the cache needed is already in it by now — onStop saved synchronously.
+        mirroredBodyHtml = ""
+        restoredDraftForTest = null
         // No redirectedToUnlock guard: ioExecutor is a property initializer, so it exists even
         // when onCreate bailed, and skipping shutdown would leak its thread.
         ioExecutor.shutdownNow()
@@ -876,6 +914,9 @@ class ComposeActivity : LockedActivity() {
         const val EXTRA_BODY_HTML = "compose_body_html"
 
         private const val TAG = "ComposeActivity"
+
+        /** The mirror's cadence, and so the ceiling on how much typing a sudden teardown costs. */
+        private const val BODY_MIRROR_INTERVAL_MS = 2_000L
 
         /** Mirror of the backend maxMailAttachmentBytes (25 MB total decoded). Named in
          *  [MemoryBudget] rather than here, because what this admits decides what a send costs —

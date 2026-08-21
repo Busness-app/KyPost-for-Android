@@ -15,36 +15,54 @@
             android:id="@+id/rowAddressLabel"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="4dp" />
+            android:layout_marginBottom="4dp"
+            android:hint="@string/contacts_address_label_hint"
+            android:importantForAutofill="no"
+            android:inputType="textCapWords" />
 
         <EditText
             android:id="@+id/rowAddressStreet"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="4dp" />
+            android:layout_marginBottom="4dp"
+            android:hint="@string/contacts_address_street_hint"
+            android:importantForAutofill="no"
+            android:inputType="textPostalAddress" />
 
         <EditText
             android:id="@+id/rowAddressCity"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="4dp" />
+            android:layout_marginBottom="4dp"
+            android:hint="@string/contacts_address_city_hint"
+            android:importantForAutofill="no"
+            android:inputType="textPostalAddress|textCapWords" />
 
         <EditText
             android:id="@+id/rowAddressRegion"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="4dp" />
+            android:layout_marginBottom="4dp"
+            android:hint="@string/contacts_address_region_hint"
+            android:importantForAutofill="no"
+            android:inputType="textPostalAddress|textCapWords" />
 
         <EditText
             android:id="@+id/rowAddressPostalCode"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="4dp" />
+            android:layout_marginBottom="4dp"
+            android:hint="@string/contacts_address_postal_code_hint"
+            android:importantForAutofill="no"
+            android:inputType="textPostalAddress|textCapCharacters" />
 
         <EditText
             android:id="@+id/rowAddressCountry"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content" />
+            android:layout_height="wrap_content"
+            android:hint="@string/contacts_address_country_hint"
+            android:importantForAutofill="no"
+            android:inputType="textPostalAddress|textCapWords" />
 
     </LinearLayout>
 
@@ -54,7 +72,7 @@
         android:layout_height="40dp"
         android:layout_marginStart="8dp"
         android:gravity="center"
-        android:text="✕"
+        android:text="@string/contacts_field_remove_glyph"
         android:textSize="18sp"
         android:clickable="true"
         android:focusable="true"
