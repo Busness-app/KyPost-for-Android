@@ -26,6 +26,7 @@ import org.kysecurity.mail.mail.MailOutcome
 import org.kysecurity.mail.mail.MailRepository
 import org.kysecurity.mail.mail.MailRuntime
 import org.kysecurity.mail.mail.isFlaggedPhishing
+import org.kysecurity.mail.mail.notifiedMessage
 import org.kysecurity.mail.mail.userFacingMessage
 import org.kysecurity.mail.push.PushNotificationDispatcher
 import java.util.concurrent.ExecutorService
@@ -293,14 +294,7 @@ class InboxActivity : LockedActivity() {
 
     private fun checkPendingMessage(emails: List<Email>, isFinal: Boolean = false) {
         val id = pendingMessageId ?: return
-        
-        // Fuzzy fallback for IMAP id mismatches. Needs a non-blank sender: contains("") matches anything.
-        val email = emails.find { it.id == id }
-            ?: pendingSender
-                ?.takeIf { it.isNotBlank() }
-                ?.let { sender ->
-                    emails.find { it.sender.contains(sender, ignoreCase = true) && it.subject == pendingSubject }
-                }
+        val email = notifiedMessage(emails, id, pendingSender, pendingSubject)
 
         if (email != null) {
             pendingMessageId = null

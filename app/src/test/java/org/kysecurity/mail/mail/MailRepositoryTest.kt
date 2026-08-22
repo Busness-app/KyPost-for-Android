@@ -58,14 +58,25 @@ private fun email(id: String, body: String? = "body-$id", status: String = "unre
     sourceMode = "relay",
 )
 
-private fun row(id: String, folder: String, body: String? = null, status: String = "unread") = EmailEntity(
+private fun row(
+    id: String,
+    folder: String,
+    body: String? = null,
+    status: String = "unread",
+    sentTo: String = "",
+    cc: String = "",
+    pgpEncrypted: Boolean = false,
+) = EmailEntity(
     messageId = id,
     folder = folder,
     sender = "x",
+    sentTo = sentTo,
+    cc = cc,
     subject = "subject-$folder-$id",
     body = body,
     status = status,
     sourceMode = "relay",
+    pgpEncrypted = pgpEncrypted,
 )
 
 private fun FakeEmailDao.put(entity: EmailEntity) {
@@ -334,6 +345,68 @@ class MailRepositoryTest {
         val outcome = repo.fetchBody("42", "Archive")
 
         assertEquals("archive body", (outcome as MailOutcome.Success).value.html)
+    }
+
+    /** Reply All's only source of recipients: nothing in a relay response ever populates them, so
+     *  dropping them here made Reply All indistinguishable from Reply. */
+    @Test
+    fun cachedRecipientsAreParsedForReplyAll() {
+        val dao = FakeEmailDao()
+        dao.put(
+            row(
+                "42",
+                "INBOX",
+                body = "hello",
+                sentTo = "me@example.com, Team <team@example.com>",
+                cc = " watcher@example.com ,, WATCHER@example.com ",
+            ),
+        )
+        val repo = repository(dao, FakeMailSource())
+
+        val body = (repo.fetchBody("42", "INBOX") as MailOutcome.Success).value
+
+        assertEquals(listOf("me@example.com", "Team <team@example.com>"), body.toAddresses)
+        assertEquals(listOf("watcher@example.com"), body.ccAddresses)
+    }
+
+    @Test
+    fun noRecipientHeadersYieldEmptyListsRatherThanBlankAddresses() {
+        val dao = FakeEmailDao()
+        dao.put(row("42", "INBOX", body = "hello"))
+        val repo = repository(dao, FakeMailSource())
+
+        val body = (repo.fetchBody("42", "INBOX") as MailOutcome.Success).value
+
+        assertEquals(emptyList<String>(), body.toAddresses)
+        assertEquals(emptyList<String>(), body.ccAddresses)
+    }
+
+    /** A blank cached body must NOT be re-routed to the relay. `fetchMessageBody` is a hard-fail
+     *  stub (the inbox listing carries bodies inline), so routing there turns the client-protected
+     *  shape — pgpEncrypted with no body — into BODY_UNAVAILABLE and drops the webmail handoff.
+     *  `FakeMailSource.fetchMessageBody` throws, so a regression fails loudly rather than quietly. */
+    @Test
+    fun clientProtectedRowIsServedFromCacheAndNeverRefetched() {
+        val dao = FakeEmailDao()
+        dao.put(row("42", "INBOX", body = null, pgpEncrypted = true))
+        val repo = repository(dao, FakeMailSource())
+
+        val body = (repo.fetchBody("42", "INBOX") as MailOutcome.Success).value
+
+        assertEquals("", body.html)
+    }
+
+    /** The other half of the same rule: no row at all IS a cache miss, and must reach the source. */
+    @Test
+    fun missingRowFallsThroughToTheRelay() {
+        val repo = repository(FakeEmailDao(), FakeMailSource())
+
+        try {
+            repo.fetchBody("42", "INBOX")
+            throw AssertionError("expected the relay source to be consulted")
+        } catch (expected: UnsupportedOperationException) {
+            // FakeMailSource.fetchMessageBody: reaching it is the assertion.
+        }
     }
 
     /** The documented mitigation for a UIDVALIDITY reset (see `EmailEntity`): the daily since=0

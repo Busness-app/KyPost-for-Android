@@ -39,13 +39,35 @@ kotlinxCoroutinesPlayServices = "1.10.2"
 playServicesCodeScanner = "16.1.0"
 googleServices = "4.4.4"
 securityCrypto = "1.1.0"
-# Newest stable; alphas above it back the MFA gate and unlock vault. REVIEW BY 2027-02-01.
+# Newest stable, and abandoned at this branch. Audited 2026-08-21; staying on 1.1.0 deliberately.
 #
-# "Newest stable" is accurate and is not a defence: it means the library is ABANDONED at this
-# branch, five years back, under an app whose unlock vault and MFA gate both depend on it. The
-# review is not "is there a newer stable" (there is not, and there may never be) — it is: write
-# down what in 1.1.0 has been audited and is being relied on, or move to the 1.2.0-alpha line and
-# say what that buys. A date alone defers the question without recording it.
+# What is relied on (the whole surface — nothing else is imported):
+#   BiometricManager.from().canAuthenticate(BIOMETRIC_STRONG)          UnlockActivity availability gate
+#   PromptInfo.Builder.setAllowedAuthenticators(BIOMETRIC_STRONG)      UnlockActivity
+#   ...setAllowedAuthenticators(BIOMETRIC_STRONG or DEVICE_CREDENTIAL) VaultOpenerAndroid, DeviceEnrollmentActivity
+#   BiometricPrompt(activity, executor, AuthenticationCallback)        all three
+#   prompt.authenticate(info, CryptoObject(cipher)) / cancelAuthentication()
+#
+# Why the abandonment is tolerable: this library is UI glue, not the trust boundary. Every secret
+# is sealed under an AndroidKeyStore key built with setUserAuthenticationRequired(true) and
+# setUserAuthenticationParameters(0, ...) — per-use auth (EnrollmentVault, BiometricUnlockVault).
+# The Keystore, not androidx.biometric, refuses to unwrap the cipher without a fresh user auth, so
+# a library defect can drop or mis-render a prompt but cannot hand back an unauthenticated key.
+# BiometricUnlockVault additionally sets setInvalidatedByBiometricEnrollment(true).
+#
+# Known 1.1.0 defects and their handling:
+#   - the prompt is not resolved across a configuration change; DeviceEnrollmentActivity.onDestroy
+#     resolves it by hand (see the comment there).
+#   - a prompt requested after FragmentManager state-save is dropped with no callback; every call
+#     site checks isStateSaved on Main immediately before authenticate().
+#
+# API-level matrix: minSdk 31 / targetSdk 36. The CryptoObject-with-DEVICE_CREDENTIAL combination
+# is unsupported below API 30, which minSdk 31 puts out of reach. UNPROVEN: no instrumented run
+# across the 31..36 matrix exists — TlsPinNarrowingTest-style androidTest coverage for the two
+# CryptoObject paths is the outstanding work, not another version bump.
+#
+# The 1.2.0-alpha line buys AndroidX Credential Manager interop we do not use. Revisit only if a
+# defect above stops being workable-around, or if a stable 1.2.0 ships.
 biometric = "1.1.0"
 workRuntime = "2.10.1"
 lifecycleProcess = "2.9.4"

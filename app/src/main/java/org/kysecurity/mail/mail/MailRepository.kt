@@ -1,6 +1,7 @@
 package org.kysecurity.mail.mail
 
 import org.kysecurity.mail.Email
+import org.kysecurity.mail.splitAddresses
 import org.kysecurity.mail.data.EmailDao
 import org.kysecurity.mail.data.toEntity
 import org.kysecurity.mail.data.toUiEmail
@@ -86,15 +87,20 @@ class MailRepository(
     fun downloadAttachment(id: String, folder: String, index: Int): MailOutcome<DownloadedAttachment> =
         relaySource.downloadAttachment(id, folder, index)
 
-    // "No row" must not look like an empty body: empty + pgpEncrypted is the client-protected shape.
+    // "No row" must not look like an empty body: empty + pgpEncrypted is the client-protected
+    // shape, and a blank body must NOT be re-routed to the relay — /api/inbox carries the body
+    // inline, `fetchMessageBody` is a hard-fail stub, and its failure means BODY_UNAVAILABLE,
+    // which would erase the client-protected state and its webmail handoff. See `fetchBody` tests.
     fun fetchBody(id: String, folder: String): MailOutcome<MailMessageBody> {
         val row = emailDao.getById(id, folder) ?: return relaySource.fetchMessageBody(id, folder)
         return MailOutcome.Success(
             MailMessageBody(
                 html = row.body?.takeIf { it.isNotBlank() }.orEmpty(),
                 bodyMode = row.bodyMode,
-                toAddresses = emptyList(),
-                ccAddresses = emptyList(),
+                // The cache is the only source of these: no relay response ever populates them, so
+                // dropping them here is what makes Reply All reply to the sender alone.
+                toAddresses = splitAddresses(row.sentTo),
+                ccAddresses = splitAddresses(row.cc),
             ),
         )
     }
