@@ -267,20 +267,26 @@ class PushRepository(
         return residue
     }
 
-    /** Best-effort deregister then unconditional clear; SecurityWipe passes a pre-captured pairing. */
+    /** Best-effort deregister then unconditional clear; SecurityWipe passes a pre-captured pairing.
+     *
+     *  Returns [clearPairing]'s residue as well as the network result. Dropping it here was the
+     *  hole: pairing proof is gone either way, so the next [PushSyncCoordinator.attemptPairing]
+     *  sees no existing pairing, skips its replacement purge, and the new account inherits
+     *  whatever survived. No table carries a subscriber column, so survivors are readable by
+     *  whoever pairs next -- the caller must escalate a non-empty residue to a full wipe. */
     suspend fun unpairDevice(
         deregisterClient: DeregisterClient,
         pairing: PairingData? = pairingForAuthenticatedCall(),
-    ): DeregisterResult {
+    ): UnpairOutcome {
         val networkResult = if (pairing != null) {
             deregisterClient.deregister(pairing)
         } else {
             DeregisterResult.Error("Device is not paired")
         }
         tearDownPushTransport()
-        clearPairing()
+        val residue = clearPairing()
         PullScheduler.cancelPeriodic(context)
-        return networkResult
+        return UnpairOutcome(networkResult, residue)
     }
 
     /** Severs the delivery channel itself. Not called from [PushSyncCoordinator]'s replacement path. */

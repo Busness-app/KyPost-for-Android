@@ -49,6 +49,18 @@ class ContactSyncRepository(
         val pendingChanges = db.pendingContactChangeDao().getAllPending()
         val cursor = cursorStore.cursor(pairing.subscriberId)
 
+        // Fail closed BEFORE the network call. A row this app cannot encode used to become an
+        // empty ContactDto, which the server accepts as a real update and applyDelta then clears
+        // from the outbox -- silently replacing the contact with a blank one, original gone.
+        val wireChanges = pendingChanges.map { it to it.toWireDtoOrNull(json) }
+        val undecodable = wireChanges.mapNotNull { (row, dto) -> row.takeIf { dto == null } }
+        if (undecodable.isNotEmpty()) {
+            return@withLock ContactSyncOutcome.Retry(
+                "Contact sync stopped: ${undecodable.size} queued change(s) are unreadable " +
+                    "(${undecodable.joinToString { it.changeType }}). Nothing was sent or discarded.",
+            )
+        }
+
         val result = if (pendingChanges.isEmpty()) {
             client.pull(pairing.serverUrl, deviceId, deviceSecret, cursor)
         } else {
@@ -57,7 +69,7 @@ class ContactSyncRepository(
                 deviceId = deviceId,
                 deviceSecret = deviceSecret,
                 baseCursor = cursor,
-                changes = pendingChanges.map(::toWireDto),
+                changes = wireChanges.mapNotNull { it.second },
             )
         }
 
@@ -139,22 +151,16 @@ class ContactSyncRepository(
         }
     }
 
-    private fun toWireDto(change: PendingContactChangeEntity): ContactDto = when (change.changeType) {
-        CHANGE_DELETE -> ContactDto(uid = change.localUid, rev = change.rev, deleted = true)
-        CHANGE_CREATE -> decodePayload(change).copy(uid = "")
-        else -> decodePayload(change).copy(uid = change.localUid, rev = change.rev)
-    }
-
-    private fun decodePayload(change: PendingContactChangeEntity): ContactDto =
-        runCatching { json.decodeFromString<ContactDto>(change.payloadJson) }.getOrDefault(ContactDto())
-
     private suspend fun applyDelta(
         subscriberId: String,
         response: ContactSyncPullResponseDto,
         flushedChanges: List<PendingContactChangeEntity>,
     ) {
         if (response.tooOld) {
-            // Non-destructive: reset the cursor but do NOT clear, or flushed changes get replayed.
+            // Wire contract: the server applies the pushed changes BEFORE it computes tooOld, so
+            // they are already persisted and the outbox rows MUST be cleared. Replaying them
+            // duplicates every create (toWireDtoOrNull sends a blank uid, so the server mints a new one).
+            // Only the cursor is discarded, which makes the next sync a full since=0 re-pull.
             db.withTransaction {
                 cursorStore.resetCursor(subscriberId)
                 if (flushedChanges.isNotEmpty()) {
@@ -194,6 +200,18 @@ class ContactSyncRepository(
         const val CHANGE_DELETE = "delete"
     }
 }
+
+/** Null when this outbox row cannot be turned into a wire change -- corrupt payload or a change
+ *  type this build does not know. Callers must abandon the sync rather than send a substitute. */
+internal fun PendingContactChangeEntity.toWireDtoOrNull(json: Json): ContactDto? = when (changeType) {
+    ContactSyncRepository.CHANGE_DELETE -> ContactDto(uid = localUid, rev = rev, deleted = true)
+    ContactSyncRepository.CHANGE_CREATE -> decodePayload(json)?.copy(uid = "")
+    ContactSyncRepository.CHANGE_UPDATE -> decodePayload(json)?.copy(uid = localUid, rev = rev)
+    else -> null
+}
+
+private fun PendingContactChangeEntity.decodePayload(json: Json): ContactDto? =
+    runCatching { json.decodeFromString<ContactDto>(payloadJson) }.getOrNull()
 
 internal suspend fun resolveDedupeOutcome(
     pairingProvider: suspend () -> PairingData?,

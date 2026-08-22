@@ -29,6 +29,24 @@ sealed interface PinPosture {
     object TofuWindow : PinPosture
 }
 
+/** A leaf-SPKI pin carried in the pairing QR/deep link, attached to the registration request with
+ *  `.tag(LinkPin::class.java, ...)` so the very first call is pinned.
+ *
+ *  Scope, precisely: this closes the hostile-NETWORK hole, where a locally trusted CA intercepts
+ *  the one request that carries `pairingToken` and the WebPush keys. It does NOT defend a hostile
+ *  LINK -- whoever writes the link can omit `pin` and put us back in the TOFU window. The link
+ *  itself is trusted out-of-band, by the user reading it off their own relay. */
+data class LinkPin(val host: String, val spkiSha256: String)
+
+/** Normalises a `pin` link parameter to OkHttp's `sha256/<base64>` form, or null if it is not a
+ *  base64 SHA-256. Null must fail the pairing: a pin we cannot parse is not a reason to downgrade. */
+fun normalizeSpkiPin(raw: String): String? {
+    val body = raw.trim().removePrefix("sha256/")
+    // 32 raw bytes of SHA-256 is exactly 44 base64 characters with one '=' of padding.
+    if (!Regex("^[A-Za-z0-9+/]{43}=$").matches(body)) return null
+    return "sha256/" + body
+}
+
 /** Redirects disabled: OkHttp does not strip our custom credential headers cross-host. */
 private val basePairingClient: OkHttpClient by lazy {
     OkHttpClient.Builder()
