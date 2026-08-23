@@ -1,11 +1,8 @@
 package org.kysecurity.mail
 
-import android.content.ContentValues
 import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
-import android.os.Environment
-import android.provider.MediaStore
 import android.text.TextUtils
 import android.view.View
 import android.webkit.WebResourceRequest
@@ -778,7 +775,9 @@ class EmailDetailActivity : LockedActivity() {
                     if (!isFinishing && !isDestroyed) viewAttachmentEphemerally(downloaded)
                 }
                 org.kysecurity.mail.security.AttachmentAction.SAVE_TO_DOWNLOADS -> {
-                    val saved = saveToDownloads(downloaded.name, downloaded.mimeType, downloaded.bytes)
+                    val saved = org.kysecurity.mail.security.saveAttachmentToDownloads(
+                        this, downloaded.name, downloaded.mimeType, downloaded.bytes,
+                    )
                     val message = if (saved) getString(R.string.attachment_saved, info.name) else getString(R.string.attachment_save_failed, info.name)
                     runOnUiThread {
                         if (isFinishing || isDestroyed) return@runOnUiThread
@@ -828,29 +827,6 @@ class EmailDetailActivity : LockedActivity() {
         runCatching { startActivity(chooser) }.onFailure {
             Toast.makeText(this, getString(R.string.attachment_save_failed, downloaded.name), Toast.LENGTH_LONG).show()
         }
-    }
-
-    /** Name and type come from the sender's headers, unfiltered by the relay: sanitise both. */
-    private fun saveToDownloads(name: String, mimeType: String, bytes: ByteArray): Boolean {
-        val resolver = contentResolver
-        val safeType = safeMimeType(mimeType)
-        val values = ContentValues().apply {
-            // The name's extension is derived from safeType, not from the sender's filename.
-            put(MediaStore.Downloads.DISPLAY_NAME, safeFileName(name, safeType))
-            put(MediaStore.Downloads.MIME_TYPE, safeType)
-            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
-        }
-        return runCatching {
-            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                ?: return false
-            // Recorded BEFORE a byte is written, and with commit(): this row is the only thing that
-            // makes a file outside the sandbox reachable by a later wipe, so it has to be durable
-            // before the file exists. Recorded after, a crash in openOutputStream leaves decrypted
-            // mail in shared storage that nothing will ever find again.
-            org.kysecurity.mail.security.DownloadedAttachmentLedger.record(this, uri)
-            resolver.openOutputStream(uri)?.use { it.write(bytes) } ?: return false
-            true
-        }.getOrDefault(false)
     }
 
     override fun onResume() {

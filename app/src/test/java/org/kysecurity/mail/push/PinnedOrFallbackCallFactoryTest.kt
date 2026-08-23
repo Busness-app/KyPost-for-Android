@@ -37,9 +37,10 @@ class PinnedOrFallbackCallFactoryTest {
     fun usesThePinnedClientWhenAPinExists() {
         val pinned = RecordingFactory()
         val fallback = RecordingFactory()
+        val pin = TlsPin("relay.example", setOf("sha256/x"))
         val factory = PinnedOrFallbackCallFactory(
-            pinnedProvider = { pinned },
-            pinStateProvider = { TlsPinState.Pinned(TlsPin("relay.example", setOf("sha256/x"))) },
+            pinnedProvider = { pin to pinned },
+            pinStateProvider = { TlsPinState.Pinned(pin) },
             fallback = fallback,
         )
 
@@ -47,6 +48,27 @@ class PinnedOrFallbackCallFactoryTest {
 
         assertSame(1, pinned.calls)
         assertSame(0, fallback.calls)
+    }
+
+    /** A pinned client pins the ONE host it was built for; `CertificatePinner` passes every other
+     *  host vacuously. So a request that does not match the pin must be refused rather than sent
+     *  with this device's credentials on plain system trust — the state a re-pair racing an
+     *  in-flight call used to be able to produce. */
+    @Test
+    fun refusesARequestForAHostThePinDoesNotCover() {
+        val pinned = RecordingFactory()
+        val fallback = RecordingFactory()
+        val factory = PinnedOrFallbackCallFactory(
+            pinnedProvider = { TlsPin("other-relay.example", setOf("sha256/x")) to pinned },
+            pinStateProvider = { TlsPinState.Pinned(TlsPin("other-relay.example", setOf("sha256/x"))) },
+            fallback = fallback,
+        )
+
+        val call = factory.newCall(request)
+
+        assertThrows(SSLPeerUnverifiedException::class.java) { call.execute() }
+        assertSame("the mismatched pinned client must not be used", 0, pinned.calls)
+        assertSame("and it must not fall through to the unpinned client", 0, fallback.calls)
     }
 
     /** A `pin` in the pairing link narrows the TOFU window to one key for the one request that
