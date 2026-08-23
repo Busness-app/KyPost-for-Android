@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
     android:id="@+id/composeRoot"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
@@ -13,8 +14,13 @@
         app:labelVisibilityMode="labeled"
         app:menu="@menu/bottom_nav_menu" />
 
+    <!-- tools:ignore="InconsistentLayout": composeContent is deliberately only in the wide
+         layout, which is the one with a nav rail beside the content. ComposeActivity reads it as
+         `findViewById<View?>(R.id.composeContent) ?: rootView`, so the phone layout's absence is
+         the documented path, not a missing widget. -->
     <LinearLayout
         android:id="@+id/composeContent"
+        tools:ignore="InconsistentLayout"
         android:layout_width="0dp"
         android:layout_height="match_parent"
         android:layout_weight="1"

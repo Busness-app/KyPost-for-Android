@@ -35,12 +35,19 @@ object AppRestart {
         // Quiesce BEFORE dropping DataRuntime, which closes the database it owns. Mail mutations are
         // deliberately fired on a pool that outlives the screen that started them, so closing the
         // database out from under one is an uncaught exception on a non-UI thread — a process kill.
+        // Suspended for the whole teardown, not just up to it: submissions in between would run
+        // against graphs that are being dropped. `finally`, because the process survives a relaunch
+        // and the screen it lands on still needs mail actions to work.
         org.kysecurity.mail.MailBackgroundExecutor.quiesce()
-        MailRuntime.invalidate()
-        DeviceContactsRuntime.invalidate()
-        ContactsRuntime.invalidate()
-        PushRuntime.invalidate()
-        SecurityRuntime.invalidate()
-        DataRuntime.invalidate()
+        try {
+            MailRuntime.invalidate()
+            DeviceContactsRuntime.invalidate()
+            ContactsRuntime.invalidate()
+            PushRuntime.invalidate()
+            SecurityRuntime.invalidate()
+            DataRuntime.invalidate()
+        } finally {
+            org.kysecurity.mail.MailBackgroundExecutor.resume()
+        }
     }
 }

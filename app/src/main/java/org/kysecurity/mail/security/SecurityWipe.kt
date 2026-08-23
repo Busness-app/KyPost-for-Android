@@ -97,7 +97,21 @@ object SecurityWipe {
 
     /** [NonCancellable]: a half-finished wipe is worse than either outcome. */
     suspend fun wipeAndResetApp(context: Context): WipeResult =
-        withContext(Dispatchers.IO + NonCancellable) { wipeGate.withLock { runWipe(context) } }
+        withContext(Dispatchers.IO + NonCancellable) {
+            wipeGate.withLock {
+                // Mail work stays suspended for the WHOLE wipe, not just the database step: a task
+                // submitted after that step builds a fresh [org.kysecurity.mail.mail.MailGraph],
+                // and building one builds a [DataRuntime] graph, which recreates on disk the
+                // database this routine has just deleted. `finally`, because the process survives
+                // the wipe — see [org.kysecurity.mail.security.AppRestart].
+                org.kysecurity.mail.MailBackgroundExecutor.quiesce()
+                try {
+                    runWipe(context)
+                } finally {
+                    org.kysecurity.mail.MailBackgroundExecutor.resume()
+                }
+            }
+        }
 
     private suspend fun runWipe(context: Context): WipeResult {
         val appContext = context.applicationContext
@@ -448,17 +462,23 @@ object SecurityWipe {
         val appContext = context.applicationContext
 
         // ORDER MATTERS: quiesce first, then take() — invalidate()+graph() would close a new DB.
+        // The suspension covers the delete as well as the close, or a task submitted in between
+        // writes to the database this is erasing. Re-entrant: [runWipe] already holds one.
         val settled = org.kysecurity.mail.MailBackgroundExecutor.quiesce()
-        val doomed = DataRuntime.takeGraph()
-        runCatching { doomed?.database?.close() }
-            .onFailure { android.util.Log.e(TAG, "Failed to close the database before deleting it", it) }
-        val deleted = appContext.deleteDatabase(org.kysecurity.mail.data.DATABASE_NAME)
-        // Reported, not merely logged: a false return means the file is still there.
-        if (!deleted && appContext.getDatabasePath(org.kysecurity.mail.data.DATABASE_NAME).exists()) {
-            throw IOException(
-                "${org.kysecurity.mail.data.DATABASE_NAME} still exists after deletion" +
-                    if (!settled) " (mail work did not quiesce first)" else "",
-            )
+        try {
+            val doomed = DataRuntime.takeGraph()
+            runCatching { doomed?.database?.close() }
+                .onFailure { android.util.Log.e(TAG, "Failed to close the database before deleting it", it) }
+            val deleted = appContext.deleteDatabase(org.kysecurity.mail.data.DATABASE_NAME)
+            // Reported, not merely logged: a false return means the file is still there.
+            if (!deleted && appContext.getDatabasePath(org.kysecurity.mail.data.DATABASE_NAME).exists()) {
+                throw IOException(
+                    "${org.kysecurity.mail.data.DATABASE_NAME} still exists after deletion" +
+                        if (!settled) " (mail work did not quiesce first)" else "",
+                )
+            }
+        } finally {
+            org.kysecurity.mail.MailBackgroundExecutor.resume()
         }
     }
 
