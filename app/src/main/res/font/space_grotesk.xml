@@ -1,5 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- tools:ignore="FontValidation": lint says minSdk 31 needs only the android: attributes,
+     and for a font the FRAMEWORK inflates that is true. Nothing here reaches the framework
+     parser. Every text view in this app is an AppCompat one, and AppCompatTextHelper
+     resolves fontFamily through TintTypedArray.getFont -> ResourcesCompat ->
+     FontResourcesParserCompat, which reads R.styleable.FontFamily: the androidx attrs,
+     app: only, with no android: fallback in it. Taking lint's advice returns a null provider
+     entry from that parser, and the app silently falls back to the platform default face.
+     Re-check against androidx.core if that parser ever learns the android: namespace. -->
 <font-family xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    tools:ignore="FontValidation"
     app:fontProviderAuthority="com.google.android.gms.fonts"
     app:fontProviderPackage="com.google.android.gms"
     app:fontProviderQuery="Space Grotesk"

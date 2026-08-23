@@ -59,6 +59,48 @@ class WipeResurrectionTest {
         )
     }
 
+    /** The other half of that ordering: work submitted WHILE the wipe runs.
+     *
+     *  `quiesce()` used to install a fresh pool on its way out, so the lane it was supposed to shut
+     *  reopened immediately — a notification tap or a mark-read landing mid-wipe got a live thread,
+     *  a rebuilt [DataRuntime] graph, and a recreated `kypost_mail.db` behind a wipe that had
+     *  already reported the file deleted. Mail work is now suspended for the whole wipe. */
+    @Test
+    fun wipe_refusesMailWorkSubmittedWhileItRuns(): Unit = runBlocking {
+        DataRuntime.graph(context).database.openHelper.writableDatabase
+        assertTrue("precondition: db exists", dbFile().exists())
+
+        val wipeRunning = java.util.concurrent.atomic.AtomicBoolean(false)
+        val stop = java.util.concurrent.atomic.AtomicBoolean(false)
+        val ranDuringWipe = java.util.concurrent.atomic.AtomicInteger(0)
+        val submitter = Thread {
+            while (!stop.get()) {
+                org.kysecurity.mail.MailBackgroundExecutor.submit {
+                    // Scoped to the wipe's window so the tail of this thread, running after the
+                    // wipe has legitimately restored the pool, cannot recreate the file itself.
+                    if (!wipeRunning.get()) return@submit
+                    ranDuringWipe.incrementAndGet()
+                    // The resurrection primitive, called directly: building a data graph opens —
+                    // and therefore creates — the database file the wipe has just deleted.
+                    DataRuntime.graph(context).database.openHelper.writableDatabase
+                }
+                Thread.sleep(1)
+            }
+        }.apply { start() }
+
+        try {
+            wipeRunning.set(true)
+            SecurityWipe.wipeAndResetApp(context)
+        } finally {
+            wipeRunning.set(false)
+            stop.set(true)
+            submitter.join(5_000)
+        }
+
+        assertEquals("no mail task may run while a wipe is destroying the database", 0, ranDuringWipe.get())
+        assertFalse("kypost_mail.db must not be recreated by work racing the wipe", dbFile().exists())
+    }
+
     /** Under HLP the resurrected graph was disk-backed, since the flag file was already deleted. */
     @Test
     fun wipe_underHostileLocation_leavesNoDatabaseOnDisk(): Unit = runBlocking {

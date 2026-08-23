@@ -68,29 +68,50 @@ class PinnedOrFallbackCallFactory(
     /** Null when the request carries no link pin, so the caller falls back to the TOFU window. */
     private fun linkPinnedCall(request: Request): Call? {
         val linkPin = request.tag(org.kysecurity.mail.LinkPin::class.java) ?: return null
-        val client = linkPinnedClients.getOrPut(linkPin) {
-            pairingHttpClient(PinPosture.Pinned(host = linkPin.host, spkiSha256 = setOf(linkPin.spkiSha256)))
-        }
+        // Built for this call and dropped with it. These were cached, keyed by the pin, behind a
+        // comment claiming the map was "bounded in practice" — it was keyed by whatever host and
+        // pin a BROWSABLE pairing link supplied, so any app on the device could grow it without
+        // ever completing a pairing. The saving was never real either: [pairingHttpClient] derives
+        // from one shared base client, so this is a config wrapper over an already-shared
+        // dispatcher and connection pool, in front of a call that is about to do a TLS handshake.
+        val client = pairingHttpClient(
+            PinPosture.Pinned(host = linkPin.host, spkiSha256 = setOf(linkPin.spkiSha256)),
+        )
         return client.newCall(request)
     }
-
-    /** Keyed by the whole pin, so a client is never reused against a different one. Bounded in
-     *  practice by how many distinct relays a device pairs with before one succeeds. */
-    private val linkPinnedClients = java.util.concurrent.ConcurrentHashMap<org.kysecurity.mail.LinkPin, Call.Factory>()
 }
 
 /** A [Call] that fails with [cause] the moment it is executed or enqueued, so a refusal reaches
  *  callers through the same `IOException` path every other network failure does. */
 private class FailedCall(private val request: Request, private val cause: java.io.IOException) : Call {
     @Volatile private var canceled = false
+
+    /** A [Call] is single-use. Reporting `isExecuted() == false` after a refusal would offer a
+     *  spent call back to any retry or instrumentation that asks, which is the one question this
+     *  flag exists to answer. */
+    private val executed = java.util.concurrent.atomic.AtomicBoolean(false)
+
     override fun request(): Request = request
-    override fun execute(): okhttp3.Response = throw cause
-    override fun enqueue(responseCallback: okhttp3.Callback) = responseCallback.onFailure(this, cause)
+
+    override fun execute(): okhttp3.Response {
+        markExecuted()
+        throw cause
+    }
+
+    /** Delivered inline, unlike a real dispatch: the failure is known before any I/O, so there is
+     *  nothing to wait for and no dispatcher of our own to hand it to. */
+    override fun enqueue(responseCallback: okhttp3.Callback) {
+        markExecuted()
+        responseCallback.onFailure(this, cause)
+    }
+
     override fun cancel() { canceled = true }
-    override fun isExecuted(): Boolean = false
+    override fun isExecuted(): Boolean = executed.get()
     override fun isCanceled(): Boolean = canceled
     override fun timeout(): okio.Timeout = okio.Timeout.NONE
     override fun clone(): Call = FailedCall(request, cause)
+
+    private fun markExecuted() = check(executed.compareAndSet(false, true)) { "Already Executed" }
 }
 
 /** Shared by every client outside [PushGraph]; its own clients would recurse building it. */
