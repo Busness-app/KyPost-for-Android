@@ -8,41 +8,63 @@ import okhttp3.Call
 import okhttp3.Request
 import javax.net.ssl.SSLPeerUnverifiedException
 
-/** Caches a pinned [Call.Factory] from the stored TOFU pin; null until one is captured. */
+/** Caches a pinned [Call.Factory] together with the pin it enforces; null until one is captured.
+ *
+ *  The pin travels WITH the client because a client only pins the host it was built for, and the
+ *  caller has to be able to check that against the request it is about to send. */
 class PinnedCallFactoryProvider(
     private val tlsPinProvider: () -> TlsPin?,
     /** Passed through to [pairingHttpClient]; null keeps OkHttp's per-phase defaults. */
     private val callTimeoutMillis: Long? = null,
-) : () -> Call.Factory? {
+) : () -> Pair<TlsPin, Call.Factory>? {
     /** Pin and client published as ONE reference so a client is never read against another pin. */
     @Volatile private var cached: Pair<TlsPin, Call.Factory>? = null
 
-    override fun invoke(): Call.Factory? {
-        val pin = tlsPinProvider() ?: return null
-        cached?.takeIf { it.first == pin }?.let { return it.second }
+    override fun invoke(): Pair<TlsPin, Call.Factory>? {
+        cached?.let { hit -> if (hit.first == tlsPinProvider()) return hit }
         // Synchronized, so a concurrent re-pair produces one client rather than one per caller.
-        // Re-checked inside: another thread may have built it while this one waited.
         return synchronized(this) {
-            cached?.takeIf { it.first == pin }?.second ?: run {
-                val client = pairingHttpClient(
+            // Re-read INSIDE the lock, never from before the wait: a re-pair can land while this
+            // thread is blocked, and a pin sampled before it would publish a client for the
+            // superseded server over the current one — leaving the next caller a client that pins
+            // a host it is no longer talking to, which CertificatePinner passes vacuously.
+            val pin = tlsPinProvider() ?: return null
+            cached?.takeIf { it.first == pin } ?: (
+                pin to pairingHttpClient(
                     posture = PinPosture.Pinned(host = pin.host, spkiSha256 = pin.spkiSha256),
                     callTimeoutMillis = callTimeoutMillis,
                 )
-                cached = pin to client
-                client
-            }
+                ).also { cached = it }
         }
     }
 }
 
 /** Falls back to [fallback] only for [TlsPinState.NeverPaired]; [TlsPinState.Lost] fails closed. */
 class PinnedOrFallbackCallFactory(
-    private val pinnedProvider: () -> Call.Factory?,
+    private val pinnedProvider: () -> Pair<TlsPin, Call.Factory>?,
     private val pinStateProvider: () -> TlsPinState,
     private val fallback: Call.Factory = pairingHttpClient(PinPosture.TofuWindow),
 ) : Call.Factory {
     override fun newCall(request: Request): Call {
-        pinnedProvider()?.let { return it.newCall(request) }
+        pinnedProvider()?.let { (pin, pinned) ->
+            // `CertificatePinner` enforces pins only for the hosts they were configured for and
+            // passes every other host vacuously, so a pinned client is pinned for exactly one
+            // host. Sending this request through a client built for a DIFFERENT host would put it
+            // back on plain system trust while it carries this device's credentials. Every URL
+            // this app builds is same-origin with the pinned relay (see `sameOrigin`), so a
+            // mismatch means the pairing moved under an in-flight call: refuse, and let the caller
+            // retry against the pin that is current.
+            return if (request.url.host.equals(pin.host, ignoreCase = true)) {
+                pinned.newCall(request)
+            } else {
+                FailedCall(
+                    request,
+                    SSLPeerUnverifiedException(
+                        "This device is pinned to ${pin.host}; refusing to send credentials to ${request.url.host}.",
+                    ),
+                )
+            }
+        }
         return when (pinStateProvider()) {
             // The legitimate TOFU window: nothing has ever been pinned, so there is nothing to
             // downgrade from. A pin carried in the pairing link narrows it to one key for the one

@@ -22,7 +22,9 @@ fun Request.Builder.pairingAuthHeaders(deviceId: String, deviceSecret: String): 
 
 /** No default posture: `grep TofuWindow` is the complete audit of the unpinned surface. */
 sealed interface PinPosture {
-    /** [spkiSha256] is the whole observed chain, not just the leaf — see [org.kysecurity.mail.push.TlsPin]. */
+    /** [spkiSha256] is ONE leaf pin for anything captured under the current rule; only installs
+     *  pinned before it still carry a whole-chain set, and they narrow on the next successful
+     *  resync. Never widen this to an issuer — see [org.kysecurity.mail.security.SpkiPinner.pinsForChain]. */
     data class Pinned(val host: String, val spkiSha256: Set<String>) : PinPosture
 
     /** Only legitimate before any pairing completes; a pin that existed and is gone fails closed. */
@@ -60,8 +62,10 @@ private val basePairingClient: OkHttpClient by lazy {
 fun pairingHttpClient(posture: PinPosture, callTimeoutMillis: Long? = null): OkHttpClient {
     val builder = basePairingClient.newBuilder()
     when (posture) {
-        // `add` is vararg per host: every chain pin is registered, and CertificatePinner passes on
-        // the first match, so a renewed leaf under an already-pinned issuer still validates.
+        // Whatever the set holds is registered for this host, and `CertificatePinner` passes on the
+        // FIRST chain member matching ANY of them. That is why the set may only ever hold leaves:
+        // one issuer pin in here would admit every certificate that issuer signs. Renewal with a
+        // new key is a re-trust through `reconnectToServer`, not a pin to relax.
         is PinPosture.Pinned -> {
             // Empty would configure no pin for the host, which CertificatePinner passes vacuously.
             // TlsPin makes that unrepresentable; this is the second half of the same guarantee.
