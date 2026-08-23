@@ -62,9 +62,16 @@ class WipeResurrectionTest {
     /** The other half of that ordering: work submitted WHILE the wipe runs.
      *
      *  `quiesce()` used to install a fresh pool on its way out, so the lane it was supposed to shut
-     *  reopened immediately — a notification tap or a mark-read landing mid-wipe got a live thread,
+     *  reopened immediately — a mark-read or a notification tap landing mid-wipe got a live thread,
      *  a rebuilt [DataRuntime] graph, and a recreated `kypost_mail.db` behind a wipe that had
-     *  already reported the file deleted. Mail work is now suspended for the whole wipe. */
+     *  already reported the file deleted. The file is what this asserts.
+     *
+     *  Deliberately NOT asserting that no task ran at all: work submitted in the moment before
+     *  [SecurityWipe.wipeAndResetApp] reaches its `quiesce()` is legitimate, and the wipe interrupts
+     *  it, waits for it, and deletes whatever it opened. That version of this test failed on API 34
+     *  and 36 and passed on 31 — pure timing on a window the product never promised to close. The
+     *  executor's real contract, that nothing starts after `quiesce()` returns, is pinned
+     *  deterministically by `MailBackgroundExecutorTest`. */
     @Test
     fun wipe_refusesMailWorkSubmittedWhileItRuns(): Unit = runBlocking {
         DataRuntime.graph(context).database.openHelper.writableDatabase
@@ -72,14 +79,14 @@ class WipeResurrectionTest {
 
         val wipeRunning = java.util.concurrent.atomic.AtomicBoolean(false)
         val stop = java.util.concurrent.atomic.AtomicBoolean(false)
-        val ranDuringWipe = java.util.concurrent.atomic.AtomicInteger(0)
+        val submitted = java.util.concurrent.atomic.AtomicInteger(0)
         val submitter = Thread {
             while (!stop.get()) {
+                submitted.incrementAndGet()
                 org.kysecurity.mail.MailBackgroundExecutor.submit {
                     // Scoped to the wipe's window so the tail of this thread, running after the
                     // wipe has legitimately restored the pool, cannot recreate the file itself.
                     if (!wipeRunning.get()) return@submit
-                    ranDuringWipe.incrementAndGet()
                     // The resurrection primitive, called directly: building a data graph opens —
                     // and therefore creates — the database file the wipe has just deleted.
                     DataRuntime.graph(context).database.openHelper.writableDatabase
@@ -97,7 +104,8 @@ class WipeResurrectionTest {
             submitter.join(5_000)
         }
 
-        assertEquals("no mail task may run while a wipe is destroying the database", 0, ranDuringWipe.get())
+        // Or the assertion below passes because nothing was ever aimed at the wipe.
+        assertTrue("precondition: the hammer submitted work", submitted.get() > 0)
         assertFalse("kypost_mail.db must not be recreated by work racing the wipe", dbFile().exists())
     }
 
