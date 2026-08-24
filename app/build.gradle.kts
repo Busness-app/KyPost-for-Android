@@ -253,6 +253,17 @@ val allowedExportedComponents = setOf(
  *  declares a stand-in class of its own with the same name. */
 val runtimeMatchedClassNames = setOf(
     "com.google.crypto.tink.shaded.protobuf.InvalidProtocolBufferException",
+    // Named as strings in jakarta.mail's META-INF/mailcap and loaded by MailcapCommandMap, so no
+    // bytecode references them and R8 deleted all five. Without them jakarta.activation falls back
+    // to DataSourceDataContentHandler, whose getContent() answers an InputStream rather than a
+    // String or a MimeMultipart — so PgpMimeReader found neither an html nor a plain part and
+    // every decrypted message in a release build ended as "could not be read once decrypted".
+    // MimeContentHandlersTest keeps this list level with what mailcap actually declares.
+    "org.eclipse.angus.mail.handlers.text_plain",
+    "org.eclipse.angus.mail.handlers.text_html",
+    "org.eclipse.angus.mail.handlers.text_xml",
+    "org.eclipse.angus.mail.handlers.multipart_mixed",
+    "org.eclipse.angus.mail.handlers.message_rfc822",
 )
 
 androidComponents.onVariants { variant ->
@@ -317,8 +328,8 @@ androidComponents.onVariants { variant ->
                 }
             val broken = names.mapNotNull { name ->
                 when (val to = renamedTo[name]) {
-                    null -> "$name is absent from the mapping — the library no longer ships it " +
-                        "under that name, so the runtime comparison can never match"
+                    null -> "$name is absent from the mapping — R8 shrank it away, or the library " +
+                        "moved it. Either way nothing can load it by that name at runtime"
                     name -> null
                     else -> "$name was renamed to '$to', so a runtime match on its simple name " +
                         "silently never fires"
