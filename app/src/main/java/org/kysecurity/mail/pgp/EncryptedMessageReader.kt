@@ -33,6 +33,12 @@ internal sealed class ReadOutcome {
      *  the inbox flag said encrypted and the fetched message disagrees. */
     object NoEncryptedContent : ReadOutcome()
 
+    /** Signed but not encrypted, and the server produced neither the signed part nor a body — so
+     *  there is nothing to show and nothing to verify. Terminal for the same reason
+     *  [NoEncryptedContent] is: the server populates `body` whenever it cannot produce the signed
+     *  part, so both being empty is the message, not a transport fault. No Retry. */
+    object NoReadableContent : ReadOutcome()
+
     data class UnsealFailed(val message: String) : ReadOutcome()
     data class FetchFailed(val message: String) : ReadOutcome()
     data class DecryptFailed(val message: String) : ReadOutcome()
@@ -85,22 +91,46 @@ internal class EncryptedMessageReader(
         val offeredKeys =
             localKeys.map { it.publicKey } + payload.signerKeys.filter { !it.conflict }.map { it.publicKey }
 
-        // Signed-but-not-encrypted. Unreachable today; do not revive without the canonical signed octets.
+        // Signed-but-not-encrypted.
         if (payload.encryptedPayload.isBlank()) {
+            // The ONLY bytes a detached signature may be checked against. `body` is the server's
+            // transfer-decoded render of the same part, so verifying against it could only ever
+            // fail — which is what this branch used to do, and why it was marked unreachable.
+            val signedPart = decodeSignedPart(payload.signedPartBase64)
+
+            // The server ships both of these from one raw fetch or neither; empty means that fetch
+            // failed, and it leaves `body` populated instead. That is a valid response, not an
+            // error: show the message and claim nothing about its signature.
+            if (signedPart.isEmpty() || payload.signaturePayload.isBlank()) {
+                if (payload.body.isEmpty()) return ReadOutcome.NoReadableContent
+                return ReadOutcome.Decrypted(
+                    PgpMimeReader.read(payload.body.toByteArray(Charsets.UTF_8))
+                        ?: DecryptedBody(html = null, plain = payload.body, protectedSubject = null),
+                    PgpSignatureState.NONE,
+                    payload.resolvedSender,
+                )
+            }
+
             val raw = offeredKeys.firstNotNullOfOrNull { armored ->
                 PgpDecryptor.verifyDetached(
                     armoredPublicKey = armored,
-                    body = payload.body.toByteArray(Charsets.UTF_8),
+                    body = signedPart,
                     armoredSignature = payload.signaturePayload,
                 ).takeIf { it.valid }
             } ?: PgpDecryptor.verifyDetached(
                 // Not the binding decision: this only yields a non-null RawSignature so the verdict can run.
                 armoredPublicKey = offeredKeys.firstOrNull().orEmpty(),
-                body = payload.body.toByteArray(Charsets.UTF_8),
+                body = signedPart,
                 armoredSignature = payload.signaturePayload,
             )
-            val parsed = PgpMimeReader.read(payload.body.toByteArray(Charsets.UTF_8))
-                ?: DecryptedBody(html = null, plain = payload.body, protectedSubject = null)
+            // Rendered from the SAME bytes that were verified. Rendering `body` beside a verdict
+            // computed from `signedPart` would show one message and vouch for another.
+            val parsed = PgpMimeReader.read(signedPart)
+                ?: DecryptedBody(
+                    html = null,
+                    plain = String(signedPart, Charsets.UTF_8),
+                    protectedSubject = null,
+                )
             return ReadOutcome.Decrypted(
                 parsed,
                 signatureStateFor(raw, payload.signerKeys, localKeys),
@@ -138,4 +168,13 @@ internal class EncryptedMessageReader(
             payload.resolvedSender,
         )
     }
+}
+
+/** Undecodable base64 reads as absent rather than as an error: a field the server could not fill
+ *  and one it filled with rubbish leave the reader in the same place — unable to check, still able
+ *  to show the message. `java.util.Base64`, not `android.util.Base64`, because this file holds no
+ *  Android dependency. Strict, matching the server's `base64.StdEncoding`. */
+private fun decodeSignedPart(base64: String): ByteArray {
+    if (base64.isEmpty()) return ByteArray(0)
+    return runCatching { java.util.Base64.getDecoder().decode(base64) }.getOrDefault(ByteArray(0))
 }

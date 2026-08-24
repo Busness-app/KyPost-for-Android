@@ -237,6 +237,110 @@ class EncryptedMessageReaderTest {
         assertEquals(PgpSignatureState.KEY_CHANGED, outcome.signature)
     }
 
+    /** The regression. The server empties `body` whenever it sends `signedPartBase64`, so a client
+     *  that reads `body` renders nothing at all — which is how signed-only mail went blank. */
+    @Test
+    fun aSignedOnlyMessageRendersTheBytesItVerified() {
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
+        val (r, _) = reader(payloads = FakePayloadSource(detachedSignedPayload(signerKeys = listOf(boundKey()))))
+
+        val outcome = read(r, unlockIfNeeded = false) as ReadOutcome.Decrypted
+
+        assertEquals(PgpSignatureState.VERIFIED_SEEN_BEFORE, outcome.signature)
+        assertEquals(TestPgpPrivateKey.DETACHED_SIGNATURE_BODY, outcome.body.plain)
+    }
+
+    /** Byte-exactness, the property the whole `signedPartBase64` round trip exists to preserve. */
+    @Test
+    fun oneFlippedByteInTheSignedPartIsInvalid() {
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
+        val tampered = TestPgpPrivateKey.DETACHED_SIGNATURE_BODY.toByteArray(Charsets.UTF_8)
+            .copyOf().also { it[0] = (it[0].toInt() xor 0x01).toByte() }
+        val (r, _) = reader(
+            payloads = FakePayloadSource(
+                detachedSignedPayload(signedPart = tampered, signerKeys = listOf(boundKey())),
+            ),
+        )
+
+        val outcome = read(r, unlockIfNeeded = false) as ReadOutcome.Decrypted
+
+        assertEquals(PgpSignatureState.INVALID, outcome.signature)
+    }
+
+    /** `body` must never reach a signature check. Here it disagrees with the signed part, and the
+     *  verdict has to come from the signed part alone — verifying `body` instead would fail, and
+     *  rendering it would show one message while vouching for another. */
+    @Test
+    fun bodyIsNeverTheInputToASignatureCheck() {
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
+        val (r, _) = reader(
+            payloads = FakePayloadSource(
+                detachedSignedPayload(body = "a different message entirely", signerKeys = listOf(boundKey())),
+            ),
+        )
+
+        val outcome = read(r, unlockIfNeeded = false) as ReadOutcome.Decrypted
+
+        assertEquals(PgpSignatureState.VERIFIED_SEEN_BEFORE, outcome.signature)
+        assertEquals(TestPgpPrivateKey.DETACHED_SIGNATURE_BODY, outcome.body.plain)
+    }
+
+    /** The server's raw re-fetch failed. A valid response, not an error: show what arrived and
+     *  claim nothing. NONE is "could not check", and must not read as an accusation. */
+    @Test
+    fun anEmptySignedPartShowsTheBodyWithNoVerdict() {
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
+        val (r, _) = reader(
+            payloads = FakePayloadSource(
+                detachedSignedPayload(
+                    signedPart = ByteArray(0),
+                    body = "the server could not fetch the raw part",
+                    signerKeys = listOf(boundKey()),
+                ),
+            ),
+        )
+
+        val outcome = read(r, unlockIfNeeded = false) as ReadOutcome.Decrypted
+
+        assertEquals(PgpSignatureState.NONE, outcome.signature)
+        assertEquals("the server could not fetch the raw part", outcome.body.plain)
+    }
+
+    /** Undecodable base64 leaves the reader exactly where an empty field does: unable to check,
+     *  still able to show. It must not surface as a failure. */
+    @Test
+    fun anUndecodableSignedPartFallsBackToTheBodyRatherThanFailing() {
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
+        val payload = detachedSignedPayload(body = "still readable", signerKeys = listOf(boundKey()))
+            .copy(signedPartBase64 = "!!! not base64 !!!")
+        val (r, _) = reader(payloads = FakePayloadSource(payload))
+
+        val outcome = read(r, unlockIfNeeded = false) as ReadOutcome.Decrypted
+
+        assertEquals(PgpSignatureState.NONE, outcome.signature)
+        assertEquals("still readable", outcome.body.plain)
+    }
+
+    @Test
+    fun noSignedPartAndNoBodyIsTerminalRatherThanBlank() {
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
+        val (r, _) = reader(
+            payloads = FakePayloadSource(
+                detachedSignedPayload(signedPart = ByteArray(0), body = "", signerKeys = listOf(boundKey())),
+            ),
+        )
+
+        assertEquals(ReadOutcome.NoReadableContent, read(r, unlockIfNeeded = false))
+    }
+
+    private fun boundKey() = SignerKey(
+        addresses = listOf("bob@example.com"),
+        publicKey = TestPgpPrivateKey.ARMORED_PUBLIC,
+        verified = false,
+        source = "autocrypt",
+        conflict = false,
+    )
+
     @Test
     fun aClientUnprotectedAccountSaysSo() {
         val (r, _) = reader(payloads = FakePayloadSource(PgpPayloadResult.NotClientProtected))

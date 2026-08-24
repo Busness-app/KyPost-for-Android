@@ -30,15 +30,21 @@ internal fun successPayload(
     encryptedPayload = encrypted,
     signaturePayload = "",
     body = "",
+    signedPartBase64 = "",
     signerKeys = signerKeys,
     sender = sender,
     resolvedSender = resolvedSender,
 )
 
-/** Signed but not encrypted: blank `encryptedPayload`, readable `body`, a detached signature. */
+/** Signed but not encrypted, shaped as the server actually sends it: the verbatim signed octets in
+ *  `signedPartBase64`, a detached signature over exactly those octets, and `body` EMPTY — the
+ *  server empties `body` whenever it can produce the signed part, so the two never both arrive.
+ *
+ *  [signedPart] takes bytes, not a String, because that is what the signature covers. */
 internal fun detachedSignedPayload(
-    body: String = TestPgpPrivateKey.DETACHED_SIGNATURE_BODY,
+    signedPart: ByteArray = TestPgpPrivateKey.DETACHED_SIGNATURE_BODY.toByteArray(Charsets.UTF_8),
     signaturePayload: String = TestPgpPrivateKey.ARMORED_DETACHED_SIGNATURE,
+    body: String = "",
     signerKeys: List<SignerKey> = emptyList(),
     sender: String = "bob@example.com",
     resolvedSender: String = "bob@example.com",
@@ -46,6 +52,8 @@ internal fun detachedSignedPayload(
     encryptedPayload = "",
     signaturePayload = signaturePayload,
     body = body,
+    signedPartBase64 =
+        if (signedPart.isEmpty()) "" else java.util.Base64.getEncoder().encodeToString(signedPart),
     signerKeys = signerKeys,
     sender = sender,
     resolvedSender = resolvedSender,
