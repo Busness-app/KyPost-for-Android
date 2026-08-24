@@ -168,12 +168,12 @@ fun showAboutDialog(activity: Activity) {
 }
 
 private fun readLicenseText(context: Context): String {
-    return context.resources.openRawResource(R.raw.gpl_license)
+    return context.resources.openRawResource(R.raw.mit_license)
         .bufferedReader()
         .use { it.readText() }
 }
 
-/** Reflows the print-wrapped GPL text for the screen; the wording itself is never altered. */
+/** Reflows the print-wrapped licence text for the screen; the wording itself is never altered. */
 private fun formatLicenseText(raw: String): CharSequence {
     val builder = SpannableStringBuilder()
     val blocks = mutableListOf<List<String>>()
