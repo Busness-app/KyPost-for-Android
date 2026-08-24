@@ -80,7 +80,7 @@ android {
         applicationId = "org.kysecurity.mail"
         minSdk = 31
         targetSdk = 36
-        versionCode = 9
+        versionCode = 10
         versionName = "0.3.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
