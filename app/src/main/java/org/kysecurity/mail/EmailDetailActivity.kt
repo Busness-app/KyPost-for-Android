@@ -662,6 +662,7 @@ class EmailDetailActivity : LockedActivity() {
             ReadOutcome.TooLarge,
             ReadOutcome.NotClientProtected,
             ReadOutcome.NoEncryptedContent,
+            ReadOutcome.NoReadableContent,
             is ReadOutcome.UnsealFailed,
             is ReadOutcome.FetchFailed,
             is ReadOutcome.DecryptFailed,
@@ -1269,6 +1270,9 @@ internal fun readFailureNotice(outcome: ReadOutcome): Pair<Int, String?>? = when
     ReadOutcome.TooLarge -> R.string.email_pgp_too_large to null
     ReadOutcome.NotClientProtected -> R.string.email_pgp_not_client_protected to null
     ReadOutcome.NoEncryptedContent -> R.string.email_pgp_no_encrypted_content to null
+    // Its own sentence, not NoEncryptedContent's: this message is signed and not encrypted, so
+    // "carries no encrypted content" would be true of every signed-only message that reads fine.
+    ReadOutcome.NoReadableContent -> R.string.email_pgp_no_readable_content to null
     is ReadOutcome.UnsealFailed -> R.string.email_pgp_unseal_failed to null
     is ReadOutcome.FetchFailed -> R.string.email_pgp_fetch_failed to outcome.message
     // ..._here_failed, not ..._decrypt_failed: the latter is the SERVER's decrypt error, rendered

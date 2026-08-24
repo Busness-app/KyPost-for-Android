@@ -93,6 +93,7 @@
     <string name="email_pgp_too_large">This message is too large to open on this device.</string>
     <string name="email_pgp_fetch_failed">Couldn\'t reach the server to fetch this message: %1$s</string>
     <string name="email_pgp_no_encrypted_content">This message doesn\'t carry any encrypted content. Open it in webmail if you expected something here.</string>
+    <string name="email_pgp_no_readable_content">This signed message doesn\'t carry any readable content. Open it in webmail if you expected something here.</string>
     <string name="email_pgp_decrypt_here_failed">This message couldn\'t be decrypted on this device: %1$s</string>
     <string name="email_pgp_not_client_protected">Your key is held by the server, not this device, so this message can\'t be opened here. Open it in webmail.</string>
     <string name="email_pgp_reply_disabled">Replying to encrypted mail isn\'t available in the app yet — use webmail.</string>

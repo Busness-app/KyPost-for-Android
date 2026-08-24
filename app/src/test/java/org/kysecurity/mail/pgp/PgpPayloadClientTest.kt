@@ -39,6 +39,42 @@ class PgpPayloadClientTest {
         assertEquals("qr", ok.signerKeys[0].source)
     }
 
+    /** THE REGRESSION THIS TEST EXISTS FOR. `Json { ignoreUnknownKeys = true }` means a field the
+     *  DTO does not declare is dropped without a parse error, a log line, or any other trace. The
+     *  server added `signedPartBase64` and began emptying `body` alongside it; the DTO did not
+     *  follow, so signed-only mail arrived carrying nothing and rendered as nothing. */
+    @Test
+    fun readsTheSignedPartAndTheEmptyBodyThatComesWithIt() {
+        val result = fetchWith(
+            200,
+            """
+            {"messageId":42,"mailbox":"INBOX","encryptedPayload":"",
+             "signaturePayload":"-----BEGIN PGP SIGNATURE-----","signedPartBase64":"cGFydA==",
+             "body":"","signerKeys":[]}
+            """.trimIndent(),
+        )
+
+        val ok = result as? PgpPayloadResult.Success
+            ?: throw AssertionError("expected Success, got $result")
+        assertEquals("cGFydA==", ok.signedPartBase64)
+        assertEquals("", ok.body)
+    }
+
+    /** An older server sends no `signedPartBase64` at all. Empty means "could not check", and the
+     *  reader shows `body` with no verdict rather than treating it as a failure. */
+    @Test
+    fun anOlderServerWithoutTheSignedPartFieldStillParses() {
+        val result = fetchWith(
+            200,
+            """{"encryptedPayload":"","signaturePayload":"SIG","body":"readable","signerKeys":[]}""",
+        )
+
+        val ok = result as? PgpPayloadResult.Success
+            ?: throw AssertionError("expected Success, got $result")
+        assertEquals("", ok.signedPartBase64)
+        assertEquals("readable", ok.body)
+    }
+
     @Test
     fun absentProvenanceFieldsDefaultToTheWeakerClaim() {
         // omitempty: an older server sends neither field. Defaulting verified to false is the safe

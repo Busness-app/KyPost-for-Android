@@ -243,6 +243,18 @@ val allowedExportedComponents = setOf(
     "org.unifiedpush.android.connector.internal.RaiseToForegroundService",
 )
 
+/** Classes this app identifies by NAME at runtime, where R8 renaming one is silent: the comparison
+ *  still compiles, still runs, and simply never matches again.
+ *
+ *  `EncryptedPrefs.isProtobufParseFailure` is the reason this gate exists. It decides whether an
+ *  unreadable encrypted store is repaired or the app refuses to open it, by comparing
+ *  `javaClass.simpleName` against a literal. Obfuscated, the literal could not match, so only the
+ *  debug build could ever heal a store — and its unit test could not see that, because the test
+ *  declares a stand-in class of its own with the same name. */
+val runtimeMatchedClassNames = setOf(
+    "com.google.crypto.tink.shaded.protobuf.InvalidProtocolBufferException",
+)
+
 androidComponents.onVariants { variant ->
     val mergedManifest = variant.artifacts.get(SingleArtifact.MERGED_MANIFEST)
     val allowed = allowedExportedComponents
@@ -284,11 +296,49 @@ androidComponents.onVariants { variant ->
             }
         }
     }
+    val variantName = variant.name.replaceFirstChar { it.uppercase() }
+
+    // Reads the mapping R8 actually emitted, not the rules we asked for: a -keep rule that matches
+    // nothing — because the library moved the class — is written exactly like one that works.
+    val mappingFile = variant.artifacts.get(SingleArtifact.OBFUSCATION_MAPPING_FILE)
+    val names = runtimeMatchedClassNames
+    val nameGate = tasks.register("checkRuntimeMatchedClassNames$variantName") {
+        description = "Fails if R8 renamed a class this app matches by name at runtime."
+        inputs.file(mappingFile).withPropertyName("mappingFile").optional(true)
+        doLast {
+            // Absent on an unminified variant, where there is nothing to rename.
+            val file = mappingFile.orNull?.asFile?.takeIf { it.exists() } ?: return@doLast
+            // Class lines are unindented and end in ':'; member lines are indented.
+            val renamedTo = file.readLines()
+                .filter { it.isNotEmpty() && !it[0].isWhitespace() && it.endsWith(":") && " -> " in it }
+                .associate { line ->
+                    val parts = line.removeSuffix(":").split(" -> ")
+                    parts[0] to parts[1]
+                }
+            val broken = names.mapNotNull { name ->
+                when (val to = renamedTo[name]) {
+                    null -> "$name is absent from the mapping — the library no longer ships it " +
+                        "under that name, so the runtime comparison can never match"
+                    name -> null
+                    else -> "$name was renamed to '$to', so a runtime match on its simple name " +
+                        "silently never fires"
+                }
+            }
+            if (broken.isNotEmpty()) {
+                throw GradleException(
+                    "R8 broke a class name this app compares at runtime:\n" +
+                        broken.joinToString("\n") { "  - $it" } +
+                        "\nAdd a -keepnames rule in proguard-rules.pro, or stop matching on the " +
+                        "name. See runtimeMatchedClassNames in app/build.gradle.kts.",
+                )
+            }
+        }
+    }
+
     // Every task that can emit an installable artifact. NOT `check`: CI does not run it, so
     // hanging this gate there alone would have been the same nothing the lint entry was.
-    val variantName = variant.name.replaceFirstChar { it.uppercase() }
     listOf("assemble$variantName", "bundle$variantName").forEach { producer ->
-        tasks.matching { it.name == producer }.configureEach { dependsOn(gate) }
+        tasks.matching { it.name == producer }.configureEach { dependsOn(gate, nameGate) }
     }
 }
 

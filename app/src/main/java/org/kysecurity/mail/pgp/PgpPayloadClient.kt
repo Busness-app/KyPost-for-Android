@@ -14,9 +14,17 @@ internal sealed class PgpPayloadResult {
     data class Success(
         val encryptedPayload: String,
         val signaturePayload: String,
-        /** The readable body of a signed-but-not-encrypted message, which the client needs
-         *  alongside a detached signature in order to verify it. Empty when encrypted. */
+        /** The server's own decoded render. Display only, and NEVER the input to a signature
+         *  check — see [signedPartBase64]. The server empties it whenever [signedPartBase64] is
+         *  set, so on a signed-only message the two are mutually exclusive. Empty when encrypted. */
         val body: String,
+        /** Base64 of the verbatim octets the detached signature covers, re-fetched raw by the
+         *  server. Base64 because they are byte-exact: a detached signature is over what was
+         *  transmitted, so any re-encoding on the way here breaks the check.
+         *
+         *  Empty is a valid answer — the server's raw re-fetch failed — and means "could not
+         *  check", never "invalid". [body] carries the message in that case. */
+        val signedPartBase64: String,
         /** Already narrowed by the server to [resolvedSender] — see [signatureStateFor]. */
         val signerKeys: List<SignerKey>,
         /** The raw From header as the server re-rendered it. Display only — never bind on it. */
@@ -59,6 +67,11 @@ private data class PgpPayloadDto(
     val encryptedPayload: String = "",
     val signaturePayload: String = "",
     val body: String = "",
+    // `omitempty` server-side, and the default is the contract for an older server: empty reads as
+    // "could not check", which is the safe direction. Absent here for its first two releases, and
+    // because the reader below ignores unknown keys the field arrived and was dropped in silence,
+    // leaving signed-only mail rendering as nothing at all.
+    val signedPartBase64: String = "",
     val signerKeys: List<SignerKeyDto> = emptyList(),
     val sender: String = "",
     val resolvedSender: String = "",
@@ -115,6 +128,7 @@ internal class PgpPayloadClient(
                     encryptedPayload = parsed.encryptedPayload,
                     signaturePayload = parsed.signaturePayload,
                     body = parsed.body,
+                    signedPartBase64 = parsed.signedPartBase64,
                     signerKeys = parsed.signerKeys.map {
                         SignerKey(it.addresses, it.publicKey, it.verified, it.source, it.conflict)
                     },
