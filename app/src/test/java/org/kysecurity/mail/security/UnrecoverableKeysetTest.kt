@@ -1,5 +1,6 @@
 package org.kysecurity.mail.security
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -123,6 +124,26 @@ class UnrecoverableKeysetTest {
     fun anAbsentAliasIsProofOnItsOwn() {
         assertTrue(isUnrecoverableKeyset(IOException("No space left on device"), MasterKeyState.ABSENT))
         assertTrue(isUnrecoverableKeyset(GeneralSecurityException("gone"), MasterKeyState.ABSENT))
+    }
+
+    /** The stand-ins above are named by hand, so they agree with [isProtobufParseFailure] no matter
+     *  what Tink actually ships — which is how a release build that could never match the real
+     *  class passed this suite. This test uses the real one.
+     *
+     *  It pins the shipped name and the shape of the hierarchy. It CANNOT see obfuscation, because
+     *  unit tests run unminified; `checkRuntimeMatchedClassNames` reads R8's mapping for that. */
+    @Test
+    fun tinksRealParseFailureIsTheOneThisMatches() {
+        // Loaded by name, not imported: security-crypto declares tink-android as `implementation`,
+        // so the shaded package is on the test RUNTIME classpath only. Resolving it here is itself
+        // half the assertion — a Tink upgrade that relocates the class fails on this line.
+        val type = Class.forName("com.google.crypto.tink.shaded.protobuf.InvalidProtocolBufferException")
+        val real = type.getConstructor(String::class.java).newInstance("bad tag") as Throwable
+
+        assertEquals("InvalidProtocolBufferException", real.javaClass.simpleName)
+        assertTrue(real is IOException)
+        assertTrue(isUnrecoverableKeyset(real))
+        assertTrue(isUnrecoverableKeyset(IOException("could not read keyset", real)))
     }
 
     /** Everything Tink hands back that says nothing on its own about which layer broke. */

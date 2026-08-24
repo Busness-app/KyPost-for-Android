@@ -14,6 +14,14 @@
 }
 -keep,includedescriptorclasses class org.kysecurity.mail.**$$serializer { *; }
 
+# Tink's shaded protobuf parse failure
+# EncryptedPrefs.isProtobufParseFailure identifies this by simpleName, because it is the one proof
+# that an encrypted store's keyset is destroyed rather than the Keystore being briefly unwell.
+# Renamed, that comparison never matches: release refused to reopen a store debug would have
+# repaired, and the swallowed failure surfaced as "this device is not enrolled". Names only — the
+# class may still be shrunk if nothing uses it. checkRuntimeMatchedClassNames enforces this.
+-keepnames class com.google.crypto.tink.shaded.protobuf.InvalidProtocolBufferException
+
 # Manifest-declared components
 # Instantiated by name by the framework; only the class name and no-arg constructor must survive.
 -keep class org.kysecurity.mail.KyPostApp { <init>(); }
