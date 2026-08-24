@@ -333,6 +333,46 @@ class EncryptedMessageReaderTest {
         assertEquals(ReadOutcome.NoReadableContent, read(r, unlockIfNeeded = false))
     }
 
+    /** A signed plain-text body has no blank line, so JavaMail reads the whole thing as headers and
+     *  PgpMimeReader answers null — for content that verified perfectly. The raw fallback is what
+     *  keeps those messages readable, which is the case the default fixture exercises.
+     *
+     *  It renders as TEXT: unparsed octets must not reach the WebView as markup. */
+    @Test
+    fun anUnparseableSignedPartStillRendersAsPlainTextNeverAsMarkup() {
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
+        val (r, _) = reader(payloads = FakePayloadSource(detachedSignedPayload(signerKeys = listOf(boundKey()))))
+
+        val outcome = read(r, unlockIfNeeded = false) as ReadOutcome.Decrypted
+
+        assertEquals(null, PgpMimeReader.read(TestPgpPrivateKey.DETACHED_SIGNATURE_BODY.toByteArray(Charsets.UTF_8)))
+        assertEquals(TestPgpPrivateKey.DETACHED_SIGNATURE_BODY, outcome.body.plain)
+        assertEquals("plain", outcome.body.bodyMode)
+        assertTrue(
+            org.kysecurity.mail.isPlainTextBody(outcome.body.plain!!, outcome.body.bodyMode),
+        )
+    }
+
+    /** A real, parseable key that is NOT the signer. Must never pass, and must never accuse either:
+     *  nothing was checked, so SIGNER_UNKNOWN, not INVALID. Mirrors the Mac client's
+     *  `GopenPGPCryptoTests` row for a wrong key. */
+    @Test
+    fun aDetachedSignatureOfferedTheWrongKeyIsUnknownNotValidAndNotInvalid() {
+        EnrollmentSession.put(TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray())
+        val wrongKey = SignerKey(
+            addresses = listOf("bob@example.com"),
+            publicKey = TestPgpSecondKey.ARMORED_PUBLIC,
+            verified = false,
+            source = "autocrypt",
+            conflict = false,
+        )
+        val (r, _) = reader(payloads = FakePayloadSource(detachedSignedPayload(signerKeys = listOf(wrongKey))))
+
+        val outcome = read(r, unlockIfNeeded = false) as ReadOutcome.Decrypted
+
+        assertEquals(PgpSignatureState.SIGNER_UNKNOWN, outcome.signature)
+    }
+
     private fun boundKey() = SignerKey(
         addresses = listOf("bob@example.com"),
         publicKey = TestPgpPrivateKey.ARMORED_PUBLIC,

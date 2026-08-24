@@ -33,10 +33,15 @@ internal sealed class ReadOutcome {
      *  the inbox flag said encrypted and the fetched message disagrees. */
     object NoEncryptedContent : ReadOutcome()
 
-    /** Signed but not encrypted, and the server produced neither the signed part nor a body — so
-     *  there is nothing to show and nothing to verify. Terminal for the same reason
-     *  [NoEncryptedContent] is: the server populates `body` whenever it cannot produce the signed
-     *  part, so both being empty is the message, not a transport fault. No Retry. */
+    /** Signed but not encrypted, and nothing readable came out: either the server produced neither
+     *  the signed part nor a body, or the signed part would not parse as MIME.
+     *
+     *  Terminal for the same reason [NoEncryptedContent] is — the server populates `body` whenever
+     *  it cannot produce the signed part, so both being empty is the message rather than a
+     *  transport fault, and a re-fetch returns the same unparseable bytes. No Retry.
+     *
+     *  Its own outcome rather than [DecryptFailed], which the Mac client uses here: nothing on this
+     *  path was ever encrypted, so "couldn't be decrypted on this device" names the wrong failure. */
     object NoReadableContent : ReadOutcome()
 
     data class UnsealFailed(val message: String) : ReadOutcome()
@@ -125,10 +130,20 @@ internal class EncryptedMessageReader(
             )
             // Rendered from the SAME bytes that were verified. Rendering `body` beside a verdict
             // computed from `signedPart` would show one message and vouch for another.
+            //
+            // The fallback is load-bearing, not defensive: a signed PLAIN-TEXT body carries no
+            // blank line, so JavaMail consumes the whole thing as headers and PgpMimeReader
+            // answers null for content that verified perfectly well. The Mac client calls this
+            // unreadable; that would blank exactly the messages this commit set out to fix.
+            //
+            // Pinned to "plain" — unlike the `body` branch above, which leaves the mode empty so a
+            // server-rendered HTML body still renders. Bytes that would not parse as MIME have not
+            // earned markup treatment, and mode "" lets `bodyLooksLikeHtml` route them to the WebView.
             val parsed = PgpMimeReader.read(signedPart)
                 ?: DecryptedBody(
                     html = null,
                     plain = String(signedPart, Charsets.UTF_8),
+                    bodyMode = "plain",
                     protectedSubject = null,
                 )
             return ReadOutcome.Decrypted(
