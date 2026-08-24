@@ -54,7 +54,12 @@ fun MailOutcome<*>.userFacingMessage(): String? = when (this) {
     is MailOutcome.ServiceUnavailable -> "Mail relay is unavailable: $message"
     is MailOutcome.UpstreamFailure -> "Couldn't reach the mail server: $message"
     is MailOutcome.BadRequest -> message
-    is MailOutcome.CertificateMismatch -> "This server's certificate has changed since pairing — clear pairing and re-pair in Settings if you expect this (e.g. you rotated your server's certificate)"
+    // Reconnect, NOT unpair/re-pair. Both end the current pairing, but only one keeps the mailbox:
+    // reconnectToServer clears the credential and the pin and nothing else, while unpairing runs
+    // the account-replacement purge — and a purge that cannot prove itself escalates to erasing the
+    // device. Recommending the destructive ceremony for a routine certificate renewal is how a
+    // renewed cert became a wiped mailbox.
+    is MailOutcome.CertificateMismatch -> "This server's certificate has changed since pairing — if you expect this (e.g. you renewed your server's certificate), use \"Reconnect to server\" on the pairing screen. It keeps your downloaded mail, contacts and keys."
     is MailOutcome.ClientSideNeeded -> "This account's PGP key is end-to-end protected, so signing and encryption aren't available on mobile. Send without them, or use webmail."
     is MailOutcome.PickupFallbackNeeded ->
         "No PGP key on file for ${keylessRecipients.joinToString(", ")} — nothing was sent."

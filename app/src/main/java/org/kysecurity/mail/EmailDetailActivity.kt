@@ -650,11 +650,13 @@ class EmailDetailActivity : LockedActivity() {
                 btnDecryptHere.visibility = View.VISIBLE
                 btnOpenInWebmail.visibility = View.GONE
             }
-            // Every remaining outcome means "this device cannot open this message", whatever the
-            // reason, and they all render identically: the padlock plus the webmail fallback when
-            // one resolved. Listed rather than collapsed to `else` so the compiler still forces a
-            // decision when a new outcome is added; whether Retry is offered is not decided here
-            // but by `showsRetryButton` below, which is why these can share a branch at all.
+            // Every remaining outcome means "this device cannot open this message", and they share
+            // the same furniture: the padlock plus the webmail fallback when one resolved. They do
+            // NOT share a sentence — `readFailureNotice` gives each its own, because a decrypt that
+            // failed on this device and a message the server refused are different problems and a
+            // wordless padlock told the reader neither. Listed rather than collapsed to `else` so
+            // the compiler still forces a decision when a new outcome is added; whether Retry is
+            // offered is decided by `showsRetryButton` below, not here.
             ReadOutcome.NotEnrolled,
             ReadOutcome.NoSecureLockScreen,
             ReadOutcome.TooLarge,
@@ -664,12 +666,18 @@ class EmailDetailActivity : LockedActivity() {
             is ReadOutcome.FetchFailed,
             is ReadOutcome.DecryptFailed,
             -> {
-                showLocked("")
+                showLocked(noticeTextFor(outcome))
                 btnOpenInWebmail.visibility = if (webmailUnavailable) View.GONE else View.VISIBLE
             }
         }
         // Routed through the pure decision below so NoEncryptedContent cannot drift into offering Retry.
         btnRetryPayload.visibility = if (showsRetryButton(outcome)) View.VISIBLE else View.GONE
+    }
+
+    /** Resolves [readFailureNotice] against resources; empty for an outcome that has no sentence. */
+    private fun noticeTextFor(outcome: ReadOutcome): String {
+        val (resId, detail) = readFailureNotice(outcome) ?: return ""
+        return if (detail == null) getString(resId) else getString(resId, detail)
     }
 
     /** Padlock and webmail button appear together, except when [webmailUnavailable]. */
@@ -1241,6 +1249,35 @@ private fun escapeEmailText(text: String): String = text
 
 /** True only for [ReadOutcome.FetchFailed]; NoEncryptedContent is terminal, so no Retry. */
 internal fun showsRetryButton(outcome: ReadOutcome): Boolean = outcome is ReadOutcome.FetchFailed
+
+/** Why a read left the message unread: a string resource and its format argument, or null for an
+ *  outcome that is not a failure.
+ *
+ *  Pure and top-level for the same reason [showsRetryButton] is — every row has to be checkable
+ *  without a Context, and the branch that renders it must hold no decisions. Six of these strings
+ *  were authored and never referenced: the failure branch passed `""`, so every row below reached
+ *  the reader as the same wordless padlock beside an Open-in-webmail button. That is not a
+ *  fallback, it is the app declining to say what went wrong, and it hid an on-device decrypt
+ *  failure behind what looked like a server refusing the message.
+ *
+ *  The detail on the last three is deliberate. "bad padding" and "this message is not encrypted to
+ *  a key on this device" are different bugs with different fixes, and only the second one means the
+ *  enrolment is stale. */
+internal fun readFailureNotice(outcome: ReadOutcome): Pair<Int, String?>? = when (outcome) {
+    ReadOutcome.NotEnrolled -> R.string.email_pgp_not_enrolled to null
+    ReadOutcome.NoSecureLockScreen -> R.string.email_pgp_no_lock_screen to null
+    ReadOutcome.TooLarge -> R.string.email_pgp_too_large to null
+    ReadOutcome.NotClientProtected -> R.string.email_pgp_not_client_protected to null
+    ReadOutcome.NoEncryptedContent -> R.string.email_pgp_no_encrypted_content to null
+    is ReadOutcome.UnsealFailed -> R.string.email_pgp_unseal_failed to null
+    is ReadOutcome.FetchFailed -> R.string.email_pgp_fetch_failed to outcome.message
+    // ..._here_failed, not ..._decrypt_failed: the latter is the SERVER's decrypt error, rendered
+    // by renderPgpBar. A reader who cannot tell which machine failed cannot act on either.
+    is ReadOutcome.DecryptFailed -> R.string.email_pgp_decrypt_here_failed to outcome.message
+    // Not failures: the screen goes on offering Decrypt, and a notice there would be an error
+    // message for the user's own choice.
+    is ReadOutcome.Decrypted, ReadOutcome.NeedsUnlock, ReadOutcome.Cancelled -> null
+}
 
 /** A verdict with no resolved mailbox reads as being about the raw sender text, so return NONE. */
 internal fun displaySignatureVerdict(outcome: ReadOutcome.Decrypted): PgpSignatureState =
