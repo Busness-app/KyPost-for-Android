@@ -6,6 +6,8 @@ import org.kysecurity.mail.pgp.PgpSignatureState
 import org.kysecurity.mail.pgp.ReadOutcome
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -504,6 +506,58 @@ class EmailDetailActivityTest {
     @Test
     fun showsRetryButton_isFalseForNoEncryptedContent() {
         assertFalse(showsRetryButton(ReadOutcome.NoEncryptedContent))
+    }
+
+    /** Every row of the exit table that leaves the message unread. */
+    private val failureOutcomes = listOf(
+        ReadOutcome.NotEnrolled,
+        ReadOutcome.NoSecureLockScreen,
+        ReadOutcome.TooLarge,
+        ReadOutcome.NotClientProtected,
+        ReadOutcome.NoEncryptedContent,
+        ReadOutcome.UnsealFailed("could not open"),
+        ReadOutcome.FetchFailed("network error"),
+        ReadOutcome.DecryptFailed("bad padding"),
+    )
+
+    @Test
+    fun readFailureNotice_namesEveryFailureRowOfTheExitTable() {
+        failureOutcomes.forEach { outcome ->
+            assertNotNull("no notice for $outcome", readFailureNotice(outcome))
+        }
+    }
+
+    /** The regression this pins: all eight rendered as one wordless padlock, so a decrypt that
+     *  failed on THIS device was indistinguishable from one the server had refused. */
+    @Test
+    fun readFailureNotice_givesEveryFailureItsOwnSentence() {
+        val ids = failureOutcomes.map { readFailureNotice(it)?.first }
+        assertEquals(failureOutcomes.size, ids.toSet().size)
+    }
+
+    /** The detail is the whole point on this row: "bad padding" and "not encrypted to a key on
+     *  this device" are different bugs behind the same padlock. */
+    @Test
+    fun readFailureNotice_carriesTheDetailOfAnOnDeviceDecryptFailure() {
+        val notice = readFailureNotice(ReadOutcome.DecryptFailed("bad padding"))
+        assertEquals(R.string.email_pgp_decrypt_here_failed, notice?.first)
+        assertEquals("bad padding", notice?.second)
+    }
+
+    @Test
+    fun readFailureNotice_isNullWhereTheScreenStillOffersDecrypt() {
+        assertNull(readFailureNotice(ReadOutcome.NeedsUnlock))
+        assertNull(readFailureNotice(ReadOutcome.Cancelled))
+    }
+
+    @Test
+    fun readFailureNotice_isNullForASuccessfulRead() {
+        val decrypted = ReadOutcome.Decrypted(
+            body = decryptedBody,
+            signature = PgpSignatureState.NONE,
+            resolvedSender = "bob@example.com",
+        )
+        assertNull(readFailureNotice(decrypted))
     }
 
     private val decryptedBody = DecryptedBody(html = "<p>hi</p>", plain = null, protectedSubject = null)
