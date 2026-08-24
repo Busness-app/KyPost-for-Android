@@ -22,6 +22,24 @@
 # class may still be shrunk if nothing uses it. checkRuntimeMatchedClassNames enforces this.
 -keepnames class com.google.crypto.tink.shaded.protobuf.InvalidProtocolBufferException
 
+# jakarta.mail content handlers
+# META-INF/mailcap names these as strings and MailcapCommandMap loads them by name, so no bytecode
+# refers to them and R8 removed all five. jakarta.activation then falls back to
+# DataSourceDataContentHandler, whose getContent() returns an InputStream instead of a String or a
+# MimeMultipart, and PgpMimeReader reads that as "no body at all" — which is every decrypted
+# message failing to render in release while debug was fine. Members too, not just the names: they
+# are reached through DataContentHandler and shrinking them leaves the class an empty shell.
+#
+# Listed one by one rather than `handlers.**`: the wildcard also keeps image_gif and image_jpeg,
+# which reference java.awt.Image and java.awt.Toolkit and fail the build on Android. mailcap does
+# not declare those, and AWT does not exist here. These five are exactly what it declares, and
+# checkRuntimeMatchedClassNames holds the same five.
+-keep class org.eclipse.angus.mail.handlers.text_plain { *; }
+-keep class org.eclipse.angus.mail.handlers.text_html { *; }
+-keep class org.eclipse.angus.mail.handlers.text_xml { *; }
+-keep class org.eclipse.angus.mail.handlers.multipart_mixed { *; }
+-keep class org.eclipse.angus.mail.handlers.message_rfc822 { *; }
+
 # Manifest-declared components
 # Instantiated by name by the framework; only the class name and no-arg constructor must survive.
 -keep class org.kysecurity.mail.KyPostApp { <init>(); }
