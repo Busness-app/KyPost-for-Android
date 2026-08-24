@@ -17,8 +17,8 @@
     <string name="menu_about">About</string>
     <string name="about_title">KyPost</string>
     <string name="about_version_badge">v%1$s</string>
-    <string name="about_body">Developed by Busnes.app\n©%1$s - Licensed Under the GPL 2</string>
-    <string name="about_license_label">GNU General Public License v2</string>
+    <string name="about_body">Developed by Busnes.app\n©%1$s - Licensed Under the MIT License</string>
+    <string name="about_license_label">MIT License</string>
 
     <string name="save_settings">Save Settings</string>
 
