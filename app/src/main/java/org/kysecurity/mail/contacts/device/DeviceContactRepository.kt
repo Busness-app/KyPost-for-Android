@@ -49,6 +49,7 @@ class DeviceContactRepository(
     // Shares syncRepository.syncMutex with ContactSyncRepository.sync(); both write the same table.
     suspend fun syncAll(): List<String> = syncRepository.syncMutex.withLock {
         listOfNotNull(
+            stage("ensureAccountVisible") { ensureAccountContactsVisible() },
             stage("pruneForeignLinks") { pruneForeignLinks() },
             stage("refreshGroups") {
                 groupSyncRepository.sync()
@@ -58,6 +59,11 @@ class DeviceContactRepository(
             stage("importNewDeviceContacts") { importNewDeviceContacts() },
             stage("pushRoomChanges") { pushRoomChangesToDevice() },
         )
+    }
+
+    /** Runs every sync, not just at enable time, so installs that predate the fix repair themselves. */
+    private suspend fun ensureAccountContactsVisible() = withContext(Dispatchers.IO) {
+        DeviceContactAccount.makeContactsVisible(context)
     }
 
     /** Renames every already-linked group, not only those a brand-new contact references. */
