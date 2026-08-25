@@ -1,7 +1,8 @@
 name: placeholder google-services.json
 description: >-
   Write a placeholder app/google-services.json when none is checked out, so the
-  com.google.gms.google-services plugin has something to consume.
+  com.google.gms.google-services plugin has something to consume for all three
+  channel flavors' package names.
 runs:
   using: composite
   steps:
@@ -11,9 +12,9 @@ runs:
         # app/google-services.json is gitignored, so a fresh checkout has none and the
         # com.google.gms.google-services plugin fails the build before a single test runs.
         # Nothing in CI talks to Firebase — the plugin only turns this file into string
-        # resources — so a placeholder carrying the right package name is the whole
-        # requirement. Written only when absent, so anyone running these steps locally
-        # with a real file keeps theirs.
+        # resources — so a placeholder carrying the three flavors' package names is the
+        # whole requirement. Written only when absent, so anyone running these steps
+        # locally with a real file keeps theirs.
         if [ ! -f app/google-services.json ]; then
           cat > app/google-services.json <<'JSON'
         {
@@ -27,6 +28,24 @@ runs:
               "client_info": {
                 "mobilesdk_app_id": "1:000000000000:android:0000000000000000",
                 "android_client_info": { "package_name": "org.kysecurity.mail" }
+              },
+              "oauth_client": [],
+              "api_key": [ { "current_key": "AIzaSyAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" } ],
+              "services": { "appinvite_service": { "other_platform_oauth_client": [] } }
+            },
+            {
+              "client_info": {
+                "mobilesdk_app_id": "1:000000000000:android:0000000000000001",
+                "android_client_info": { "package_name": "org.kysecurity.mail.github" }
+              },
+              "oauth_client": [],
+              "api_key": [ { "current_key": "AIzaSyAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" } ],
+              "services": { "appinvite_service": { "other_platform_oauth_client": [] } }
+            },
+            {
+              "client_info": {
+                "mobilesdk_app_id": "1:000000000000:android:0000000000000002",
+                "android_client_info": { "package_name": "org.kysecurity.mail.fdroid" }
               },
               "oauth_client": [],
               "api_key": [ { "current_key": "AIzaSyAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" } ],

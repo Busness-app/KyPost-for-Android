@@ -109,6 +109,32 @@ android {
         }
     }
 
+    // Android identifies an app by applicationId AND signature, and the three channels sign with
+    // three different keys: Play re-signs under Play App Signing, the GitHub APK carries the upload
+    // key, F-Droid signs with its own. One applicationId across all three means a user who
+    // installed from one cannot update from another without uninstalling, which destroys local
+    // data. Distinct ids dissolve that: each is a separate app, and they install side by side.
+    flavorDimensions += "channel"
+    productFlavors {
+        // FIRST on purpose: AGP builds the default variant from the first flavor, and `./gradlew
+        // lint` analyses only the default variant. play must be the one that gets analysed.
+        create("play") {
+            dimension = "channel"
+            // No suffix. This id is in the closed test; changing it breaks every tester's update.
+            resValue("string", "contact_account_type", "org.kysecurity.mail.contacts")
+        }
+        create("github") {
+            dimension = "channel"
+            applicationIdSuffix = ".github"
+            resValue("string", "contact_account_type", "org.kysecurity.mail.github.contacts")
+        }
+        create("fdroid") {
+            dimension = "channel"
+            applicationIdSuffix = ".fdroid"
+            resValue("string", "contact_account_type", "org.kysecurity.mail.fdroid.contacts")
+        }
+    }
+
     signingConfigs {
         signingMaterial?.let { material ->
             create("release") {

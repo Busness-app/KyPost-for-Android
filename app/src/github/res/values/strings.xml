@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Overrides src/main. The play flavor deliberately has no override and keeps "KyPost". -->
+    <string name="app_name">KyPost (GitHub)</string>
+</resources>
