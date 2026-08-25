@@ -1,9 +1,11 @@
 package org.kysecurity.mail.contacts.device
 
+import android.Manifest
 import android.content.ContentProviderOperation
 import android.provider.ContactsContract
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -22,8 +24,16 @@ class DeviceContactVisibilityTest {
     private val resolver = context.contentResolver
     private val accounts = DeviceContactAccountManager(context)
 
+    /**
+     * `connectedAndroidTest` installs without runtime grants, and CP2 is not merely empty without
+     * them — it refuses to open at all. Granted here rather than from the CI workflow so the test
+     * carries its own setup; `androidx.test:rules` would buy the same thing for a new dependency.
+     */
     @Before
-    fun createAccount() = runBlocking {
+    fun grantContactsAccessAndCreateAccount() = runBlocking {
+        val automation = InstrumentationRegistry.getInstrumentation().uiAutomation
+        automation.grantRuntimePermission(context.packageName, Manifest.permission.READ_CONTACTS)
+        automation.grantRuntimePermission(context.packageName, Manifest.permission.WRITE_CONTACTS)
         check(accounts.ensureAccount()) { "needs a sync account; is the device unlocked?" }
     }
 
