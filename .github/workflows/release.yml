@@ -58,10 +58,15 @@ jobs:
             echo "GOOGLE_SERVICES_JSON holds the CI placeholder project; push would not work." >&2
             exit 1
           fi
-          if ! grep -q '"package_name": *"org.kysecurity.mail"' app/google-services.json; then
-            echo "GOOGLE_SERVICES_JSON does not name package org.kysecurity.mail." >&2
-            exit 1
-          fi
+          # One client per flavor. The google-services plugin fails any variant whose
+          # applicationId it cannot find, so a secret that is missing one silently means that
+          # channel's release never builds -- discovered at tag time, which is the worst moment.
+          for pkg in org.kysecurity.mail org.kysecurity.mail.github org.kysecurity.mail.fdroid; do
+            if ! grep -q "\"package_name\": *\"${pkg}\"" app/google-services.json; then
+              echo "GOOGLE_SERVICES_JSON does not name package ${pkg}." >&2
+              exit 1
+            fi
+          done
 
       - name: release signing material
         env:
@@ -91,8 +96,13 @@ jobs:
       - name: assemble release
         run: |
           set -euo pipefail
-          ./gradlew checkSigningSecretsAreNotInTheTree :app:bundleRelease
-          ./gradlew -PkypostArmOnlyApk :app:assembleRelease
+          # play only: the bundle is the Play upload artifact, and Play is the only channel that
+          # takes one. github/fdroid ship APKs.
+          ./gradlew checkSigningSecretsAreNotInTheTree :app:bundlePlayRelease
+          # github only, arm-only: this is the sideload APK. The Play bundle above must NOT carry
+          # the flag, so Play keeps every ABI and x86_64 Chromebooks still get served.
+          # fdroid is built by F-Droid's own infrastructure from source, never here.
+          ./gradlew -PkypostArmOnlyApk :app:assembleGithubRelease
 
       - name: dependency verification metadata is unchanged
         run: git diff --exit-code -- gradle/verification-metadata.xml
@@ -110,7 +120,7 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          metadata=app/build/outputs/apk/release/output-metadata.json
+          metadata=app/build/outputs/apk/github/release/output-metadata.json
           version_name=$(jq -r '.elements[0].versionName' "$metadata")
           version_code=$(jq -r '.elements[0].versionCode' "$metadata")
           echo "tag=${TAG} versionName=${version_name} versionCode=${version_code}"
@@ -130,7 +140,7 @@ jobs:
           EXPECTED_SHA256: ${{ secrets.RELEASE_KEY_SHA256 }}
         run: |
           set -euo pipefail
-          apk=app/build/outputs/apk/release/app-release.apk
+          apk=app/build/outputs/apk/github/release/app-github-release.apk
           apksigner=$(find "${ANDROID_HOME}/build-tools" -name apksigner | sort -V | tail -1)
 
           expected=$(printf '%s' "${EXPECTED_SHA256}" | tr -d ':' | tr '[:upper:]' '[:lower:]')
@@ -164,12 +174,12 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          cp app/build/outputs/apk/release/app-release.apk "${RUNNER_TEMP}/kypost-${TAG}.apk"
+          cp app/build/outputs/apk/github/release/app-github-release.apk "${RUNNER_TEMP}/kypost-${TAG}.apk"
           sha256sum "${RUNNER_TEMP}/kypost-${TAG}.apk" \
             | sed "s|${RUNNER_TEMP}/||" > "${RUNNER_TEMP}/kypost-${TAG}.apk.sha256"
 
           # App Bundle for Google Play
-          cp app/build/outputs/bundle/release/app-release.aab "${RUNNER_TEMP}/kypost-${TAG}.aab"
+          cp app/build/outputs/bundle/playRelease/app-play-release.aab "${RUNNER_TEMP}/kypost-${TAG}.aab"
           sha256sum "${RUNNER_TEMP}/kypost-${TAG}.aab" \
             | sed "s|${RUNNER_TEMP}/||" > "${RUNNER_TEMP}/kypost-${TAG}.aab.sha256"
 
@@ -181,7 +191,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: mapping-${{ github.ref_name }}
-          path: app/build/outputs/mapping/release/mapping.txt
+          path: |
+            app/build/outputs/mapping/playRelease/mapping.txt
+            app/build/outputs/mapping/githubRelease/mapping.txt
           retention-days: 90
           if-no-files-found: error
 

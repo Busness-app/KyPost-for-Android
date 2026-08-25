@@ -103,6 +103,27 @@ keyPassword=…
 - CI's `release-build` job generates a throwaway key per run, so every PR still verifies the R8 configuration and `lintVitalRelease` without the real key ever being reachable from a `pull_request` trigger.
 - Published builds come from `.github/workflows/release.yml` on a `v*` tag. It reads the real key from the protected `release` environment, checks the tag against `versionName`, and refuses to publish unless `apksigner` reports the expected `RELEASE_KEY_SHA256` signer. Never build a release for distribution from a workstation.
 
+### Channels
+
+KyPost for Android ships from three channels, and each is a separate app on your device:
+
+| Channel | Package | Signed by |
+| --- | --- | --- |
+| Google Play | `org.kysecurity.mail` | Google, under Play App Signing |
+| GitHub Releases | `org.kysecurity.mail.github` | our upload key |
+| F-Droid | `org.kysecurity.mail.fdroid` | F-Droid |
+
+Android identifies an app by its package **and** its signature, so a build from one
+channel can never update a build from another. Distinct packages make that explicit
+rather than presenting it as a corrupt update: you can run more than one at a time,
+and each keeps its own mail, contacts and keys.
+
+**Upgrading a sideloaded install from before v0.4.0:** the GitHub APK's package changed
+from `org.kysecurity.mail` to `org.kysecurity.mail.github`. Android will not install it
+over the old one. Uninstall the old app first — **this erases its local data, so re-pair
+with your server afterwards.** This is a one-time break; GitHub-channel updates after
+this one install normally.
+
 ## Test coverage
 
 - Deep-link parser tests (`NativePairingDeepLinkParserTest`)
