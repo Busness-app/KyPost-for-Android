@@ -84,8 +84,15 @@ jobs:
             printf 'KYPOST_KEY_PASSWORD=%s\n' "${RELEASE_KEY_PASSWORD}"
           } >> "$GITHUB_ENV"
 
+      # Two invocations on purpose. ndk.abiFilters is global to the variant, so a single command
+      # cannot produce a full-ABI bundle and an arm-only APK. The Play bundle is built first and
+      # without the flag, so Play keeps serving x86_64 Chromebooks; the sideloaded APK is built
+      # with it and sheds ~10 MB of libsqlcipher.so nobody sideloading a phone can use.
       - name: assemble release
-        run: ./gradlew checkSigningSecretsAreNotInTheTree :app:assembleRelease :app:bundleRelease
+        run: |
+          set -euo pipefail
+          ./gradlew checkSigningSecretsAreNotInTheTree :app:bundleRelease
+          ./gradlew -PkypostArmOnlyApk :app:assembleRelease
 
       - name: dependency verification metadata is unchanged
         run: git diff --exit-code -- gradle/verification-metadata.xml
@@ -178,6 +185,21 @@ jobs:
           retention-days: 90
           if-no-files-found: error
 
+      # The bundle is the Play upload artifact and nothing else. An AAB cannot be installed --
+      # sideloading it requires bundletool and a signing key -- so on the Releases page it is
+      # 17 MB of dead weight next to the APK that people actually want, and a real share of
+      # visitors download the wrong file and conclude the release is broken. Kept here, where
+      # whoever uploads to Play can fetch it.
+      - name: retain the Play bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bundle-${{ github.ref_name }}
+          path: |
+            ${{ runner.temp }}/kypost-${{ github.ref_name }}.aab
+            ${{ runner.temp }}/kypost-${{ github.ref_name }}.aab.sha256
+          retention-days: 90
+          if-no-files-found: error
+
       # `gh` is preinstalled on the runner, so this needs no third-party action — one less
       # entry in the supply chain of a job that holds the signing key.
       #
@@ -195,9 +217,7 @@ jobs:
             --title "${TAG}" \
             --generate-notes \
             "${RUNNER_TEMP}/kypost-${TAG}.apk" \
-            "${RUNNER_TEMP}/kypost-${TAG}.apk.sha256" \
-            "${RUNNER_TEMP}/kypost-${TAG}.aab" \
-            "${RUNNER_TEMP}/kypost-${TAG}.aab.sha256"
+            "${RUNNER_TEMP}/kypost-${TAG}.apk.sha256"
 
       - name: destroy signing material
         if: always()
