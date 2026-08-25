@@ -116,10 +116,12 @@ android {
     // data. Distinct ids dissolve that: each is a separate app, and they install side by side.
     flavorDimensions += "channel"
     productFlavors {
-        // FIRST on purpose: AGP builds the default variant from the first flavor, and `./gradlew
-        // lint` analyses only the default variant. play must be the one that gets analysed.
+        // Declared first for readability, but declaration order is NOT what AGP uses to pick the
+        // default variant — left to itself it picks alphabetically, which would be fdroid. `./gradlew
+        // lint` (and CI's lint step) analyses only the default variant, so isDefault pins it to play.
         create("play") {
             dimension = "channel"
+            isDefault = true
             // No suffix. This id is in the closed test; changing it breaks every tester's update.
             resValue("string", "contact_account_type", "org.kysecurity.mail.contacts")
         }
