@@ -247,27 +247,37 @@ android {
 }
 
 // Gate on the tasks that emit a signable artifact, never on gradle.startParameter.taskNames.
-// `packageRelease` (APK) and `signReleaseBundle` (AAB), matched exactly. A prefix match on
-// "package…Release" also catches `packageReleaseResources`, a resource-merge step in the *compile*
-// chain, which would fail release compilation rather than only artifact production.
-tasks.matching { it.name == "packageRelease" || it.name == "signReleaseBundle" }.configureEach {
-    // The secrets check runs HERE, not only in CI. On a developer machine keystore.properties is
-    // gitignored, so no CI job can see it — which made "CI fails on this" true and useless: a
-    // password could sit in the working tree indefinitely behind nothing but a build warning.
-    // Gated on release packaging rather than preBuild so the debug loop is unaffected and the
-    // refusal lands at the moment the password is actually about to be used.
-    dependsOn("checkSigningSecretsAreNotInTheTree")
-    // Resolved at configuration time and captured below as a plain Boolean. Referencing
-    // `keystorePropertiesFile` from inside doFirst instead makes the action hold a reference to the
-    // build script, which the configuration cache cannot serialize.
-    val signingMaterialPresent = signingMaterial != null
-    doFirst {
-        if (!signingMaterialPresent) {
-            throw GradleException(
-                "No signing material: a release variant cannot be signed. Set KYPOST_KEYSTORE, " +
-                    "KYPOST_STORE_PASSWORD, KYPOST_KEY_ALIAS and KYPOST_KEY_PASSWORD (see " +
-                    "keystore.properties.example), or build only the debug variant.",
-            )
+// One release variant's real names are `package<VariantName>` (APK) and `sign<VariantName>Bundle`
+// (AAB) — with the channel flavor dimension that is one pair per flavor: packagePlayRelease,
+// packageGithubRelease, packageFdroidRelease, and the sign*ReleaseBundle equivalents. VariantName
+// comes from AGP's own variant, not a guessed string, so this cannot go stale the way a hardcoded
+// "packageRelease"/"signReleaseBundle" pair did the moment a second flavor existed. Matched
+// exactly, same as before: `package<VariantName>Resources` (a resource-merge step in the
+// *compile* chain), `-Bundle`, `-UniversalApk`, and `signingConfigWriter<VariantName>` are all
+// different task names and must stay untouched — catching one of those would fail release
+// compilation rather than only artifact production.
+androidComponents.onVariants { variant ->
+    if (variant.buildType != "release") return@onVariants
+    val variantName = variant.name.replaceFirstChar { it.uppercase() }
+    tasks.matching { it.name == "package$variantName" || it.name == "sign${variantName}Bundle" }.configureEach {
+        // The secrets check runs HERE, not only in CI. On a developer machine keystore.properties is
+        // gitignored, so no CI job can see it — which made "CI fails on this" true and useless: a
+        // password could sit in the working tree indefinitely behind nothing but a build warning.
+        // Gated on release packaging rather than preBuild so the debug loop is unaffected and the
+        // refusal lands at the moment the password is actually about to be used.
+        dependsOn("checkSigningSecretsAreNotInTheTree")
+        // Resolved at configuration time and captured below as a plain Boolean. Referencing
+        // `keystorePropertiesFile` from inside doFirst instead makes the action hold a reference to the
+        // build script, which the configuration cache cannot serialize.
+        val signingMaterialPresent = signingMaterial != null
+        doFirst {
+            if (!signingMaterialPresent) {
+                throw GradleException(
+                    "No signing material: a release variant cannot be signed. Set KYPOST_KEYSTORE, " +
+                        "KYPOST_STORE_PASSWORD, KYPOST_KEY_ALIAS and KYPOST_KEY_PASSWORD (see " +
+                        "keystore.properties.example), or build only the debug variant.",
+                )
+            }
         }
     }
 }
