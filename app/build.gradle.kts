@@ -88,6 +88,17 @@ android {
         // FLAG_SECURE is unconditional unless this is overridden, and only the debug type below
         // can override it. See security/SecureWindow.kt for why the escape hatch exists at all.
         buildConfigField("boolean", "ALLOW_SCREENSHOTS", "false")
+
+        // The sideloaded APK carries arm only. x86/x86_64 are ~10 MB of libsqlcipher.so that
+        // serve emulators and a handful of Chromebooks, not phones. Deliberately a flag rather
+        // than an unconditional filter: bundleRelease must run WITHOUT it so the Play bundle
+        // keeps every ABI and Chromebooks still get served. See .github/workflows/release.yml.
+        if (providers.gradleProperty("kypostArmOnlyApk").isPresent) {
+            ndk {
+                abiFilters.clear()
+                abiFilters += listOf("armeabi-v7a", "arm64-v8a")
+            }
+        }
     }
 
     signingConfigs {
