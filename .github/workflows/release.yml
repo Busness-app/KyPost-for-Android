@@ -44,6 +44,15 @@ jobs:
       # published build where push notifications work and one where they fail silently — the
       # app builds, installs and runs identically either way, so nothing downstream would
       # catch a placeholder. Hence the explicit rejection below.
+      #
+      # RELEASE PREREQUISITE, not yet done: as of the three-flavor split, Firebase must have an
+      # app REGISTERED — not merely present in some json a developer hand-edited — for
+      # org.kysecurity.mail.github and org.kysecurity.mail.fdroid, and GOOGLE_SERVICES_JSON on
+      # the `release` environment must be rotated to the file Firebase generates once they are.
+      # The check below only verifies the secret NAMES all three packages; a google-services.json
+      # naming a package Firebase has never registered passes it just as well, and ships an app
+      # whose FirebaseMessaging.getToken() fails at runtime — which breaks pairing outright, since
+      # pairing hard-requires a token. The next `v*` tag fails here until this is done.
       - name: production google-services.json
         env:
           GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
@@ -183,10 +192,20 @@ jobs:
           sha256sum "${RUNNER_TEMP}/kypost-${TAG}.aab" \
             | sed "s|${RUNNER_TEMP}/||" > "${RUNNER_TEMP}/kypost-${TAG}.aab.sha256"
 
-      # R8's mapping file, kept as a workflow artifact rather than attached to the Release.
-      # Without it a crash report from this build is unreadable; published alongside the APK
-      # it also hands an analyst a full symbol table for a security-sensitive binary. Retained
-      # long enough to outlive the release it belongs to.
+      # R8's mapping files, one per published flavor, kept as a workflow artifact rather than
+      # attached to the Release. Without them crash reports from this build are unreadable;
+      # published alongside the APK they also hand an analyst a full symbol table for a
+      # security-sensitive binary. Retained long enough to outlive the release they belong to.
+      #
+      # Checked explicitly before uploading: if-no-files-found: error only fires when NEITHER
+      # path matches, so losing just the github mapping (or just the play one) would otherwise
+      # upload the other silently and nothing would say a mapping file went missing.
+      - name: both R8 mapping files exist
+        run: |
+          set -euo pipefail
+          test -f app/build/outputs/mapping/playRelease/mapping.txt
+          test -f app/build/outputs/mapping/githubRelease/mapping.txt
+
       - name: retain the R8 mapping
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

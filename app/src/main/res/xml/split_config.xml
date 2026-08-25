@@ -2,6 +2,12 @@
 <resources xmlns:window="http://schemas.android.com/apk/res-auto">
 
     <!-- 800dp, not the layout's 600dp: measured on a Fold, 720 split the 751dp cover screen. -->
+    <!-- Fully qualified names, not a leading dot. androidx.window's RuleParser expands a
+         leading-dot name against the applicationContext's package name, which is applicationId —
+         "org.kysecurity.mail.github" on the github flavor, not the fixed namespace these classes
+         actually live in. A relative name there resolves to a class that does not exist, so
+         SplitPairFilter never matches and the split silently stops happening on every flavor but
+         play. A dotted name is used as-is on every flavor, so it is the only form that works here. -->
     <SplitPairRule
         window:splitRatio="0.4"
         window:splitLayoutDirection="locale"
@@ -10,8 +16,8 @@
         window:finishSecondaryWithPrimary="always"
         window:clearTop="true">
         <SplitPairFilter
-            window:primaryActivityName=".InboxActivity"
-            window:secondaryActivityName=".EmailDetailActivity" />
+            window:primaryActivityName="org.kysecurity.mail.InboxActivity"
+            window:secondaryActivityName="org.kysecurity.mail.EmailDetailActivity" />
     </SplitPairRule>
 
     <!-- Same 800 threshold and the same reasoning as the rule above. -->
@@ -23,14 +29,14 @@
         window:finishSecondaryWithPrimary="always"
         window:clearTop="true">
         <SplitPairFilter
-            window:primaryActivityName=".contacts.ContactsListActivity"
-            window:secondaryActivityName=".contacts.ContactDetailActivity" />
+            window:primaryActivityName="org.kysecurity.mail.contacts.ContactsListActivity"
+            window:secondaryActivityName="org.kysecurity.mail.contacts.ContactDetailActivity" />
         <SplitPairFilter
-            window:primaryActivityName=".contacts.ContactsListActivity"
-            window:secondaryActivityName=".contacts.ContactEditActivity" />
+            window:primaryActivityName="org.kysecurity.mail.contacts.ContactsListActivity"
+            window:secondaryActivityName="org.kysecurity.mail.contacts.ContactEditActivity" />
         <SplitPairFilter
-            window:primaryActivityName=".contacts.ContactDetailActivity"
-            window:secondaryActivityName=".contacts.ContactEditActivity" />
+            window:primaryActivityName="org.kysecurity.mail.contacts.ContactDetailActivity"
+            window:secondaryActivityName="org.kysecurity.mail.contacts.ContactEditActivity" />
     </SplitPairRule>
 
 </resources>

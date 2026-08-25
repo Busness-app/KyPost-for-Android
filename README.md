@@ -37,8 +37,12 @@ KyPost is an Android email client backed by a self-hosted KyPost relay. It shows
 
 ## Firebase setup
 
-1. Create or update the Firebase Android app for the application id `org.kysecurity.mail`.
-2. Download `google-services.json`.
+1. In the same Firebase project, create or update a Firebase Android app for **each** of the
+   three application ids: `org.kysecurity.mail`, `org.kysecurity.mail.github`, and
+   `org.kysecurity.mail.fdroid`. The google-services plugin fails any variant whose applicationId
+   it cannot find a client for, so a `google-services.json` missing one silently means that
+   channel's build breaks at `process<Variant>GoogleServices`.
+2. Download the merged `google-services.json` (it holds all three clients once they exist).
 3. Put the file at `app/google-services.json`.
 4. Enable FCM in the Firebase project settings.
 
@@ -60,7 +64,7 @@ KyPost is an Android email client backed by a self-hosted KyPost relay. It shows
 - Make sure the deep link scheme and host are exactly `kypost://native-pair`. The app no longer supports the legacy `novu-pair` host or the old `llamalabels://` scheme.
 - Make sure the required query parameters exist: `sub`, `srv`, and `pt`. A link that still carries `hash` comes from an outdated server; the app ignores the parameter and the server no longer accepts it.
 - Make sure the device can reach the resolved registration endpoint (`reg`, or `{srv}/api/notifications/native/register`).
-- Make sure the Firebase project configuration matches the package `org.kysecurity.mail`.
+- Make sure the Firebase project has a registered app for whichever of the three packages you built (`org.kysecurity.mail`, `.github`, or `.fdroid`).
 - If the registration fails with `400`, the request was malformed or missed a field.
 - If the registration fails with `401`, the pairing token (`pt`) is invalid or expired. Scan a new QR code.
 - If the registration fails with `503`, the backend has no `PAIRING_SECRET` configuration. The app cannot retry around this error.
@@ -76,17 +80,17 @@ KyPost is an Android email client backed by a self-hosted KyPost relay. It shows
 ## Build and test
 
 ```sh
-./gradlew testDebugUnitTest
+./gradlew testPlayDebugUnitTest
 ```
 
 ```sh
-./gradlew assembleDebug
+./gradlew assemblePlayDebug
 ```
 
 Instrumented tests need a connected device or emulator, **with a secure lock screen set**. The Keystore-backed enrollment vault refuses to create a key without one by design, so on a bare emulator the vault suites fail as though the code were broken. CI sets a PIN first; see the `instrumented` job in `.github/workflows/ci.yml`.
 
 ```sh
-./gradlew connectedDebugAndroidTest
+./gradlew connectedPlayDebugAndroidTest
 ```
 
 ### Release builds
@@ -111,14 +115,18 @@ KyPost for Android ships from three channels, and each is a separate app on your
 | --- | --- | --- |
 | Google Play | `org.kysecurity.mail` | Google, under Play App Signing |
 | GitHub Releases | `org.kysecurity.mail.github` | our upload key |
-| F-Droid | `org.kysecurity.mail.fdroid` | F-Droid |
+| F-Droid | `org.kysecurity.mail.fdroid` | not yet live — the flavor still pulls in Firebase, which F-Droid's build servers cannot satisfy |
 
 Android identifies an app by its package **and** its signature, so a build from one
 channel can never update a build from another. Distinct packages make that explicit
 rather than presenting it as a corrupt update: you can run more than one at a time,
 and each keeps its own mail, contacts and keys.
 
-**Upgrading a sideloaded install from before v0.4.0:** the GitHub APK's package changed
+With more than one channel installed side by side, a `kypost://native-pair` link opens
+Android's app chooser instead of a single app — pick the copy you actually mean to pair,
+since pairing the wrong one is silent and does not fail.
+
+**Upgrading a sideloaded install from before this change:** the GitHub APK's package changed
 from `org.kysecurity.mail` to `org.kysecurity.mail.github`. Android will not install it
 over the old one. Uninstall the old app first — **this erases its local data, so re-pair
 with your server afterwards.** This is a one-time break; GitHub-channel updates after

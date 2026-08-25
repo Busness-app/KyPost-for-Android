@@ -164,6 +164,12 @@ jobs:
       # DTO, its generated $$serializer/$Companion, or a manifest-declared component, all kept on
       # purpose. 30% is a regression tripwire with real headroom, not a target. If a legitimate
       # change pushes it over, raise it deliberately and say in the commit which rule did it.
+      #
+      # ponytail: checks playRelease only, not all three flavors. Fine today because the flavors
+      # are byte-identical apart from applicationId, so one R8 run stands for all three. Widen
+      # this to also check githubRelease/fdroidRelease once the fdroid flavor drops the Firebase
+      # dependency (see the Channels table in README.md) — at that point its R8 input differs
+      # from play's and this check stops covering it.
       - name: R8 actually obfuscated the app
         run: |
           mapping=app/build/outputs/mapping/playRelease/mapping.txt

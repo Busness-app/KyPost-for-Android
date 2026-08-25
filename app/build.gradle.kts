@@ -1,4 +1,5 @@
 import com.android.build.api.artifact.SingleArtifact
+import com.android.build.api.variant.ResValue
 import java.util.Properties
 
 plugins {
@@ -94,8 +95,8 @@ android {
         // account types globally across the device and binds each to a signing key, so two flavors
         // claiming one type means only the first-installed one has a working authenticator.
         // DeviceContactAccount derives the same value from BuildConfig; DeviceContactAccountTest
-        // and AccountTypeMatchesManifestTest pin the two halves together.
-        resValue("string", "contact_account_type", "org.kysecurity.mail.contacts")
+        // and AccountTypeMatchesManifestTest pin the two halves together. Set per-variant from
+        // applicationId below, not here — see the androidComponents.onVariants block.
 
         // The sideloaded APK carries arm only. x86/x86_64 are ~10 MB of libsqlcipher.so that
         // serve emulators and a handful of Chromebooks, not phones. Deliberately a flag rather
@@ -123,17 +124,14 @@ android {
             dimension = "channel"
             isDefault = true
             // No suffix. This id is in the closed test; changing it breaks every tester's update.
-            resValue("string", "contact_account_type", "org.kysecurity.mail.contacts")
         }
         create("github") {
             dimension = "channel"
             applicationIdSuffix = ".github"
-            resValue("string", "contact_account_type", "org.kysecurity.mail.github.contacts")
         }
         create("fdroid") {
             dimension = "channel"
             applicationIdSuffix = ".fdroid"
-            resValue("string", "contact_account_type", "org.kysecurity.mail.fdroid.contacts")
         }
     }
 
@@ -258,9 +256,14 @@ android {
 // *compile* chain), `-Bundle`, `-UniversalApk`, and `signingConfigWriter<VariantName>` are all
 // different task names and must stay untouched — catching one of those would fail release
 // compilation rather than only artifact production.
+// Names this gate depends on existing, checked below once AGP has finished registering tasks.
+val expectedReleasePackagingTaskNames = mutableListOf<String>()
+
 androidComponents.onVariants { variant ->
     if (variant.buildType != "release") return@onVariants
     val variantName = variant.name.replaceFirstChar { it.uppercase() }
+    expectedReleasePackagingTaskNames += "package$variantName"
+    expectedReleasePackagingTaskNames += "sign${variantName}Bundle"
     tasks.matching { it.name == "package$variantName" || it.name == "sign${variantName}Bundle" }.configureEach {
         // The secrets check runs HERE, not only in CI. On a developer machine keystore.properties is
         // gitignored, so no CI job can see it — which made "CI fails on this" true and useless: a
@@ -281,6 +284,23 @@ androidComponents.onVariants { variant ->
                 )
             }
         }
+    }
+}
+
+// The gate above is only as good as the task names it matches. If AGP ever renames
+// `package<VariantName>` or `sign<VariantName>Bundle`, tasks.matching(...) above silently matches
+// nothing and the whole signing gate is gone on a green build — the exact failure mode that
+// motivated moving off a hardcoded "packageRelease"/"signReleaseBundle" pair in the first place.
+// Checked once every task is registered, so a rename fails the build loudly instead of quietly.
+// tasks.names is a name index and does not realize a lazily-registered task, so this is free.
+afterEvaluate {
+    val missing = expectedReleasePackagingTaskNames.filterNot { it in tasks.names }
+    if (missing.isNotEmpty()) {
+        throw GradleException(
+            "Expected release packaging task(s) not found: $missing. The signing-material gate " +
+                "above matches tasks by these names and does nothing if they are wrong — see the " +
+                "comment above androidComponents.onVariants that registers them.",
+        )
     }
 }
 
@@ -326,6 +346,14 @@ val runtimeMatchedClassNames = setOf(
 )
 
 androidComponents.onVariants { variant ->
+    // Derived, not a literal per flavor: a hand-typed literal can drift from applicationId
+    // without the build noticing, and DeviceContactAccount.ACCOUNT_TYPE computes exactly this
+    // string from BuildConfig.APPLICATION_ID at runtime. See the resValue comment in defaultConfig.
+    variant.resValues.put(
+        variant.makeResValueKey("string", "contact_account_type"),
+        variant.applicationId.map { ResValue("$it.contacts") },
+    )
+
     val mergedManifest = variant.artifacts.get(SingleArtifact.MERGED_MANIFEST)
     val allowed = allowedExportedComponents
     val gate = tasks.register("checkExportedComponents${variant.name.replaceFirstChar { it.uppercase() }}") {
