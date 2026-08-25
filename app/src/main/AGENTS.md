@@ -225,6 +225,15 @@ Owns production Android app code and resources.
   acknowledgement is atomic.
   Entry point is the Contacts nav item and the settings hub; CardDAV (the doc's alternative sync
   surface) has no mobile client — it is web/OS-driven.
+- **Writing a raw contact into CP2 is not the same as the user seeing it.** A raw contact that
+  belongs to no group is hidden unless its account's `ContactsContract.Settings` row sets
+  `UNGROUPED_VISIBLE = 1`; grouped contacts are exempt because `DeviceGroupLinker` sets
+  `GROUP_VISIBLE`. Skipping it does not fail a write, log an error, or fail any test that only
+  reads back `RawContacts` — it just presents an empty address book. `DeviceContactAccount
+  .makeContactsVisible` owns the opt-in and `DeviceContactRepository.syncAll`'s
+  `ensureAccountVisible` stage runs it on every sync, not only at enable time, so installs that
+  predate it repair themselves. Assert visibility through `Contacts.IN_VISIBLE_GROUP`, never
+  through the presence of the row.
 - Room (`androidx.room`, `data/AppDatabase`) is a deliberate, user-requested exception to "do not
   add new dependencies unless they reduce overall code size/complexity" below — it's the local email
   and contacts cache. KSP (Room's annotation processor) needs

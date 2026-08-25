@@ -2,7 +2,9 @@ package org.kysecurity.mail.contacts.device
 
 import android.accounts.Account
 import android.accounts.AccountManager
+import android.content.ContentValues
 import android.content.Context
+import android.provider.ContactsContract
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -14,6 +16,23 @@ object DeviceContactAccount {
     const val ACCOUNT_NAME = "KyPost"
 
     fun account(): Account = Account(ACCOUNT_NAME, ACCOUNT_TYPE)
+
+    /**
+     * CP2 hides a raw contact that belongs to no group unless its account opts in here, so every
+     * ungrouped contact we pushed was stored correctly and shown nowhere. Grouped contacts stayed
+     * visible (DeviceGroupLinker sets GROUP_VISIBLE), which is why this read as a partial sync
+     * rather than a display flag. Insert on Settings is an upsert, so calling this repeatedly
+     * updates the one row and repairs installs whose account already exists.
+     */
+    fun makeContactsVisible(context: Context) {
+        val values = ContentValues().apply {
+            put(ContactsContract.Settings.ACCOUNT_NAME, ACCOUNT_NAME)
+            put(ContactsContract.Settings.ACCOUNT_TYPE, ACCOUNT_TYPE)
+            put(ContactsContract.Settings.UNGROUPED_VISIBLE, 1)
+        }
+        context.applicationContext.contentResolver
+            .insert(ContactsContract.Settings.CONTENT_URI, values)
+    }
 }
 
 class DeviceContactAccountManager(private val context: Context) {
