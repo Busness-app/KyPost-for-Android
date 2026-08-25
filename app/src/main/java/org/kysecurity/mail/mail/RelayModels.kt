@@ -164,6 +164,21 @@ data class RelayAttachmentListResponseDto(
     val attachments: List<RelayAttachmentInfoDto> = emptyList(),
 )
 
+/** One message's body from GET /api/mail/body, the on-demand counterpart to `bodies=0`.
+ *
+ *  [bodyMode] is `html`, `plain`, or absent — absent means the server could not tell from the MIME
+ *  parse, which is NOT the same as plain, and must never be resolved by sniffing the text: a
+ *  plain-text message containing an address literal like `<user@example.com>` parses as an unknown
+ *  tag and the address vanishes from what the user is shown.
+ *
+ *  No recipients here: the endpoint carries body and bodyMode only. Reply All's `to`/`cc` come from
+ *  the cached row — see [MailRepository.fetchBody]. */
+@Serializable
+data class RelayMessageBodyDto(val body: String = "", val bodyMode: String = "") {
+    /** Redacted: [body] is the message the user is reading. Enforced by `SourceRulesTest`. */
+    override fun toString(): String = "RelayMessageBodyDto(redacted)"
+}
+
 @Serializable
 data class RelaySendResponseDto(val ok: Boolean = false, val sentSaved: Boolean = false, val warning: String = "")
 

@@ -65,6 +65,11 @@ class RelayMailSource(
             .addQueryParameter("limit", limit.toString())
             .addQueryParameter("mailbox", mailbox)
             .addQueryParameter("since", since)
+            // The list rows render no body; only the opened message does, and it fetches its own
+            // from /api/mail/body. Opting out costs one round trip per first open and takes a
+            // since=0 window from 151.4 KiB to 571 B, a five-new-message poll from 15.9 KiB to
+            // 295 B, and ~2.6 MiB off the decoded peak (see MemoryBudget).
+            .addQueryParameter("bodies", "0")
             .build()
         val request = Request.Builder().url(url).get()
             .authed(pairing)
@@ -237,11 +242,47 @@ class RelayMailSource(
         }
     }
 
+    /** The counterpart to `bodies=0` on [fetchInbox]: the list carries no bodies, so the opened
+     *  message fetches its own. Same mailbox+messageId pair the attachment endpoints take.
+     *
+     *  Recipients come back empty because the endpoint does not carry them; [MailRepository]
+     *  merges `to`/`cc` from the cached row, which is their only source. */
     override fun fetchMessageBody(messageId: String, folder: String): MailOutcome<MailMessageBody> {
-        // /api/inbox already returns each message's full body inline (Mobile_Mail_Relay.md Part 2)
-        // — there is no separate fetch-one-message endpoint. MailRepository.fetchBody serves this
-        // from the Room cache instead of calling here; this only runs on an uncached cache miss.
-        return MailOutcome.BadRequest("Relay mode has no separate message-body endpoint")
+        val pairing = pairingProvider() ?: return MailOutcome.Unauthorized("Device is not paired")
+        val base = baseUrl(pairing, "/api/mail/body") ?: return MailOutcome.BadRequest("Server URL is not valid")
+        val url = base.newBuilder()
+            .addQueryParameter("mailbox", folder)
+            .addQueryParameter("messageId", messageId)
+            .build()
+        val request = Request.Builder().url(url).get()
+            .authed(pairing)
+            .build()
+        return execute(request) { code, body ->
+            // Handled here rather than in mapErrorCode, whose generic fallback words every unknown
+            // status as an upstream failure — which userFacingMessage renders as "Couldn't reach
+            // the mail server". Both of these ARRIVED and were answered definitively, and sending
+            // the user to check their signal over a message that will never open is a lie. 502
+            // still goes to the shared mapper, because that one really is retry-later.
+            if (code == 404) {
+                return@execute MailOutcome.BadRequest("This message is no longer on the server")
+            }
+            // Deliberately not the response body: the 413 is JSON, and raw JSON in a toast is
+            // worse than a sentence — the same call mapErrorCode makes for an unrecognized 409.
+            if (code == 413) {
+                return@execute MailOutcome.BadRequest("This message is too large for the server to open")
+            }
+            if (code != 200) return@execute mapErrorCode(code, body)
+            val parsed = runCatching { json.decodeFromString<RelayMessageBodyDto>(body) }.getOrNull()
+                ?: return@execute MailOutcome.UpstreamFailure("Malformed message body response")
+            MailOutcome.Success(
+                MailMessageBody(
+                    html = parsed.body,
+                    bodyMode = parsed.bodyMode,
+                    toAddresses = emptyList(),
+                    ccAddresses = emptyList(),
+                ),
+            )
+        }
     }
 
     override fun listAttachments(messageId: String, folder: String): MailOutcome<List<AttachmentInfo>> {

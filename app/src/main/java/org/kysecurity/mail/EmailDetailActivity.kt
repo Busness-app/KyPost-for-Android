@@ -16,6 +16,7 @@ import android.widget.Toast
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
 import org.kysecurity.mail.mail.AttachmentInfo
+import org.kysecurity.mail.mail.MailMessageBody
 import org.kysecurity.mail.mail.MailOutcome
 import org.kysecurity.mail.mail.MailRepository
 import org.kysecurity.mail.mail.MailRuntime
@@ -310,6 +311,9 @@ class EmailDetailActivity : LockedActivity() {
         // A failed fetch means "not cached", which is NOT the same as "the server sent no
         // body" — see MailRepository.fetchBody.
         val bodyUnavailable = outcome !is MailOutcome.Success
+        // Routine since the inbox went bodies=0: the body is fetched on open, so any network
+        // failure lands here rather than needing a missing cache row.
+        val fetchFailure = bodyFetchFailureNotice(outcome)
         val pgpState = pgpMessageStateOf(pgpEncrypted, pgpDecryptError, content?.html, bodyUnavailable)
         // A client-protected message has no body to fall back to, and emailPreview is the
         // placeholder subject line — rendering it would look like the message content.
@@ -320,11 +324,11 @@ class EmailDetailActivity : LockedActivity() {
             PgpMessageState.BODY_UNAVAILABLE -> ""
             else -> content?.html?.takeIf { it.isNotBlank() }
                 ?.let { emailBodyToHtml(it, bodyMode) }
-                ?: emailBodyToHtml(emailPreview, "plain")
+                ?: if (mayFallBackToPreview(outcome)) emailBodyToHtml(emailPreview, "plain") else ""
         }
         // Computed from the same inputs the line above used, so the notice cannot claim the screen is
         // empty while something is on it, or stay silent while it is not.
-        val nothingToRender = rendersNothing(pgpState, content?.html, emailPreview)
+        val nothingToRender = rendersNothing(pgpState, content?.html, emailPreview) || fetchFailure != null
         val palette = getStoredThemePalette(this)
         val monoFontFace = ibmPlexMonoFontFaceCss(this)
         val isDark = isDarkPalette(palette)
@@ -345,7 +349,8 @@ class EmailDetailActivity : LockedActivity() {
             lastRenderedHtml = htmlWithImages
             // A local decrypt must never reach this property; not `bodyToRender`, which is blanked.
             fetchedBodyHtml = content?.html?.takeIf { pgpState != PgpMessageState.CLIENT_PROTECTED }
-            val plainTextBody = content?.html?.takeIf { it.isNotBlank() } ?: emailPreview
+            val plainTextBody = content?.html?.takeIf { it.isNotBlank() }
+                ?: emailPreview.takeIf { mayFallBackToPreview(outcome) }.orEmpty()
             val plainText = plainTextBody.takeIf { isPlainTextBody(it, bodyMode) }
             plainTextScroll.visibility = if (plainText != null) View.VISIBLE else View.GONE
             webView.visibility = if (plainText != null) View.GONE else View.VISIBLE
@@ -355,7 +360,7 @@ class EmailDetailActivity : LockedActivity() {
             }
             loading.visibility = android.view.View.GONE
             imagesBlockedBar.visibility = if (hasRemoteImages) View.VISIBLE else View.GONE
-            renderPgpBar(pgpState, pgpDecryptError, serverUrl, webmailUrl, nothingToRender, emailFolder, emailId, emailSender)
+            renderPgpBar(pgpState, pgpDecryptError, serverUrl, webmailUrl, nothingToRender, fetchFailure, emailFolder, emailId, emailSender)
             applyReplyForwardAvailability(pgpState)
             if (content != null) {
                 toRecipients = content.toAddresses
@@ -461,6 +466,10 @@ class EmailDetailActivity : LockedActivity() {
         /** Decided by [rendersNothing] in the same render pass that chose the body, so this cannot
          *  disagree with what was actually put on screen. */
         nothingToRender: Boolean,
+        /** The body fetch's own failure, or null. Takes precedence over [R.string.email_no_content]
+         *  below: that string claims the server answered and had nothing, which a failed fetch has
+         *  not established — and the two call for different responses from the user. */
+        fetchFailure: String?,
         /** Only needed to kick off [attemptDecrypt] from the CLIENT_PROTECTED branch below. */
         mailbox: String,
         messageId: String,
@@ -471,8 +480,12 @@ class EmailDetailActivity : LockedActivity() {
 
         if (state == PgpMessageState.NONE) {
             // An encrypted message the server never warmed arrives with pgpEncrypted false and no body.
-            val notice = signatureNotice
-                ?: getString(R.string.email_no_content).takeIf { nothingToRender }
+            val notice = emptyBodyNotice(
+                signatureNotice,
+                fetchFailure,
+                getString(R.string.email_no_content),
+                nothingToRender,
+            )
             pgpBar.visibility = if (notice == null) View.GONE else View.VISIBLE
             btnOpenInWebmail.visibility = View.GONE
             pgpText.text = notice.orEmpty()
@@ -1065,6 +1078,40 @@ internal fun buildEmailBodyHtml(bodyToRender: String, palette: ThemePalette, mon
         </html>
     """.trimIndent()
 }
+
+/** Whether the preview may stand in for a body the reader does not have.
+ *
+ *  The inbox is fetched with `bodies=0`, so the body arrives over the network on open and the fetch
+ *  can fail — before that it took a missing cache row and effectively never happened. What a failure
+ *  leaves behind is the preview, and rendering it is indistinguishable from a short message that
+ *  arrived intact. The fallback is for a message the server answered for and had no body for. */
+internal fun mayFallBackToPreview(outcome: MailOutcome<MailMessageBody>): Boolean =
+    outcome is MailOutcome.Success
+
+/** What to tell the user when the body fetch itself failed, or null when it did not.
+ *
+ *  Paired with [mayFallBackToPreview]: "No message body available." claims the server answered and
+ *  had nothing, which a failed fetch has not established. A failure is the one the user can act on,
+ *  so it carries the outcome's own wording — "couldn't reach the mail server" and "this message is
+ *  too large for the server to open" call for different responses. */
+internal fun bodyFetchFailureNotice(outcome: MailOutcome<MailMessageBody>): String? =
+    if (outcome is MailOutcome.Success) null else outcome.userFacingMessage()
+
+/** The notice bar for a message with no text of its own, composed from facts that can co-occur.
+ *
+ *  A signature notice and a failed fetch are independent, and joining them beats picking one — the
+ *  failure is what the user can act on, and a signature notice must not swallow it. [noContent] is
+ *  the odd one out: it claims the server answered and had nothing, so it is mutually exclusive with
+ *  [fetchFailure], which has established no such thing. */
+internal fun emptyBodyNotice(
+    signatureNotice: String?,
+    fetchFailure: String?,
+    noContent: String,
+    nothingToRender: Boolean,
+): String? = listOfNotNull(
+    signatureNotice,
+    fetchFailure ?: noContent.takeIf { nothingToRender },
+).joinToString("\n\n").ifBlank { null }
 
 /** Pairs the body with its MIME mode before it reaches the WebView. A server-supplied mode wins;
  *  sniffing is only the compatibility fallback for old cache rows. */

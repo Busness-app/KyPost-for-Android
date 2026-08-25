@@ -32,6 +32,12 @@ interface EmailDao {
     @Query("DELETE FROM emails WHERE folder = :folder AND messageId NOT IN (:keepIds)")
     fun pruneStaleInFolder(folder: String, keepIds: List<String>)
 
+    /** Fills in a body fetched on open. Scoped to the columns the fetch actually answers for, not
+     *  an `@Upsert` of the whole row: the metadata already there came from the inbox window and is
+     *  fresher than anything this call knows. */
+    @Query("UPDATE emails SET body = :body, bodyMode = :bodyMode WHERE messageId = :id AND folder = :folder")
+    fun updateBody(id: String, folder: String, body: String, bodyMode: String)
+
     /** Drops cached plaintext of mail the server decrypted. Subject is deliberately left alone. */
     // `body IS NOT NULL` is not redundant: `body != ''` is NULL, not false, for a null body.
     @Query("UPDATE emails SET body = '', preview = '' WHERE pgpEncrypted = 1 AND body IS NOT NULL AND body != ''")

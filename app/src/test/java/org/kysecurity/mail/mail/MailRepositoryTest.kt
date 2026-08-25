@@ -39,6 +39,12 @@ private class FakeEmailDao : EmailDao {
             .forEach { rows.remove(key(it.messageId, it.folder)) }
     }
 
+    /** Mirrors the real query. The authority on the SQL itself is `EmailDaoLazyBodyTest`. */
+    override fun updateBody(id: String, folder: String, body: String, bodyMode: String) {
+        if (failNextWrite) throw IllegalStateException("simulated Room failure")
+        rows[key(id, folder)]?.let { rows[key(id, folder)] = it.copy(body = body, bodyMode = bodyMode) }
+    }
+
     /** Mirrors the real query's predicate. The authority on the SQL itself is
      *  `EmailDaoClearDecryptedTest`, which runs it against a real Room database. */
     override fun clearServerDecryptedBodies(): Int {
@@ -110,7 +116,16 @@ private class FakeMailSource(
     override fun saveDraft(draft: MailDraft) = unsupported()
     override fun sendMail(draft: MailDraft) = unsupported()
     override fun sendClientEncrypted(message: ClientEncryptedMessage) = unsupported()
-    override fun fetchMessageBody(messageId: String, folder: String) = unsupported()
+    /** Null keeps the old throwing behaviour, so tests asserting "must never reach the relay"
+     *  still fail loudly rather than against a plausible-looking success. */
+    var bodyOutcome: MailOutcome<MailMessageBody>? = null
+    val bodyFetches = mutableListOf<Pair<String, String>>()
+
+    override fun fetchMessageBody(messageId: String, folder: String): MailOutcome<MailMessageBody> {
+        val stubbed = bodyOutcome ?: unsupported()
+        bodyFetches += messageId to folder
+        return stubbed
+    }
     override fun listAttachments(messageId: String, folder: String) = unsupported()
     override fun downloadAttachment(messageId: String, folder: String, index: Int) = unsupported()
 
@@ -407,6 +422,160 @@ class MailRepositoryTest {
         } catch (expected: UnsupportedOperationException) {
             // FakeMailSource.fetchMessageBody: reaching it is the assertion.
         }
+    }
+
+    /** With bodies=0 the row arrives with metadata and no body, so a blank body is a cache miss to
+     *  be filled — the opposite of the rule that held while /api/inbox carried bodies inline. */
+    @Test
+    fun blankCachedBodyIsFetchedFromTheRelay() {
+        val dao = FakeEmailDao()
+        dao.put(row("42", "INBOX", body = null))
+        val source = FakeMailSource().apply {
+            bodyOutcome = MailOutcome.Success(
+                MailMessageBody(html = "<p>hi</p>", bodyMode = "html", toAddresses = emptyList(), ccAddresses = emptyList()),
+            )
+        }
+
+        val body = (repository(dao, source).fetchBody("42", "INBOX") as MailOutcome.Success).value
+
+        assertEquals("<p>hi</p>", body.html)
+        assertEquals(listOf("42" to "INBOX"), source.bodyFetches)
+    }
+
+    /** Room becomes a cache of what was opened rather than a mirror of the window. Re-opening a
+     *  message must not re-pay the round trip, and must still work with no network at all. */
+    @Test
+    fun aFetchedBodyIsCachedSoTheNextOpenNeedsNoNetwork() {
+        val dao = FakeEmailDao()
+        dao.put(row("42", "INBOX", body = null))
+        val source = FakeMailSource().apply {
+            bodyOutcome = MailOutcome.Success(
+                MailMessageBody(html = "<p>hi</p>", bodyMode = "html", toAddresses = emptyList(), ccAddresses = emptyList()),
+            )
+        }
+        val repo = repository(dao, source)
+
+        repo.fetchBody("42", "INBOX")
+        val second = (repo.fetchBody("42", "INBOX") as MailOutcome.Success).value
+
+        assertEquals("<p>hi</p>", second.html)
+        assertEquals("html", second.bodyMode)
+        assertEquals(1, source.bodyFetches.size)
+    }
+
+    /** /api/mail/body carries body and bodyMode only. Taking the recipients from it would overwrite
+     *  the cached ones with empties, which is exactly what makes Reply All reply to the sender alone. */
+    @Test
+    fun aFetchedBodyKeepsTheCachedRecipientsForReplyAll() {
+        val dao = FakeEmailDao()
+        dao.put(row("42", "INBOX", body = null, sentTo = "me@example.com", cc = "watcher@example.com"))
+        val source = FakeMailSource().apply {
+            bodyOutcome = MailOutcome.Success(
+                MailMessageBody(html = "hi", bodyMode = "plain", toAddresses = emptyList(), ccAddresses = emptyList()),
+            )
+        }
+
+        val body = (repository(dao, source).fetchBody("42", "INBOX") as MailOutcome.Success).value
+
+        // The body came off the wire; the recipients did not, and must not have been overwritten
+        // by the empties that came with it.
+        assertEquals("hi", body.html)
+        assertEquals(listOf("me@example.com"), body.toAddresses)
+        assertEquals(listOf("watcher@example.com"), body.ccAddresses)
+    }
+
+    /** A failed fetch must stay a failure, not become "the server sent no body": the reader tells
+     *  those apart to decide between an error and "No message body available." */
+    @Test
+    fun aFailedBodyFetchIsReportedRatherThanCachedAsEmpty() {
+        val dao = FakeEmailDao()
+        dao.put(row("42", "INBOX", body = null))
+        val source = FakeMailSource().apply {
+            bodyOutcome = MailOutcome.UpstreamFailure("imap down")
+        }
+
+        val outcome = repository(dao, source).fetchBody("42", "INBOX")
+
+        assertTrue(outcome is MailOutcome.UpstreamFailure)
+        assertNull(dao.getById("42", "INBOX")?.body)
+    }
+
+    /** The path the daily self-heal actually takes. The relay answers `"delta": since > 0`
+     *  (server_inbox.go), so a since=0 window arrives with isDelta=false and goes through
+     *  `replaceFolderSnapshot`, whose @Upsert rewrites whole rows. With bodies=0 that would drop
+     *  every body the user had opened, once a day, on every folder. */
+    @Test
+    fun fullSnapshotWithoutBodies_keepsBodiesAlreadyFetchedOnOpen() {
+        val dao = FakeEmailDao()
+        dao.put(row("m1", "INBOX", body = "opened-earlier").copy(bodyMode = "html"))
+
+        val result = MailFetchResult(
+            tabs = emptyList(),
+            messages = listOf(email("m1", body = null)),
+            isDelta = false,
+        )
+        reconcileFetchResult(dao, "INBOX", "relay", result)
+
+        assertEquals("opened-earlier", dao.getById("m1", "INBOX")?.body)
+        assertEquals("html", dao.getById("m1", "INBOX")?.bodyMode)
+    }
+
+    /** A snapshot still prunes: keeping a body must not keep a message the server no longer lists. */
+    @Test
+    fun fullSnapshotWithoutBodies_stillPrunesMessagesTheServerDropped() {
+        val dao = FakeEmailDao()
+        dao.put(row("m1", "INBOX", body = "opened-earlier"))
+        dao.put(row("deleted-on-web", "INBOX", body = "also-opened"))
+
+        val result = MailFetchResult(
+            tabs = emptyList(),
+            messages = listOf(email("m1", body = null)),
+            isDelta = false,
+        )
+        reconcileFetchResult(dao, "INBOX", "relay", result)
+
+        assertEquals(setOf("INBOX" to "m1"), dao.rows.keys)
+    }
+
+    /** The daily self-heal sends since=0, and the server labels EVERY message in that window
+     *  `changeType: "new"` — not "updated" — so they take the new-entity path. With bodies=0 those
+     *  entities carry no body, and Room's @Upsert replaces the whole row, which would drop every
+     *  body the user had opened, once a day. An incoming entity with no body is missing one, never
+     *  asserting the message has none: an IMAP UID is immutable, so a body never legitimately
+     *  changes out from under a cached copy. */
+    @Test
+    fun fullResyncWithoutBodies_keepsBodiesAlreadyFetchedOnOpen() {
+        val dao = FakeEmailDao()
+        dao.put(row("m1", "INBOX", body = "opened-earlier").copy(bodyMode = "html"))
+
+        val result = MailFetchResult(
+            tabs = emptyList(),
+            messages = listOf(email("m1", body = null)),
+            isDelta = true,
+            isFullWindow = true,
+            updatedMessageIds = emptySet(),
+        )
+        reconcileFetchResult(dao, "INBOX", "relay", result)
+
+        assertEquals("opened-earlier", dao.getById("m1", "INBOX")?.body)
+        assertEquals("html", dao.getById("m1", "INBOX")?.bodyMode)
+    }
+
+    /** The other half: a genuinely new message has no cached body to keep, and must not inherit
+     *  one from a row that never existed. */
+    @Test
+    fun fullResyncWithoutBodies_storesNewMessagesBodyless() {
+        val dao = FakeEmailDao()
+
+        val result = MailFetchResult(
+            tabs = emptyList(),
+            messages = listOf(email("m1", body = null)),
+            isDelta = true,
+            isFullWindow = true,
+        )
+        reconcileFetchResult(dao, "INBOX", "relay", result)
+
+        assertNull(dao.getById("m1", "INBOX")?.body)
     }
 
     /** The documented mitigation for a UIDVALIDITY reset (see `EmailEntity`): the daily since=0
