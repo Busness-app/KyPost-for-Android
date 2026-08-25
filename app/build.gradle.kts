@@ -89,6 +89,14 @@ android {
         // can override it. See security/SecureWindow.kt for why the escape hatch exists at all.
         buildConfigField("boolean", "ALLOW_SCREENSHOTS", "false")
 
+        // res/xml cannot read ${applicationId} the way the manifest can, so the account type is
+        // injected as a string resource instead. It MUST track applicationId: AccountManager keys
+        // account types globally across the device and binds each to a signing key, so two flavors
+        // claiming one type means only the first-installed one has a working authenticator.
+        // DeviceContactAccount derives the same value from BuildConfig; DeviceContactAccountTest
+        // and AccountTypeMatchesManifestTest pin the two halves together.
+        resValue("string", "contact_account_type", "org.kysecurity.mail.contacts")
+
         // The sideloaded APK carries arm only. x86/x86_64 are ~10 MB of libsqlcipher.so that
         // serve emulators and a handful of Chromebooks, not phones. Deliberately a flag rather
         // than an unconditional filter: bundleRelease must run WITHOUT it so the Play bundle
@@ -185,6 +193,8 @@ android {
 
     buildFeatures {
         buildConfig = true
+        // Required for the resValue("string", "contact_account_type", …) call above.
+        resValues = true
     }
     testOptions {
         unitTests {
