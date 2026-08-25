@@ -3,6 +3,7 @@ package org.kysecurity.mail.mail
 import org.kysecurity.mail.Email
 import org.kysecurity.mail.splitAddresses
 import org.kysecurity.mail.data.EmailDao
+import org.kysecurity.mail.data.EmailEntity
 import org.kysecurity.mail.data.toEntity
 import org.kysecurity.mail.data.toUiEmail
 
@@ -87,21 +88,33 @@ class MailRepository(
     fun downloadAttachment(id: String, folder: String, index: Int): MailOutcome<DownloadedAttachment> =
         relaySource.downloadAttachment(id, folder, index)
 
-    // "No row" must not look like an empty body: empty + pgpEncrypted is the client-protected
-    // shape, and a blank body must NOT be re-routed to the relay — /api/inbox carries the body
-    // inline, `fetchMessageBody` is a hard-fail stub, and its failure means BODY_UNAVAILABLE,
-    // which would erase the client-protected state and its webmail handoff. See `fetchBody` tests.
+    /** Room caches the bodies that were opened, not the whole window: the inbox is fetched with
+     *  `bodies=0`, so a row arrives with metadata and no body, and the body is fetched on open.
+     *
+     *  Blank means "not fetched yet" and is filled from the relay — EXCEPT when the row is
+     *  `pgpEncrypted`, where blank is the client-protected shape and means the server genuinely has
+     *  no plaintext to give under either protection mode. Fetching there would turn that state into
+     *  BODY_UNAVAILABLE and drop the webmail handoff. Signed-but-not-encrypted mail is not
+     *  `pgpEncrypted`, so it takes the fetch path and keeps the server's copy as the fallback for a
+     *  signature this device cannot verify. */
     fun fetchBody(id: String, folder: String): MailOutcome<MailMessageBody> {
         val row = emailDao.getById(id, folder) ?: return relaySource.fetchMessageBody(id, folder)
+        // The cache is the only source of these: no relay response ever populates them — not the
+        // inbox listing, and not /api/mail/body, which carries body and bodyMode alone. Taking the
+        // response's empties is what makes Reply All reply to the sender alone.
+        val to = splitAddresses(row.sentTo)
+        val cc = splitAddresses(row.cc)
+        val cached = row.body?.takeIf { it.isNotBlank() }
+        if (cached == null && !row.pgpEncrypted) {
+            val fetched = relaySource.fetchMessageBody(id, folder)
+            // A failure stays a failure: the reader tells "the fetch failed" from "the server had
+            // no body" to choose between an error and "No message body available."
+            if (fetched !is MailOutcome.Success) return fetched
+            emailDao.updateBody(id, folder, fetched.value.html, fetched.value.bodyMode)
+            return MailOutcome.Success(fetched.value.copy(toAddresses = to, ccAddresses = cc))
+        }
         return MailOutcome.Success(
-            MailMessageBody(
-                html = row.body?.takeIf { it.isNotBlank() }.orEmpty(),
-                bodyMode = row.bodyMode,
-                // The cache is the only source of these: no relay response ever populates them, so
-                // dropping them here is what makes Reply All reply to the sender alone.
-                toAddresses = splitAddresses(row.sentTo),
-                ccAddresses = splitAddresses(row.cc),
-            ),
+            MailMessageBody(html = cached.orEmpty(), bodyMode = row.bodyMode, toAddresses = to, ccAddresses = cc),
         )
     }
 }
@@ -120,12 +133,25 @@ internal fun MailOutcome<MailActionOutcome>.appliedTo(id: String): MailOutcome<U
 }
 
 internal fun reconcileFetchResult(emailDao: EmailDao, folder: String, mode: String, result: MailFetchResult) {
+    // The inbox is fetched with bodies=0, so NO fetched entry carries a body and both write paths
+    // below would otherwise blank the ones already fetched on open — @Upsert rewrites whole rows.
+    // The daily self-heal is the one that bites: the relay answers `"delta": since > 0`, so its
+    // since=0 window arrives as a snapshot and would wipe every opened body once a day.
+    //
+    // An absent body means "this response does not carry one", never "this message has none". An
+    // IMAP UID is immutable, so a cached body cannot be stale for the id it is filed under; the
+    // one thing that reuses ids is a UIDVALIDITY reset, which `replaceFolderSnapshot` still prunes.
+    fun EmailEntity.keepingCachedBody(): EmailEntity {
+        if (!body.isNullOrBlank()) return this
+        val existing = emailDao.getById(messageId, folder) ?: return this
+        return copy(body = existing.body, bodyMode = bodyMode.ifBlank { existing.bodyMode })
+    }
     if (!result.isDelta) {
-        emailDao.replaceFolderSnapshot(folder, result.messages.map { it.toEntity(folder, mode) })
+        emailDao.replaceFolderSnapshot(folder, result.messages.map { it.toEntity(folder, mode).keepingCachedBody() })
         return
     }
     val (updated, new) = result.messages.partition { it.id in result.updatedMessageIds }
-    val newEntities = new.map { it.toEntity(folder, mode) }
+    val newEntities = new.map { it.toEntity(folder, mode).keepingCachedBody() }
     // An "updated" entry never carries a body; with no existing row, skip rather than invent one.
     val mergedEntities = updated.mapNotNull { email ->
         val incoming = email.toEntity(folder, mode)

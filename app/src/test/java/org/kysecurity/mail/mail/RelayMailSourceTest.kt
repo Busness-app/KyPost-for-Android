@@ -145,6 +145,153 @@ class RelayMailSourceTest {
         assertEquals("sub-1", outcome.checkpoint().subscriberId)
     }
 
+    /** The list rows render no bodies; only the opened message does, and it fetches its own from
+     *  /api/mail/body. Measured against this client's own request shape (limit=50, since= always
+     *  present, gzip): a since=0 window costs 151.4 KiB with bodies and 571 B without, and a poll
+     *  carrying five new messages costs 15.9 KiB against 295 B. */
+    @Test
+    fun inboxRequest_optsOutOfMessageBodies() {
+        val callFactory = FakeCallFactory { request ->
+            jsonResponse(request, """{"tabs": [], "byTab": {}, "cursor": "c1", "delta": true, "removed": []}""")
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(storedCursor = null),
+            callFactory = callFactory,
+        )
+
+        source.fetchInbox("INBOX", 50)
+
+        assertEquals("0", callFactory.requests.single().url.queryParameter("bodies"))
+    }
+
+    @Test
+    fun fetchMessageBody_addressesOneMessageByMailboxAndId() {
+        val callFactory = FakeCallFactory { request ->
+            jsonResponse(request, """{"body": "<p>hi</p>", "bodyMode": "html"}""")
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = callFactory,
+        )
+
+        source.fetchMessageBody("42", "Archive")
+
+        val url = callFactory.requests.single().url
+        assertEquals("/api/mail/body", url.encodedPath)
+        assertEquals("42", url.queryParameter("messageId"))
+        assertEquals("Archive", url.queryParameter("mailbox"))
+    }
+
+    @Test
+    fun fetchMessageBody_carriesThisDevicesCredentials() {
+        val callFactory = FakeCallFactory { request ->
+            jsonResponse(request, """{"body": "hi", "bodyMode": "plain"}""")
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = callFactory,
+        )
+
+        source.fetchMessageBody("42", "INBOX")
+
+        val request = callFactory.requests.single()
+        assertEquals("device-1", request.header(HEADER_DEVICE_ID))
+        assertEquals("secret-1", request.header(HEADER_DEVICE_SECRET))
+    }
+
+    /** bodyMode travels with the body and is never sniffed from the text: a plain-text message
+     *  containing an RFC 5322 address literal like <user@example.com> parses as an unknown tag and
+     *  the address disappears from what the user is shown. The server knows from the MIME parse. */
+    @Test
+    fun fetchMessageBody_carriesTheServersBodyModeVerbatim() {
+        val callFactory = FakeCallFactory { request ->
+            jsonResponse(request, """{"body": "mail <user@example.com> now", "bodyMode": "plain"}""")
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = callFactory,
+        )
+
+        val body = (source.fetchMessageBody("42", "INBOX") as MailOutcome.Success).value
+
+        assertEquals("mail <user@example.com> now", body.html)
+        assertEquals("plain", body.bodyMode)
+    }
+
+    /** The endpoint carries body and bodyMode and nothing else; recipients live only in the Room
+     *  row, and MailRepository merges them back. Empty here, never a fabricated single address. */
+    @Test
+    fun fetchMessageBody_reportsNoRecipientsRatherThanGuessingThem() {
+        val callFactory = FakeCallFactory { request ->
+            jsonResponse(request, """{"body": "hi", "bodyMode": "plain"}""")
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = callFactory,
+        )
+
+        val body = (source.fetchMessageBody("42", "INBOX") as MailOutcome.Success).value
+
+        assertEquals(emptyList<String>(), body.toAddresses)
+        assertEquals(emptyList<String>(), body.ccAddresses)
+    }
+
+    /** The request arrived and the server answered definitively. Wording it as a network problem
+     *  sends the user to check their signal over a message that will never open. */
+    @Test
+    fun fetchMessageBody_missingMessageIsNotWordedAsAConnectivityFailure() {
+        val callFactory = FakeCallFactory { request -> jsonResponse(request, "message not found", code = 404) }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = callFactory,
+        )
+
+        val outcome = source.fetchMessageBody("42", "INBOX")
+
+        assertFalse(outcome is MailOutcome.UpstreamFailure)
+        assertFalse(outcome.userFacingMessage().orEmpty().contains("Couldn't reach"))
+    }
+
+    /** Same rule for a message too large for the server to hold in memory: a definite answer, and
+     *  the 413 body is JSON, which must not reach a toast raw. */
+    @Test
+    fun fetchMessageBody_oversizeMessageIsNotWordedAsAConnectivityFailure() {
+        val callFactory = FakeCallFactory { request ->
+            jsonResponse(request, """{"error": "message exceeds the maximum size"}""", code = 413)
+        }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = callFactory,
+        )
+
+        val outcome = source.fetchMessageBody("42", "INBOX")
+
+        assertFalse(outcome is MailOutcome.UpstreamFailure)
+        val shown = outcome.userFacingMessage().orEmpty()
+        assertFalse(shown.contains("Couldn't reach"))
+        assertFalse(shown.contains("{"))
+    }
+
+    /** 502 IS the upstream failure the generic wording exists for — IMAP is down, retrying works. */
+    @Test
+    fun fetchMessageBody_imapFailureStaysAnUpstreamFailure() {
+        val callFactory = FakeCallFactory { request -> jsonResponse(request, "failed to fetch message", code = 502) }
+        val source = RelayMailSource(
+            pairingProvider = { testPairing() },
+            cursorProvider = FakeMailCursorProvider(),
+            callFactory = callFactory,
+        )
+
+        assertTrue(source.fetchMessageBody("42", "INBOX") is MailOutcome.UpstreamFailure)
+    }
+
     @Test
     fun sinceZeroResponse_isFlaggedAsAFullWindow() {
         val cursorProvider = FakeMailCursorProvider(storedCursor = null)

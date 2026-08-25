@@ -1,5 +1,7 @@
 package org.kysecurity.mail
 
+import org.kysecurity.mail.mail.MailMessageBody
+import org.kysecurity.mail.mail.MailOutcome
 import org.kysecurity.mail.pgp.DecryptedBody
 import org.kysecurity.mail.pgp.PgpMessageState
 import org.kysecurity.mail.pgp.PgpSignatureState
@@ -12,6 +14,103 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class EmailDetailActivityTest {
+
+    /** The inbox is fetched with bodies=0, so the body arrives over the network when the message is
+     *  opened and the fetch can now fail — before that it took a missing cache row and effectively
+     *  never happened. What it leaves behind is `emailPreview`, and rendering that is
+     *  indistinguishable from a short message that arrived intact. */
+    @Test
+    fun aFailedBodyFetch_doesNotLetThePreviewStandInForTheMessage() {
+        val outcome: MailOutcome<MailMessageBody> = MailOutcome.UpstreamFailure("imap down")
+
+        assertFalse(mayFallBackToPreview(outcome))
+    }
+
+    /** The server answering with an empty body IS the case the preview fallback exists for. */
+    @Test
+    fun anEmptyBodyFromTheServer_stillFallsBackToThePreview() {
+        val outcome: MailOutcome<MailMessageBody> = MailOutcome.Success(
+            MailMessageBody(html = "", bodyMode = "", toAddresses = emptyList(), ccAddresses = emptyList()),
+        )
+
+        assertTrue(mayFallBackToPreview(outcome))
+    }
+
+    /** "No message body available." is only true when the server answered and had nothing. A
+     *  failure is a different fact and the only one the user can act on. */
+    @Test
+    fun aFailedBodyFetch_isReportedInsteadOfClaimingTheMessageHasNoBody() {
+        val outcome: MailOutcome<MailMessageBody> = MailOutcome.UpstreamFailure("imap down")
+
+        val notice = bodyFetchFailureNotice(outcome)
+
+        assertNotNull(notice)
+        assertTrue(notice!!.contains("imap down"))
+    }
+
+    @Test
+    fun aSuccessfulBodyFetch_reportsNoFailure() {
+        val outcome: MailOutcome<MailMessageBody> = MailOutcome.Success(
+            MailMessageBody(html = "hi", bodyMode = "plain", toAddresses = emptyList(), ccAddresses = emptyList()),
+        )
+
+        assertNull(bodyFetchFailureNotice(outcome))
+    }
+
+    /** A signature notice must not swallow the fetch failure: they are independent facts, and the
+     *  one about the message not loading is the one the user can act on. */
+    @Test
+    fun aSignedMessageWhoseBodyFailedToLoad_saysBoth() {
+        val notice = emptyBodyNotice(
+            signatureNotice = "Signed by an unknown key",
+            fetchFailure = "Couldn't reach the mail server",
+            noContent = "No message body available.",
+            nothingToRender = true,
+        )
+
+        assertNotNull(notice)
+        assertTrue(notice!!.contains("Signed by an unknown key"))
+        assertTrue(notice.contains("Couldn't reach the mail server"))
+    }
+
+    /** "No message body available." claims the server answered and had nothing. A failed fetch has
+     *  not established that, so the two must never both appear. */
+    @Test
+    fun aFailedFetch_neverAlsoClaimsTheMessageHasNoBody() {
+        val notice = emptyBodyNotice(
+            signatureNotice = null,
+            fetchFailure = "Couldn't reach the mail server",
+            noContent = "No message body available.",
+            nothingToRender = true,
+        )
+
+        assertEquals("Couldn't reach the mail server", notice)
+    }
+
+    @Test
+    fun anEmptyMessageTheServerAnsweredFor_saysSoWhenNothingIsOnScreen() {
+        val notice = emptyBodyNotice(
+            signatureNotice = null,
+            fetchFailure = null,
+            noContent = "No message body available.",
+            nothingToRender = true,
+        )
+
+        assertEquals("No message body available.", notice)
+    }
+
+    /** Nothing to say when the message rendered fine. */
+    @Test
+    fun aMessageThatRendered_getsNoNotice() {
+        val notice = emptyBodyNotice(
+            signatureNotice = null,
+            fetchFailure = null,
+            noContent = "No message body available.",
+            nothingToRender = false,
+        )
+
+        assertNull(notice)
+    }
 
     @Test
     fun emailBodyToHtml_preservesPlainTextWhitespaceAndEscapesMarkup() {

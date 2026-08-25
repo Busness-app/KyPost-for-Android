@@ -182,6 +182,18 @@ Owns production Android app code and resources.
   - Sign-only is impossible (the relay accepts `multipart/encrypted` only), so the two chips are
     coupled when `clientSide`.
 - Inbox tabs come from the relay's `tabs`/`label` response fields.
+- The inbox is fetched with `bodies=0`, so **an inbox row never carries a body** and the `emails`
+  table is a cache of the messages actually opened, not a mirror of the window. `fetchBody` fills a
+  blank one from `GET /api/mail/body` and writes it back. Two rules hold this together, both with
+  tests named for them in `MailRepositoryTest`:
+  - A blank body on a `pgpEncrypted` row is the client-protected shape, not a cache miss — fetching
+    there turns it into `BODY_UNAVAILABLE` and drops the webmail handoff. Signed-but-not-encrypted
+    mail is *not* `pgpEncrypted`, so it fetches and keeps the server's copy as the fallback for a
+    signature this device cannot verify.
+  - `reconcileFetchResult` preserves a cached body whenever the response carries none, on both write
+    paths. The relay answers `"delta": since > 0`, so the daily self-heal arrives as a *snapshot*
+    through `replaceFolderSnapshot`, whose `@Upsert` rewrites whole rows — without this it would
+    blank every opened body once a day, per folder.
 - Email bodies carry the relay's `bodyMode` (`html`/`plain`) through the Room cache and into
   `EmailDetailActivity`; plain bodies must be escaped into whitespace-preserving block markup for
   HTML fallback/quoting, while HTML bodies must not be detected by content when the server supplied
