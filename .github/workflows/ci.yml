@@ -67,7 +67,7 @@ jobs:
       # checkout keystore.properties does not exist (it is gitignored) and the task is a no-op;
       # it fires only if one is ever committed with a password in it.
       - name: unit tests, lint and signing-secret check
-        run: ./gradlew checkSigningSecretsAreNotInTheTree checkExportedComponentsDebug testDebugUnitTest lint
+        run: ./gradlew checkSigningSecretsAreNotInTheTree checkExportedComponentsPlayDebug testPlayDebugUnitTest lint
 
       # The other half of the rule above, expressed as a check rather than a comment: if
       # anything in this job regenerated the metadata, the file is dirty and the job fails.
@@ -164,9 +164,15 @@ jobs:
       # DTO, its generated $$serializer/$Companion, or a manifest-declared component, all kept on
       # purpose. 30% is a regression tripwire with real headroom, not a target. If a legitimate
       # change pushes it over, raise it deliberately and say in the commit which rule did it.
+      #
+      # ponytail: checks playRelease only, not all three flavors. Fine today because the flavors
+      # are byte-identical apart from applicationId, so one R8 run stands for all three. Widen
+      # this to also check githubRelease/fdroidRelease once the fdroid flavor drops the Firebase
+      # dependency (see the Channels table in README.md) — at that point its R8 input differs
+      # from play's and this check stops covering it.
       - name: R8 actually obfuscated the app
         run: |
-          mapping=app/build/outputs/mapping/release/mapping.txt
+          mapping=app/build/outputs/mapping/playRelease/mapping.txt
           test -f "$mapping" || { echo "No $mapping — is minification still enabled?" >&2; exit 1; }
           total=$(grep -cE '^org\.kysecurity\.mail\.[^ ]* ->' "$mapping")
           kept=$(grep -cE '^org\.kysecurity\.mail\.[^ ]* -> org\.kysecurity\.mail\.' "$mapping")
@@ -384,7 +390,7 @@ jobs:
             # `|| echo` rather than letting gradle fail the line: each line here is its own sh -c,
             # so a bare non-zero exit ends the script and the dump never runs. The marker file
             # re-raises the failure at the end, so nothing is silenced.
-            ./gradlew connectedDebugAndroidTest || echo failed > /tmp/testfail.txt
+            ./gradlew connectedPlayDebugAndroidTest || echo failed > /tmp/testfail.txt
 
             # READ THE KEYGUARD AGAIN. Everything above proves it was down when the suite STARTED
             # and never looks again, so a re-arm partway through arrives as a pile of app-looking

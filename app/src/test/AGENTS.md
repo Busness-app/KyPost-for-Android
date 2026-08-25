@@ -23,7 +23,7 @@ Owns JVM unit tests for app logic that can run without device/emulator.
 
 # Verification
 
-- Run `testDebugUnitTest` after unit test updates.
+- Run `testPlayDebugUnitTest` after unit test updates — see root AGENTS.md: use `…PlayDebug`, not `…Debug`.
 
 # Child DOX Index
 

@@ -7,6 +7,34 @@ how this app's look should align with the sibling web app (`../llama labels/fron
 while staying native Android, and is binding for colors, shape, typography, and
 component patterns.
 
+# Distribution channels
+
+Three product flavors on the `channel` dimension, in `app/build.gradle.kts`:
+
+| Flavor | `applicationId` | Ships as |
+| --- | --- | --- |
+| `play` | `org.kysecurity.mail` | Play bundle, `bundlePlayRelease` |
+| `github` | `org.kysecurity.mail.github` | sideload APK, `assembleGithubRelease` |
+| `fdroid` | `org.kysecurity.mail.fdroid` | built by F-Droid from source |
+
+`play` must keep `org.kysecurity.mail`; it is the id in the Play listing, and Play App
+Signing is scoped to it. `play` is the default variant because it sets `isDefault = true`
+in `productFlavors` — declaration order does **not** determine this. Without it, AGP picks
+alphabetically, so `fdroid` would win and bare `./gradlew lint` (and CI's `lint`) would
+analyse `fdroidDebug` instead of `play`.
+
+`namespace` stays `org.kysecurity.mail` on every flavor — Kotlin packages, `BuildConfig`
+and manifest class names are flavor-independent, and `allowedExportedComponents` in
+`app/build.gradle.kts` lists them by their fixed names.
+
+Anything that identifies this app to the *device* must derive from `applicationId`, or
+the three installs collide. Today that is the two provider authorities (already
+`${applicationId}`-interpolated in the manifest) and the contacts `accountType` (the
+`contact_account_type` resValue, mirrored by `DeviceContactAccount.ACCOUNT_TYPE`).
+Adding another such identifier means adding it to that list.
+
+Variant-named Gradle tasks: use `…PlayDebug`, not `…Debug`.
+
 # Ponytail, lazy senior dev mode
 
 Use the smallest correct change.

@@ -12,7 +12,7 @@ import kotlinx.coroutines.withContext
 private const val TAG = "DeviceContactAccount"
 
 object DeviceContactAccount {
-    const val ACCOUNT_TYPE = "org.kysecurity.mail.contacts"
+    val ACCOUNT_TYPE = "${org.kysecurity.mail.BuildConfig.APPLICATION_ID}.contacts"
     const val ACCOUNT_NAME = "KyPost"
 
     fun account(): Account = Account(ACCOUNT_NAME, ACCOUNT_TYPE)

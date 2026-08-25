@@ -1,4 +1,5 @@
 import com.android.build.api.artifact.SingleArtifact
+import com.android.build.api.variant.ResValue
 import java.util.Properties
 
 plugins {
@@ -89,6 +90,14 @@ android {
         // can override it. See security/SecureWindow.kt for why the escape hatch exists at all.
         buildConfigField("boolean", "ALLOW_SCREENSHOTS", "false")
 
+        // res/xml cannot read ${applicationId} the way the manifest can, so the account type is
+        // injected as a string resource instead. It MUST track applicationId: AccountManager keys
+        // account types globally across the device and binds each to a signing key, so two flavors
+        // claiming one type means only the first-installed one has a working authenticator.
+        // DeviceContactAccount derives the same value from BuildConfig; DeviceContactAccountTest
+        // and AccountTypeMatchesManifestTest pin the two halves together. Set per-variant from
+        // applicationId below, not here — see the androidComponents.onVariants block.
+
         // The sideloaded APK carries arm only. x86/x86_64 are ~10 MB of libsqlcipher.so that
         // serve emulators and a handful of Chromebooks, not phones. Deliberately a flag rather
         // than an unconditional filter: bundleRelease must run WITHOUT it so the Play bundle
@@ -98,6 +107,31 @@ android {
                 abiFilters.clear()
                 abiFilters += listOf("armeabi-v7a", "arm64-v8a")
             }
+        }
+    }
+
+    // Android identifies an app by applicationId AND signature, and the three channels sign with
+    // three different keys: Play re-signs under Play App Signing, the GitHub APK carries the upload
+    // key, F-Droid signs with its own. One applicationId across all three means a user who
+    // installed from one cannot update from another without uninstalling, which destroys local
+    // data. Distinct ids dissolve that: each is a separate app, and they install side by side.
+    flavorDimensions += "channel"
+    productFlavors {
+        // Declared first for readability, but declaration order is NOT what AGP uses to pick the
+        // default variant — left to itself it picks alphabetically, which would be fdroid. `./gradlew
+        // lint` (and CI's lint step) analyses only the default variant, so isDefault pins it to play.
+        create("play") {
+            dimension = "channel"
+            isDefault = true
+            // No suffix. This id is in the closed test; changing it breaks every tester's update.
+        }
+        create("github") {
+            dimension = "channel"
+            applicationIdSuffix = ".github"
+        }
+        create("fdroid") {
+            dimension = "channel"
+            applicationIdSuffix = ".fdroid"
         }
     }
 
@@ -185,6 +219,8 @@ android {
 
     buildFeatures {
         buildConfig = true
+        // Required for the resValue("string", "contact_account_type", …) call above.
+        resValues = true
     }
     testOptions {
         unitTests {
@@ -211,28 +247,60 @@ android {
 }
 
 // Gate on the tasks that emit a signable artifact, never on gradle.startParameter.taskNames.
-// `packageRelease` (APK) and `signReleaseBundle` (AAB), matched exactly. A prefix match on
-// "package…Release" also catches `packageReleaseResources`, a resource-merge step in the *compile*
-// chain, which would fail release compilation rather than only artifact production.
-tasks.matching { it.name == "packageRelease" || it.name == "signReleaseBundle" }.configureEach {
-    // The secrets check runs HERE, not only in CI. On a developer machine keystore.properties is
-    // gitignored, so no CI job can see it — which made "CI fails on this" true and useless: a
-    // password could sit in the working tree indefinitely behind nothing but a build warning.
-    // Gated on release packaging rather than preBuild so the debug loop is unaffected and the
-    // refusal lands at the moment the password is actually about to be used.
-    dependsOn("checkSigningSecretsAreNotInTheTree")
-    // Resolved at configuration time and captured below as a plain Boolean. Referencing
-    // `keystorePropertiesFile` from inside doFirst instead makes the action hold a reference to the
-    // build script, which the configuration cache cannot serialize.
-    val signingMaterialPresent = signingMaterial != null
-    doFirst {
-        if (!signingMaterialPresent) {
-            throw GradleException(
-                "No signing material: a release variant cannot be signed. Set KYPOST_KEYSTORE, " +
-                    "KYPOST_STORE_PASSWORD, KYPOST_KEY_ALIAS and KYPOST_KEY_PASSWORD (see " +
-                    "keystore.properties.example), or build only the debug variant.",
-            )
+// One release variant's real names are `package<VariantName>` (APK) and `sign<VariantName>Bundle`
+// (AAB) — with the channel flavor dimension that is one pair per flavor: packagePlayRelease,
+// packageGithubRelease, packageFdroidRelease, and the sign*ReleaseBundle equivalents. VariantName
+// comes from AGP's own variant, not a guessed string, so this cannot go stale the way a hardcoded
+// "packageRelease"/"signReleaseBundle" pair did the moment a second flavor existed. Matched
+// exactly, same as before: `package<VariantName>Resources` (a resource-merge step in the
+// *compile* chain), `-Bundle`, `-UniversalApk`, and `signingConfigWriter<VariantName>` are all
+// different task names and must stay untouched — catching one of those would fail release
+// compilation rather than only artifact production.
+// Names this gate depends on existing, checked below once AGP has finished registering tasks.
+val expectedReleasePackagingTaskNames = mutableListOf<String>()
+
+androidComponents.onVariants { variant ->
+    if (variant.buildType != "release") return@onVariants
+    val variantName = variant.name.replaceFirstChar { it.uppercase() }
+    expectedReleasePackagingTaskNames += "package$variantName"
+    expectedReleasePackagingTaskNames += "sign${variantName}Bundle"
+    tasks.matching { it.name == "package$variantName" || it.name == "sign${variantName}Bundle" }.configureEach {
+        // The secrets check runs HERE, not only in CI. On a developer machine keystore.properties is
+        // gitignored, so no CI job can see it — which made "CI fails on this" true and useless: a
+        // password could sit in the working tree indefinitely behind nothing but a build warning.
+        // Gated on release packaging rather than preBuild so the debug loop is unaffected and the
+        // refusal lands at the moment the password is actually about to be used.
+        dependsOn("checkSigningSecretsAreNotInTheTree")
+        // Resolved at configuration time and captured below as a plain Boolean. Referencing
+        // `keystorePropertiesFile` from inside doFirst instead makes the action hold a reference to the
+        // build script, which the configuration cache cannot serialize.
+        val signingMaterialPresent = signingMaterial != null
+        doFirst {
+            if (!signingMaterialPresent) {
+                throw GradleException(
+                    "No signing material: a release variant cannot be signed. Set KYPOST_KEYSTORE, " +
+                        "KYPOST_STORE_PASSWORD, KYPOST_KEY_ALIAS and KYPOST_KEY_PASSWORD (see " +
+                        "keystore.properties.example), or build only the debug variant.",
+                )
+            }
         }
+    }
+}
+
+// The gate above is only as good as the task names it matches. If AGP ever renames
+// `package<VariantName>` or `sign<VariantName>Bundle`, tasks.matching(...) above silently matches
+// nothing and the whole signing gate is gone on a green build — the exact failure mode that
+// motivated moving off a hardcoded "packageRelease"/"signReleaseBundle" pair in the first place.
+// Checked once every task is registered, so a rename fails the build loudly instead of quietly.
+// tasks.names is a name index and does not realize a lazily-registered task, so this is free.
+afterEvaluate {
+    val missing = expectedReleasePackagingTaskNames.filterNot { it in tasks.names }
+    if (missing.isNotEmpty()) {
+        throw GradleException(
+            "Expected release packaging task(s) not found: $missing. The signing-material gate " +
+                "above matches tasks by these names and does nothing if they are wrong — see the " +
+                "comment above androidComponents.onVariants that registers them.",
+        )
     }
 }
 
@@ -278,6 +346,14 @@ val runtimeMatchedClassNames = setOf(
 )
 
 androidComponents.onVariants { variant ->
+    // Derived, not a literal per flavor: a hand-typed literal can drift from applicationId
+    // without the build noticing, and DeviceContactAccount.ACCOUNT_TYPE computes exactly this
+    // string from BuildConfig.APPLICATION_ID at runtime. See the resValue comment in defaultConfig.
+    variant.resValues.put(
+        variant.makeResValueKey("string", "contact_account_type"),
+        variant.applicationId.map { ResValue("$it.contacts") },
+    )
+
     val mergedManifest = variant.artifacts.get(SingleArtifact.MERGED_MANIFEST)
     val allowed = allowedExportedComponents
     val gate = tasks.register("checkExportedComponents${variant.name.replaceFirstChar { it.uppercase() }}") {
