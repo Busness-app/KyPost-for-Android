@@ -18,10 +18,10 @@ Three product flavors on the `channel` dimension, in `app/build.gradle.kts`:
 | `fdroid` | `org.kysecurity.mail.fdroid` | built by F-Droid from source |
 
 `play` must keep `org.kysecurity.mail`; it is the id in the Play listing, and Play App
-Signing is scoped to it. `play` is declared first in `productFlavors`, but that does not
-make it the default variant: measured on this AGP version, bare `./gradlew lint` (and CI's
-`lint` in the same command line) analyses `fdroidDebug`, not `play`. Name the variant
-explicitly — `lintPlayDebug`, `assemblePlayDebug` — when you need `play` checked.
+Signing is scoped to it. `play` is the default variant because it sets `isDefault = true`
+in `productFlavors` — declaration order does **not** determine this. Without it, AGP picks
+alphabetically, so `fdroid` would win and bare `./gradlew lint` (and CI's `lint`) would
+analyse `fdroidDebug` instead of `play`.
 
 `namespace` stays `org.kysecurity.mail` on every flavor — Kotlin packages, `BuildConfig`
 and manifest class names are flavor-independent, and `allowedExportedComponents` in
