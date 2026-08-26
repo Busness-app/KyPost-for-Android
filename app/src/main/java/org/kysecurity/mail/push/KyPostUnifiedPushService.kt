@@ -51,19 +51,45 @@ class KyPostUnifiedPushService : PushService() {
     }
 
     override fun onRegistrationFailed(reason: FailedReason, instance: String) {
+        val graph = PushRuntime.graph(applicationContext)
+        val message = unifiedPushFailureMessage(reason.toString(), ChannelPush.canReplaceUnifiedPush)
+
+        if (!ChannelPush.canReplaceUnifiedPush) {
+            // Keep the distributor selection. It is the only delivery route this build has, so
+            // discarding it turns a retryable failure — the distributor being offline, a network
+            // blip — into a state the user can only leave by re-pairing. And do not re-register:
+            // there is no other transport to register on, so it would fail for a second reason
+            // and overwrite the one that explains this.
+            serviceScope.launch {
+                graph.repository.updateSyncState(lastSyncAtEpochMs = null, syncError = message)
+            }
+            return
+        }
+
         // Clear the stale distributor and fall back to FCM so the user isn't left with no delivery.
         UnifiedPush.removeDistributor(applicationContext)
-        val graph = PushRuntime.graph(applicationContext)
         serviceScope.launch {
-            graph.repository.updateSyncState(lastSyncAtEpochMs = null, syncError = "UnifiedPush registration failed: $reason — reverted to Firebase")
+            graph.repository.updateSyncState(lastSyncAtEpochMs = null, syncError = message)
             graph.syncCoordinator.syncCurrentPairingToken()
         }
     }
 
     override fun onUnregistered(instance: String) {
+        val graph = PushRuntime.graph(applicationContext)
+        if (!ChannelPush.canReplaceUnifiedPush) {
+            // Nothing to fall back to. Say so instead of silently re-registering on a transport
+            // this build does not have: that call fails, and the pairing screen would show the
+            // generic "unable to obtain a token" rather than the fact the user unregistered.
+            serviceScope.launch {
+                graph.repository.updateSyncState(
+                    lastSyncAtEpochMs = null,
+                    syncError = "No UnifiedPush distributor is selected, so notifications are stopped.",
+                )
+            }
+            return
+        }
         // Explicit unregistration (user switched distributor away, or picked "none"):
         // fall back to FCM so delivery keeps working without user intervention.
-        val graph = PushRuntime.graph(applicationContext)
         serviceScope.launch {
             graph.syncCoordinator.syncCurrentPairingToken()
         }
