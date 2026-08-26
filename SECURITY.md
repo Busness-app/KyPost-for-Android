@@ -7,7 +7,7 @@ vulnerability and what the app does and does not protect.
 
 For **server-side** security (TLS termination, reverse proxies, key custody at rest,
 deployment hardening), see [SECURITY.md in the server
-repository](https://github.com/Yoshiofthewire/kypost-server/blob/main/SECURITY.md).
+repository](https://github.com/Busness-app/KyPost-Server/blob/main/SECURITY.md).
 Report server vulnerabilities there, not here.
 
 ## Reporting Security Vulnerabilities
@@ -16,7 +16,7 @@ Report vulnerabilities in the Android app via GitHub Security Advisories rather 
 opening a public issue.
 
 1. Go to the [Security
-   Advisories](https://github.com/Yoshiofthewire/KyPost-for-Android/security/advisories)
+   Advisories](https://github.com/Busness-app/KyPost-for-Android/security/advisories)
    page
 2. Click "Report a vulnerability"
 3. Provide a description, affected versions, and reproduction steps if you have them
@@ -239,7 +239,7 @@ branch for older versions.
 ## Security Contacts
 
 - **Vulnerability reports:** [GitHub Security
-  Advisories](https://github.com/Yoshiofthewire/KyPost-for-Android/security/advisories)
+  Advisories](https://github.com/Busness-app/KyPost-for-Android/security/advisories)
 - **Maintainer:** [Yoshiofthewire](https://github.com/Yoshiofthewire)
 - **Code of Conduct concerns** are handled separately — see
   [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Security vulnerabilities are not a Code of
