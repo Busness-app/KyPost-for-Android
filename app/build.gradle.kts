@@ -494,10 +494,9 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.ktx)
     implementation(libs.kotlinx.coroutines.android)
-    // Apache-2 itself, but it pulls com.google.android.gms:play-services-tasks. Moves to
-    // gmsImplementation with the scanner above; the same two activities need it for
-    // Task.await().
-    implementation(libs.kotlinx.coroutines.play.services)
+    // Apache-2 itself, but it pulls com.google.android.gms:play-services-tasks, so it belongs
+    // with the rest of the Google surface rather than in the shared configuration.
+    gmsImplementation(libs.kotlinx.coroutines.play.services)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.androidx.security.crypto)
     implementation(libs.androidx.biometric)
@@ -511,11 +510,12 @@ dependencies {
         // tink and tink-android both ship com.google.crypto.tink.*; never configurations.all.
         exclude(group = "com.google.crypto.tink", module = "tink")
     }
-    // ponytail: still every flavor. PgpKeyActivity and PushPairingActivity call
-    // GmsBarcodeScanning from src/main, so this cannot move to gmsImplementation until
-    // the fdroid CameraX scanner exists. Until then the fdroid APK still carries Play
-    // Services and F-Droid would still refuse it — see the D3 design doc.
-    implementation(libs.play.services.code.scanner)
+    gmsImplementation(libs.play.services.code.scanner)
+    // The fdroid flavor's scanner. Behind the same QrScanner seam as the ML Kit one above.
+    // String notation: AGP creates the per-flavor configurations, and unlike
+    // gmsImplementation above (a configurations.creating val) they have no generated
+    // Kotlin accessor.
+    "fdroidImplementation"(libs.zxing.android.embedded)
     // QR *generation* for the "My QR Code" screen — play-services-code-scanner above only scans.
     implementation(libs.zxing.core)
     implementation(libs.rich.html.editor)

@@ -19,7 +19,6 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.google.android.material.chip.Chip
-import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import org.kysecurity.mail.R
 import org.kysecurity.mail.contacts.device.DeviceContactSyncEnabler
 import org.kysecurity.mail.contacts.device.DeviceContactSyncSettings
@@ -33,7 +32,6 @@ import org.kysecurity.mail.applyThemeToActivity
 import org.kysecurity.mail.applyTopInsetWithHeader
 import org.kysecurity.mail.getStoredThemePalette
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
 import java.text.DateFormat
 import java.util.Date
 import org.kysecurity.mail.security.LockedActivity
@@ -64,6 +62,10 @@ class PushPairingActivity : LockedActivity() {
     private lateinit var historyEmptyText: TextView
 
     private val dateFormat: DateFormat = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
+
+    // Registered here and not in onCreateUnlocked: see QrScannerFactory for why the order of
+    // these registrations has to be identical on every creation.
+    private val qrScanner: QrScanner = ChannelQrScanner.create(this)
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -274,8 +276,7 @@ class PushPairingActivity : LockedActivity() {
     private fun scanQr() {
         lifecycleScope.launch {
             runCatching {
-                val result = GmsBarcodeScanning.getClient(this@PushPairingActivity).startScan().await()
-                result.rawValue.orEmpty()
+                qrScanner.scan()
             }.onSuccess { raw ->
                 if (raw.isNotBlank()) {
                     handleParsedPairing(NativePairingDeepLinkParser.parse(raw))
