@@ -475,6 +475,20 @@ val gmsImplementation by configurations.creating
 configurations.named("playImplementation") { extendsFrom(gmsImplementation) }
 configurations.named("githubImplementation") { extendsFrom(gmsImplementation) }
 
+// PairingChooserIsLegibleTest reads the manifest and the flavors' strings.xml at run time, and
+// neither is on the unit-test classpath — so Gradle saw no reason to re-run it when they changed
+// and the task reported UP-TO-DATE. A gate that does not run when its subject changes is not a
+// gate: adding android:label to the pairing forwarder passed cleanly until these were declared.
+tasks.withType<Test>().configureEach {
+    inputs.files(
+        "src/main/AndroidManifest.xml",
+        "src/main/res/values/strings.xml",
+        "src/github/res/values/strings.xml",
+        "src/fdroid/res/values/strings.xml",
+    ).withPropertyName("pairingChooserLabelSources")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+}
+
 dependencies {
     implementation(libs.androidx.activity.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
