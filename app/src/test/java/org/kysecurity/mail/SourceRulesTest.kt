@@ -38,6 +38,29 @@ class SourceRulesTest {
         )
     }
 
+    /** Every transport that receives a push must decide what it is the same way.
+     *
+     *  The Firebase and UnifiedPush services each used to make that call themselves and drifted:
+     *  only one of them checked for an MFA challenge, so a challenge delivered over UnifiedPush
+     *  was read as mail, failed to parse, and was dropped in silence. IncomingPushRouter is the
+     *  single answer now, and a service reaching past it to a parser directly is the exact shape
+     *  of the regression. */
+    @Test
+    fun pushReceivingServicesRouteThroughIncomingPushRouter() {
+        val offenders = mainSources()
+            .filter { it.relativePath.substringAfterLast('/') in PUSH_RECEIVING_SERVICES }
+            .filter { file ->
+                val text = file.readText()
+                PARSER_CALLED_DIRECTLY.containsMatchIn(text)
+            }
+            .map { it.path }
+        assertEquals(
+            emptyList(), offenders,
+            "Call IncomingPushRouter.route(data) and branch on IncomingPush instead. " +
+                "See IncomingPushRouter for why this is one decision and not one per transport.",
+        )
+    }
+
     @Test
     fun jvmTestedCodeDoesNotUseTheStubbedAndroidApisThatFailSilently() {
         val testPaths = sourcesUnder(TEST_ROOT).map { it.relativePath }.toSet()
@@ -176,6 +199,14 @@ class SourceRulesTest {
         }.toList()
 
     private companion object {
+        val PUSH_RECEIVING_SERVICES = setOf(
+            "KyPostFirebaseMessagingService.kt",
+            "KyPostUnifiedPushService.kt",
+        )
+
+        /** Either payload parser named directly by a push-receiving service. */
+        val PARSER_CALLED_DIRECTLY = Regex("""(MfaChallengePayloadParser|PushPayloadParser)\s*\.\s*parse""")
+
         const val MAIN_ROOT = "src/main/java"
         const val TEST_ROOT = "src/test/java"
 

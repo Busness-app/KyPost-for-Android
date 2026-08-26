@@ -17,6 +17,16 @@ class KyPostUnifiedPushService : PushService() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val json = Json { ignoreUnknownKeys = true }
 
+    override fun onCreate() {
+        super.onCreate()
+        // PushNotificationDispatcher.show() calls ensureChannel itself, which is why mail worked
+        // here without this; showMfaChallenge does not, so an MFA challenge would have posted to
+        // a channel that does not exist and shown nothing. KyPostFirebaseMessagingService has
+        // done both since it was written.
+        PushNotificationDispatcher.ensureChannel(this)
+        PushNotificationDispatcher.ensureMfaChannel(this)
+    }
+
     companion object {
         private const val TAG = "KyPostUnifiedPushService"
     }
@@ -81,14 +91,16 @@ class KyPostUnifiedPushService : PushService() {
             return
         }
 
-        // MFA challenges are excluded from UnifiedPush by design; only mail notifications
-        // are expected here, but parse defensively via the same path.
-        val payload = PushPayloadParser.parse(data) ?: return
-        val graph = PushRuntime.graph(applicationContext)
-        serviceScope.launch {
-            graph.repository.appendPayload(payload)
+        when (val incoming = IncomingPushRouter.route(data)) {
+            is IncomingPush.Mfa ->
+                PushNotificationDispatcher.showMfaChallenge(applicationContext, incoming.payload)
+            is IncomingPush.Mail -> {
+                val graph = PushRuntime.graph(applicationContext)
+                serviceScope.launch { graph.repository.appendPayload(incoming.payload) }
+                PushNotificationDispatcher.show(applicationContext, incoming.payload)
+            }
+            null -> return
         }
-        PushNotificationDispatcher.show(applicationContext, payload)
     }
 
     override fun onDestroy() {
