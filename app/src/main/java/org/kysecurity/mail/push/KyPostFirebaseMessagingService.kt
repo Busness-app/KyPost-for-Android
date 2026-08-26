@@ -39,18 +39,16 @@ class KyPostFirebaseMessagingService : FirebaseMessagingService() {
             return
         }
 
-        val mfaChallenge = MfaChallengePayloadParser.parse(message.data)
-        if (mfaChallenge != null) {
-            PushNotificationDispatcher.showMfaChallenge(applicationContext, mfaChallenge)
-            return
+        when (val incoming = IncomingPushRouter.route(message.data)) {
+            is IncomingPush.Mfa ->
+                PushNotificationDispatcher.showMfaChallenge(applicationContext, incoming.payload)
+            is IncomingPush.Mail -> {
+                val graph = PushRuntime.graph(applicationContext)
+                serviceScope.launch { graph.repository.appendPayload(incoming.payload) }
+                PushNotificationDispatcher.show(applicationContext, incoming.payload)
+            }
+            null -> return
         }
-
-        val payload = PushPayloadParser.parse(message.data) ?: return
-        val graph = PushRuntime.graph(applicationContext)
-        serviceScope.launch {
-            graph.repository.appendPayload(payload)
-        }
-        PushNotificationDispatcher.show(applicationContext, payload)
     }
 
     override fun onDestroy() {
