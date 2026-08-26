@@ -71,46 +71,6 @@ jobs:
 
       # The other half of the rule above, expressed as a check rather than a comment: if
       # anything in this job regenerated the metadata, the file is dirty and the job fails.
-      # The whole point of the fdroid flavor, asserted against the artifact rather than the build
-      # file — the build file is where a mistake would live, so it cannot also be the evidence.
-      # F-Droid refuses proprietary dependencies, and a flavor that merely stops CALLING Firebase
-      # still ships it. Reading the dex is the only thing that settles which happened.
-      #
-      # ponytail: firebase only, not com/google/android/gms. The fdroid flavor still carries
-      # play-services-code-scanner, because PgpKeyActivity and PushPairingActivity call
-      # GmsBarcodeScanning from src/main. Widen this to gms once the CameraX scanner replaces it;
-      # until then F-Droid would still refuse the build and this check says so honestly rather
-      # than implying the job is done.
-      - name: the fdroid APK carries no Firebase
-        run: |
-          set -euo pipefail
-          apk=$(find app/build/outputs/apk/fdroid/release -name '*.apk' | head -1)
-          test -n "$apk" || { echo "No fdroid release APK to check." >&2; exit 1; }
-          found=0
-          for dex in $(unzip -Z1 "$apk" | grep '\.dex$'); do
-            if unzip -p "$apk" "$dex" | strings | grep -q '^Lcom/google/firebase/'; then
-              found=1
-            fi
-          done
-          if [ "$found" -ne 0 ]; then
-            echo "The fdroid APK contains com.google.firebase classes. F-Droid will refuse it." >&2
-            exit 1
-          fi
-          # Proves the check can see classes at all, so a broken unzip/strings pipeline cannot
-          # pass as "clean". The play APK is built by the same job and does carry Firebase.
-          playapk=$(find app/build/outputs/apk/play/release -name '*.apk' | head -1)
-          test -n "$playapk" || { echo "No play release APK for the control check." >&2; exit 1; }
-          control=0
-          for dex in $(unzip -Z1 "$playapk" | grep '\.dex$'); do
-            if unzip -p "$playapk" "$dex" | strings | grep -q '^Lcom/google/firebase/'; then
-              control=1
-            fi
-          done
-          if [ "$control" -ne 1 ]; then
-            echo "The play APK has no Firebase either — this check is not looking at what it thinks." >&2
-            exit 1
-          fi
-
       - name: dependency verification metadata is unchanged
         run: git diff --exit-code -- gradle/verification-metadata.xml
 
@@ -219,6 +179,44 @@ jobs:
           echo "app classes: $total, keeping their original name: $kept"
           test "$total" -gt 0
           test $((kept * 100 / total)) -lt 30
+
+      # Asserted against the release build's own R8 mapping, not the build file — the build file
+      # is where a mistake would live, so it cannot also be the evidence.
+      #
+      # The dex is the wrong artifact to read here, and the mistake is instructive: R8 renames
+      # com.google.firebase.* in a release build, so grepping the dex for those descriptors
+      # returns nothing for EVERY flavor and a check written that way passes while proving
+      # nothing. mapping.txt records the original names, which is exactly what is wanted.
+      #
+      # The play control is not decoration. Without it, a mistyped path, a renamed output
+      # directory or a grep that silently matches nothing all read as "fdroid is clean".
+      #
+      # ponytail: this checks Firebase Cloud Messaging, not all of com.google. The fdroid flavor
+      # still pulls firebase-components and firebase-encoders transitively through
+      # play-services-code-scanner, which PgpKeyActivity and PushPairingActivity call from
+      # src/main — so F-Droid would still refuse this build. Widen to com.google.firebase and
+      # com.google.android.gms once the CameraX scanner replaces it.
+      - name: the fdroid build carries no Firebase Cloud Messaging
+        run: |
+          set -euo pipefail
+          fcm_classes() {
+            grep -cE '^com\.google\.firebase\.(messaging|installations|iid)\.' "$1" || true
+          }
+          fdroid=app/build/outputs/mapping/fdroidRelease/mapping.txt
+          play=app/build/outputs/mapping/playRelease/mapping.txt
+          for m in "$fdroid" "$play"; do
+            test -f "$m" || { echo "No $m — is minification still enabled?" >&2; exit 1; }
+          done
+          if [ "$(fcm_classes "$fdroid")" -ne 0 ]; then
+            echo "The fdroid build contains Firebase Cloud Messaging classes:" >&2
+            grep -E '^com\.google\.firebase\.(messaging|installations|iid)\.' "$fdroid" | head -5 >&2
+            exit 1
+          fi
+          # Proves the check can see FCM at all. play carries it by design.
+          if [ "$(fcm_classes "$play")" -eq 0 ]; then
+            echo "The play build has no FCM either — this check is not reading what it thinks." >&2
+            exit 1
+          fi
 
       - name: dependency verification metadata is unchanged
         run: git diff --exit-code -- gradle/verification-metadata.xml
