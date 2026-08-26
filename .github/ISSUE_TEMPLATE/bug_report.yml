@@ -2,21 +2,14 @@ name: Bug report
 description: Something in the KyPost Android app does not work as documented.
 labels: ["bug"]
 body:
-  - type: markdown
-    attributes:
-      value: >-
-        **Not for security vulnerabilities** — use
-        [Security Advisories](https://github.com/Busness-app/KyPost-for-Android/security/advisories/new).
-
-
-        **Not for server problems.** Mail not arriving or not being labelled, or
-        a server refusing a pairing code, belongs in
-        [KyPost-Server](https://github.com/Busness-app/KyPost-Server/issues).
-
   - type: textarea
     id: what-happened
     attributes:
       label: What happened, and what you expected instead
+      description: >-
+        Not for security vulnerabilities, and not for server-side problems such
+        as mail not arriving or not being labelled — the links on the issue
+        chooser route both to the right place.
     validations: {required: true}
 
   - type: textarea
@@ -33,12 +26,10 @@ body:
     attributes:
       label: Which build did you install?
       description: >-
-        The single most useful answer in this form. The three channels are
-        different apps with different package names, different signing keys and
-        different push transports — F-Droid contains no Google code at all, so a
-        push bug there has entirely different causes. The app name is what tells
-        them apart: "KyPost", "KyPost (GitHub)", "KyPost (F-Droid)". (About shows
-        the version, not the channel.)
+        Android Settings -> Apps -> KyPost -> App info shows the package name,
+        which is definitive. The app name also distinguishes the store builds:
+        "KyPost", "KyPost (GitHub)", "KyPost (F-Droid)". (About shows the
+        version, not the channel.)
       options:
         - "Google Play  —  org.kysecurity.mail"
         - "GitHub APK  —  org.kysecurity.mail.github"
@@ -72,13 +63,14 @@ body:
     attributes:
       label: Notification delivery, if this is a notification bug
       description: >-
-        Play and GitHub builds use FCM. The F-Droid build uses UnifiedPush and
-        needs a distributor app installed. App Pull works on any build and needs
-        no push service at all.
+        Transport is not decided by the channel. UnifiedPush and App Pull work on
+        any build; FCM is available on the Play and GitHub builds only, because
+        the F-Droid build ships no Google code. UnifiedPush needs a distributor
+        app installed.
       options:
         - "Not a notification bug"
-        - "Push via FCM (Play or GitHub build)"
-        - "Push via UnifiedPush (F-Droid build)"
+        - "Push via FCM"
+        - "Push via UnifiedPush"
         - "App Pull"
 
   - type: textarea
