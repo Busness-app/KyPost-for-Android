@@ -199,40 +199,68 @@ jobs:
       # Asserted against the release build's own R8 mapping, not the build file — the build file
       # is where a mistake would live, so it cannot also be the evidence.
       #
-      # The dex is the wrong artifact to read here, and the mistake is instructive: R8 renames
-      # com.google.firebase.* in a release build, so grepping the dex for those descriptors
-      # returns nothing for EVERY flavor and a check written that way passes while proving
-      # nothing. mapping.txt records the original names, which is exactly what is wanted.
+      # The dex is the wrong artifact to read, and the mistake is instructive: R8 renames these
+      # classes in a release build, so grepping the dex for com/google/... descriptors returns
+      # nothing for EVERY flavor and a check written that way passes while proving nothing.
+      # mapping.txt records the original names.
       #
       # The play control is not decoration. Without it, a mistyped path, a renamed output
       # directory or a grep that silently matches nothing all read as "fdroid is clean".
       #
-      # ponytail: this checks Firebase Cloud Messaging, not all of com.google. The fdroid flavor
-      # still pulls firebase-components and firebase-encoders transitively through
-      # play-services-code-scanner, which PgpKeyActivity and PushPairingActivity call from
-      # src/main — so F-Droid would still refuse this build. Widen to com.google.firebase and
-      # com.google.android.gms once the CameraX scanner replaces it.
-      - name: the fdroid build carries no Firebase Cloud Messaging
+      # Scoped to firebase/gms/mlkit rather than all of com.google on purpose: com.google.zxing
+      # and com.google.gson are Apache-2 and ship in every flavor, F-Droid included. The test is
+      # proprietary-ness, not the package prefix.
+      - name: the fdroid build carries no Google code
         run: |
           set -euo pipefail
-          fcm_classes() {
-            grep -cE '^com\.google\.firebase\.(messaging|installations|iid)\.' "$1" || true
+          google_classes() {
+            grep -cE '^com\.google\.(firebase|android\.gms|mlkit)\.' "$1" || true
           }
           fdroid=app/build/outputs/mapping/fdroidRelease/mapping.txt
           play=app/build/outputs/mapping/playRelease/mapping.txt
           for m in "$fdroid" "$play"; do
             test -f "$m" || { echo "No $m — is minification still enabled?" >&2; exit 1; }
           done
-          if [ "$(fcm_classes "$fdroid")" -ne 0 ]; then
-            echo "The fdroid build contains Firebase Cloud Messaging classes:" >&2
-            grep -E '^com\.google\.firebase\.(messaging|installations|iid)\.' "$fdroid" | head -5 >&2
+
+          found=$(google_classes "$fdroid")
+          if [ "$found" -ne 0 ]; then
+            echo "The fdroid build contains $found proprietary Google classes. F-Droid will refuse it:" >&2
+            grep -E '^com\.google\.(firebase|android\.gms|mlkit)\.' "$fdroid" | head -10 >&2
             exit 1
           fi
-          # Proves the check can see FCM at all. play carries it by design.
-          if [ "$(fcm_classes "$play")" -eq 0 ]; then
-            echo "The play build has no FCM either — this check is not reading what it thinks." >&2
+
+          # Proves the check can see these classes at all. play carries them by design.
+          control=$(google_classes "$play")
+          if [ "$control" -eq 0 ]; then
+            echo "The play build has none either — this check is not reading what it thinks." >&2
             exit 1
           fi
+          echo "fdroid: 0 proprietary Google classes (play control: $control)"
+
+      # The camera permission belongs to the fdroid flavor alone. play and github scan with ML
+      # Kit, which runs the camera in the Play Services process, so they ask for nothing — and
+      # that absence is a Data Safety claim on the Play listing, not just a detail.
+      - name: only the fdroid build asks for CAMERA
+        run: |
+          set -euo pipefail
+          aapt=$(find "$ANDROID_HOME/build-tools" -name aapt2 | sort -V | tail -1)
+          test -n "$aapt" || { echo "No aapt2 found." >&2; exit 1; }
+          for flavor in play github; do
+            apk=$(find "app/build/outputs/apk/$flavor/release" -name '*.apk' | head -1)
+            test -n "$apk" || { echo "No $flavor release APK." >&2; exit 1; }
+            if "$aapt" dump permissions "$apk" | grep -q 'android.permission.CAMERA'; then
+              echo "The $flavor APK requests CAMERA. It scans with ML Kit and must not need it." >&2
+              exit 1
+            fi
+          done
+          # Control: fdroid must ask for it, or the FOSS scanner cannot open the camera and this
+          # check is passing because it is looking at the wrong thing.
+          apk=$(find app/build/outputs/apk/fdroid/release -name '*.apk' | head -1)
+          test -n "$apk" || { echo "No fdroid release APK." >&2; exit 1; }
+          "$aapt" dump permissions "$apk" | grep -q 'android.permission.CAMERA' || {
+            echo "The fdroid APK does not request CAMERA, so its scanner cannot work." >&2
+            exit 1
+          }
 
       - name: dependency verification metadata is unchanged
         run: git diff --exit-code -- gradle/verification-metadata.xml

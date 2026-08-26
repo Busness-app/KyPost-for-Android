@@ -12,7 +12,6 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.lifecycle.lifecycleScope
-import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import org.kysecurity.mail.R
@@ -27,7 +26,6 @@ import org.kysecurity.mail.data.DataRuntime
 import org.kysecurity.mail.push.PushRuntime
 import org.kysecurity.mail.push.pinnedPairingCallFactory
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.kysecurity.mail.security.LockedActivity
@@ -51,6 +49,11 @@ class PgpKeyActivity : LockedActivity() {
     private val client by lazy { PgpQrClient(callFactory = pinnedPairingCallFactory(this)) }
     private val bootstrapClient by lazy { PgpBootstrapClient(callFactory = pinnedPairingCallFactory(this)) }
     private var pendingKey: PgpQrKeyDto? = null
+
+    // Registered here and not in onCreateUnlocked: see QrScannerFactory for why the order of
+    // these registrations has to be identical on every creation.
+    private val qrScanner: org.kysecurity.mail.push.QrScanner =
+        org.kysecurity.mail.push.ChannelQrScanner.create(this)
 
     private val pickContactLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -163,7 +166,7 @@ class PgpKeyActivity : LockedActivity() {
     private fun scanQr() {
         lifecycleScope.launch {
             runCatching {
-                GmsBarcodeScanning.getClient(this@PgpKeyActivity).startScan().await().rawValue.orEmpty()
+                qrScanner.scan()
             }.onSuccess { raw ->
                 if (raw.isNotBlank()) {
                     handleScanned(raw)

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The fdroid channel's own manifest surface.
+
+    CAMERA is declared HERE and must never move to src/main. play and github scan with ML Kit,
+    which runs the camera inside the Google Play Services process, so those builds ask for no
+    camera permission at all — a real privacy property, and one the Play listing's Data Safety
+    section would otherwise have to declare. The fdroid build cannot use ML Kit (F-Droid refuses
+    proprietary dependencies) and scans in-process instead, which does require the permission.
+
+    zxing-android-embedded's own manifest also declares CAMERA, so this is belt-and-braces; it is
+    written out anyway because a reader of src/fdroid should be able to see what this flavor asks
+    for without resolving a library manifest, and because the dependency could be swapped.
+
+    See QrScannerFactory for the seam these two scanners sit behind.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- A device with no camera can still pair by pasting the link, so this must not be a filter. -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+</manifest>

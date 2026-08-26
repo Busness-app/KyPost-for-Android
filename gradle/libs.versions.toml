@@ -77,6 +77,7 @@ ksp = "2.3.2"
 bouncyCastlePgp = "1.85"
 jsoup = "1.23.1"
 zxingCore = "3.5.3"
+zxingEmbedded = "4.3.0"
 richHtmlEditor = "1.1.0"
 unifiedPush = "3.3.3"
 window = "1.5.1"
@@ -107,6 +108,9 @@ firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.r
 firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging" }
 play-services-code-scanner = { group = "com.google.android.gms", name = "play-services-code-scanner", version.ref = "playServicesCodeScanner" }
 zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxingCore" }
+# Scanner UI for the fdroid flavor only; play and github use ML Kit. Apache-2, and its only
+# real transitive is zxing-core above, which this project already carries for QR generation.
+zxing-android-embedded = { group = "com.journeyapps", name = "zxing-android-embedded", version.ref = "zxingEmbedded" }
 rich-html-editor = { group = "com.github.infomaniak", name = "android-rich-html-editor", version.ref = "richHtmlEditor" }
 unifiedpush-connector = { group = "org.unifiedpush.android", name = "connector", version.ref = "unifiedPush" }
 androidx-security-crypto = { group = "androidx.security", name = "security-crypto", version.ref = "securityCrypto" }
