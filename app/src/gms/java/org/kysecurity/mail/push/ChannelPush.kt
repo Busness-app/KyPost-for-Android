@@ -22,14 +22,15 @@ object ChannelPush : ChannelPushTransport {
             .getOrNull()
             ?.let { PushRegistrationCredential(token = it) }
 
-    override suspend fun tearDown(context: Context) {
+    override suspend fun tearDown(context: Context): Boolean =
         runCatching {
             FirebaseMessaging.getInstance().deleteToken().await()
             // Rotating the messaging token leaves the Firebase installation and its stable Fid in
             // place, which keeps the device linkable across an unpair and a later re-pair.
             FirebaseInstallations.getInstance().delete().await()
-        }
-    }
+        }.onFailure {
+            android.util.Log.e("ChannelPush", "Firebase teardown failed", it)
+        }.isSuccess
 
     /** Firebase is always available on these builds, so a UnifiedPush failure has somewhere to go. */
     override val canReplaceUnifiedPush: Boolean = true

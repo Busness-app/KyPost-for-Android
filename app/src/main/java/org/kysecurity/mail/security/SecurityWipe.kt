@@ -290,10 +290,12 @@ object SecurityWipe {
         // Firebase-free build it is a no-op that completes instantly, so this whole branch is
         // free there rather than skipped.
         // withTimeoutOrNull does bound it.
+        // `== true` and not `!= null`: tearDown reports its own outcome, and a channel whose
+        // teardown failed must not read as success just because it returned rather than timed out.
         val fcmTornDown = runCatching {
             withTimeoutOrNull(FCM_TEARDOWN_TIMEOUT_MS) {
                 org.kysecurity.mail.push.ChannelPush.tearDown(appContext)
-            } != null
+            } == true
         }.onFailure { android.util.Log.e(TAG, "push teardown threw", it) }.getOrDefault(false)
         if (!fcmTornDown) {
             android.util.Log.e(

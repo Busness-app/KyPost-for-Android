@@ -23,8 +23,13 @@ interface ChannelPushTransport {
     suspend fun registrationCredential(context: Context, store: PushStore): PushRegistrationCredential?
 
     /** Severs this transport's own delivery state, after the transport-neutral teardown has run.
-     *  Called on unpair and on wipe. */
-    suspend fun tearDown(context: Context)
+     *  Called on unpair and on wipe.
+     *
+     *  Returns whether it actually succeeded. This is not decoration: [SecurityWipe] warns the
+     *  user that the device "may stay subscribed and linkable" when teardown does not complete,
+     *  and an implementation that swallows its own failure turns that warning off for exactly the
+     *  cases it exists to cover. */
+    suspend fun tearDown(context: Context): Boolean
 
     /** Whether a failed or abandoned UnifiedPush registration can revert to this transport.
      *

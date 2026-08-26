@@ -33,8 +33,9 @@ object ChannelPush : ChannelPushTransport {
     }
 
     /** The transport-neutral teardown in [PushRepository] already unregisters the distributor and
-     *  deletes the connector's key material. There is no second transport with state of its own. */
-    override suspend fun tearDown(context: Context) = Unit
+     *  deletes the connector's key material. There is no second transport with state of its own,
+     *  so there is nothing here that can fail. */
+    override suspend fun tearDown(context: Context): Boolean = true
 
     /** Nothing to fall back to. A build with no Firebase that "reverts to Firebase" on a
      *  UnifiedPush failure ends up paired, registered and permanently silent. */
