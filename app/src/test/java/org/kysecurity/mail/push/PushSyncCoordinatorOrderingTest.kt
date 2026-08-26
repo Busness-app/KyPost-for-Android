@@ -52,12 +52,14 @@ class PushSyncCoordinatorOrderingTest {
         store: FakePushStore,
         responder: (Request) -> okhttp3.Response,
         token: suspend () -> String? = { "fcm-token" },
+        // These tests are about registration ordering, not about which transport a build uses;
+        // the credential wrapper keeps them expressed in the token they actually care about.
         onWipe: suspend (List<String>) -> Unit = {},
     ) = PushSyncCoordinator(
         repository = store,
         registrationClient = NativeRegistrationClient(callFactory = FakeCallFactory(responder)),
         wipeOnIncompletePurge = onWipe,
-        fetchFcmToken = token,
+        fetchRegistrationCredential = { token()?.let { PushRegistrationCredential(token = it) } },
     )
 
     /** Two registrations in flight at once used to interleave as register-A, register-B,

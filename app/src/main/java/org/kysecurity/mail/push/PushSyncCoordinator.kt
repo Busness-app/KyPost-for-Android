@@ -16,11 +16,15 @@ class PushSyncCoordinator(
      *  [attemptPairing]. Injected rather than called directly so the refusal is testable and so
      *  this class keeps needing no `Context`. */
     private val wipeOnIncompletePurge: suspend (List<String>) -> Unit,
-    /** The FCM token, or null when it cannot be fetched. Injected for the same reason as
-     *  [wipeOnIncompletePurge]: `FirebaseMessaging.getInstance()` needs a live FirebaseApp, so
-     *  leaving it inline put every ordering rule in this class out of a unit test's reach. */
-    private val fetchFcmToken: suspend () -> String? = {
-        runCatching { FirebaseMessaging.getInstance().token.await() }.getOrNull()
+    /** This build's push credential, or null when it cannot be obtained. Injected for the same
+     *  reason as [wipeOnIncompletePurge]: `FirebaseMessaging.getInstance()` needs a live
+     *  FirebaseApp, so leaving it inline put every ordering rule in this class out of a unit
+     *  test's reach. It is also the seam the Firebase-free channel replaces — see
+     *  [PushRegistrationCredential]. */
+    private val fetchRegistrationCredential: suspend () -> PushRegistrationCredential? = {
+        runCatching { FirebaseMessaging.getInstance().token.await() }
+            .getOrNull()
+            ?.let { PushRegistrationCredential(token = it) }
     },
 ) {
     /** ONE registration at a time, process-wide.
@@ -51,12 +55,18 @@ class PushSyncCoordinator(
         val credentialState = repository.currentCredentialState()
         if (credentialState is PushRepository.PairingCredentialState.Unavailable) return credentialGateDeferral()
 
-        val token = fetchFcmToken()
-            ?: return NativeRegistrationResult.Error("Unable to fetch FCM token")
+        val credential = fetchRegistrationCredential()
+            ?: return NativeRegistrationResult.Error(UNAVAILABLE_CREDENTIAL)
 
         // NonCancellable: the server has already invalidated the previous secret by the time it answers.
         withContext(NonCancellable) {
-            val result = registrationClient.register(pairing = pairing, token = token)
+            val result = registrationClient.register(
+                pairing = pairing,
+                token = credential.token,
+                transport = credential.transport,
+                p256dh = credential.p256dh,
+                auth = credential.auth,
+            )
             if (result !is NativeRegistrationResult.Success) return@withContext result
 
             // NOTHING is destroyed until the replacement is proven. Purging first meant a
@@ -96,13 +106,18 @@ class PushSyncCoordinator(
     }
 
     suspend fun syncCurrentPairingToken(): NativeRegistrationResult {
-        val token = fetchFcmToken()
+        val credential = fetchRegistrationCredential()
             ?: run {
-                repository.updateSyncState(lastSyncAtEpochMs = null, syncError = "Unable to fetch FCM token")
-                return NativeRegistrationResult.Error("Unable to fetch FCM token")
+                repository.updateSyncState(lastSyncAtEpochMs = null, syncError = UNAVAILABLE_CREDENTIAL)
+                return NativeRegistrationResult.Error(UNAVAILABLE_CREDENTIAL)
             }
 
-        return syncAndPersist(token = token)
+        return syncAndPersist(
+            token = credential.token,
+            transport = credential.transport,
+            p256dh = credential.p256dh,
+            auth = credential.auth,
+        )
     }
 
     suspend fun syncProvidedToken(
@@ -226,5 +241,11 @@ class PushSyncCoordinator(
     private suspend fun persistDelivery(pairing: PairingData, result: NativeRegistrationResult.Success) {
         val endpoint = resolvePullEndpoint(pairing.serverUrl, result.pullEndpoint)
         repository.updateDelivery(result.deliveryMode, endpoint)
+    }
+
+    private companion object {
+        /** One message for both entry points, naming neither Firebase nor a distributor: which one
+         *  is missing depends on the build, and the injected seam above is what decides. */
+        const val UNAVAILABLE_CREDENTIAL = "Unable to obtain a push registration token"
     }
 }
