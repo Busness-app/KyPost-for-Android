@@ -45,14 +45,14 @@ jobs:
       # app builds, installs and runs identically either way, so nothing downstream would
       # catch a placeholder. Hence the explicit rejection below.
       #
-      # RELEASE PREREQUISITE, not yet done: as of the three-flavor split, Firebase must have an
-      # app REGISTERED — not merely present in some json a developer hand-edited — for
-      # org.kysecurity.mail.github and org.kysecurity.mail.fdroid, and GOOGLE_SERVICES_JSON on
-      # the `release` environment must be rotated to the file Firebase generates once they are.
-      # The check below only verifies the secret NAMES all three packages; a google-services.json
-      # naming a package Firebase has never registered passes it just as well, and ships an app
-      # whose FirebaseMessaging.getToken() fails at runtime — which breaks pairing outright, since
-      # pairing hard-requires a token. The next `v*` tag fails here until this is done.
+      # Both flavor packages are now REGISTERED in Firebase project device-streaming-e3aa5b87
+      # ("KyPost (Github)" and "KyPost (FDroid)"), and GOOGLE_SERVICES_JSON was rotated on
+      # 2026-08-26 to the file Firebase itself generates for them. Registration is what matters,
+      # not the json: the check below only verifies the secret NAMES each package, and a
+      # google-services.json naming a package Firebase has never registered passes it just as
+      # well — then ships an app whose FirebaseMessaging.getToken() fails at runtime, which
+      # breaks pairing outright, since pairing hard-requires a token. If a channel is ever added,
+      # register it in Firebase and re-export the secret; do not hand-edit the json.
       - name: production google-services.json
         env:
           GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
