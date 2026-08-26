@@ -36,8 +36,9 @@ body:
         The single most useful answer in this form. The three channels are
         different apps with different package names, different signing keys and
         different push transports — F-Droid contains no Google code at all, so a
-        push bug there has entirely different causes. Settings -> About shows it,
-        or check the app name: "KyPost", "KyPost (GitHub)", "KyPost (F-Droid)".
+        push bug there has entirely different causes. The app name is what tells
+        them apart: "KyPost", "KyPost (GitHub)", "KyPost (F-Droid)". (About shows
+        the version, not the channel.)
       options:
         - "Google Play  —  org.kysecurity.mail"
         - "GitHub APK  —  org.kysecurity.mail.github"
