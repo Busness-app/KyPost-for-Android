@@ -1,0 +1,83 @@
+name: Bug report
+description: Something in the KyPost Android app does not work as documented.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what you expected instead
+      description: >-
+        **Never report a security vulnerability here.** Use
+        [Security Advisories](https://github.com/Busness-app/KyPost-for-Android/security/advisories/new)
+        — a public issue discloses it before a fix exists. Server-side problems
+        (mail not arriving or not being labelled) belong in KyPost-Server; the
+        issue chooser links it.
+    validations: {required: true}
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: >-
+        Numbered, from a state someone else can reach. "It happens sometimes" is
+        still worth filing — say so rather than leaving this blank.
+    validations: {required: true}
+
+  - type: dropdown
+    id: channel
+    attributes:
+      label: Which build did you install?
+      description: >-
+        Android Settings -> Apps -> KyPost -> App info shows the package name,
+        which is definitive. The app name also distinguishes the store builds:
+        "KyPost", "KyPost (GitHub)", "KyPost (F-Droid)". (About shows the
+        version, not the channel.)
+      options:
+        - "Google Play  —  org.kysecurity.mail"
+        - "GitHub APK  —  org.kysecurity.mail.github"
+        - "F-Droid  —  org.kysecurity.mail.fdroid"
+        - "Built from source"
+    validations: {required: true}
+
+  - type: input
+    id: app-version
+    attributes:
+      label: App version
+      placeholder: "0.3.3"
+    validations: {required: true}
+
+  - type: input
+    id: device
+    attributes:
+      label: Device and Android version
+      placeholder: "Pixel 8, Android 15"
+    validations: {required: true}
+
+  - type: input
+    id: server-version
+    attributes:
+      label: Server version, if the problem involves one
+      description: On the server, Admin -> Server -> Application.
+      placeholder: "0.3.0"
+
+  - type: dropdown
+    id: delivery
+    attributes:
+      label: Notification delivery, if this is a notification bug
+      description: >-
+        Transport is not decided by the channel. UnifiedPush and App Pull work on
+        any build; FCM is available on the Play and GitHub builds only, because
+        the F-Droid build ships no Google code. UnifiedPush needs a distributor
+        app installed.
+      options:
+        - "Not a notification bug"
+        - "Push via FCM"
+        - "Push via UnifiedPush"
+        - "App Pull"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logcat output
+      description: "**Redact before pasting** — logs can carry email addresses and hostnames."
+      render: text
