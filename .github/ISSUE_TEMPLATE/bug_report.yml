@@ -7,9 +7,11 @@ body:
     attributes:
       label: What happened, and what you expected instead
       description: >-
-        Not for security vulnerabilities, and not for server-side problems such
-        as mail not arriving or not being labelled — the links on the issue
-        chooser route both to the right place.
+        **Never report a security vulnerability here.** Use
+        [Security Advisories](https://github.com/Busness-app/KyPost-for-Android/security/advisories/new)
+        — a public issue discloses it before a fix exists. Server-side problems
+        (mail not arriving or not being labelled) belong in KyPost-Server; the
+        issue chooser links it.
     validations: {required: true}
 
   - type: textarea
