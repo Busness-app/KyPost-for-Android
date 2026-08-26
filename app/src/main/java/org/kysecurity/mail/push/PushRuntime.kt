@@ -32,6 +32,9 @@ class PushGraph(context: Context) {
     )
     val syncCoordinator = PushSyncCoordinator(
         repository = repository,
+        // The channel's own transport: Firebase on play/github, UnifiedPush on fdroid. This is
+        // the single place the two builds diverge at runtime.
+        fetchRegistrationCredential = { ChannelPush.registrationCredential(appContext, repository) },
         // First pairing pins to the link's `pin` when the relay published one, TOFU otherwise;
         // every resync afterward pins to the captured leaf.
         registrationClient = NativeRegistrationClient(callFactory = pinnedOrFallbackCallFactory),

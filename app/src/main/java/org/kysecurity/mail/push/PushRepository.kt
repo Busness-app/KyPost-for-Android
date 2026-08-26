@@ -301,12 +301,9 @@ class PushRepository(
         // UnifiedPush.unregister keeps the distributor selection on purpose so a later re-register
         // reuses it; after an unpair that record should not outlive the pairing.
         runCatching { context.deleteSharedPreferences("unifiedpush.connector") }
-        runCatching {
-            com.google.firebase.messaging.FirebaseMessaging.getInstance().deleteToken().await()
-            // Rotating the messaging token leaves the Firebase installation and its stable Fid in
-            // place, which keeps the device linkable across an unpair and a later re-pair.
-            com.google.firebase.installations.FirebaseInstallations.getInstance().delete().await()
-        }
+        // Whatever this channel's own transport keeps. On a Firebase build that is the messaging
+        // token and the installation Fid; on the Firebase-free one there is nothing left to do.
+        ChannelPush.tearDown(context)
     }
 
     /** Persist the authoritative delivery mode and (derived or server-provided) pull endpoint. */

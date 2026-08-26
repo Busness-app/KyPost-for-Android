@@ -1,11 +1,9 @@
 package org.kysecurity.mail.push
 
-import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 
 /** Every registration here mints a new `deviceSecret` and invalidates the previous one. */
@@ -16,16 +14,13 @@ class PushSyncCoordinator(
      *  [attemptPairing]. Injected rather than called directly so the refusal is testable and so
      *  this class keeps needing no `Context`. */
     private val wipeOnIncompletePurge: suspend (List<String>) -> Unit,
-    /** This build's push credential, or null when it cannot be obtained. Injected for the same
-     *  reason as [wipeOnIncompletePurge]: `FirebaseMessaging.getInstance()` needs a live
-     *  FirebaseApp, so leaving it inline put every ordering rule in this class out of a unit
-     *  test's reach. It is also the seam the Firebase-free channel replaces — see
-     *  [PushRegistrationCredential]. */
-    private val fetchRegistrationCredential: suspend () -> PushRegistrationCredential? = {
-        runCatching { FirebaseMessaging.getInstance().token.await() }
-            .getOrNull()
-            ?.let { PushRegistrationCredential(token = it) }
-    },
+    /** This build's push credential, or null when it cannot be obtained.
+     *
+     *  No default: it used to fall back to `FirebaseMessaging.getInstance()`, which named a
+     *  library that only two of the three channels carry, from a file every channel compiles.
+     *  [PushGraph] supplies the channel's own [ChannelPush], and a caller that forgets now fails
+     *  to compile rather than silently registering the wrong transport. */
+    private val fetchRegistrationCredential: suspend () -> PushRegistrationCredential?,
 ) {
     /** ONE registration at a time, process-wide.
      *
