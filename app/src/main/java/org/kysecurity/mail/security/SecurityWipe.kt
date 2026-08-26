@@ -279,21 +279,24 @@ object SecurityWipe {
         // Everything below touches the network; nothing below it destroys local data.
 
         // NOT a `step`, for the same reason the downloads sweep above is not one and the deregister
-        // call below is not either: this needs a reachable Firebase, and nothing the user can do
+        // call below is not either: it needs a reachable push service, and nothing the user can do
         // makes one appear. As a step it failed the wipe on every resume of an offline device until
         // MAX_WIPE_RESUMES marked it abandoned, at which point LockedActivity blocks the app for
         // good — bricking the client because the network was down during a wipe. The local half of
         // the token is already gone with the sandbox; what survives is a server-side subscription,
         // which is exactly what the deregister below reports rather than fails on.
-        // withTimeoutOrNull does bound Task.await().
+        //
+        // What the teardown actually is depends on the channel — see ChannelPush. On the
+        // Firebase-free build it is a no-op that completes instantly, so this whole branch is
+        // free there rather than skipped.
+        // withTimeoutOrNull does bound it.
+        // `== true` and not `!= null`: tearDown reports its own outcome, and a channel whose
+        // teardown failed must not read as success just because it returned rather than timed out.
         val fcmTornDown = runCatching {
             withTimeoutOrNull(FCM_TEARDOWN_TIMEOUT_MS) {
-                com.google.firebase.messaging.FirebaseMessaging.getInstance().deleteToken().await()
-                // The token is not the installation. Leaving the Fid behind keeps this device
-                // linkable across the wipe and a later re-pair.
-                com.google.firebase.installations.FirebaseInstallations.getInstance().delete().await()
-            } != null
-        }.onFailure { android.util.Log.e(TAG, "FCM teardown threw", it) }.getOrDefault(false)
+                org.kysecurity.mail.push.ChannelPush.tearDown(appContext)
+            } == true
+        }.onFailure { android.util.Log.e(TAG, "push teardown threw", it) }.getOrDefault(false)
         if (!fcmTornDown) {
             android.util.Log.e(
                 TAG,

@@ -66,8 +66,21 @@ jobs:
       # ci.yml" — and no workflow ever called it, so the control was a sentence. On a fresh
       # checkout keystore.properties does not exist (it is gitignored) and the task is a no-op;
       # it fires only if one is ever committed with a password in it.
+      # Every flavor, not just play. Until fdroid took its own source set the three were
+      # byte-identical apart from applicationId, so one run genuinely stood for all three. It
+      # does not any more: src/fdroid and src/gms compile different ChannelPush implementations,
+      # and a play-only run cannot see either a break in the fdroid one or a merged-manifest
+      # regression in a variant it never assembles.
       - name: unit tests, lint and signing-secret check
-        run: ./gradlew checkSigningSecretsAreNotInTheTree checkExportedComponentsPlayDebug testPlayDebugUnitTest lint
+        run: |
+          ./gradlew checkSigningSecretsAreNotInTheTree \
+            checkExportedComponentsPlayDebug \
+            checkExportedComponentsGithubDebug \
+            checkExportedComponentsFdroidDebug \
+            testPlayDebugUnitTest \
+            testGithubDebugUnitTest \
+            testFdroidDebugUnitTest \
+            lint lintGithubDebug lintFdroidDebug
 
       # The other half of the rule above, expressed as a check rather than a comment: if
       # anything in this job regenerated the metadata, the file is dirty and the job fails.
@@ -165,20 +178,61 @@ jobs:
       # purpose. 30% is a regression tripwire with real headroom, not a target. If a legitimate
       # change pushes it over, raise it deliberately and say in the commit which rule did it.
       #
-      # ponytail: checks playRelease only, not all three flavors. Fine today because the flavors
-      # are byte-identical apart from applicationId, so one R8 run stands for all three. Widen
-      # this to also check githubRelease/fdroidRelease once the fdroid flavor drops the Firebase
-      # dependency (see the Channels table in README.md) — at that point its R8 input differs
-      # from play's and this check stops covering it.
+      # All three flavors now. The note here used to say playRelease alone was enough because the
+      # flavors were byte-identical apart from applicationId, and to widen this "once the fdroid
+      # flavor drops the Firebase dependency — at that point its R8 input differs from play's and
+      # this check stops covering it". That point is now: fdroid has its own source set and its
+      # own dependency graph, so play's mapping says nothing about fdroid's.
       - name: R8 actually obfuscated the app
         run: |
-          mapping=app/build/outputs/mapping/playRelease/mapping.txt
-          test -f "$mapping" || { echo "No $mapping — is minification still enabled?" >&2; exit 1; }
-          total=$(grep -cE '^org\.kysecurity\.mail\.[^ ]* ->' "$mapping")
-          kept=$(grep -cE '^org\.kysecurity\.mail\.[^ ]* -> org\.kysecurity\.mail\.' "$mapping")
-          echo "app classes: $total, keeping their original name: $kept"
-          test "$total" -gt 0
-          test $((kept * 100 / total)) -lt 30
+          set -euo pipefail
+          for flavor in play github fdroid; do
+            mapping=app/build/outputs/mapping/${flavor}Release/mapping.txt
+            test -f "$mapping" || { echo "No $mapping — is minification still enabled?" >&2; exit 1; }
+            total=$(grep -cE '^org\.kysecurity\.mail\.[^ ]* ->' "$mapping")
+            kept=$(grep -cE '^org\.kysecurity\.mail\.[^ ]* -> org\.kysecurity\.mail\.' "$mapping")
+            echo "$flavor: app classes $total, keeping their original name $kept"
+            test "$total" -gt 0
+            test $((kept * 100 / total)) -lt 30
+          done
+
+      # Asserted against the release build's own R8 mapping, not the build file — the build file
+      # is where a mistake would live, so it cannot also be the evidence.
+      #
+      # The dex is the wrong artifact to read here, and the mistake is instructive: R8 renames
+      # com.google.firebase.* in a release build, so grepping the dex for those descriptors
+      # returns nothing for EVERY flavor and a check written that way passes while proving
+      # nothing. mapping.txt records the original names, which is exactly what is wanted.
+      #
+      # The play control is not decoration. Without it, a mistyped path, a renamed output
+      # directory or a grep that silently matches nothing all read as "fdroid is clean".
+      #
+      # ponytail: this checks Firebase Cloud Messaging, not all of com.google. The fdroid flavor
+      # still pulls firebase-components and firebase-encoders transitively through
+      # play-services-code-scanner, which PgpKeyActivity and PushPairingActivity call from
+      # src/main — so F-Droid would still refuse this build. Widen to com.google.firebase and
+      # com.google.android.gms once the CameraX scanner replaces it.
+      - name: the fdroid build carries no Firebase Cloud Messaging
+        run: |
+          set -euo pipefail
+          fcm_classes() {
+            grep -cE '^com\.google\.firebase\.(messaging|installations|iid)\.' "$1" || true
+          }
+          fdroid=app/build/outputs/mapping/fdroidRelease/mapping.txt
+          play=app/build/outputs/mapping/playRelease/mapping.txt
+          for m in "$fdroid" "$play"; do
+            test -f "$m" || { echo "No $m — is minification still enabled?" >&2; exit 1; }
+          done
+          if [ "$(fcm_classes "$fdroid")" -ne 0 ]; then
+            echo "The fdroid build contains Firebase Cloud Messaging classes:" >&2
+            grep -E '^com\.google\.firebase\.(messaging|installations|iid)\.' "$fdroid" | head -5 >&2
+            exit 1
+          fi
+          # Proves the check can see FCM at all. play carries it by design.
+          if [ "$(fcm_classes "$play")" -eq 0 ]; then
+            echo "The play build has no FCM either — this check is not reading what it thinks." >&2
+            exit 1
+          fi
 
       - name: dependency verification metadata is unchanged
         run: git diff --exit-code -- gradle/verification-metadata.xml
@@ -195,6 +249,10 @@ jobs:
     # "ci-instrumented (34)", so the required context never arrived and the PR sat BLOCKED on a
     # check that does not exist. These legs are named for what they are; instrumented-gate below
     # supplies the context.
+    #
+    # Since the flavor dimension was added the legs report as "ci-emulator (31, Play)" and
+    # "ci-emulator (34, Fdroid)". Nothing should ever require those names directly — require
+    # ci-instrumented, which is what the gate exists to provide.
     name: ci-emulator
     runs-on: ubuntu-latest
     # Slower and flakier than unit-only, and still worth it: the wipe, teardown, Keystore
@@ -236,9 +294,22 @@ jobs:
         # The app was never implicated: no FATAL EXCEPTION, no ANR, nothing in logcat but normal
         # operation. Activity recreation is not broken for Android 16 users.
         api-level: [31, 34, 36]
+        flavor: [Play]
+        include:
+          # One fdroid leg, not a full cross-product. This job is the only place the app is
+          # actually LAUNCHED, and the fdroid-specific risks are launch-shaped: a manifest that
+          # still declares KyPostFirebaseMessagingService, a ChannelPush that cannot resolve, a
+          # dependency the flavor no longer has. None of that is visible to a unit test, and all
+          # of it fails identically on every API level — so one leg buys the coverage and three
+          # would buy very little more for triple the wall clock.
+          #
+          # 34 rather than 31 or 36: it is the level this job ran on alone for its whole history,
+          # so it is the one with the least emulator-specific noise of its own.
+          - api-level: 34
+            flavor: Fdroid
     # No leg is allowed to fail any more. 36 was `continue-on-error` while its failure was
     # unexplained; it is explained and fixed, so it gates like the other two and
-    # `instrumented-gate` now means all three passed.
+    # `instrumented-gate` now means every leg passed.
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -390,7 +461,7 @@ jobs:
             # `|| echo` rather than letting gradle fail the line: each line here is its own sh -c,
             # so a bare non-zero exit ends the script and the dump never runs. The marker file
             # re-raises the failure at the end, so nothing is silenced.
-            ./gradlew connectedPlayDebugAndroidTest || echo failed > /tmp/testfail.txt
+            ./gradlew connected${{ matrix.flavor }}DebugAndroidTest || echo failed > /tmp/testfail.txt
 
             # READ THE KEYGUARD AGAIN. Everything above proves it was down when the suite STARTED
             # and never looks again, so a re-arm partway through arrives as a pile of app-looking
@@ -447,5 +518,5 @@ jobs:
       # app; that is the failure mode it was silent about for four runs.
       - name: require every required emulator leg
         run: |
-          echo "ci-emulator matrix result (all of 31, 34, 36 required): ${{ needs.instrumented.result }}"
+          echo "ci-emulator matrix result (Play on 31/34/36 and Fdroid on 34, all required): ${{ needs.instrumented.result }}"
           test "${{ needs.instrumented.result }}" = "success"

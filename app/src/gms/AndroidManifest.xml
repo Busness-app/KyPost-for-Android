@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Firebase's manifest surface, merged into the play and github variants only.
+
+    It lives here rather than in src/main because the fdroid variant does not compile
+    KyPostFirebaseMessagingService at all — F-Droid refuses proprietary dependencies, so that
+    flavor ships no Firebase. A service element naming a class the APK does not contain is not a
+    harmless leftover: the system resolves the component, fails to instantiate it, and the failure
+    surfaces at delivery time rather than at build time.
+
+    See the sourceSets block in app/build.gradle.kts for the wiring.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <service
+            android:name=".push.KyPostFirebaseMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+    </application>
+</manifest>

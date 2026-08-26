@@ -135,6 +135,21 @@ android {
         }
     }
 
+    // play and github are the same build with two applicationIds; fdroid is the one that differs,
+    // because F-Droid refuses proprietary dependencies and so that flavor ships no Google code at
+    // all. `gms` is not a flavor name, so AGP does not pick it up on its own — everything that
+    // touches Firebase or Play Services lives there and is compiled into those two only.
+    sourceSets {
+        // Both `java` and `kotlin`: AGP's java.srcDir alone does not reach the Kotlin compiler for
+        // a flavor source set, so the sources resolve for javac and are invisible to kotlinc —
+        // which shows up as "Unresolved reference 'ChannelPush'" and nothing else.
+        listOf("play", "github").forEach { flavor ->
+            getByName(flavor).java.srcDir("src/gms/java")
+            getByName(flavor).kotlin.srcDir("src/gms/java")
+            getByName(flavor).manifest.srcFile("src/gms/AndroidManifest.xml")
+        }
+    }
+
     signingConfigs {
         signingMaterial?.let { material ->
             create("release") {
@@ -316,10 +331,20 @@ val allowedExportedComponents = setOf(
     "androidx.work.impl.background.systemjob.SystemJobService",
     "androidx.work.impl.diagnostics.DiagnosticsReceiver",
     "androidx.profileinstaller.ProfileInstallReceiver",
-    "com.google.firebase.iid.FirebaseInstanceIdReceiver",
     // UnifiedPush's distributor-facing surface: the route a distributor delivers a push through.
     "org.unifiedpush.android.connector.internal.MessagingReceiverImpl",
     "org.unifiedpush.android.connector.internal.RaiseToForegroundService",
+)
+
+/** Exported by the Firebase-carrying channels only.
+ *
+ *  Kept apart from the set above rather than merged into it because the gate is bidirectional: it
+ *  fails on an allowlisted component the merged manifest does NOT export, which is what stops the
+ *  list from quietly covering nothing. Merged, this entry would fail every fdroid build; dropped,
+ *  it would stop being checked on play and github. Neither is what we want, so the allowlist is
+ *  per-variant. */
+val gmsExportedComponents = setOf(
+    "com.google.firebase.iid.FirebaseInstanceIdReceiver",
 )
 
 /** Classes this app identifies by NAME at runtime, where R8 renaming one is silent: the comparison
@@ -355,7 +380,10 @@ androidComponents.onVariants { variant ->
     )
 
     val mergedManifest = variant.artifacts.get(SingleArtifact.MERGED_MANIFEST)
-    val allowed = allowedExportedComponents
+    // Resolved here, at configuration time, into a plain Set the task action captures — the
+    // action must not reference `variant` or it cannot be serialized to the configuration cache.
+    val allowed = allowedExportedComponents +
+        if (variant.flavorName == "fdroid") emptySet() else gmsExportedComponents
     val gate = tasks.register("checkExportedComponents${variant.name.replaceFirstChar { it.uppercase() }}") {
         description = "Fails if the merged manifest exports a component outside the allowlist."
         inputs.file(mergedManifest).withPropertyName("mergedManifest")
@@ -440,11 +468,21 @@ androidComponents.onVariants { variant ->
     }
 }
 
+// Declared once and extended into play and github, so the Google dependencies are named in one
+// place and fdroid provably cannot resolve them. A `configurations.all` exclude would not do:
+// that hides the artifact while leaving the flavor's compile path claiming it exists.
+val gmsImplementation by configurations.creating
+configurations.named("playImplementation") { extendsFrom(gmsImplementation) }
+configurations.named("githubImplementation") { extendsFrom(gmsImplementation) }
+
 dependencies {
     implementation(libs.androidx.activity.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.ktx)
     implementation(libs.kotlinx.coroutines.android)
+    // Apache-2 itself, but it pulls com.google.android.gms:play-services-tasks. Moves to
+    // gmsImplementation with the scanner above; the same two activities need it for
+    // Task.await().
     implementation(libs.kotlinx.coroutines.play.services)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.androidx.security.crypto)
@@ -453,12 +491,16 @@ dependencies {
     implementation(libs.androidx.lifecycle.process)
     implementation(libs.okhttp)
     implementation(libs.kotlinx.serialization.json)
-    implementation(platform(libs.firebase.bom))
-    implementation(libs.firebase.messaging)
+    gmsImplementation(platform(libs.firebase.bom))
+    gmsImplementation(libs.firebase.messaging)
     implementation(libs.unifiedpush.connector) {
         // tink and tink-android both ship com.google.crypto.tink.*; never configurations.all.
         exclude(group = "com.google.crypto.tink", module = "tink")
     }
+    // ponytail: still every flavor. PgpKeyActivity and PushPairingActivity call
+    // GmsBarcodeScanning from src/main, so this cannot move to gmsImplementation until
+    // the fdroid CameraX scanner exists. Until then the fdroid APK still carries Play
+    // Services and F-Droid would still refuse it — see the D3 design doc.
     implementation(libs.play.services.code.scanner)
     // QR *generation* for the "My QR Code" screen — play-services-code-scanner above only scans.
     implementation(libs.zxing.core)
@@ -498,4 +540,5 @@ dependencies {
 ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
 }
+
 
