@@ -32,17 +32,65 @@ surfaces say so in as many words:
 - `strings.xml:11` — "Not paired yet. Pair this device before using Relay mode."
 - `strings.xml:373` — "Not paired yet. Pair this device via the Pairing menu first."
 
-This is a stronger gate than a password, and the usual remedy does not work:
-**there is no username and password you can type into Play Console that will let
-a reviewer in.** They need a reachable server.
+This is a stronger gate than a password: **no username and password typed into
+Play Console will let a reviewer in on its own.** They need a reachable server
+*and* a way to get a pairing link onto the test device.
+
+> **Corrected 2026-08-26.** An earlier version of this section told you to put a
+> pairing QR or `kypost://native-pair` URI into Play Console. That is wrong. The
+> native pairing token lives **90 seconds**
+> (`backend/internal/api/server_notifications.go:327`), so anything static
+> pasted into a console field is dead long before a reviewer opens it.
+
+### The route that actually works, and it already exists
+
+The web pairing panel renders the URI **only as a QR image**
+(`frontend/src/pages/security/PairingPanel.tsx:145,231-234`), and the Android
+app's only in-app entry is *Scan QR Code* (`strings.xml:232`) — there is no
+paste field. So a reviewer with one screen, or an emulator with no usable
+camera, cannot scan anything.
+
+The **"Pair Desktop App"** button below the QR is the way in, despite its name.
+It is not a desktop-specific code exchange: it fetches a *fresh* pairing token
+(`PairingPanel.tsx:169`), builds the same `kypost://native-pair` URI the QR
+encodes (`:177`), and navigates the browser to it (`:183`). On Android that
+fires an implicit VIEW intent which `PushPairingLinkActivity` handles — the
+manifest declares `action.VIEW`, `category.BROWSABLE`, `scheme="kypost"`,
+`host="native-pair"` and `exported="true"`.
+
+That makes it camera-free, single-device, emulator-safe, and immune to the
+90-second problem because the token is minted on the tap.
 
 **Before submitting:**
 
-1. Stand up a reviewer-accessible KyPost instance.
-2. In Play Console → *App access*, supply a working pairing QR (or the
-   `kypost://native-pair` URI) **and** written steps for using it.
+1. Stand up a reviewer-accessible KyPost instance with a web login. *(Done.)*
+2. In Play Console → *App access*, give the login **plus** steps that say: open
+   the pairing page in the **test device's own browser** and tap **"Pair Desktop
+   App"**. Say explicitly not to scan the QR — a code shown on the screen you
+   are scanning with cannot be scanned.
 3. State that the app requires an external self-hosted server, so a reviewer who
    cannot pair reads it as by-design rather than as a broken build.
+4. Note that release builds set `FLAG_SECURE` (`app/build.gradle.kts:91`,
+   `security/SecureWindow.kt:10-11`), so a screen recording of the app is black.
+   Correct for a mail client, and worth saying before it reads as a defect.
+
+### Two rough edges worth fixing rather than documenting around
+
+- **The button is named for the wrong audience.** A reviewer on a phone has no
+  reason to press *"Pair Desktop App"*. It is the mobile path too; naming it so
+  would remove the need for step 2's warning entirely.
+- **Its fallback instruction is false on Android.** If the app does not take
+  focus, `PairingPanel.tsx:190` tells the user to "paste this link into the
+  app's pairing screen". There is no paste field on Android. Either add one or
+  reword the fallback.
+
+### Unverified
+
+The browser-to-app hop was confirmed by reading the manifest, the URI builder
+and the handler — not by watching a phone do it. Chrome on Android honours
+custom-scheme navigation from inside a click handler, so it is expected to work,
+but expected is not verified. Try it on a real device with the `play` build
+before submitting.
 
 ## 2. The Data Safety item the launch plan predicted
 
@@ -141,8 +189,13 @@ and github flavors.
 
 ## Checklist
 
-- [ ] Reviewer-accessible KyPost server, with pairing QR and instructions in
-      Play Console → App access. **This is the rejection risk.**
+- [x] Reviewer-accessible KyPost server with a web login.
+- [ ] Play Console → App access instructions naming the **"Pair Desktop App"**
+      button as the pairing route, and warning off the QR. **This is the
+      rejection risk** — the login alone does not pair the app.
+- [ ] Verified on a real device that tapping that button from the phone's
+      browser opens and pairs the app.
+- [ ] Review notes mention FLAG_SECURE, so black screen recordings are expected.
 - [ ] Data Safety completed against the **play** artifact, not a repo scan.
 - [ ] Free-text states: previews off by default; mail server is user-operated;
       no hardware or advertising identifier is read.
