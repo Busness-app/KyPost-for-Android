@@ -592,9 +592,24 @@ object SecurityWipe {
         }
     }
 
-    /** A gate: Application.onCreate cannot promise to run before the launcher Activity. */
-    val startupVerdict: kotlinx.coroutines.CompletableDeferred<WipeResult?> =
+    /** A gate: Application.onCreate cannot promise to run before the launcher Activity.
+     *
+     *  `private set` and reassigned by nothing in production: `KyPostApp` completes this one
+     *  instance, once. The setter exists only for [reopenStartupVerdictForTest], because the
+     *  screens that wait on the gate — `UnlockActivity`, `MfaApprovalActivity` — reach that branch
+     *  only while it is open, and by the time any test runs the app process has already closed it. */
+    @Volatile
+    var startupVerdict: kotlinx.coroutines.CompletableDeferred<WipeResult?> =
         kotlinx.coroutines.CompletableDeferred()
+        private set
+
+    /** Reopens the startup gate so a test can drive the awaiting-verdict path. `internal`, so it
+     *  cannot be reached from outside this module, and a caller that leaves the gate open hangs
+     *  only itself — every waiter is scoped to the screen that opened it. */
+    @androidx.annotation.VisibleForTesting
+    internal fun reopenStartupVerdictForTest() {
+        startupVerdict = kotlinx.coroutines.CompletableDeferred()
+    }
 
     /** Set by [enforceTripwire] when the app-lock store could not be opened, so [LockedActivity]
      *  can block without paying for the check itself.
