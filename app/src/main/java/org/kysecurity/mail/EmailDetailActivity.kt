@@ -1164,7 +1164,13 @@ internal fun blockExternalResources(
 ): String {
     val document = runCatching { parse(html) }.getOrNull()
         ?: return escapeEmailText(html)
-    val resourceTags = if (keepImages) "iframe, video, audio, source, embed, object" else "img, iframe, video, audio, source, embed, object"
+    // Dropped whole, not stripped: `srcdoc` carries an ENTIRE inline document that no attribute
+    // removal below reaches, and it loads its own stylesheets, fonts and frames the moment "Show
+    // images" clears blockNetworkLoads. A frame with no src and no srcdoc renders nothing anyway,
+    // so there is nothing to preserve — the composer's Safelist drops the tag for the same reason.
+    document.select("iframe").remove()
+    // `track` fetches over the network exactly like its sibling `source`, and never as an image.
+    val resourceTags = if (keepImages) "video, audio, source, track, embed, object" else "img, video, audio, source, track, embed, object"
     document.select(resourceTags).forEach { element ->
         element.removeAttr("src")
         element.removeAttr("srcset")

@@ -128,6 +128,26 @@ class SourceRulesTest {
         )
     }
 
+    /** `deriveKeys` throws when the Keystore pepper cannot be read, and every PIN path has to abort
+     *  on that rather than die: a Keystore fault is not a wrong PIN. `changePin` was the one caller
+     *  that skipped it, so an unreadable Keystore killed the process in the middle of the staged
+     *  write the PIN change exists to survive. */
+    @Test
+    fun credentialDerivationsHandleAnUnavailableKeystore() {
+        val offenders = mainSources()
+            .filterNot { it.relativePath.substringAfterLast('/') in RAW_DERIVE_KEYS_OWNERS }
+            .flatMap { file ->
+                file.readText().lineSequence().withIndex()
+                    .filter { (_, line) -> RAW_DERIVE_KEYS.containsMatchIn(line) }
+                    .map { (index, line) -> "${file.path}:${index + 1}: ${line.trim().take(80)}" }
+                    .toList()
+            }
+        assertEquals(
+            emptyList(), offenders,
+            "Use CredentialCipher.deriveKeysOrNull and abort on null. See PepperUnavailableException.",
+        )
+    }
+
     private class Source(val path: String, val relativePath: String, private val file: File) {
         fun readText(): String = file.readText()
     }
@@ -206,6 +226,13 @@ class SourceRulesTest {
 
         /** Either payload parser named directly by a push-receiving service. */
         val PARSER_CALLED_DIRECTLY = Regex("""(MfaChallengePayloadParser|PushPayloadParser)\s*\.\s*parse""")
+
+        /** May derive raw: the declaration itself, and the manager whose every entry point already
+         *  catches [org.kysecurity.mail.security.PepperUnavailableException]. */
+        val RAW_DERIVE_KEYS_OWNERS = setOf("CredentialCipher.kt", "AppLockManager.kt")
+
+        /** `deriveKeysOrNull(` does not match: `OrNull` sits where the paren must be. */
+        val RAW_DERIVE_KEYS = Regex("""CredentialCipher\s*\.\s*deriveKeys\s*\(""")
 
         const val MAIN_ROOT = "src/main/java"
         const val TEST_ROOT = "src/test/java"

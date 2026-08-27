@@ -24,6 +24,33 @@ data class PairingData(
     override fun toString(): String = "PairingData(redacted)"
 }
 
+/** The account whose data a credential-only reconnect deliberately KEPT on this device.
+ *
+ *  [PushRepository.resetPairingCredential] removes the pairing proof and the TOFU pin while leaving
+ *  mail, contacts, keys and the contact outbox in place, so "no pairing" stopped meaning "nothing
+ *  here to lose". This is what names whose those survivors are. */
+data class ReconnectExpectation(val subscriberId: String, val serverUrl: String)
+
+/** Whether pairing [incoming] activates a DIFFERENT account than the data already on this device.
+ *
+ *  One answer for [PushSyncCoordinator.attemptPairing], which purges on true, and for the pairing
+ *  confirmation dialog, which warns on it — split, the warning drifts from what actually happens.
+ *  [reconnect] is consulted only when there is no [current] pairing: after a reconnect that is the
+ *  sole record of the account the surviving mailbox belongs to. No pairing and no marker is a
+ *  first-ever pairing, which must not purge anything. */
+fun isAccountReplacement(
+    incoming: PairingData,
+    current: PairingData?,
+    reconnect: ReconnectExpectation?,
+): Boolean {
+    val (subscriberId, serverUrl) = when {
+        current != null -> current.subscriberId to current.serverUrl
+        reconnect != null -> reconnect.subscriberId to reconnect.serverUrl
+        else -> return false
+    }
+    return subscriberId != incoming.subscriberId || serverUrl != incoming.serverUrl
+}
+
 /** True when both are the same https origin. Userinfo makes both sides fail closed. */
 internal fun sameOrigin(candidate: String, reference: String): Boolean {
     val a = pairingUrl(candidate) ?: return false

@@ -18,6 +18,9 @@ interface PushStore {
     fun currentTlsPin(): TlsPin?
     fun tlsPinIsLeafOnly(): Boolean
 
+    /** The account a credential-only reconnect kept data for, or null. See [ReconnectExpectation]. */
+    fun reconnectExpectation(): ReconnectExpectation?
+
     /** The default is declared HERE, not on the override: Kotlin resolves default arguments from
      *  the declaring member, and an override may not restate them. */
     suspend fun savePairing(

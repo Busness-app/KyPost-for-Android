@@ -35,6 +35,10 @@ private const val KEY_DEVICE_SECRET_VERSION = "pair_device_secret_version"
  *  under the current (peppered) scheme, so it carries no version of its own. */
 private const val KEY_DEVICE_SECRET_PENDING_CIPHERTEXT = "pair_device_secret_pending_ciphertext"
 private const val KEY_DEVICE_SECRET_PENDING_IV = "pair_device_secret_pending_iv"
+/** The account a credential-only reconnect kept data for; see [SecurePairingStore.clearPairing]. */
+private const val KEY_RECONNECT_SUB = "reconnect_expect_sub"
+private const val KEY_RECONNECT_SRV = "reconnect_expect_srv"
+
 /** Legacy: a single leaf pin. Read-only now — [readTlsPin] carries it forward, nothing writes it. */
 private const val KEY_TLS_PIN = "pair_tls_spki_pin"
 private const val KEY_TLS_PINS = "pair_tls_spki_pins"
@@ -130,6 +134,10 @@ class SecurePairingStore(context: Context) {
                 .putString(KEY_REGISTRATION_URL, pairing.registrationUrl)
                 .putString(KEY_PAIRING_TOKEN, pairing.pairingToken)
                 .putLong(KEY_PAIRED_AT, pairing.pairedAtEpochMs)
+                // A pairing exists again, so the reconnect marker is spent: the pairing itself now
+                // names the account, and a marker that outlives it can only name a stale one.
+                .remove(KEY_RECONNECT_SUB)
+                .remove(KEY_RECONNECT_SRV)
             if (pairing.deviceId.isNullOrBlank()) editor.remove(KEY_DEVICE_ID) else editor.putString(KEY_DEVICE_ID, pairing.deviceId)
 
             when (secret) {
@@ -183,6 +191,14 @@ class SecurePairingStore(context: Context) {
 
     /** Whether a pairing exists on disk at all, without decrypting anything. */
     fun hasStoredPairing(): Boolean = !prefs.getString(KEY_SUBSCRIBER_ID, null).isNullOrBlank()
+
+    /** The account a reconnect kept data for, or null. Synchronous: the pairing confirmation
+     *  dialog reads it on the cold path, where there is no state flow to observe yet. */
+    fun reconnectExpectation(): ReconnectExpectation? {
+        val sub = prefs.getString(KEY_RECONNECT_SUB, null)?.takeIf { it.isNotBlank() } ?: return null
+        val srv = prefs.getString(KEY_RECONNECT_SRV, null)?.takeIf { it.isNotBlank() } ?: return null
+        return ReconnectExpectation(subscriberId = sub, serverUrl = srv)
+    }
 
     /** Unwraps `deviceSecret`; null if wrapped and [credentialKeys] is wrong. Never throws. */
     fun pairingSnapshot(credentialKeys: CredentialKeys?): PairingData? = readPairing(credentialKeys)
@@ -259,9 +275,17 @@ class SecurePairingStore(context: Context) {
         return TlsPin(host = host, spkiSha256 = pins)
     }
 
-    suspend fun clearPairing() {
+    /** Drops pairing proof and the TOFU pin.
+     *
+     *  [rememberForReconnect] additionally records which account the KEPT account-scoped data
+     *  belongs to — see [PushRepository.resetPairingCredential] and [isAccountReplacement]. It is
+     *  written in the same commit as the removal it describes: a marker written afterwards can be
+     *  lost to process death, and then the next pairing inherits this account's mail in silence.
+     *  A second reconnect finds no pairing to name and must leave the first marker standing. */
+    suspend fun clearPairing(rememberForReconnect: Boolean = false) {
+        val leaving = _pairing.value
         withContext(Dispatchers.IO + NonCancellable) {
-            prefs.edit()
+            val editor = prefs.edit()
                 .remove(KEY_SUBSCRIBER_ID)
                 .remove(KEY_DEVICE_SECRET)
                 .clearWrappedSecret()
@@ -274,9 +298,16 @@ class SecurePairingStore(context: Context) {
                 .remove(KEY_TLS_PINS)
                 .remove(KEY_TLS_PIN_HOST)
                 .remove(KEY_TLS_PINS_ARE_LEAVES)
-                .commit()
-            // Deliberate unpair: there genuinely is no pin any more, so the marker goes too and the
-            // next pairing gets a clean TOFU window rather than being refused as "lost".
+            when {
+                !rememberForReconnect -> editor.remove(KEY_RECONNECT_SUB).remove(KEY_RECONNECT_SRV)
+                leaving != null -> editor
+                    .putString(KEY_RECONNECT_SUB, leaving.subscriberId)
+                    .putString(KEY_RECONNECT_SRV, leaving.serverUrl)
+                else -> Unit
+            }
+            editor.commit()
+            // Deliberate unpair or reconnect: there genuinely is no pin any more, so the marker goes
+            // too and the next pairing gets a clean TOFU window rather than being refused as "lost".
             tlsPinTripwire.edit().clear().commit()
         }
         _pairing.value = null

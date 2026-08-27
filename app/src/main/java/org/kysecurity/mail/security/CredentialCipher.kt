@@ -223,20 +223,39 @@ object CredentialCipher {
         pepper: CredentialPepper = KeystoreCredentialPepper,
     ): CredentialKeys {
         val raw = pbkdf2(pin, salt)
-        val peppered = pepper.mix(raw)
+        // Nested, so a pepper that throws still leaves nothing behind — [deriveKeysOrNull] makes
+        // that a survivable path rather than a dead process.
         try {
-            // SecretKeySpec copies, so zeroing both afterwards costs nothing and is the whole
-            // point: these are 256 bits of key material each, and the PBEKeySpec below is scrubbed
-            // for exactly this reason. Wiping the PIN while leaving the keys DERIVED from it for
-            // the collector protects the cheaper of the two secrets.
-            return CredentialKeys(
-                current = SecretKeySpec(peppered, "AES"),
-                legacy = SecretKeySpec(raw, "AES"),
-            )
+            val peppered = pepper.mix(raw)
+            try {
+                // SecretKeySpec copies, so zeroing both afterwards costs nothing and is the whole
+                // point: these are 256 bits of key material each, and the PBEKeySpec below is
+                // scrubbed for exactly this reason. Wiping the PIN while leaving the keys DERIVED
+                // from it for the collector protects the cheaper of the two secrets.
+                return CredentialKeys(
+                    current = SecretKeySpec(peppered, "AES"),
+                    legacy = SecretKeySpec(raw, "AES"),
+                )
+            } finally {
+                java.util.Arrays.fill(peppered, 0)
+            }
         } finally {
-            java.util.Arrays.fill(peppered, 0)
             java.util.Arrays.fill(raw, 0)
         }
+    }
+
+    /** [deriveKeys], but null instead of [PepperUnavailableException] when the Keystore cannot be
+     *  consulted. For callers that must abort rather than die: a Keystore fault is not a wrong
+     *  PIN, which is the same distinction [AppLockManager] draws before scoring an attempt. */
+    fun deriveKeysOrNull(
+        pin: CharArray,
+        salt: ByteArray,
+        pepper: CredentialPepper = KeystoreCredentialPepper,
+    ): CredentialKeys? = try {
+        deriveKeys(pin, salt, pepper)
+    } catch (e: PepperUnavailableException) {
+        Log.e(TAG, "Credential key derivation is unevaluable; refusing to proceed", e)
+        null
     }
 
     fun wrap(plaintext: String, key: SecretKeySpec): WrappedSecret {

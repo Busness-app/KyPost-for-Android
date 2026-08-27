@@ -53,18 +53,22 @@ data class PullNotificationsResponse(
     val mode: DeliveryMode get() = DeliveryMode.fromWire(deliveryMode)
 }
 
-/** Maps a pulled notification onto [PushPayload]; synthesizes an id from `seq` when absent. */
+/** Maps a pulled notification onto [PushPayload]; synthesizes an id from `seq` when absent.
+ *
+ *  Pull is a second delivery path for the same relay strings, and the relay picks which path a
+ *  device is on, so it goes through [PushPayloadParser.sanitize] exactly like the push path —
+ *  otherwise the bounds on `push_state` are only as good as the relay's choice. */
 fun PullNotification.toPushPayload(nowEpochMs: Long = System.currentTimeMillis()): PushPayload {
     val fields = data ?: emptyMap()
     val messageId = fields["messageId"]?.takeIf { it.isNotBlank() } ?: "pull-$seq"
-    val senderName = title.ifBlank { fields["sender"].orEmpty() }.trim()
-    val subject = body.ifBlank { fields["subject"].orEmpty() }.trim()
-    return PushPayload(
-        messageId = messageId,
-        senderName = senderName,
-        emailSubject = subject,
-        keywords = emptyList(),
-        receivedAtEpochMs = parseRfc3339Millis(createdAt) ?: nowEpochMs,
+    return PushPayloadParser.sanitize(
+        PushPayload(
+            messageId = messageId,
+            senderName = title.ifBlank { fields["sender"].orEmpty() },
+            emailSubject = body.ifBlank { fields["subject"].orEmpty() },
+            keywords = emptyList(),
+            receivedAtEpochMs = parseRfc3339Millis(createdAt) ?: nowEpochMs,
+        )
     )
 }
 

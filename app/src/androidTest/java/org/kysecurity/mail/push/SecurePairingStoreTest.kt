@@ -104,6 +104,34 @@ class SecurePairingStoreTest {
         assertNull(SecurePairingStore(context).pairing.value)
     }
 
+    /** The reconnect marker, which is what stops a credential-only reset from reading as a fresh
+     *  install. `resetPairingCredential` keeps the mail, contacts and keys, so without a record of
+     *  whose they are the next pairing skips the account-replacement purge and inherits them. */
+    @Test
+    fun clearPairing_remembersTheAccountWhoseDataItKept() = runBlocking {
+        val store = SecurePairingStore(context)
+        store.savePairing(pairing, gateEnabled = false)
+        assertNull(store.reconnectExpectation())
+
+        store.clearPairing(rememberForReconnect = true)
+        val expected = ReconnectExpectation(pairing.subscriberId, pairing.serverUrl)
+        assertEquals(expected, store.reconnectExpectation())
+        assertEquals(expected, SecurePairingStore(context).reconnectExpectation())
+
+        // A second reconnect has no pairing left to name, and must leave the first marker standing.
+        store.clearPairing(rememberForReconnect = true)
+        assertEquals(expected, store.reconnectExpectation())
+
+        // Paired again: spent, since the pairing itself now names the account.
+        store.savePairing(pairing, gateEnabled = false)
+        assertNull(store.reconnectExpectation())
+
+        // And the destructive clear, which purges the data the marker described, drops it outright.
+        store.clearPairing(rememberForReconnect = true)
+        store.clearPairing()
+        assertNull(store.reconnectExpectation())
+    }
+
     @Test
     fun underlyingPrefsFile_doesNotContainPlaintextSecrets() = runBlocking {
         SecurePairingStore(context).savePairing(pairing, gateEnabled = false)

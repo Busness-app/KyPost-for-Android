@@ -55,7 +55,7 @@ fun MailOutcome<*>.userFacingMessage(): String? = when (this) {
     is MailOutcome.UpstreamFailure -> "Couldn't reach the mail server: $message"
     is MailOutcome.BadRequest -> message
     // Reconnect, NOT unpair/re-pair. Both end the current pairing, but only one keeps the mailbox:
-    // reconnectToServer clears the credential and the pin and nothing else, while unpairing runs
+    // reconnectToServer clears the credential and the pin and destroys nothing, while unpairing runs
     // the account-replacement purge — and a purge that cannot prove itself escalates to erasing the
     // device. Recommending the destructive ceremony for a routine certificate renewal is how a
     // renewed cert became a wiped mailbox.

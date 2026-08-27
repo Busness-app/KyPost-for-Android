@@ -291,6 +291,37 @@ class EmailDetailActivityTest {
         assertFalse(rendered.stripped.contains("a.example"))
     }
 
+    /** `srcdoc` is a whole inline document, not a URL: removing `src` never touched it, so the
+     *  frame kept its beacons and fired them the moment "Show images" cleared blockNetworkLoads.
+     *  The frame goes entirely, as the composer's Safelist already does with it. */
+    @Test
+    fun renderableBody_dropsAnIframeSrcdocPayloadFromBothVariants() {
+        val body = "<iframe srcdoc=\"&lt;img src=https://tracker.example/b.png&gt;\"></iframe><p>Hi</p>"
+
+        val rendered = renderableBody(body, darkPalette, "", isDark = true)
+
+        assertFalse(rendered.stripped.contains("tracker.example"))
+        assertFalse("the frame itself must be gone", rendered.stripped.contains("iframe", ignoreCase = true))
+        assertFalse("not even behind Show images", rendered.withImages.contains("tracker.example"))
+        assertFalse(rendered.withImages.contains("srcdoc", ignoreCase = true))
+        assertFalse("nothing here is an image the user asked for", rendered.hasRemoteImages)
+    }
+
+    /** And pressing "Show images" on a message carrying both restores the picture without
+     *  reviving the frame riding along with it. */
+    @Test
+    fun renderableBody_showImagesDoesNotReviveAnIframeSrcdoc() {
+        val body = "<img src=\"https://pictures.example/i.png\">" +
+            "<iframe srcdoc=\"&lt;link rel=stylesheet href=https://tracker.example/b.css&gt;\"></iframe>"
+
+        val rendered = renderableBody(body, darkPalette, "", isDark = true)
+
+        assertTrue(rendered.hasRemoteImages)
+        assertTrue(rendered.withImages.contains("pictures.example"))
+        assertFalse(rendered.withImages.contains("tracker.example"))
+        assertFalse(rendered.withImages.contains("iframe", ignoreCase = true))
+    }
+
     /** `[^)]*` stops at the FIRST `)`, which in a quoted CSS url is not the closing one: the old
      *  regex replaced `url("http://x/a)` and left `b")` — the tail of the URL it meant to remove. */
     @Test
