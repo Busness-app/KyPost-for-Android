@@ -29,6 +29,9 @@ app/release/
 keystore.properties
 signing.properties
 app/google-services.json
+app/google-services_fdroid.json
+app/google-services_github.json
+app/google-services*.json
 .artifacts/
 
 # OS artifacts
