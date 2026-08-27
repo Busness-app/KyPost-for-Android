@@ -298,9 +298,12 @@ class PushPairingActivity : LockedActivity() {
     private fun confirmAndApplyPairing(pairing: PairingData) {
         // From the store, not uiState: on the cold path uiState still serves its null initialValue.
         // A reconnect leaves the mailbox in place with no pairing, so "not paired" is not "nothing
-        // to lose" — replacesAnotherAccount is the same signal attemptPairing purges on.
+        // to lose" — replacesAnotherAccount is the same signal attemptPairing purges on, and it is
+        // the WHOLE condition. Or-ing in isPairedNow() made re-pairing the SAME account take the
+        // replace branch, which tells the user another account's mail is about to be erased when
+        // nothing is: attemptPairing purges on replacement alone, and the wording has to match.
         val repository = PushRuntime.graph(this).repository
-        val replaces = repository.isPairedNow() || repository.replacesAnotherAccount(pairing)
+        val replaces = repository.replacesAnotherAccount(pairing)
         val messageRes = if (replaces) R.string.pairing_confirm_replace_message else R.string.pairing_confirm_message
         // The parsed host, never the raw `srv`: a raw URL in a trust prompt is a phishing surface.
         val shownHost = pairingUrlHost(pairing.serverUrl)
