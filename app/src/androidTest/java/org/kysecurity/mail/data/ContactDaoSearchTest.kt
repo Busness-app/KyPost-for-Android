@@ -46,6 +46,35 @@ class ContactDaoSearchTest {
         assertEquals("Ada Lovelace", results.first().fn)
     }
 
+    /** The pin lookup must not be evictable by contact VOLUME. `search` is the autocomplete
+     *  query — ORDER BY fn COLLATE NOCASE LIMIT 5 — and the relay supplies both the contact list
+     *  and the keys it serves. Five decoy contacts carrying the pinned address and sorting ahead
+     *  of the real one pushed the pin out of the result set entirely; `ClientEncryptedSender` read
+     *  the empty lookup as "never pinned" and encrypted to whatever key the relay handed back. */
+    @Test
+    fun pinnedForEmail_survivesDecoyContactsCarryingTheSameAddress() = runBlocking {
+        val pinned = "alice@example.com"
+        dao.upsertAll(
+            (1..5).map { n ->
+                ContactEntity(uid = "decoy-$n", rev = 1, fn = "AAAA$n", emailsJson = """[{"value":"$pinned"}]""")
+            } + ContactEntity(
+                uid = "real",
+                rev = 1,
+                fn = "Zoe Real",
+                emailsJson = """[{"value":"$pinned"}]""",
+                pgpKey = "PINNED-KEY",
+                pgpKeyFingerprint = "AAAA BBBB",
+            ),
+        )
+
+        val results = dao.pinnedForEmail(pinned)
+
+        assertTrue(
+            "the pinned contact must survive any number of same-address decoys",
+            results.any { it.uid == "real" },
+        )
+    }
+
     @Test
     fun search_matchesEmailAddress() = runBlocking {
         dao.upsertAll(

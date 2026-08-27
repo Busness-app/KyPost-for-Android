@@ -6,6 +6,7 @@ import org.kysecurity.mail.mail.MailSendOutcome
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -175,6 +176,34 @@ class ClientEncryptedSenderTest {
 
         assertEquals(listOf("alice@example.invalid"), (result as ClientSendOutcome.KeyChanged).addresses)
         assertTrue("nothing may be delivered", transport.sent.isEmpty())
+    }
+
+    /** A pin this device HOLDS but can no longer verify is a refusal, not an absence.
+     *
+     *  `ContactMappers.toEntity` stores a relay key verbatim even when `PgpFingerprint.compute`
+     *  rejects it, keeping the previous fingerprint — so `keysFor` hands back a pin that will not
+     *  fingerprint. Collapsing that into "never pinned" let a relay erase an in-person pin by
+     *  serving an unparseable key, then supply any key it liked with no KeyChanged and no warning.
+     *  Serving a merely DIFFERENT key was already caught; serving a broken one must be too. */
+    @Test
+    fun aPinThatWillNotFingerprintIsARefusalNotAnAbsence() = runBlocking {
+        val unusablePin = "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nnot-a-key\n-----END PGP PUBLIC KEY BLOCK-----"
+        assertNull("this test proves nothing unless compute() rejects the pin", PgpFingerprint.compute(unusablePin))
+        val transport = FakeClientEncryptedTransport()
+
+        val result = sender(
+            resolver = FakeRecipientKeyResolver(
+                resolvedAll(listOf("alice@example.invalid"), TestPgpPrivateKey.ARMORED_PUBLIC),
+            ),
+            transport = transport,
+            localKeys = FakePinnedKeys(
+                mapOf("alice@example.invalid" to listOf(LocalSignerKey(unusablePin, confirmed = true))),
+            ),
+        ).send(draft(), sign = false)
+
+        assertTrue("expected KeyChanged, got $result", result is ClientSendOutcome.KeyChanged)
+        assertEquals(listOf("alice@example.invalid"), (result as ClientSendOutcome.KeyChanged).addresses)
+        assertTrue("nothing may be encrypted to the relay's key", transport.sent.isEmpty())
     }
 
     /** An unconfirmed pin is still a key this device recorded for that contact, and the read path

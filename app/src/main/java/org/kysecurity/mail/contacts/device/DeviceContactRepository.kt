@@ -702,13 +702,18 @@ class DeviceContactRepository(
             ops.add(
                 insertRow(ContactsContract.CommonDataKinds.Organization.CONTENT_ITEM_TYPE)
                     .withValue(ContactsContract.CommonDataKinds.Organization.COMPANY, org)
-                    // The row is replaced wholesale and nothing reads a device-typed title into
-                    // Room, so the device's own value is what keeps it.
+                    // The row is replaced wholesale and nothing reads a device-typed title or
+                    // department into Room, so the device's own value is what keeps it. Both
+                    // fields, identically: DEPARTMENT lacked the fallback, so a department typed
+                    // in the system Contacts app vanished the first time Room's org won.
                     .withValue(
                         ContactsContract.CommonDataKinds.Organization.TITLE,
                         dto.title?.takeIf { it.isNotBlank() } ?: currentSnapshot.title,
                     )
-                    .withValue(ContactsContract.CommonDataKinds.Organization.DEPARTMENT, dto.department)
+                    .withValue(
+                        ContactsContract.CommonDataKinds.Organization.DEPARTMENT,
+                        dto.department?.takeIf { it.isNotBlank() } ?: currentSnapshot.department,
+                    )
                     .build(),
             )
         }

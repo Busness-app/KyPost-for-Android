@@ -180,9 +180,20 @@ internal class ClientEncryptedSender(
             val relayKey = merged[lower] ?: continue
             // A relay key that is already missing stays KeysMissing; it is not a changed key.
             if (!relayKey.usable || relayKey.publicKey.isBlank()) continue
-            val pins = localKeys.keysFor(address)
+            // "No pin recorded" and "a pin we hold and cannot verify" are opposite answers and must
+            // not collapse. ContactMappers.toEntity stores a relay key verbatim even when compute()
+            // rejects it, keeping the previous fingerprint, so keysFor CAN hand back a pin that will
+            // not fingerprint — and treating that as never-pinned let a relay erase an in-person pin
+            // by serving a broken key, then substitute any key it liked. A pin we cannot verify is
+            // a refusal.
+            val recorded = localKeys.keysFor(address).filter { it.publicKey.isNotBlank() }
+            if (recorded.isEmpty()) continue
+            val pins = recorded
                 .mapNotNull { pin -> PgpFingerprint.compute(pin.publicKey)?.let { it to pin.publicKey } }
-            if (pins.isEmpty()) continue
+            if (pins.isEmpty()) {
+                mismatched += address
+                continue
+            }
             // A relay key that will not fingerprint matches no pin, so it lands in `mismatched`.
             val relayFingerprint = PgpFingerprint.compute(relayKey.publicKey)
             val match = pins.firstOrNull { it.first == relayFingerprint }

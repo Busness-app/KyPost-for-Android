@@ -15,8 +15,10 @@ internal class RoomLocalSignerKeys(context: Context) : LocalSignerKeyLookup {
         if (needle.isBlank()) return emptyList()
         return withContext(Dispatchers.IO) {
             val dao = DataRuntime.graph(appContext).database.contactDao()
-            // Exact match in Kotlin, not the SQL LIKE: a substring would accept a lookalike.
-            dao.search(needle)
+            // pinnedForEmail, never search: search is capped at five name-ordered rows, which let
+            // relay-supplied contacts evict the pin. Exact match in Kotlin, not the SQL LIKE, so a
+            // substring cannot admit a lookalike.
+            dao.pinnedForEmail(needle)
                 .filter { it.hasEmail(needle) }
                 .mapNotNull { it.toLocalSignerKey() }
         }
