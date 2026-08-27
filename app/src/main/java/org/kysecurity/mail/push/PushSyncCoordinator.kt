@@ -43,13 +43,10 @@ class PushSyncCoordinator(
         // Read INSIDE the gate: a registration that finished while this one queued may have
         // changed which account is current, and so whether this is a replacement at all.
         val existing = repository.state.first().pairing
-        // "No pairing" is not "no account": a reconnect (PushRepository.resetPairingCredential)
-        // drops the credential and keeps the mailbox, so the resident marker is what a pairing with
-        // no stored pairing has to be checked against. The live pairing still wins, because installs
-        // predating the marker have one and no marker.
-        val resident = existing?.let { ResidentAccount(it.subscriberId, it.serverUrl) }
-            ?: repository.residentAccount()
-        val isReplacement = resident != null && !resident.matches(pairing)
+        // Not "is there a pairing": a reconnect (PushRepository.resetPairingCredential) drops the
+        // pairing and KEEPS the mail, contacts and keys, so a null pairing is not an empty device.
+        // The marker it leaves names the account those survivors belong to.
+        val isReplacement = isAccountReplacement(pairing, existing, repository.reconnectExpectation())
 
         // Taken BEFORE the network call and reused after it: the app can lock while it is in flight.
         val credentialState = repository.currentCredentialState()
@@ -84,9 +81,13 @@ class PushSyncCoordinator(
                 }
             }
 
-            persistSuccess(pairing, result, credentialState)
-            // TOFU: capture the pin only on the pairing call, never on routine resyncs.
+            // TOFU: capture the pin only on the pairing call, never on routine resyncs. BEFORE the
+            // pairing, for the same reason SecurePairingStore.saveTlsPin writes its own three in
+            // that order: a pin with no pairing is inert, but a pairing with no pin reads as
+            // NeverPaired, and every credentialed call then goes out through the unpinned TOFU
+            // window until some later resync happens to repair it.
             result.tlsPin?.let { repository.saveTlsPin(it) }
+            persistSuccess(pairing, result, credentialState)
             result
         }
     }

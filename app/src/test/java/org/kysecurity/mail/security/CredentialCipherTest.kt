@@ -1,11 +1,14 @@
 package org.kysecurity.mail.security
 
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
+import kotlin.test.assertFailsWith
 
 /** Stand-in for [KeystoreCredentialPepper]: a JVM unit test has no AndroidKeyStore. */
 private class FixedPepper(private val keyBytes: ByteArray = "test-pepper".toByteArray()) : CredentialPepper {
@@ -14,6 +17,16 @@ private class FixedPepper(private val keyBytes: ByteArray = "test-pepper".toByte
         mac.init(SecretKeySpec(keyBytes, "HmacSHA256"))
         return mac.doFinal(derived)
     }
+}
+
+/** The Keystore refusing to answer — what [PepperUnavailableException] is for. */
+private object UnavailablePepper : CredentialPepper {
+    override fun mix(derived: ByteArray): ByteArray = throw PepperUnavailableException("test-alias")
+}
+
+/** A failure that is NOT the Keystore's, so it must keep propagating. */
+private object BrokenPepper : CredentialPepper {
+    override fun mix(derived: ByteArray): ByteArray = throw IllegalArgumentException("not a keystore fault")
 }
 
 class CredentialCipherTest {
@@ -80,5 +93,35 @@ class CredentialCipherTest {
 
         assertNull(CredentialCipher.unwrap(wrapped, attacker.current))
         assertEquals("top-secret-device-secret", CredentialCipher.unwrap(wrapped, onDevice.current))
+    }
+
+    /** The PIN-change path derives twice and had no handler, so an unreadable Keystore killed the
+     *  process in the middle of the staged-write protocol built to survive exactly that. */
+    @Test
+    fun deriveKeysOrNull_returnsNull_soAPinChangeAbortsInsteadOfCrashing() {
+        assertNull(
+            CredentialCipher.deriveKeysOrNull("123456".toCharArray(), CredentialCipher.randomSalt(), UnavailablePepper),
+        )
+    }
+
+    @Test
+    fun deriveKeysOrNull_derivesTheSameKeys_asDeriveKeys() {
+        val salt = CredentialCipher.randomSalt()
+        val expected = CredentialCipher.deriveKeys("123456".toCharArray(), salt, pepper)
+
+        val actual = CredentialCipher.deriveKeysOrNull("123456".toCharArray(), salt, pepper)
+
+        assertNotNull(actual)
+        assertArrayEquals(expected.current.encoded, actual!!.current.encoded)
+        assertArrayEquals(expected.legacy.encoded, actual.legacy.encoded)
+    }
+
+    /** Only the Keystore's own fault is convertible to "abort". Widening this would hide real bugs
+     *  behind a message about the Keystore. */
+    @Test
+    fun deriveKeysOrNull_stillThrows_whenTheFailureIsNotAnUnavailablePepper() {
+        assertFailsWith<IllegalArgumentException> {
+            CredentialCipher.deriveKeysOrNull("123456".toCharArray(), CredentialCipher.randomSalt(), BrokenPepper)
+        }
     }
 }

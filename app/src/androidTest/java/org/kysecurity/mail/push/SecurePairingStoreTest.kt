@@ -92,35 +92,6 @@ class SecurePairingStoreTest {
         assertNull(openEncryptedPrefsForTest().getString("pair_tls_spki_pin", null))
     }
 
-    /** The reconnect path has to NAME the account it just unpaired, including for a pairing saved
-     *  before the marker existed — that install is the likeliest one to reconnect, since a rotated
-     *  leaf is exactly what fails every call closed. */
-    @Test
-    fun clearPairing_retainingResident_namesTheClearedAccount_evenWithoutAPriorMarker() = runBlocking {
-        SecurePairingStore(context).savePairing(pairing, gateEnabled = false)
-        // A pre-upgrade file shape: the pairing is there, the marker savePairing writes is not.
-        openEncryptedPrefsForTest().edit()
-            .remove("resident_sub")
-            .remove("resident_srv")
-            .commit()
-        assertNull(SecurePairingStore(context).residentAccount())
-
-        SecurePairingStore(context).clearPairing(retainResidentAccount = true)
-
-        val resident = SecurePairingStore(context).residentAccount()
-        assertEquals(ResidentAccount(pairing.subscriberId, pairing.serverUrl), resident)
-        assertNull("the pairing proof itself must still be gone", SecurePairingStore(context).pairing.value)
-    }
-
-    @Test
-    fun clearPairing_withoutRetaining_dropsTheResidentMarker() = runBlocking {
-        SecurePairingStore(context).savePairing(pairing, gateEnabled = false)
-
-        SecurePairingStore(context).clearPairing()
-
-        assertNull(SecurePairingStore(context).residentAccount())
-    }
-
     private fun openEncryptedPrefsForTest() =
         org.kysecurity.mail.security.openEncryptedPrefs(context, "push_pairing_secure") {}
 
@@ -131,6 +102,34 @@ class SecurePairingStoreTest {
         store.clearPairing()
 
         assertNull(SecurePairingStore(context).pairing.value)
+    }
+
+    /** The reconnect marker, which is what stops a credential-only reset from reading as a fresh
+     *  install. `resetPairingCredential` keeps the mail, contacts and keys, so without a record of
+     *  whose they are the next pairing skips the account-replacement purge and inherits them. */
+    @Test
+    fun clearPairing_remembersTheAccountWhoseDataItKept() = runBlocking {
+        val store = SecurePairingStore(context)
+        store.savePairing(pairing, gateEnabled = false)
+        assertNull(store.reconnectExpectation())
+
+        store.clearPairing(rememberForReconnect = true)
+        val expected = ReconnectExpectation(pairing.subscriberId, pairing.serverUrl)
+        assertEquals(expected, store.reconnectExpectation())
+        assertEquals(expected, SecurePairingStore(context).reconnectExpectation())
+
+        // A second reconnect has no pairing left to name, and must leave the first marker standing.
+        store.clearPairing(rememberForReconnect = true)
+        assertEquals(expected, store.reconnectExpectation())
+
+        // Paired again: spent, since the pairing itself now names the account.
+        store.savePairing(pairing, gateEnabled = false)
+        assertNull(store.reconnectExpectation())
+
+        // And the destructive clear, which purges the data the marker described, drops it outright.
+        store.clearPairing(rememberForReconnect = true)
+        store.clearPairing()
+        assertNull(store.reconnectExpectation())
     }
 
     @Test

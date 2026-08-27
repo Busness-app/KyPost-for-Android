@@ -31,14 +31,14 @@ private const val KEY_DEVICE_SECRET_SALT = "pair_device_secret_salt"
 private const val KEY_DEVICE_SECRET_IV = "pair_device_secret_iv"
 private const val KEY_DEVICE_SECRET_VERSION = "pair_device_secret_version"
 
-/** Which account's data is on disk; see [ResidentAccount]. Outlives the pairing on purpose. */
-private const val KEY_RESIDENT_SUBSCRIBER_ID = "resident_sub"
-private const val KEY_RESIDENT_SERVER_URL = "resident_srv"
-
 /** The staged half of a PIN change; see [SecurePairingStore.stagePendingSecret]. Always written
  *  under the current (peppered) scheme, so it carries no version of its own. */
 private const val KEY_DEVICE_SECRET_PENDING_CIPHERTEXT = "pair_device_secret_pending_ciphertext"
 private const val KEY_DEVICE_SECRET_PENDING_IV = "pair_device_secret_pending_iv"
+/** The account a credential-only reconnect kept data for; see [SecurePairingStore.clearPairing]. */
+private const val KEY_RECONNECT_SUB = "reconnect_expect_sub"
+private const val KEY_RECONNECT_SRV = "reconnect_expect_srv"
+
 /** Legacy: a single leaf pin. Read-only now — [readTlsPin] carries it forward, nothing writes it. */
 private const val KEY_TLS_PIN = "pair_tls_spki_pin"
 private const val KEY_TLS_PINS = "pair_tls_spki_pins"
@@ -68,18 +68,6 @@ data class TlsPin(val host: String, val spkiSha256: Set<String>) {
         // no pin is configured for the host, so this must be unrepresentable rather than checked.
         require(spkiSha256.isNotEmpty()) { "A TlsPin with no pins would pin nothing" }
     }
-}
-
-/** The account whose mail, contacts and keys are still on disk.
- *
- *  [PushRepository.resetPairingCredential] drops the pairing proof and keeps the mailbox, so
- *  "there is no pairing" stops meaning "there is no account here". This marker is what survives
- *  that, and what [PushSyncCoordinator.attemptPairing] checks the next pairing against — without
- *  it a reconnect turned every replacement into a fresh pairing over the previous account's data.
- *  Identifying data, so it lives in the encrypted store with the pairing itself. */
-data class ResidentAccount(val subscriberId: String, val serverUrl: String) {
-    fun matches(pairing: PairingData): Boolean =
-        subscriberId == pairing.subscriberId && serverUrl == pairing.serverUrl
 }
 
 /** Why a request is or is not pinned: "never paired" must not be answered like "pin is gone". */
@@ -146,9 +134,10 @@ class SecurePairingStore(context: Context) {
                 .putString(KEY_REGISTRATION_URL, pairing.registrationUrl)
                 .putString(KEY_PAIRING_TOKEN, pairing.pairingToken)
                 .putLong(KEY_PAIRED_AT, pairing.pairedAtEpochMs)
-                // From here on this account's data is the resident data; see [ResidentAccount].
-                .putString(KEY_RESIDENT_SUBSCRIBER_ID, pairing.subscriberId)
-                .putString(KEY_RESIDENT_SERVER_URL, pairing.serverUrl)
+                // A pairing exists again, so the reconnect marker is spent: the pairing itself now
+                // names the account, and a marker that outlives it can only name a stale one.
+                .remove(KEY_RECONNECT_SUB)
+                .remove(KEY_RECONNECT_SRV)
             if (pairing.deviceId.isNullOrBlank()) editor.remove(KEY_DEVICE_ID) else editor.putString(KEY_DEVICE_ID, pairing.deviceId)
 
             when (secret) {
@@ -202,6 +191,14 @@ class SecurePairingStore(context: Context) {
 
     /** Whether a pairing exists on disk at all, without decrypting anything. */
     fun hasStoredPairing(): Boolean = !prefs.getString(KEY_SUBSCRIBER_ID, null).isNullOrBlank()
+
+    /** The account a reconnect kept data for, or null. Synchronous: the pairing confirmation
+     *  dialog reads it on the cold path, where there is no state flow to observe yet. */
+    fun reconnectExpectation(): ReconnectExpectation? {
+        val sub = prefs.getString(KEY_RECONNECT_SUB, null)?.takeIf { it.isNotBlank() } ?: return null
+        val srv = prefs.getString(KEY_RECONNECT_SRV, null)?.takeIf { it.isNotBlank() } ?: return null
+        return ReconnectExpectation(subscriberId = sub, serverUrl = srv)
+    }
 
     /** Unwraps `deviceSecret`; null if wrapped and [credentialKeys] is wrong. Never throws. */
     fun pairingSnapshot(credentialKeys: CredentialKeys?): PairingData? = readPairing(credentialKeys)
@@ -278,22 +275,15 @@ class SecurePairingStore(context: Context) {
         return TlsPin(host = host, spkiSha256 = pins)
     }
 
-    /** The account whose data is resident, or null when nothing account-scoped is left. */
-    fun residentAccount(): ResidentAccount? {
-        val subscriberId = prefs.getString(KEY_RESIDENT_SUBSCRIBER_ID, null)?.takeIf { it.isNotBlank() } ?: return null
-        val serverUrl = prefs.getString(KEY_RESIDENT_SERVER_URL, null)?.takeIf { it.isNotBlank() } ?: return null
-        return ResidentAccount(subscriberId, serverUrl)
-    }
-
-    /** Drops the pairing proof and the TOFU pin.
+    /** Drops pairing proof and the TOFU pin.
      *
-     *  [retainResidentAccount] is the reconnect case ([PushRepository.resetPairingCredential]):
-     *  the mailbox stays, so the marker naming whose mailbox it is has to stay with it. The marker
-     *  is WRITTEN here from the pairing being cleared, not merely spared: a pairing saved by any
-     *  build older than the marker has none on disk, and "reconnect" is exactly the state such an
-     *  install reaches — every relay call failing closed on a rotated leaf. Retaining a key that
-     *  was never written would leave the next QR pairing over the old mailbox unannounced. */
-    suspend fun clearPairing(retainResidentAccount: Boolean = false) {
+     *  [rememberForReconnect] additionally records which account the KEPT account-scoped data
+     *  belongs to — see [PushRepository.resetPairingCredential] and [isAccountReplacement]. It is
+     *  written in the same commit as the removal it describes: a marker written afterwards can be
+     *  lost to process death, and then the next pairing inherits this account's mail in silence.
+     *  A second reconnect finds no pairing to name and must leave the first marker standing. */
+    suspend fun clearPairing(rememberForReconnect: Boolean = false) {
+        val leaving = _pairing.value
         withContext(Dispatchers.IO + NonCancellable) {
             val editor = prefs.edit()
                 .remove(KEY_SUBSCRIBER_ID)
@@ -308,20 +298,16 @@ class SecurePairingStore(context: Context) {
                 .remove(KEY_TLS_PINS)
                 .remove(KEY_TLS_PIN_HOST)
                 .remove(KEY_TLS_PINS_ARE_LEAVES)
-            if (retainResidentAccount) {
-                // Same editor as the removes below, so the marker cannot be lost to a crash between.
-                val subscriberId = prefs.getString(KEY_SUBSCRIBER_ID, null)?.takeIf { it.isNotBlank() }
-                val serverUrl = prefs.getString(KEY_SERVER_URL, null)?.takeIf { it.isNotBlank() }
-                if (subscriberId != null && serverUrl != null) {
-                    editor.putString(KEY_RESIDENT_SUBSCRIBER_ID, subscriberId)
-                        .putString(KEY_RESIDENT_SERVER_URL, serverUrl)
-                }
-            } else {
-                editor.remove(KEY_RESIDENT_SUBSCRIBER_ID).remove(KEY_RESIDENT_SERVER_URL)
+            when {
+                !rememberForReconnect -> editor.remove(KEY_RECONNECT_SUB).remove(KEY_RECONNECT_SRV)
+                leaving != null -> editor
+                    .putString(KEY_RECONNECT_SUB, leaving.subscriberId)
+                    .putString(KEY_RECONNECT_SRV, leaving.serverUrl)
+                else -> Unit
             }
             editor.commit()
-            // Deliberate unpair: there genuinely is no pin any more, so the marker goes too and the
-            // next pairing gets a clean TOFU window rather than being refused as "lost".
+            // Deliberate unpair or reconnect: there genuinely is no pin any more, so the marker goes
+            // too and the next pairing gets a clean TOFU window rather than being refused as "lost".
             tlsPinTripwire.edit().clear().commit()
         }
         _pairing.value = null

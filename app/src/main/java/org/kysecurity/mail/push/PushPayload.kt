@@ -24,27 +24,37 @@ object PushPayloadParser {
     internal const val MAX_KEYWORDS = 32
     internal const val MAX_KEYWORD_LENGTH = org.kysecurity.mail.KeywordSettings.MAX_KEYWORD_LENGTH
 
-    fun parse(data: Map<String, String>, nowEpochMs: Long = System.currentTimeMillis()): PushPayload? {
-        val messageId = data["messageId"].orEmpty().trim().take(MAX_MESSAGE_ID_LENGTH)
-        if (messageId.isBlank()) return null
+    /** The one place relay-supplied strings get bounded. Every delivery path — FCM push via
+     *  [parse], App Pull via `PullNotification.toPushPayload` — must go through this before the
+     *  payload is notified or persisted, or the unbounded path becomes the one the relay picks. */
+    internal fun sanitize(payload: PushPayload): PushPayload = payload.copy(
+        messageId = payload.messageId.trim().take(MAX_MESSAGE_ID_LENGTH),
+        senderName = payload.senderName.trim().take(MAX_HEADER_LENGTH),
+        emailSubject = payload.emailSubject.trim().take(MAX_HEADER_LENGTH),
+        keywords = boundKeywords(payload.keywords.asSequence()),
+    )
 
-        val senderName = data["senderName"].orEmpty().trim().take(MAX_HEADER_LENGTH)
-        val emailSubject = data["emailSubject"].orEmpty().trim().take(MAX_HEADER_LENGTH)
+    /** Sequence in, so a hostile CSV is cut off rather than materialised whole. */
+    private fun boundKeywords(raw: Sequence<String>): List<String> = raw
+        .map { it.trim() }
+        .filter { it.isNotBlank() && it.length <= MAX_KEYWORD_LENGTH }
+        .take(MAX_KEYWORDS)
+        .toList()
+
+    fun parse(data: Map<String, String>, nowEpochMs: Long = System.currentTimeMillis()): PushPayload? {
         // Accept either casing: the server sends "Keywords" while every other field is camelCase.
         val keywordsCsv = (data["keywords"] ?: data["Keywords"]).orEmpty()
 
-        return PushPayload(
-            messageId = messageId,
-            senderName = senderName,
-            emailSubject = emailSubject,
-            keywords = keywordsCsv
-                .splitToSequence(',')
-                .map { it.trim() }
-                .filter { it.isNotBlank() && it.length <= MAX_KEYWORD_LENGTH }
-                .take(MAX_KEYWORDS)
-                .toList(),
-            receivedAtEpochMs = nowEpochMs,
+        val payload = sanitize(
+            PushPayload(
+                messageId = data["messageId"].orEmpty(),
+                senderName = data["senderName"].orEmpty(),
+                emailSubject = data["emailSubject"].orEmpty(),
+                keywords = boundKeywords(keywordsCsv.splitToSequence(',')),
+                receivedAtEpochMs = nowEpochMs,
+            )
         )
+        return payload.takeIf { it.messageId.isNotBlank() }
     }
 
     fun title(payload: PushPayload): String {

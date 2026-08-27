@@ -14,13 +14,12 @@ interface PushStore {
     val state: Flow<PushState>
 
     fun pairingForAuthenticatedCall(): PairingData?
-
-    /** Whose account-scoped data is on disk, which outlives the pairing itself; see
-     *  [ResidentAccount]. A reconnect leaves this set with no pairing at all. */
-    fun residentAccount(): ResidentAccount?
     fun currentCredentialState(): PushRepository.PairingCredentialState
     fun currentTlsPin(): TlsPin?
     fun tlsPinIsLeafOnly(): Boolean
+
+    /** The account a credential-only reconnect kept data for, or null. See [ReconnectExpectation]. */
+    fun reconnectExpectation(): ReconnectExpectation?
 
     /** The default is declared HERE, not on the override: Kotlin resolves default arguments from
      *  the declaring member, and an override may not restate them. */

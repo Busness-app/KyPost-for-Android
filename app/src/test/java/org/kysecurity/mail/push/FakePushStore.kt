@@ -13,6 +13,9 @@ internal class FakePushStore(
     pairing: PairingData? = null,
     /** What [clearPairing] reports as surviving the purge. Non-empty is the failed-purge case. */
     var purgeResidue: List<String> = emptyList(),
+    /** The marker `PushRepository.resetPairingCredential` leaves: a pairing was cleared but the
+     *  account-scoped data was KEPT. Written and cleared here exactly where the real store does. */
+    var reconnectMarker: ReconnectExpectation? = null,
     private var credentialState: PushRepository.PairingCredentialState =
         PushRepository.PairingCredentialState.NotGated,
 ) : PushStore {
@@ -26,30 +29,21 @@ internal class FakePushStore(
     var cursor: Long = 0L
     val notified = mutableListOf<PushPayload>()
 
-    /** Written by [savePairing] and dropped by [clearPairing], exactly as the real store does. */
-    private var resident: ResidentAccount? = pairing?.let { ResidentAccount(it.subscriberId, it.serverUrl) }
-
     override val state: Flow<PushState> get() = backing
 
     fun currentPairing(): PairingData? = backing.value.pairing
 
-    /** Mirrors [PushRepository.resetPairingCredential]: the credential goes, the mailbox — and so
-     *  the resident marker — stays. */
-    fun resetPairingCredential() {
-        backing.value = backing.value.copy(pairing = null)
-        storedPin = null
-    }
-
     override fun pairingForAuthenticatedCall(): PairingData? = backing.value.pairing
-    override fun residentAccount(): ResidentAccount? = resident
     override fun currentCredentialState(): PushRepository.PairingCredentialState = credentialState
     override fun currentTlsPin(): TlsPin? = storedPin
     override fun tlsPinIsLeafOnly(): Boolean = leafOnly
+    override fun reconnectExpectation(): ReconnectExpectation? = reconnectMarker
 
     override suspend fun savePairing(pairing: PairingData, credentialState: PushRepository.PairingCredentialState) {
         events += "persist:${pairing.deviceSecret}"
         backing.value = backing.value.copy(pairing = pairing)
-        resident = ResidentAccount(pairing.subscriberId, pairing.serverUrl)
+        // As in SecurePairingStore.savePairing: a pairing names the account again, marker spent.
+        reconnectMarker = null
     }
 
     override suspend fun saveTlsPin(pin: TlsPin) {
@@ -60,10 +54,12 @@ internal class FakePushStore(
 
     override suspend fun clearPairing(): List<String> {
         events += "clearPairing"
+        // Unconditional, as in SecurePairingStore.clearPairing(): the destructive clear drops the
+        // marker whether or not the purge it wraps could prove itself complete.
+        reconnectMarker = null
         if (purgeResidue.isEmpty()) {
             backing.value = backing.value.copy(pairing = null)
             storedPin = null
-            resident = null
         }
         return purgeResidue
     }

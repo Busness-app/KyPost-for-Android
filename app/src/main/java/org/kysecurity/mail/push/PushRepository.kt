@@ -64,9 +64,6 @@ class PushRepository(
     /** Whether a pairing exists right now, read straight from the store — for cold-path callers. */
     fun isPairedNow(): Boolean = securePairingStore.pairing.value != null
 
-    /** See [ResidentAccount]: whose data is on disk, which [resetPairingCredential] does not change. */
-    override fun residentAccount(): ResidentAccount? = securePairingStore.residentAccount()
-
     override fun pairingForAuthenticatedCall(): PairingData? =
         securePairingStore.pairingSnapshot(SecurityRuntime.graph(context).appLockManager.cachedCredentialKeys())
 
@@ -82,6 +79,15 @@ class PushRepository(
 
     /** See [SecurePairingStore.tlsPinIsLeafOnly] — false means a legacy whole-chain set is stored. */
     override fun tlsPinIsLeafOnly(): Boolean = securePairingStore.tlsPinIsLeafOnly()
+
+    /** See [SecurePairingStore.reconnectExpectation] — whose data survived a credential-only reset. */
+    override fun reconnectExpectation(): ReconnectExpectation? = securePairingStore.reconnectExpectation()
+
+    /** Whether pairing [pairing] would activate a different account than the one whose data is on
+     *  this device — the dialog wording must match what [PushSyncCoordinator.attemptPairing] does.
+     *  Read from the store, not `state`: the confirmation runs on the cold path. */
+    fun replacesAnotherAccount(pairing: PairingData): Boolean =
+        isAccountReplacement(pairing, securePairingStore.pairing.value, reconnectExpectation())
 
     /** Persist a TLS pin observed on a just-succeeded call: the TOFU capture in
      *  [PushSyncCoordinator.attemptPairing], and the one-way narrowing in
@@ -237,11 +243,12 @@ class PushRepository(
      *  account-replacement branch. Clearing the pin reopens the TOFU window so the next pairing
      *  can capture a fresh chain.
      *
-     *  The [ResidentAccount] marker is RETAINED: the mailbox it names is still here, so the next
-     *  pairing must still be checked against it. Dropping it made a reconnect look like a
-     *  never-paired device, and any account could then pair over the previous one's data. */
+     *  It also records which account the kept data belongs to. Without that marker the next
+     *  [PushSyncCoordinator.attemptPairing] saw no pairing, concluded there was nothing to replace,
+     *  and activated a DIFFERENT account over this one's mail, contacts, PGP vault and pending
+     *  contact changes — none of which carries a subscriber column. */
     suspend fun resetPairingCredential() {
-        securePairingStore.clearPairing(retainResidentAccount = true)
+        securePairingStore.clearPairing(rememberForReconnect = true)
         context.pushDataStore.edit { prefs ->
             prefs.remove(KEY_SYNC_ERROR)
             prefs.remove(KEY_LAST_SYNC_AT)
