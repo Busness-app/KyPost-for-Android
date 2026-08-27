@@ -9,9 +9,23 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 
+/** The one-shot latch behind a startup notice is spent when the dialog is *built*, so a screen
+ *  that cannot show one must not ask: the dialog dies with the Activity while the latch stays set
+ *  for the rest of the process, and the pref behind it is only cleared by the user tapping OK.
+ *  Order matters — [canShow] is checked before the CAS, never after. */
+internal fun claimNotice(
+    pending: Boolean,
+    canShow: Boolean,
+    latch: java.util.concurrent.atomic.AtomicBoolean,
+): Boolean = pending && canShow && latch.compareAndSet(false, true)
+
 abstract class LockedActivity : AppCompatActivity() {
 
     protected open val secureWindow: Boolean = true
+
+    /** False for a screen that routes on and finishes itself: the startup notices are one-shot for
+     *  the whole process, so such a screen would spend the latch on a dialog nobody ever sees. */
+    protected open val showsStartupNotices: Boolean = true
 
     /** [AppLockManager.isLockedNow], not the flow value: the grace window may have expired. */
     protected fun isLocked(): Boolean = SecurityRuntime.graph(this).appLockManager.isLockedNow()
@@ -39,6 +53,10 @@ abstract class LockedActivity : AppCompatActivity() {
         if (!passesStartupTripwire()) return
         redirectToUnlockIfLocked()
         if (redirectedToUnlock || isFinishing) return
+        // After the redirect, never before it: these consume a process-wide one-shot latch, and a
+        // screen bouncing to UnlockActivity takes the dialog down with it while the latch stays set.
+        reportCredentialResets()
+        reportStrandedDownloads()
         onCreateUnlocked(savedInstanceState)
     }
 
@@ -105,18 +123,20 @@ abstract class LockedActivity : AppCompatActivity() {
             return false
         }
 
-        reportCredentialResets()
-        reportStrandedDownloads()
         window.decorView.visibility = View.VISIBLE
         return true
     }
+
+    /** True while this screen will still be on-screen to hold a dialog. */
+    private fun canShowNotice(): Boolean =
+        showsStartupNotices && !redirectedToUnlock && !isFinishing && !isDestroyed
 
     /** A wipe that finished cleanly can still have left decrypted attachments in shared Downloads,
      *  which the app cannot delete and the user can. Saying so is the whole point: the alternative
      *  is a "your data has been erased" notice that is not true. */
     private fun reportStrandedDownloads() {
         val stranded = SecurityWipe.strandedDownloadsPending(this)
-        if (stranded <= 0 || !strandedDownloadsReported.compareAndSet(false, true)) return
+        if (!claimNotice(stranded > 0, canShowNotice(), strandedDownloadsReported)) return
         android.util.Log.e("LockedActivity", "Wipe left $stranded attachment(s) in shared Downloads")
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle(org.kysecurity.mail.R.string.security_stranded_downloads_title)
@@ -135,7 +155,7 @@ abstract class LockedActivity : AppCompatActivity() {
 
     private fun reportCredentialResets() {
         val reset = credentialResetsPending(this)
-        if (reset.isEmpty() || !credentialResetReported.compareAndSet(false, true)) return
+        if (!claimNotice(reset.isNotEmpty(), canShowNotice(), credentialResetReported)) return
         android.util.Log.e("LockedActivity", "Encrypted stores were reset: $reset")
         // Losing the database key costs the cached mail, not just a re-establishable credential.
         val message = if (org.kysecurity.mail.data.DATABASE_NAME in reset) {
@@ -245,7 +265,11 @@ abstract class LockedActivity : AppCompatActivity() {
          *  behind them. A relaunch between showing and acknowledging used to lose the notice for
          *  the rest of the process while the pref stayed set — so the user was never told their
          *  credentials had been reset. The process survives [AppRestart.relaunch]; these latches
-         *  must not. */
+         *  must not.
+         *
+         *  ponytail: a configuration change while the dialog is up still costs the notice until
+         *  the next process start. Upgrade path: release the latch from `onDestroy` when the pref
+         *  behind it is still pending. */
         val noticeLatches = object : org.kysecurity.mail.ProcessScopedState {
             override fun resetForNewSession() {
                 credentialResetReported.set(false)

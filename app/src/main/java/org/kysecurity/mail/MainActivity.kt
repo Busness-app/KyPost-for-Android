@@ -14,6 +14,10 @@ class MainActivity : LockedActivity() {
 
     private var routed = false
 
+    /** This screen finishes itself as soon as it has routed, so the startup notices belong to
+     *  whatever it routes to — claimed here, they would go down with it unseen. */
+    override val showsStartupNotices: Boolean = false
+
     override fun onCreateUnlocked(savedInstanceState: Bundle?) {
         routed = savedInstanceState?.getBoolean(STATE_ROUTED, false) ?: false
     }

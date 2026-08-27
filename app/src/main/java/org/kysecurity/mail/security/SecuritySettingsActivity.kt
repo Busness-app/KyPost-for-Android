@@ -785,7 +785,10 @@ class SecuritySettingsActivity : LockedActivity() {
         val salt = appLockStore.credentialSalt()
 
         val pairing = if (gateEnabled && salt != null) {
-            val oldKeys = CredentialCipher.deriveKeys(oldPin, salt)
+            // deriveKeysOrNull, not deriveKeys: an unreadable Keystore pepper must abort the change,
+            // not kill the coroutine mid-protocol. Nothing has been written yet, so the old PIN
+            // stays authoritative and there is nothing to roll back.
+            val oldKeys = CredentialCipher.deriveKeysOrNull(oldPin, salt) ?: return@withContext false
             securePairingStore.pairingSnapshot(oldKeys)
         } else {
             null
@@ -810,7 +813,9 @@ class SecuritySettingsActivity : LockedActivity() {
         // Non-null together or not at all: both phases below act on the same wrapped secret.
         val secretToRewrap = pairing?.takeIf { !it.deviceSecret.isNullOrBlank() }
         if (gateEnabled && salt != null && secretToRewrap != null) {
-            val newKeys = CredentialCipher.deriveKeys(newPin, salt)
+            // Still ahead of the destructive write, so aborting here stages nothing and leaves the
+            // old PIN the only one that opens anything.
+            val newKeys = CredentialCipher.deriveKeysOrNull(newPin, salt) ?: return@withContext false
             securePairingStore.stagePendingSecret(secretToRewrap.deviceSecret!!, newKeys)
         }
 

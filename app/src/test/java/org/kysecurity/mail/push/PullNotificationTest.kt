@@ -80,6 +80,55 @@ class PullNotificationTest {
         assertEquals("Hi", payload.emailSubject)
     }
 
+    /** Pull is a second delivery path for the same relay strings, and the relay decides which path
+     *  a device is on — so it must bound them to exactly what the push path allows, or the bounds
+     *  on the persisted `push_state` history are only as good as the relay's choice. */
+    @Test
+    fun toPushPayload_boundsRelaySuppliedStrings_identicallyToThePushPath() {
+        val n = PullNotification(
+            seq = 1,
+            title = "s".repeat(10_000),
+            body = "j".repeat(10_000),
+            data = mapOf("messageId" to "m".repeat(10_000)),
+        )
+        val pulled = n.toPushPayload(nowEpochMs = 1L)
+
+        assertEquals(PushPayloadParser.MAX_MESSAGE_ID_LENGTH, pulled.messageId.length)
+        assertEquals(PushPayloadParser.MAX_HEADER_LENGTH, pulled.senderName.length)
+        assertEquals(PushPayloadParser.MAX_HEADER_LENGTH, pulled.emailSubject.length)
+
+        val pushed = requireNotNull(
+            PushPayloadParser.parse(
+                mapOf(
+                    "messageId" to "m".repeat(10_000),
+                    "senderName" to "s".repeat(10_000),
+                    "emailSubject" to "j".repeat(10_000),
+                ),
+                nowEpochMs = 1L,
+            )
+        )
+        assertEquals(pushed.messageId, pulled.messageId)
+        assertEquals(pushed.senderName, pulled.senderName)
+        assertEquals(pushed.emailSubject, pulled.emailSubject)
+    }
+
+    /** The `data` fallbacks are relay-supplied too, and the synthesized id must stay non-blank. */
+    @Test
+    fun toPushPayload_boundsDataFallbacks_andKeepsSynthesizedId() {
+        val n = PullNotification(
+            seq = 5,
+            title = "   ",
+            body = "\t",
+            data = mapOf("sender" to "a".repeat(9_000), "subject" to "b".repeat(9_000)),
+        )
+        val payload = n.toPushPayload(nowEpochMs = 1L)
+
+        assertEquals(PushPayloadParser.MAX_HEADER_LENGTH, payload.senderName.length)
+        assertEquals(PushPayloadParser.MAX_HEADER_LENGTH, payload.emailSubject.length)
+        assertEquals("pull-5", payload.messageId)
+        assertTrue(payload.keywords.isEmpty())
+    }
+
     @Test
     fun processor_filtersSeqAtOrBelowCursor_andSortsBySeq() {
         val response = PullNotificationsResponse(

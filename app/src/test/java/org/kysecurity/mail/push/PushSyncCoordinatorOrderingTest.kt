@@ -2,6 +2,7 @@ package org.kysecurity.mail.push
 
 import org.kysecurity.mail.testing.FakeCallFactory
 import org.kysecurity.mail.testing.response
+import org.kysecurity.mail.testing.testTlsHandshake
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -165,5 +166,91 @@ class PushSyncCoordinatorOrderingTest {
 
         assertTrue("clearPairing" !in store.events)
         assertEquals("secret-again", store.currentPairing()?.deviceSecret)
+    }
+
+    /** `reconnectToServer` clears the pairing and deliberately KEEPS the mailbox, so "no pairing"
+     *  must not read as "no account here". It used to: the replacement branch was skipped, and a
+     *  QR for a different account activated over the previous one's mail, synced address book,
+     *  device-contact rows, pending contact changes and sealed PGP vault. */
+    @Test
+    fun pairingADifferentAccountAfterAReconnectStillPurges() = runBlocking {
+        val store = FakePushStore(
+            pairing = null,
+            reconnectMarker = ReconnectExpectation(existing.subscriberId, existing.serverUrl),
+        )
+        val coordinator = coordinator(store, { req -> response(req, body("secret-new"), 200) })
+
+        val result = coordinator.attemptPairing(replacement)
+
+        assertTrue(result is NativeRegistrationResult.Success)
+        assertEquals(listOf("clearPairing", "persist:secret-new"), store.events)
+    }
+
+    /** And the escalation reaches that path too, rather than only the still-paired one. */
+    @Test
+    fun anIncompletePurgeAfterAReconnectAlsoRefusesAndWipes() = runBlocking {
+        val store = FakePushStore(
+            pairing = null,
+            purgeResidue = listOf("database"),
+            reconnectMarker = ReconnectExpectation(existing.subscriberId, existing.serverUrl),
+        )
+        var wipedWith: List<String>? = null
+        val coordinator = coordinator(
+            store,
+            { req -> response(req, body("secret-new"), 200) },
+            onWipe = { wipedWith = it },
+        )
+
+        val result = coordinator.attemptPairing(replacement)
+
+        assertTrue(result is NativeRegistrationResult.Error)
+        assertEquals(listOf("database"), wipedWith)
+        assertEquals(listOf("clearPairing"), store.events)
+    }
+
+    /** The reconnect's own happy path: the same account comes back, keeps its mail, and spends the
+     *  marker, which the restored pairing has made redundant. */
+    @Test
+    fun reconnectingTheSameAccountKeepsTheMailboxAndSpendsTheMarker() = runBlocking {
+        val store = FakePushStore(
+            pairing = null,
+            reconnectMarker = ReconnectExpectation(existing.subscriberId, existing.serverUrl),
+        )
+        val coordinator = coordinator(store, { req -> response(req, body("secret-again"), 200) })
+
+        coordinator.attemptPairing(existing)
+
+        assertTrue("clearPairing" !in store.events)
+        assertEquals("secret-again", store.currentPairing()?.deviceSecret)
+        assertNull(store.reconnectMarker)
+    }
+
+    /** The marker must not be able to strand a fresh install: nothing stored, nothing purged. */
+    @Test
+    fun aFirstEverPairingPurgesNothing() = runBlocking {
+        val store = FakePushStore(pairing = null)
+        val coordinator = coordinator(store, { req -> response(req, body("secret-first"), 200) })
+
+        val result = coordinator.attemptPairing(replacement)
+
+        assertTrue(result is NativeRegistrationResult.Success)
+        assertEquals(listOf("persist:secret-first"), store.events)
+    }
+
+    /** The pin lands BEFORE the pairing it protects. Reversed, a process death between the two
+     *  writes leaves a pairing with no pin and no tripwire — which `tlsPinState()` reads as
+     *  NeverPaired, the legitimate TOFU window — so every credentialed call goes out on plain
+     *  system trust, carrying the device secret, until some later resync happens to repair it. */
+    @Test
+    fun theTlsPinIsPersistedBeforeThePairingItProtects() = runBlocking {
+        val store = FakePushStore(pairing = null)
+        val coordinator = coordinator(store, { req ->
+            response(req, body("secret-new"), 200, tlsHandshake = testTlsHandshake)
+        })
+
+        val result = coordinator.attemptPairing(replacement)
+
+        assertTrue(result is NativeRegistrationResult.Success)
+        assertEquals(listOf("savePin:new.example.com", "persist:secret-new"), store.events)
     }
 }
