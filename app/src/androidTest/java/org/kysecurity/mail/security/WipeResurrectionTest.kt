@@ -6,6 +6,7 @@ import org.kysecurity.mail.data.DataRuntime
 import org.kysecurity.mail.push.PairingData
 import org.kysecurity.mail.push.PushRuntime
 import kotlinx.coroutines.runBlocking
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -72,6 +73,14 @@ class WipeResurrectionTest {
         DataRuntime.invalidate()
         PushRuntime.invalidate()
         SecurityRuntime.invalidate()
+    }
+
+    /** Without this the posture leaks into whatever class runs next: nothing in a wipe destroys the
+     *  keystore alias, so a surviving alias with no marker reads as ENABLED and the next class's
+     *  wipe restores and retains the file. */
+    @After
+    fun disableProtection() {
+        HostileLocationSettings(context).setEnabled(false)
     }
 
     /** purgeAccountScopedData must peek the graph, not construct one after the delete step. */
