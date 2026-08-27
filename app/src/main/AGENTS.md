@@ -180,6 +180,16 @@ Owns production Android app code and resources.
     pinned bytes on a match. It is the write-path counterpart of `RoomLocalSignerKeys` on the read
     path; without it the outgoing key is only whatever the relay chose to hand back. `localKeys` is
     deliberately not defaulted.
+  - Two rules make that pin **fail closed**, and both were once open. A pin that will not
+    fingerprint is a REFUSAL, not an absence: `ContactMappers.toEntity` stores a relay key verbatim
+    when `PgpFingerprint.compute` rejects it (unbound subkey, trailing ring) and keeps the previous
+    fingerprint, so the lookup can hand back a pin that fingerprints to null — collapsing that into
+    "never pinned" let a relay erase an in-person pin by serving a BROKEN key and then substitute
+    any key it liked, where serving a merely different one would have been caught. And the lookup is
+    `ContactDao.pinnedForEmail`, never `search`: `search` is the autocomplete query, name-ordered and
+    capped at five rows, and the relay supplies the contact list, so same-address decoys sorting
+    ahead of the pinned contact evicted the pin from its own lookup. `pinnedForEmail` is unbounded
+    and unordered; the exact-address match stays in Kotlin so a substring cannot admit a lookalike.
   - `tier == "key_changed"` is a broken TOFU pin and must stay a distinct, louder outcome — never
     folded into "no key on file". There is **no** pickup fallback on this path and there must not be:
     the server-side one works by storing plaintext, which is what client custody exists to prevent.
@@ -246,6 +256,13 @@ Owns production Android app code and resources.
   phones, addresses) through `DeviceContactUpdatePlan`, and advances the link's
   `deviceUpdatedAtEpochMs` only when the batch actually landed — stamping it for a write that never
   happened tells the next merge the device is already current.
+- **A CP2 row that is deleted and reinserted destroys every column the reinsert does not re-emit.**
+  `Organization.TITLE` and `DEPARTMENT` therefore both fall back to `DeviceRawContactSnapshot` —
+  nothing reads a device-typed value of either into Room, so the device's own is what keeps it, and
+  DEPARTMENT lacking that fallback silently erased it the first time Room's org won. Still unfixed
+  on the same shape: `JOB_DESCRIPTION`, `OFFICE_LOCATION`, `SYMBOL`, `PHONETIC_NAME` and
+  `StructuredPostal`'s `POBOX`/`NEIGHBORHOOD` are not in the snapshot at all, so every replace drops
+  them. Widen the snapshot before adding another replaced group.
 - **Writing a raw contact into CP2 is not the same as the user seeing it.** A raw contact that
   belongs to no group is hidden unless its account's `ContactsContract.Settings` row sets
   `UNGROUPED_VISIBLE = 1`; grouped contacts are exempt because `DeviceGroupLinker` sets
