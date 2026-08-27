@@ -186,6 +186,22 @@ class PushSyncCoordinatorOrderingTest {
         assertEquals(listOf("clearPairing", "persist:secret-new"), store.events)
     }
 
+    /** Either half of the marker is enough: the same subscriber id on a DIFFERENT relay is still a
+     *  different account, and the surviving mailbox belongs to neither one by default. */
+    @Test
+    fun pairingTheSameSubscriberOnAnotherServerAfterAReconnectPurges() = runBlocking {
+        val store = FakePushStore(
+            pairing = null,
+            reconnectMarker = ReconnectExpectation(existing.subscriberId, existing.serverUrl),
+        )
+        val elsewhere = replacement.copy(subscriberId = existing.subscriberId)
+        val coordinator = coordinator(store, { req -> response(req, body("secret-new"), 200) })
+
+        coordinator.attemptPairing(elsewhere)
+
+        assertEquals(listOf("clearPairing", "persist:secret-new"), store.events)
+    }
+
     /** And the escalation reaches that path too, rather than only the still-paired one. */
     @Test
     fun anIncompletePurgeAfterAReconnectAlsoRefusesAndWipes() = runBlocking {

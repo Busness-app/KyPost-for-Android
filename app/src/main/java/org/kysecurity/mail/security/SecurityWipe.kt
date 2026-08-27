@@ -38,18 +38,29 @@ private const val WIPE_STATE_PREFS = "org.kysecurity.mail.wipe_state"
 private const val KEY_WIPE_IN_PROGRESS = "wipe_in_progress"
 private const val KEY_WIPE_ATTEMPTS = "wipe_attempts"
 
-/** The files that may outlive the wipe, and the ONLY ones: destruction that is still owed.
+/** The files that may outlive the wipe, and the ONLY ones: destruction that is still owed, and
+ *  the posture the wipe re-asserts.
  *
- *  Both are PLAIN prefs, which is what makes retaining them free — neither holds a secret and
- *  neither needs the master key the final step destroys.
+ *  All three are PLAIN prefs, which is what makes retaining them free — none holds a secret,
+ *  none is account-scoped, and none needs the master key the final step destroys.
  *
  *  [DownloadedAttachmentLedger] is not optional and is the trap here. It is the only record of
  *  decrypted mail that escaped the sandbox into shared Downloads; [DownloadedAttachmentLedger
  *  .deleteAll] deliberately keeps the file when the provider refused a row, so a later wipe can
  *  retry it. Sweeping it away makes that plaintext permanently unreachable while the wipe reports
  *  Complete — a worse outcome than the surviving key this whole step exists to remove.
- *  `WipeResurrectionTest.wipe_completesButReportsAttachmentsItCouldNotRemove` is the guard. */
-private val PREFS_NAMES_RETAINED_FINAL = setOf(WIPE_STATE_PREFS, DownloadedAttachmentLedger.PREFS_NAME)
+ *  `WipeResurrectionTest.wipe_completesButReportsAttachmentsItCouldNotRemove` is the guard.
+ *
+ *  [HostileLocationSettings] holds one boolean and its MAC, written back by
+ *  `restoreHostileLocationProtection` below. Without it here this sweep deleted that restore,
+ *  and the posture read ENABLED afterwards only because a missing marker fails towards
+ *  tampering — a permanent false alarm standing in for the flag.
+ *  `WipeResurrectionTest.wipe_persistsTheRestoredHostileLocationFlag` is the guard. */
+private val PREFS_NAMES_RETAINED_FINAL = setOf(
+    WIPE_STATE_PREFS,
+    DownloadedAttachmentLedger.PREFS_NAME,
+    HostileLocationSettings.PREFS_NAME,
+)
 
 /** Set when the wipe gives up. Must NOT clear [KEY_WIPE_IN_PROGRESS]; that marker outlives it. */
 private const val KEY_WIPE_ABANDONED = "wipe_abandoned"
@@ -270,7 +281,9 @@ object SecurityWipe {
             check(leftBehind.isEmpty()) { "credential peppers left $leftBehind" }
         }
 
-        // Re-assert the posture the deletions erased; after sharedPrefs or it is deleted again.
+        // Re-assert the posture the deletions erased. After `sharedPrefs`, which would delete it
+        // again — and the LAST sweep, `androidxMasterKey`, keeps the file it writes here only
+        // because [PREFS_NAMES_RETAINED_FINAL] names it.
         if (hostileLocationWasEnabled) {
             step("restoreHostileLocationProtection") { HostileLocationSettings(appContext).setEnabled(true) }
         }
@@ -579,9 +592,24 @@ object SecurityWipe {
         }
     }
 
-    /** A gate: Application.onCreate cannot promise to run before the launcher Activity. */
-    val startupVerdict: kotlinx.coroutines.CompletableDeferred<WipeResult?> =
+    /** A gate: Application.onCreate cannot promise to run before the launcher Activity.
+     *
+     *  `private set` and reassigned by nothing in production: `KyPostApp` completes this one
+     *  instance, once. The setter exists only for [reopenStartupVerdictForTest], because the
+     *  screens that wait on the gate — `UnlockActivity`, `MfaApprovalActivity` — reach that branch
+     *  only while it is open, and by the time any test runs the app process has already closed it. */
+    @Volatile
+    var startupVerdict: kotlinx.coroutines.CompletableDeferred<WipeResult?> =
         kotlinx.coroutines.CompletableDeferred()
+        private set
+
+    /** Reopens the startup gate so a test can drive the awaiting-verdict path. `internal`, so it
+     *  cannot be reached from outside this module, and a caller that leaves the gate open hangs
+     *  only itself — every waiter is scoped to the screen that opened it. */
+    @androidx.annotation.VisibleForTesting
+    internal fun reopenStartupVerdictForTest() {
+        startupVerdict = kotlinx.coroutines.CompletableDeferred()
+    }
 
     /** Set by [enforceTripwire] when the app-lock store could not be opened, so [LockedActivity]
      *  can block without paying for the check itself.

@@ -261,6 +261,33 @@ android {
 
 }
 
+// The google-services plugin is applied to the whole module, but its work is per variant, and
+// fdroid must have none of it: F-Droid builds from source, app/google-services.json is gitignored,
+// so `processFdroidDebugGoogleServices` failed a clean checkout before one line of fdroid source
+// compiled. Disabled per variant rather than dropped from the plugins block — play and github must
+// still fail loudly on a missing file, because without it their FCM registration silently never works.
+val expectedGoogleServicesTaskNames = mutableListOf<String>()
+
+androidComponents.onVariants { variant ->
+    if (variant.flavorName != "fdroid") return@onVariants
+    val taskName = "process${variant.name.replaceFirstChar { it.uppercase() }}GoogleServices"
+    expectedGoogleServicesTaskNames += taskName
+    tasks.matching { it.name == taskName }.configureEach { enabled = false }
+}
+
+// Same reasoning as the release-packaging gate below: a task this build disables by name is gone
+// the moment the plugin renames it, and a silently re-enabled Google config step on fdroid is
+// exactly what nobody would notice on a green build.
+afterEvaluate {
+    val missing = expectedGoogleServicesTaskNames.filterNot { it in tasks.names }
+    if (missing.isNotEmpty()) {
+        throw GradleException(
+            "Expected google-services task(s) not found: $missing. The fdroid flavor disables them " +
+                "by name; if the plugin renamed them, fdroid is building Google configuration again.",
+        )
+    }
+}
+
 // Gate on the tasks that emit a signable artifact, never on gradle.startParameter.taskNames.
 // One release variant's real names are `package<VariantName>` (APK) and `sign<VariantName>Bundle`
 // (AAB) — with the channel flavor dimension that is one pair per flavor: packagePlayRelease,

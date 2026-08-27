@@ -21,7 +21,7 @@ Owns production Android app code and resources.
 - A PIN change is staged, not swapped in place. The verifier (`app_lock_secure`) and the wrapped device secret (`push_pairing_secure`) are different preference files, so no single `commit()` covers both. `SecuritySettingsActivity.changePin` writes the new wrapping via `SecurePairingStore.stagePendingSecret` **before** `setPin`, `resolveDeviceSecret` tries the live wrapping then the staged one, and the following `savePairing` promotes and clears the staged copy. Without staging, a process death between the two files sealed the secret under a key no surviving PIN derived, `needsCredentialRewrap()` could not see it (it answers a scheme-version question only — `deviceSecretIsStranded` is the one that detects this), and the relay's eventual 409 read to the user as "re-pair this device". Both of its key derivations go through `CredentialCipher.deriveKeysOrNull` and abort the change on null: an unreadable Keystore pepper is not a wrong PIN, and letting `PepperUnavailableException` out killed the process mid-protocol. Both abort points sit ahead of `setPin`, so there is nothing staged to roll back. `SourceRulesTest.credentialDerivationsHandleAnUnavailableKeystore` keeps raw `deriveKeys` out of every caller but `AppLockManager`.
 - `AppLockStore.putCredentialSaltIfAbsent` is compare-and-set under a companion-scoped lock and never overwrites. It replaced a `check()` that threw `IllegalStateException` through `AppLockManager`'s PIN paths, which catch only `PepperUnavailableException`.
 - Saving an attachment to Downloads is `security/AttachmentDownloads.kt`'s `saveAttachmentToDownloads`, not the detail Activity. The row is recorded in `DownloadedAttachmentLedger` BEFORE the first byte (it is the only handle a later wipe has on decrypted mail outside the sandbox) and is created `IS_PENDING = 1`, published only once the write completes; any failure deletes the row and KEEPS the ledger entry, since a row the delete could not remove must stay findable by the wipe.
-- `EphemeralAttachmentProvider.openFile` peeks rather than consumes: viewers that probe before reading open the same URI twice, and consuming on the first open made the attachment unreopenable. The TTL sweep is the single owner of pending bytes — the writer does not zero on completion, because that races a second reader streaming the same array. Every mutation of the pending map shares one monitor so the size budget is computed against a map nothing is concurrently draining.
+- `EphemeralAttachmentProvider.openFile` peeks rather than consumes: viewers that probe before reading open the same URI twice, and consuming on the first open made the attachment unreopenable. The TTL sweep is the single owner of pending bytes — the writer does not zero on completion, because that races a second reader streaming the same array. Every mutation of the pending map shares one monitor so the size budget is computed against a map nothing is concurrently draining. `PendingAttachment` sanitises `displayName` through `safeFileName` in its own constructor: the sender's Content-Disposition filename is served to the chooser as `OpenableColumns.DISPLAY_NAME`, so it gets the same treatment as the Downloads sink's name, at the sink rather than at each caller.
 - `NativePairingDeepLinkParser` emits an already-resolved `registrationUrl`; it is never blank. A blank one is meaningless downstream (`readPairing` reads it as "no pairing at all", `register` rejects it), so resolution happens once at the parse boundary. `PushSyncCoordinator.syncAndPersist` still re-derives it for *stored* pairings — a different concern, guarding host divergence written by older builds.
 - FCM token sync goes through the backend's native registration endpoint (`reg` from the pairing QR, or derived as `{srv}/api/notifications/native/register`) — there is no user-editable Server URL setting; `srv` is a required QR field and is always sourced from the QR.
 - A device is marked paired only after the native register call returns success (`ok:true`/`synced:true`); a QR scan alone does not pair the device. `503` from the registration endpoint means the backend is missing `PAIRING_SECRET` (a persistent misconfiguration) and is not retried.
@@ -29,7 +29,7 @@ Owns production Android app code and resources.
 - Both delivery paths bound relay-supplied strings in ONE place, `PushPayloadParser.sanitize` (messageId 256, sender/subject 512, 32 keywords): `parse` for push, `PullNotification.toPushPayload` for pull. The relay picks a device's `deliveryMode`, so a pull path that skipped those bounds made them optional — and `push_state` re-serialises its whole history on every append, so oversized strings there are an OOM the app hits before it can delete them. A new delivery path must call `sanitize`; `PullNotificationTest` asserts the two paths agree.
 - MFA push 2FA: an incoming FCM data payload with `type: "mfa_challenge"` and `challengeId` is parsed by `MfaChallengePayloadParser` (distinct from the mail payload parser) and shown via a separate high-importance notification channel (`PushNotificationDispatcher.showMfaChallenge`). The notification carries **no Approve/Deny actions and no challenge detail** — it is tap-to-open only. Notification actions fire from the lock screen with no authentication, which let anyone holding the powered-on device approve a sign-in and bypassed the PIN/biometric/lockout/wipe apparatus entirely; the `MfaResponseReceiver` that backed them has been deleted. The decision happens only in `MfaApprovalActivity`, which re-authenticates via `BiometricPrompt` (`BIOMETRIC_STRONG or DEVICE_CREDENTIAL`) and re-checks `MfaChallengeTracker.isPending` before either button does anything. `MfaResponder.respond` POSTs to `{serverUrl}/api/mfa/push/respond` via `MfaResponseClient` using the same device-id/secret pairing credential as native register/pull. `MfaChallengeTracker` is SharedPreferences-backed, not in-memory: FCM delivers to short-lived processes, so an in-memory record was usually gone before the user tapped. Each challenge gets its own notification id — coalescing distinct challenges onto one id meant answering either cancelled both.
 - Push notifications are shown via Android notification channel and copied into in-app history preview. While `AppLockManager.locked` is true, title/text are replaced with a generic string and visibility is `VISIBILITY_SECRET`; while Hostile Location Protection is on, history is held in memory only and never written to the `push_state` DataStore.
-- Every screen except `UnlockActivity` and `MfaApprovalActivity` extends `security.LockedActivity`, which redirects to the unlock screen in `onStart` (and `finish()`es, so nothing is left underneath to reveal with Back) and applies `FLAG_SECURE`. Do not extend `AppCompatActivity` directly for a new screen.
+- Every screen except `UnlockActivity` and `MfaApprovalActivity` extends `security.LockedActivity`, which redirects to the unlock screen in `onStart` (and `finish()`es, so nothing is left underneath to reveal with Back) and applies `FLAG_SECURE`. Do not extend `AppCompatActivity` directly for a new screen. Both exceptions gate on `SecurityWipe.startupVerdict` themselves, and a gate that returns from `onCreate` without `finish()` still starts and resumes the activity — so each carries a stand-down flag (`redirectedToUnlock`, `awaitingStartupVerdict`) that every other lifecycle callback touching a `lateinit` view must honour.
 - The startup notices (credential reset, stranded downloads) are one-shot **per process**: the latch is spent when the dialog is built, and the pref behind it is cleared only by the user tapping OK. They are therefore claimed through `claimNotice` *after* the unlock redirect, and never by a screen that is going away — `MainActivity` sets `showsStartupNotices = false` because it routes on and finishes. A screen that finishes itself must do the same, or the notice (including "your cached mail is gone") dies unseen for the rest of the process. `StartupNoticeLatchTest` covers the gate.
 - Android 13+ notification runtime permission is requested from launcher UI.
 - `MainActivity` is a router, not a home screen: it sends paired devices to `InboxActivity` and
@@ -174,6 +174,22 @@ Owns production Android app code and resources.
   - The Sent copy is encrypted to the public half of the **vault** key (`PgpEncryptor.ownPublicKey`),
     never to bootstrap's `publicKey`: a hostile server supplying "your" key would otherwise get a
     readable copy of every message sent.
+  - A **locally pinned contact key outranks the relay**: `ClientEncryptedSender` fingerprints the
+    resolved key and the pinned one itself (`PgpFingerprint.compute` over the key bytes, never the
+    relay's `fingerprint` field), answers `KeyChanged` on a disagreement, and encrypts to the
+    pinned bytes on a match. It is the write-path counterpart of `RoomLocalSignerKeys` on the read
+    path; without it the outgoing key is only whatever the relay chose to hand back. `localKeys` is
+    deliberately not defaulted.
+  - Two rules make that pin **fail closed**, and both were once open. A pin that will not
+    fingerprint is a REFUSAL, not an absence: `ContactMappers.toEntity` stores a relay key verbatim
+    when `PgpFingerprint.compute` rejects it (unbound subkey, trailing ring) and keeps the previous
+    fingerprint, so the lookup can hand back a pin that fingerprints to null — collapsing that into
+    "never pinned" let a relay erase an in-person pin by serving a BROKEN key and then substitute
+    any key it liked, where serving a merely different one would have been caught. And the lookup is
+    `ContactDao.pinnedForEmail`, never `search`: `search` is the autocomplete query, name-ordered and
+    capped at five rows, and the relay supplies the contact list, so same-address decoys sorting
+    ahead of the pinned contact evicted the pin from its own lookup. `pinnedForEmail` is unbounded
+    and unordered; the exact-address match stays in Kotlin so a substring cannot admit a lookalike.
   - `tier == "key_changed"` is a broken TOFU pin and must stay a distinct, louder outcome — never
     folded into "no key on file". There is **no** pickup fallback on this path and there must not be:
     the server-side one works by storing plaintext, which is what client custody exists to prevent.
@@ -232,6 +248,21 @@ Owns production Android app code and resources.
   acknowledgement is atomic.
   Entry point is the Contacts nav item and the settings hub; CardDAV (the doc's alternative sync
   surface) has no mobile client — it is web/OS-driven.
+- **CP2's `TYPE` columns are integer codes, not labels.** `Email`/`Phone`/`StructuredPostal` `TYPE`
+  is DATA2, and the free-text name belongs in the paired `LABEL` (DATA3) with `TYPE_CUSTOM`;
+  `DeviceContactFieldCoding` owns both directions of that mapping for every field kind. A label
+  written into DATA2 shows blank in the system Contacts app and round-trips back into Room as `"2"`.
+  `updateRawContactForDto` pushes all seven merged groups (name, org, notes, birthday, emails,
+  phones, addresses) through `DeviceContactUpdatePlan`, and advances the link's
+  `deviceUpdatedAtEpochMs` only when the batch actually landed — stamping it for a write that never
+  happened tells the next merge the device is already current.
+- **A CP2 row that is deleted and reinserted destroys every column the reinsert does not re-emit.**
+  `Organization.TITLE` and `DEPARTMENT` therefore both fall back to `DeviceRawContactSnapshot` —
+  nothing reads a device-typed value of either into Room, so the device's own is what keeps it, and
+  DEPARTMENT lacking that fallback silently erased it the first time Room's org won. Still unfixed
+  on the same shape: `JOB_DESCRIPTION`, `OFFICE_LOCATION`, `SYMBOL`, `PHONETIC_NAME` and
+  `StructuredPostal`'s `POBOX`/`NEIGHBORHOOD` are not in the snapshot at all, so every replace drops
+  them. Widen the snapshot before adding another replaced group.
 - **Writing a raw contact into CP2 is not the same as the user seeing it.** A raw contact that
   belongs to no group is hidden unless its account's `ContactsContract.Settings` row sets
   `UNGROUPED_VISIBLE = 1`; grouped contacts are exempt because `DeviceGroupLinker` sets

@@ -106,10 +106,13 @@ class SecurityWipeTest {
         // Asserted as a SUBSET, not as "the directory is empty". Emptiness is not the contract and
         // asserting it deleted the downloaded-attachment ledger, which is the only record of
         // plaintext that escaped the sandbox — see PREFS_NAMES_RETAINED_FINAL. What must hold is
-        // that destruction still owed may stay, and nothing else.
+        // that destruction still owed, or the posture the wipe deliberately re-asserts, may stay,
+        // and nothing else. The hostile-location file is one boolean plus its MAC, no secret, and
+        // the wipe rewrites it on purpose so protection survives its own destruction.
         val mayOutliveAWipe = setOf(
             "org.kysecurity.mail.wipe_state",
             "org.kysecurity.mail.downloaded_attachments",
+            HostileLocationSettings.PREFS_NAME,
         )
         assertTrue(
             "only destruction still owed may outlive a wipe, but shared_prefs held $survivors",

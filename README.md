@@ -115,7 +115,7 @@ KyPost for Android ships from three channels, and each is a separate app on your
 | --- | --- | --- |
 | Google Play | `org.kysecurity.mail` | Google, under Play App Signing |
 | GitHub Releases | `org.kysecurity.mail.github` | our upload key |
-| F-Droid | `org.kysecurity.mail.fdroid` | not yet live — the flavor still pulls in Firebase, which F-Droid's build servers cannot satisfy |
+| F-Droid | `org.kysecurity.mail.fdroid` | not yet live — the flavor builds from source with no Google code, but it is not yet submitted |
 
 Android identifies an app by its package **and** its signature, so a build from one
 channel can never update a build from another. Distinct packages make that explicit

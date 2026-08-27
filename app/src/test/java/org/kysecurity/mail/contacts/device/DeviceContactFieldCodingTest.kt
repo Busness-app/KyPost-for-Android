@@ -1,7 +1,10 @@
 package org.kysecurity.mail.contacts.device
 
+import android.provider.ContactsContract.CommonDataKinds.Email
 import android.provider.ContactsContract.CommonDataKinds.Event
+import android.provider.ContactsContract.CommonDataKinds.Phone
 import android.provider.ContactsContract.CommonDataKinds.Relation
+import android.provider.ContactsContract.CommonDataKinds.StructuredPostal
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -62,6 +65,103 @@ class DeviceContactFieldCodingTest {
         assertEquals("", DeviceContactFieldCoding.imServiceFromCustomProtocolLabel("Other"))
         assertEquals("", DeviceContactFieldCoding.imServiceFromCustomProtocolLabel(null))
         assertEquals("", DeviceContactFieldCoding.imServiceFromCustomProtocolLabel(""))
+    }
+
+    @Test
+    fun emailType_knownLabels_mapToConstantsCaseInsensitively() {
+        assertEquals(Email.TYPE_HOME, DeviceContactFieldCoding.emailType("Home"))
+        assertEquals(Email.TYPE_HOME, DeviceContactFieldCoding.emailType(" home "))
+        assertEquals(Email.TYPE_WORK, DeviceContactFieldCoding.emailType("WORK"))
+        assertEquals(Email.TYPE_MOBILE, DeviceContactFieldCoding.emailType("Mobile"))
+        assertEquals(Email.TYPE_OTHER, DeviceContactFieldCoding.emailType("Other"))
+    }
+
+    @Test
+    fun emailType_unrecognizedOrMissing_fallsBackToCustom() {
+        assertEquals(Email.TYPE_CUSTOM, DeviceContactFieldCoding.emailType("Holiday house"))
+        assertEquals(Email.TYPE_CUSTOM, DeviceContactFieldCoding.emailType(null))
+        assertEquals(Email.TYPE_CUSTOM, DeviceContactFieldCoding.emailType(""))
+    }
+
+    @Test
+    fun emailCustomLabel_onlySetForCustomType() {
+        assertNull(DeviceContactFieldCoding.emailCustomLabel("Work"))
+        assertEquals("Holiday house", DeviceContactFieldCoding.emailCustomLabel("Holiday house"))
+    }
+
+    @Test
+    fun emailLabel_roundTripsThroughTypeColumn() {
+        for (label in listOf("Home", "Work", "Mobile", "Other")) {
+            val type = DeviceContactFieldCoding.emailType(label)
+            assertEquals(label, DeviceContactFieldCoding.emailLabelFromType(type), "round-trip failed for '$label'")
+            assertNull(DeviceContactFieldCoding.emailCustomLabel(label))
+        }
+    }
+
+    @Test
+    fun emailLabelFromType_customOrUnset_yieldsNullSoLabelColumnWins() {
+        assertNull(DeviceContactFieldCoding.emailLabelFromType(Email.TYPE_CUSTOM))
+        assertNull(DeviceContactFieldCoding.emailLabelFromType(null))
+    }
+
+    @Test
+    fun phoneType_knownLabels_mapToConstantsCaseInsensitively() {
+        assertEquals(Phone.TYPE_HOME, DeviceContactFieldCoding.phoneType("home"))
+        assertEquals(Phone.TYPE_MOBILE, DeviceContactFieldCoding.phoneType("Mobile"))
+        assertEquals(Phone.TYPE_WORK, DeviceContactFieldCoding.phoneType("Work"))
+        assertEquals(Phone.TYPE_FAX_WORK, DeviceContactFieldCoding.phoneType("Work Fax"))
+        assertEquals(Phone.TYPE_FAX_HOME, DeviceContactFieldCoding.phoneType("Home Fax"))
+        assertEquals(Phone.TYPE_PAGER, DeviceContactFieldCoding.phoneType("Pager"))
+        assertEquals(Phone.TYPE_MAIN, DeviceContactFieldCoding.phoneType("Main"))
+        assertEquals(Phone.TYPE_OTHER, DeviceContactFieldCoding.phoneType("Other"))
+    }
+
+    @Test
+    fun phoneLabel_roundTripsThroughTypeColumn() {
+        for (label in listOf("Home", "Mobile", "Work", "Work Fax", "Home Fax", "Pager", "Main", "Other")) {
+            val type = DeviceContactFieldCoding.phoneType(label)
+            assertEquals(label, DeviceContactFieldCoding.phoneLabelFromType(type), "round-trip failed for '$label'")
+            assertNull(DeviceContactFieldCoding.phoneCustomLabel(label))
+        }
+    }
+
+    @Test
+    fun phoneCustomLabel_unrecognizedLabel_ridesInLabelColumn() {
+        assertEquals(Phone.TYPE_CUSTOM, DeviceContactFieldCoding.phoneType("Boat"))
+        assertEquals("Boat", DeviceContactFieldCoding.phoneCustomLabel("Boat"))
+        assertNull(DeviceContactFieldCoding.phoneLabelFromType(Phone.TYPE_CUSTOM))
+    }
+
+    @Test
+    fun postalLabel_roundTripsThroughTypeColumn() {
+        for (label in listOf("Home", "Work", "Other")) {
+            val type = DeviceContactFieldCoding.postalType(label)
+            assertEquals(label, DeviceContactFieldCoding.postalLabelFromType(type), "round-trip failed for '$label'")
+            assertNull(DeviceContactFieldCoding.postalCustomLabel(label))
+        }
+    }
+
+    @Test
+    fun postalCustomLabel_unrecognizedLabel_ridesInLabelColumn() {
+        assertEquals(StructuredPostal.TYPE_CUSTOM, DeviceContactFieldCoding.postalType("Summer house"))
+        assertEquals("Summer house", DeviceContactFieldCoding.postalCustomLabel("Summer house"))
+        assertNull(DeviceContactFieldCoding.postalLabelFromType(null))
+    }
+
+    @Test
+    fun customLabelOf_prefersLabelColumn() {
+        assertEquals("Holiday house", DeviceContactFieldCoding.customLabelOf("0", "Holiday house"))
+        assertNull(DeviceContactFieldCoding.customLabelOf("0", null))
+        assertNull(DeviceContactFieldCoding.customLabelOf("2", ""))
+        assertNull(DeviceContactFieldCoding.customLabelOf(null, null))
+    }
+
+    @Test
+    fun customLabelOf_nonNumericTypeColumn_readsBackAsLegacyLabel() {
+        // Builds predating the TYPE/LABEL split wrote the free text straight into DATA2.
+        assertEquals("Home", DeviceContactFieldCoding.customLabelOf("Home", null))
+        // A numeric DATA2 is a type code, never a label: this is the "label = 2" bug.
+        assertNull(DeviceContactFieldCoding.customLabelOf("2", null))
     }
 
     @Test

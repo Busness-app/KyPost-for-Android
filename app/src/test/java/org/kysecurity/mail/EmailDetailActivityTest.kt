@@ -602,6 +602,21 @@ class EmailDetailActivityTest {
         assertEquals("application/octet-stream", safeMimeType(""))
     }
 
+    /** The ephemeral sink handed the sender's filename to the chooser verbatim while the Downloads
+     *  sink sanitised it; the display name is what a viewer persists the file under. */
+    @Test
+    fun ephemeralDisplayName_getsTheSameSanitisationAsTheDownloadsName() {
+        val hostile = org.kysecurity.mail.security.PendingAttachment(
+            bytes = ByteArray(0),
+            mimeType = "application/pdf",
+            displayName = "../../etc/invoice.pdf.apk",
+        )
+        assertEquals("invoice.pdf", hostile.displayName)
+
+        val long = org.kysecurity.mail.security.PendingAttachment(ByteArray(0), "", "a".repeat(500))
+        assertEquals(120, long.displayName.length)
+    }
+
     // isDarkPalette() needs android.graphics.Color, so it is not covered here; isDark is passed in.
 
     private val nonRetryableOutcomes = listOf(

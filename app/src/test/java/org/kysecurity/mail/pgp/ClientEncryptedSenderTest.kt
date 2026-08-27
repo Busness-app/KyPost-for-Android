@@ -6,6 +6,7 @@ import org.kysecurity.mail.mail.MailSendOutcome
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -21,16 +22,22 @@ class ClientEncryptedSenderTest {
         opener: FakeVaultOpener = FakeVaultOpener(),
         resolver: FakeRecipientKeyResolver = FakeRecipientKeyResolver(),
         transport: FakeClientEncryptedTransport = FakeClientEncryptedTransport(),
+        localKeys: FakePinnedKeys = FakePinnedKeys(),
         accountAddress: String = ACCOUNT,
     ) = ClientEncryptedSender(
         opener = opener,
         resolver = resolver,
         transport = transport,
+        localKeys = localKeys,
         accountAddress = accountAddress,
     )
 
     private fun draft(to: String = "alice@example.invalid", cc: String = "", bcc: String = "") =
         MailDraft(to = to, cc = cc, bcc = bcc, subject = "Subject", body = "<p>Body</p>", mode = "html")
+
+    private fun pinnedFor(address: String, confirmed: Boolean) = FakePinnedKeys(
+        mapOf(address to listOf(LocalSignerKey(TestPgpPrivateKey.ARMORED_PUBLIC, confirmed))),
+    )
 
     /** One shared ciphertext would put each BCC recipient's key id in a packet everyone can read. */
     @Test
@@ -152,6 +159,116 @@ class ClientEncryptedSenderTest {
         ).send(draft(to = "alice@example.invalid, bob@example.invalid"), sign = false)
 
         assertEquals(listOf("alice@example.invalid"), (result as ClientSendOutcome.KeyChanged).addresses)
+    }
+
+    /** The pinned fingerprint was compared in person; `tier` is the relay describing its own
+     *  bookkeeping, and a relay that wants to substitute a key simply never sets it. */
+    @Test
+    fun aRelayKeyThatDoesNotMatchThePinnedOneIsAChangedKey() = runBlocking {
+        val transport = FakeClientEncryptedTransport()
+        val result = sender(
+            resolver = FakeRecipientKeyResolver(
+                resolvedAll(listOf("alice@example.invalid"), TestPgpSecondKey.ARMORED_PUBLIC),
+            ),
+            transport = transport,
+            localKeys = pinnedFor("alice@example.invalid", confirmed = true),
+        ).send(draft(), sign = false)
+
+        assertEquals(listOf("alice@example.invalid"), (result as ClientSendOutcome.KeyChanged).addresses)
+        assertTrue("nothing may be delivered", transport.sent.isEmpty())
+    }
+
+    /** A pin this device HOLDS but can no longer verify is a refusal, not an absence.
+     *
+     *  `ContactMappers.toEntity` stores a relay key verbatim even when `PgpFingerprint.compute`
+     *  rejects it, keeping the previous fingerprint — so `keysFor` hands back a pin that will not
+     *  fingerprint. Collapsing that into "never pinned" let a relay erase an in-person pin by
+     *  serving an unparseable key, then supply any key it liked with no KeyChanged and no warning.
+     *  Serving a merely DIFFERENT key was already caught; serving a broken one must be too. */
+    @Test
+    fun aPinThatWillNotFingerprintIsARefusalNotAnAbsence() = runBlocking {
+        val unusablePin = "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nnot-a-key\n-----END PGP PUBLIC KEY BLOCK-----"
+        assertNull("this test proves nothing unless compute() rejects the pin", PgpFingerprint.compute(unusablePin))
+        val transport = FakeClientEncryptedTransport()
+
+        val result = sender(
+            resolver = FakeRecipientKeyResolver(
+                resolvedAll(listOf("alice@example.invalid"), TestPgpPrivateKey.ARMORED_PUBLIC),
+            ),
+            transport = transport,
+            localKeys = FakePinnedKeys(
+                mapOf("alice@example.invalid" to listOf(LocalSignerKey(unusablePin, confirmed = true))),
+            ),
+        ).send(draft(), sign = false)
+
+        assertTrue("expected KeyChanged, got $result", result is ClientSendOutcome.KeyChanged)
+        assertEquals(listOf("alice@example.invalid"), (result as ClientSendOutcome.KeyChanged).addresses)
+        assertTrue("nothing may be encrypted to the relay's key", transport.sent.isEmpty())
+    }
+
+    /** An unconfirmed pin is still a key this device recorded for that contact, and the read path
+     *  already calls a mismatch against one KEY_CHANGED. The write path must not be softer. */
+    @Test
+    fun anUnconfirmedPinStillOutranksTheRelay() = runBlocking {
+        val result = sender(
+            resolver = FakeRecipientKeyResolver(
+                resolvedAll(listOf("alice@example.invalid"), TestPgpSecondKey.ARMORED_PUBLIC),
+            ),
+            localKeys = pinnedFor("alice@example.invalid", confirmed = false),
+        ).send(draft(), sign = false)
+
+        assertTrue("expected KeyChanged, got $result", result is ClientSendOutcome.KeyChanged)
+    }
+
+    /** The relay's blob fingerprints identically to the pin but carries no encryption subkey, so a
+     *  delivery the recipient can open can only have been encrypted to the pinned bytes. */
+    @Test
+    fun aMatchingPinIsTheKeyTheMessageIsEncryptedTo() = runBlocking {
+        val relayKey = strippedOfSubkeys(TestPgpPrivateKey.ARMORED_PUBLIC)
+        assertEquals(
+            "the stripped ring must fingerprint identically, or this test proves nothing",
+            PgpFingerprint.compute(TestPgpPrivateKey.ARMORED_PUBLIC),
+            PgpFingerprint.compute(relayKey),
+        )
+        val transport = FakeClientEncryptedTransport()
+        val result = sender(
+            resolver = FakeRecipientKeyResolver(resolvedAll(listOf("alice@example.invalid"), relayKey)),
+            transport = transport,
+            localKeys = pinnedFor("alice@example.invalid", confirmed = true),
+        ).send(draft(), sign = false)
+
+        assertTrue("expected Sent, got $result", result is ClientSendOutcome.Sent)
+        assertTrue(
+            "the recipient must be able to open a delivery encrypted to their pinned key",
+            PgpDecryptor.decrypt(
+                TestPgpPrivateKey.ARMORED_PRIVATE.toCharArray(),
+                armorOf(transport.sent.single().deliveries[0].ciphertext),
+                emptyList(),
+            ) is DecryptResult.Ok,
+        )
+    }
+
+    /** No pin for this address is the ordinary case: the relay's key is used, tier checks and all. */
+    @Test
+    fun anAddressWithNoPinStillUsesTheRelaysKey() = runBlocking {
+        val transport = FakeClientEncryptedTransport()
+        val result = sender(
+            resolver = FakeRecipientKeyResolver(
+                resolvedAll(listOf("alice@example.invalid"), TestPgpSecondKey.ARMORED_PUBLIC),
+            ),
+            transport = transport,
+            localKeys = pinnedFor("dave@example.invalid", confirmed = true),
+        ).send(draft(), sign = false)
+
+        assertTrue("expected Sent, got $result", result is ClientSendOutcome.Sent)
+        assertTrue(
+            "an unpinned recipient gets the relay's key",
+            PgpDecryptor.decrypt(
+                TestPgpSecondKey.ARMORED_PRIVATE.toCharArray(),
+                armorOf(transport.sent.single().deliveries[0].ciphertext),
+                emptyList(),
+            ) is DecryptResult.Ok,
+        )
     }
 
     @Test

@@ -27,6 +27,22 @@ interface ContactDao {
     // Substring match on raw emailsJson works: the address appears verbatim in the encoded JSON.
     suspend fun search(query: String): List<ContactEntity> = searchEscaped(query.escapeLikePattern())
 
+    /** The PIN lookup, deliberately not [search]. `search` is the autocomplete query — ordered by
+     *  name and capped at five rows — and the relay supplies both the contact list and the keys it
+     *  serves, so same-address decoys sorting ahead of a pinned contact evicted the pin from its
+     *  own lookup and the send fell back to the relay's key. Unbounded and unordered; the caller
+     *  still matches the address exactly in Kotlin. */
+    suspend fun pinnedForEmail(address: String): List<ContactEntity> =
+        pinnedForEmailEscaped(address.escapeLikePattern())
+
+    @Query(
+        """
+        SELECT * FROM contacts
+        WHERE emailsJson LIKE '%' || :query || '%' ESCAPE '\'
+        """,
+    )
+    suspend fun pinnedForEmailEscaped(query: String): List<ContactEntity>
+
     @Query(
         """
         SELECT * FROM contacts
