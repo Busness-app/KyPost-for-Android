@@ -297,8 +297,13 @@ class PushPairingActivity : LockedActivity() {
     /** Every pairing source always confirms the destination server: a QR scan is not proof of trust. */
     private fun confirmAndApplyPairing(pairing: PairingData) {
         // From the store, not uiState: on the cold path uiState still serves its null initialValue.
-        val alreadyPaired = PushRuntime.graph(this).repository.isPairedNow()
-        val messageRes = if (alreadyPaired) R.string.pairing_confirm_replace_message else R.string.pairing_confirm_message
+        val repository = PushRuntime.graph(this).repository
+        // Mirrors PushSyncCoordinator.attemptPairing's replacement rule, so the warning cannot
+        // disagree with what pairing will actually do. A reconnect leaves another account's mailbox
+        // resident with no pairing at all, and isPairedNow() alone called that a fresh pairing.
+        val resident = repository.residentAccount()
+        val replacing = resident?.matches(pairing)?.not() ?: repository.isPairedNow()
+        val messageRes = if (replacing) R.string.pairing_confirm_replace_message else R.string.pairing_confirm_message
         // The parsed host, never the raw `srv`: a raw URL in a trust prompt is a phishing surface.
         val shownHost = pairingUrlHost(pairing.serverUrl)
         if (shownHost == null) {

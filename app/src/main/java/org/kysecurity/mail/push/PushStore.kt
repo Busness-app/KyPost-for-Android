@@ -14,6 +14,10 @@ interface PushStore {
     val state: Flow<PushState>
 
     fun pairingForAuthenticatedCall(): PairingData?
+
+    /** Whose account-scoped data is on disk, which outlives the pairing itself; see
+     *  [ResidentAccount]. A reconnect leaves this set with no pairing at all. */
+    fun residentAccount(): ResidentAccount?
     fun currentCredentialState(): PushRepository.PairingCredentialState
     fun currentTlsPin(): TlsPin?
     fun tlsPinIsLeafOnly(): Boolean

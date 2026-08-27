@@ -67,6 +67,11 @@ class MfaApprovalActivity : AppCompatActivity() {
     /** Keys from this decision's PIN check: this screen runs locked, where the cache returns null. */
     private var decisionKeys: org.kysecurity.mail.security.CredentialKeys? = null
 
+    /** Set when [onCreate] returned early to wait for the startup wipe verdict: no content view is
+     *  set and every `lateinit` view below is unset, yet the activity still starts and resumes, so
+     *  every other lifecycle callback must stand down until the recreate lands. */
+    private var awaitingStartupVerdict = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.applySecureFlag()
@@ -89,6 +94,7 @@ class MfaApprovalActivity : AppCompatActivity() {
         // failed-attempt counter that triggers a SECOND wipe. LockedActivity blocks on exactly this
         // and this screen is deliberately outside it.
         if (!SecurityWipe.startupVerdict.isCompleted) {
+            awaitingStartupVerdict = true
             lifecycleScope.launch {
                 SecurityWipe.startupVerdict.await()
                 if (!isFinishing && !isDestroyed) recreate()
@@ -122,6 +128,9 @@ class MfaApprovalActivity : AppCompatActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        // The startup gate has not ruled yet; the recreate it is waiting on adopts this intent.
+        // Going further would render into unset views and raise a PIN prompt mid-wipe.
+        if (awaitingStartupVerdict) return
 
         // Cancel any in-flight resolve() for the old challenge so it can't finish() this screen.
         resolveJob?.cancel()
@@ -461,6 +470,8 @@ class MfaApprovalActivity : AppCompatActivity() {
     /** Authentication is consent for one decision and does not survive leaving the screen. */
     override fun onStop() {
         super.onStop()
+        // Nothing was authenticated and no view exists to disable — see [awaitingStartupVerdict].
+        if (awaitingStartupVerdict) return
         authenticated = false
         authInFlight = false
         // Dropped with the authentication that produced them: the key is consent for one decision
@@ -476,6 +487,7 @@ class MfaApprovalActivity : AppCompatActivity() {
     /** Re-authenticates on the way back; skipped while a resolve is in flight. */
     override fun onStart() {
         super.onStart()
+        if (awaitingStartupVerdict) return
         if (authenticated || authInFlight || payload == null || resolveJob?.isActive == true) return
         requireAuthentication()
     }

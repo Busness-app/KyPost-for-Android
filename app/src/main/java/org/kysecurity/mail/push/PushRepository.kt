@@ -64,6 +64,9 @@ class PushRepository(
     /** Whether a pairing exists right now, read straight from the store — for cold-path callers. */
     fun isPairedNow(): Boolean = securePairingStore.pairing.value != null
 
+    /** See [ResidentAccount]: whose data is on disk, which [resetPairingCredential] does not change. */
+    override fun residentAccount(): ResidentAccount? = securePairingStore.residentAccount()
+
     override fun pairingForAuthenticatedCall(): PairingData? =
         securePairingStore.pairingSnapshot(SecurityRuntime.graph(context).appLockManager.cachedCredentialKeys())
 
@@ -232,9 +235,13 @@ class PushRepository(
      *  account, and must not cost the user their mail. [clearPairing] stays the destructive one,
      *  for a deliberate unpair and for [PushSyncCoordinator.attemptPairing]'s genuine
      *  account-replacement branch. Clearing the pin reopens the TOFU window so the next pairing
-     *  can capture a fresh chain. */
+     *  can capture a fresh chain.
+     *
+     *  The [ResidentAccount] marker is RETAINED: the mailbox it names is still here, so the next
+     *  pairing must still be checked against it. Dropping it made a reconnect look like a
+     *  never-paired device, and any account could then pair over the previous one's data. */
     suspend fun resetPairingCredential() {
-        securePairingStore.clearPairing()
+        securePairingStore.clearPairing(retainResidentAccount = true)
         context.pushDataStore.edit { prefs ->
             prefs.remove(KEY_SYNC_ERROR)
             prefs.remove(KEY_LAST_SYNC_AT)

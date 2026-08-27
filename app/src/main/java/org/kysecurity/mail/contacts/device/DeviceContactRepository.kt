@@ -505,7 +505,7 @@ class DeviceContactRepository(
                     .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, rawContactUriIndex)
                     .withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.Event.CONTENT_ITEM_TYPE)
                     .withValue(ContactsContract.CommonDataKinds.Event.START_DATE, dto.birthday)
-                    .withValue(ContactsContract.CommonDataKinds.Event.TYPE, 3)
+                    .withValue(ContactsContract.CommonDataKinds.Event.TYPE, ContactsContract.CommonDataKinds.Event.TYPE_BIRTHDAY)
                     .build(),
             )
         }
@@ -516,7 +516,8 @@ class DeviceContactRepository(
                     .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, rawContactUriIndex)
                     .withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE)
                     .withValue(ContactsContract.CommonDataKinds.Email.ADDRESS, email.value)
-                    .withValue(ContactsContract.CommonDataKinds.Email.TYPE, email.label ?: "")
+                    .withValue(ContactsContract.CommonDataKinds.Email.TYPE, DeviceContactFieldCoding.emailType(email.label))
+                    .withValue(ContactsContract.CommonDataKinds.Email.LABEL, DeviceContactFieldCoding.emailCustomLabel(email.label))
                     .build(),
             )
         }
@@ -527,7 +528,8 @@ class DeviceContactRepository(
                     .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, rawContactUriIndex)
                     .withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE)
                     .withValue(ContactsContract.CommonDataKinds.Phone.NUMBER, phone.value)
-                    .withValue(ContactsContract.CommonDataKinds.Phone.TYPE, phone.label ?: "")
+                    .withValue(ContactsContract.CommonDataKinds.Phone.TYPE, DeviceContactFieldCoding.phoneType(phone.label))
+                    .withValue(ContactsContract.CommonDataKinds.Phone.LABEL, DeviceContactFieldCoding.phoneCustomLabel(phone.label))
                     .build(),
             )
         }
@@ -542,7 +544,8 @@ class DeviceContactRepository(
                     .withValue(ContactsContract.CommonDataKinds.StructuredPostal.REGION, address.region)
                     .withValue(ContactsContract.CommonDataKinds.StructuredPostal.POSTCODE, address.postalCode)
                     .withValue(ContactsContract.CommonDataKinds.StructuredPostal.COUNTRY, address.country)
-                    .withValue(ContactsContract.CommonDataKinds.StructuredPostal.TYPE, address.label ?: "")
+                    .withValue(ContactsContract.CommonDataKinds.StructuredPostal.TYPE, DeviceContactFieldCoding.postalType(address.label))
+                    .withValue(ContactsContract.CommonDataKinds.StructuredPostal.LABEL, DeviceContactFieldCoding.postalCustomLabel(address.label))
                     .build(),
             )
         }
@@ -643,85 +646,156 @@ class DeviceContactRepository(
             return@withContext
         }
 
-        val mergedNameDisplay = DeviceContactFieldMerge.mergeStringField(
-            roomValue = dto.fn,
-            deviceValue = currentSnapshot.fn,
+        val plan = DeviceContactUpdatePlan.of(
+            dto = dto,
+            snapshot = currentSnapshot,
             roomUpdatedAtEpochMs = dto.updatedAt?.let { DeviceContactConflictResolver.parseIso(it) },
             deviceUpdatedAtEpochMs = link.deviceUpdatedAtEpochMs,
         )
-
-        val mergedOrg = DeviceContactFieldMerge.mergeStringField(
-            roomValue = dto.org,
-            deviceValue = currentSnapshot.org,
-            roomUpdatedAtEpochMs = dto.updatedAt?.let { DeviceContactConflictResolver.parseIso(it) },
-            deviceUpdatedAtEpochMs = link.deviceUpdatedAtEpochMs,
-        )
-
-        val mergedNotes = DeviceContactFieldMerge.mergeStringField(
-            roomValue = dto.notes,
-            deviceValue = currentSnapshot.notes,
-            roomUpdatedAtEpochMs = dto.updatedAt?.let { DeviceContactConflictResolver.parseIso(it) },
-            deviceUpdatedAtEpochMs = link.deviceUpdatedAtEpochMs,
-        )
-
-        val mergedBirthday = DeviceContactFieldMerge.mergeStringField(
-            roomValue = dto.birthday,
-            deviceValue = currentSnapshot.birthday,
-            roomUpdatedAtEpochMs = dto.updatedAt?.let { DeviceContactConflictResolver.parseIso(it) },
-            deviceUpdatedAtEpochMs = link.deviceUpdatedAtEpochMs,
-        )
-
-        val mergedEmails = DeviceContactFieldMerge.mergeEmailList(
-            roomEmails = dto.emails,
-            deviceEmails = currentSnapshot.emails,
-            roomUpdatedAtEpochMs = dto.updatedAt?.let { DeviceContactConflictResolver.parseIso(it) },
-            deviceUpdatedAtEpochMs = link.deviceUpdatedAtEpochMs,
-        )
-
-        val mergedPhones = DeviceContactFieldMerge.mergePhoneList(
-            roomPhones = dto.phones,
-            devicePhones = currentSnapshot.phones,
-            roomUpdatedAtEpochMs = dto.updatedAt?.let { DeviceContactConflictResolver.parseIso(it) },
-            deviceUpdatedAtEpochMs = link.deviceUpdatedAtEpochMs,
-        )
-
-        val mergedAddresses = DeviceContactFieldMerge.mergeAddressList(
-            roomAddresses = dto.addresses,
-            deviceAddresses = currentSnapshot.addresses,
-            roomUpdatedAtEpochMs = dto.updatedAt?.let { DeviceContactConflictResolver.parseIso(it) },
-            deviceUpdatedAtEpochMs = link.deviceUpdatedAtEpochMs,
-        )
+        if (plan.isEmpty()) return@withContext
 
         val ops = arrayListOf<android.content.ContentProviderOperation>()
 
         val dataUriBase = ContactsContract.Data.CONTENT_URI.buildUpon()
             .appendQueryParameter(ContactsContract.CALLER_IS_SYNCADAPTER, "true")
             .build()
+        val rawContactIdArg = link.rawContactId.toString()
 
-        if (mergedNameDisplay != currentSnapshot.fn) {
+        fun insertRow(mimeType: String) =
+            android.content.ContentProviderOperation.newInsert(dataUriBase)
+                .withValue(ContactsContract.Data.RAW_CONTACT_ID, link.rawContactId)
+                .withValue(ContactsContract.Data.MIMETYPE, mimeType)
+
+        // Replace-the-rows-for-this-mimetype: CP2 has no upsert, and an UPDATE whose selection
+        // matches nothing is a silent no-op, so a group gained since the insert would be dropped.
+        fun deleteRows(mimeType: String, extraSelection: String = "") {
+            ops.add(
+                android.content.ContentProviderOperation.newDelete(dataUriBase)
+                    .withSelection(
+                        "${ContactsContract.Data.RAW_CONTACT_ID} = ? AND " +
+                            "${ContactsContract.Data.MIMETYPE} = ?$extraSelection",
+                        arrayOf(rawContactIdArg, mimeType),
+                    )
+                    .build(),
+            )
+        }
+
+        // The name row always exists and carries the structured parts the merge does not cover,
+        // so it stays a targeted update of DISPLAY_NAME alone.
+        plan.displayName?.let { displayName ->
             ops.add(
                 android.content.ContentProviderOperation.newUpdate(dataUriBase)
                     .withSelection(
                         "${ContactsContract.Data.RAW_CONTACT_ID} = ? AND ${ContactsContract.Data.MIMETYPE} = ?",
                         arrayOf(
-                            link.rawContactId.toString(),
+                            rawContactIdArg,
                             ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE,
                         ),
                     )
-                    .withValue(ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME, mergedNameDisplay ?: "")
+                    .withValue(ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME, displayName)
                     .build(),
             )
         }
 
-        if (ops.isNotEmpty()) {
-            runCatching {
-                contentResolver.applyBatch(ContactsContract.AUTHORITY, ops)
+        plan.org?.let { org ->
+            deleteRows(ContactsContract.CommonDataKinds.Organization.CONTENT_ITEM_TYPE)
+            ops.add(
+                insertRow(ContactsContract.CommonDataKinds.Organization.CONTENT_ITEM_TYPE)
+                    .withValue(ContactsContract.CommonDataKinds.Organization.COMPANY, org)
+                    // The row is replaced wholesale and nothing reads a device-typed title into
+                    // Room, so the device's own value is what keeps it.
+                    .withValue(
+                        ContactsContract.CommonDataKinds.Organization.TITLE,
+                        dto.title?.takeIf { it.isNotBlank() } ?: currentSnapshot.title,
+                    )
+                    .withValue(ContactsContract.CommonDataKinds.Organization.DEPARTMENT, dto.department)
+                    .build(),
+            )
+        }
+
+        plan.notes?.let { notes ->
+            deleteRows(ContactsContract.CommonDataKinds.Note.CONTENT_ITEM_TYPE)
+            ops.add(
+                insertRow(ContactsContract.CommonDataKinds.Note.CONTENT_ITEM_TYPE)
+                    .withValue(ContactsContract.CommonDataKinds.Note.NOTE, notes)
+                    .build(),
+            )
+        }
+
+        plan.birthday?.let { birthday ->
+            // Narrowed to TYPE_BIRTHDAY: anniversaries and other dates share the Event mimetype.
+            deleteRows(
+                ContactsContract.CommonDataKinds.Event.CONTENT_ITEM_TYPE,
+                " AND ${ContactsContract.CommonDataKinds.Event.TYPE} = " +
+                    "${ContactsContract.CommonDataKinds.Event.TYPE_BIRTHDAY}",
+            )
+            ops.add(
+                insertRow(ContactsContract.CommonDataKinds.Event.CONTENT_ITEM_TYPE)
+                    .withValue(ContactsContract.CommonDataKinds.Event.START_DATE, birthday)
+                    .withValue(
+                        ContactsContract.CommonDataKinds.Event.TYPE,
+                        ContactsContract.CommonDataKinds.Event.TYPE_BIRTHDAY,
+                    )
+                    .build(),
+            )
+        }
+
+        plan.emails?.let { emails ->
+            deleteRows(ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE)
+            for (email in emails) {
+                ops.add(
+                    insertRow(ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE)
+                        .withValue(ContactsContract.CommonDataKinds.Email.ADDRESS, email.value)
+                        .withValue(ContactsContract.CommonDataKinds.Email.TYPE, DeviceContactFieldCoding.emailType(email.label))
+                        .withValue(ContactsContract.CommonDataKinds.Email.LABEL, DeviceContactFieldCoding.emailCustomLabel(email.label))
+                        .build(),
+                )
             }
         }
 
-        db.deviceContactLinkDao().upsert(
-            link.copy(deviceUpdatedAtEpochMs = System.currentTimeMillis()),
-        )
+        plan.phones?.let { phones ->
+            deleteRows(ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE)
+            for (phone in phones) {
+                ops.add(
+                    insertRow(ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE)
+                        .withValue(ContactsContract.CommonDataKinds.Phone.NUMBER, phone.value)
+                        .withValue(ContactsContract.CommonDataKinds.Phone.TYPE, DeviceContactFieldCoding.phoneType(phone.label))
+                        .withValue(ContactsContract.CommonDataKinds.Phone.LABEL, DeviceContactFieldCoding.phoneCustomLabel(phone.label))
+                        .build(),
+                )
+            }
+        }
+
+        plan.addresses?.let { addresses ->
+            deleteRows(ContactsContract.CommonDataKinds.StructuredPostal.CONTENT_ITEM_TYPE)
+            for (address in addresses) {
+                ops.add(
+                    insertRow(ContactsContract.CommonDataKinds.StructuredPostal.CONTENT_ITEM_TYPE)
+                        .withValue(ContactsContract.CommonDataKinds.StructuredPostal.STREET, address.street)
+                        .withValue(ContactsContract.CommonDataKinds.StructuredPostal.CITY, address.city)
+                        .withValue(ContactsContract.CommonDataKinds.StructuredPostal.REGION, address.region)
+                        .withValue(ContactsContract.CommonDataKinds.StructuredPostal.POSTCODE, address.postalCode)
+                        .withValue(ContactsContract.CommonDataKinds.StructuredPostal.COUNTRY, address.country)
+                        .withValue(ContactsContract.CommonDataKinds.StructuredPostal.TYPE, DeviceContactFieldCoding.postalType(address.label))
+                        .withValue(ContactsContract.CommonDataKinds.StructuredPostal.LABEL, DeviceContactFieldCoding.postalCustomLabel(address.label))
+                        .build(),
+                )
+            }
+        }
+
+        val applied = runCatching {
+            contentResolver.applyBatch(ContactsContract.AUTHORITY, ops)
+        }.onFailure {
+            android.util.Log.e("DeviceContactSync", "Could not update raw contact ${link.rawContactId}", it)
+        }.isSuccess
+
+        // The link timestamp is read back as "when the device row last changed"; stamping it for a
+        // batch that never landed makes the next merge believe the device is already current.
+        if (applied) {
+            db.deviceContactLinkDao().upsert(
+                link.copy(deviceUpdatedAtEpochMs = System.currentTimeMillis()),
+            )
+        }
     }
 
     suspend fun deleteDeviceRawContact(uid: String) = withContext(Dispatchers.IO) {
@@ -859,7 +933,9 @@ class DeviceContactRepository(
                 ContactsContract.Data.DATA5,
                 ContactsContract.Data.DATA6,
                 ContactsContract.Data.DATA7,
+                ContactsContract.Data.DATA8,
                 ContactsContract.Data.DATA9,
+                ContactsContract.Data.DATA10,
             )
 
             var fn = ""
@@ -867,6 +943,7 @@ class DeviceContactRepository(
             var notes: String? = null
             var birthday: String? = null
             var department: String? = null
+            var title: String? = null
             var phoneticGivenName: String? = null
             var phoneticFamilyName: String? = null
             val emails = mutableListOf<ContactFieldDto>()
@@ -893,7 +970,9 @@ class DeviceContactRepository(
                     val data5 = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.Data.DATA5))
                     val data6 = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.Data.DATA6))
                     val data7 = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.Data.DATA7))
+                    val data8 = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.Data.DATA8))
                     val data9 = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.Data.DATA9))
+                    val data10 = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.Data.DATA10))
 
                     when (mimeType) {
                         ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE -> {
@@ -910,20 +989,25 @@ class DeviceContactRepository(
 
                         ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE -> {
                             if (data1.isNotBlank()) {
-                                val label = data2?.takeIf { it.isNotBlank() }
+                                // DATA2 is the integer TYPE, DATA3 the free-text LABEL: a standard
+                                // type decodes to its canonical label, never to its digits.
+                                val label = DeviceContactFieldCoding.emailLabelFromType(data2?.toIntOrNull())
+                                    ?: DeviceContactFieldCoding.customLabelOf(data2, data3)
                                 emails.add(ContactFieldDto(label = label, value = data1))
                             }
                         }
 
                         ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE -> {
                             if (data1.isNotBlank()) {
-                                val label = data2?.takeIf { it.isNotBlank() }
+                                val label = DeviceContactFieldCoding.phoneLabelFromType(data2?.toIntOrNull())
+                                    ?: DeviceContactFieldCoding.customLabelOf(data2, data3)
                                 phones.add(ContactFieldDto(label = label, value = data1))
                             }
                         }
 
                         ContactsContract.CommonDataKinds.Organization.CONTENT_ITEM_TYPE -> {
                             org = data1.takeIf { it.isNotBlank() }
+                            title = data4?.takeIf { it.isNotBlank() }
                             department = data5?.takeIf { it.isNotBlank() }
                         }
 
@@ -932,10 +1016,10 @@ class DeviceContactRepository(
                         }
 
                         ContactsContract.CommonDataKinds.Event.CONTENT_ITEM_TYPE -> {
-                            if (data2 == "3") {
+                            val typeInt = data2?.toIntOrNull()
+                            if (typeInt == ContactsContract.CommonDataKinds.Event.TYPE_BIRTHDAY) {
                                 birthday = data1
                             } else {
-                                val typeInt = data2?.toIntOrNull()
                                 val label = DeviceContactFieldCoding.eventLabelFromType(typeInt)
                                     ?: data3?.takeIf { it.isNotBlank() }
                                 events.add(ContactEventDto(label = label, date = data1))
@@ -973,12 +1057,15 @@ class DeviceContactRepository(
                         }
 
                         ContactsContract.CommonDataKinds.StructuredPostal.CONTENT_ITEM_TYPE -> {
-                            val street = data1?.takeIf { it.isNotBlank() }
-                            val city = data3?.takeIf { it.isNotBlank() }
-                            val region = data4?.takeIf { it.isNotBlank() }
-                            val postalCode = data5?.takeIf { it.isNotBlank() }
-                            val country = data6?.takeIf { it.isNotBlank() }
-                            val label = data2?.takeIf { it.isNotBlank() }
+                            // STREET/CITY/REGION/POSTCODE/COUNTRY are DATA4/7/8/9/10; DATA1 is the
+                            // provider-composed FORMATTED_ADDRESS, and DATA3 is the LABEL.
+                            val street = data4?.takeIf { it.isNotBlank() }
+                            val city = data7?.takeIf { it.isNotBlank() }
+                            val region = data8?.takeIf { it.isNotBlank() }
+                            val postalCode = data9?.takeIf { it.isNotBlank() }
+                            val country = data10?.takeIf { it.isNotBlank() }
+                            val label = DeviceContactFieldCoding.postalLabelFromType(data2?.toIntOrNull())
+                                ?: DeviceContactFieldCoding.customLabelOf(data2, data3)
                             if (street != null || city != null || region != null || postalCode != null || country != null) {
                                 addresses.add(
                                     ContactAddressDto(
@@ -1021,6 +1108,7 @@ class DeviceContactRepository(
                 phoneticGivenName = phoneticGivenName,
                 phoneticFamilyName = phoneticFamilyName,
                 department = department,
+                title = title,
             )
         }
 }

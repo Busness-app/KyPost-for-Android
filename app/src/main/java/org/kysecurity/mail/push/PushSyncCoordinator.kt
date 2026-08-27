@@ -43,8 +43,13 @@ class PushSyncCoordinator(
         // Read INSIDE the gate: a registration that finished while this one queued may have
         // changed which account is current, and so whether this is a replacement at all.
         val existing = repository.state.first().pairing
-        val isReplacement = existing != null &&
-            (existing.subscriberId != pairing.subscriberId || existing.serverUrl != pairing.serverUrl)
+        // "No pairing" is not "no account": a reconnect (PushRepository.resetPairingCredential)
+        // drops the credential and keeps the mailbox, so the resident marker is what a pairing with
+        // no stored pairing has to be checked against. The live pairing still wins, because installs
+        // predating the marker have one and no marker.
+        val resident = existing?.let { ResidentAccount(it.subscriberId, it.serverUrl) }
+            ?: repository.residentAccount()
+        val isReplacement = resident != null && !resident.matches(pairing)
 
         // Taken BEFORE the network call and reused after it: the app can lock while it is in flight.
         val credentialState = repository.currentCredentialState()

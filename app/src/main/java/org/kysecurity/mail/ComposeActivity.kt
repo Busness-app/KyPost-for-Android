@@ -35,6 +35,7 @@ import org.kysecurity.mail.pgp.ClientEncryptedSender
 import org.kysecurity.mail.pgp.ClientSendOutcome
 import org.kysecurity.mail.pgp.PgpComposeState
 import org.kysecurity.mail.pgp.RecipientResolveClient
+import org.kysecurity.mail.pgp.RoomLocalSignerKeys
 import org.kysecurity.mail.pgp.openWebmail
 import org.kysecurity.mail.pgp.webmailDraftsUrl
 import org.kysecurity.mail.push.PushRuntime
@@ -714,6 +715,8 @@ class ComposeActivity : LockedActivity() {
         return ClientEncryptedSender(
             opener = AndroidVaultOpener(this),
             resolver = { addresses -> resolveClient.resolve(pairing.serverUrl, deviceId, deviceSecret, addresses) },
+            // Load-bearing: without it the outgoing key is only whatever the relay says it is.
+            localKeys = RoomLocalSignerKeys(applicationContext),
             transport = { message -> MailRuntime.graph(this).repository.sendClientEncrypted(message) },
             accountAddress = address,
         )

@@ -6,7 +6,6 @@ import android.util.Base64
 import android.util.Log
 import java.security.MessageDigest
 
-private const val PREFS_NAME = "org.kysecurity.mail.hostile_location_settings"
 private const val KEY_ENABLED = "enabled"
 
 /** HMAC over [KEY_ENABLED]'s value under [KeystoreHlpKey]; see [HostileLocationSettings.state]. */
@@ -87,7 +86,10 @@ class HostileLocationSettings(context: Context) {
     /** One byte, so the MAC covers the value and not merely the fact that a marker exists. */
     private fun payload(enabled: Boolean): ByteArray = byteArrayOf(if (enabled) 1 else 0)
 
-    private companion object {
+    companion object {
+        /** Named, not inlined: [SecurityWipe] has to retain this file through its final sweep. */
+        internal const val PREFS_NAME = "org.kysecurity.mail.hostile_location_settings"
+
         /** Guards [cached] and every posture write, so no read sees a half-applied change. */
         private val LOCK = Any()
 

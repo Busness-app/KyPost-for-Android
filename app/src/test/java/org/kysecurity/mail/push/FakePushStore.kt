@@ -26,11 +26,22 @@ internal class FakePushStore(
     var cursor: Long = 0L
     val notified = mutableListOf<PushPayload>()
 
+    /** Written by [savePairing] and dropped by [clearPairing], exactly as the real store does. */
+    private var resident: ResidentAccount? = pairing?.let { ResidentAccount(it.subscriberId, it.serverUrl) }
+
     override val state: Flow<PushState> get() = backing
 
     fun currentPairing(): PairingData? = backing.value.pairing
 
+    /** Mirrors [PushRepository.resetPairingCredential]: the credential goes, the mailbox — and so
+     *  the resident marker — stays. */
+    fun resetPairingCredential() {
+        backing.value = backing.value.copy(pairing = null)
+        storedPin = null
+    }
+
     override fun pairingForAuthenticatedCall(): PairingData? = backing.value.pairing
+    override fun residentAccount(): ResidentAccount? = resident
     override fun currentCredentialState(): PushRepository.PairingCredentialState = credentialState
     override fun currentTlsPin(): TlsPin? = storedPin
     override fun tlsPinIsLeafOnly(): Boolean = leafOnly
@@ -38,6 +49,7 @@ internal class FakePushStore(
     override suspend fun savePairing(pairing: PairingData, credentialState: PushRepository.PairingCredentialState) {
         events += "persist:${pairing.deviceSecret}"
         backing.value = backing.value.copy(pairing = pairing)
+        resident = ResidentAccount(pairing.subscriberId, pairing.serverUrl)
     }
 
     override suspend fun saveTlsPin(pin: TlsPin) {
@@ -51,6 +63,7 @@ internal class FakePushStore(
         if (purgeResidue.isEmpty()) {
             backing.value = backing.value.copy(pairing = null)
             storedPin = null
+            resident = null
         }
         return purgeResidue
     }

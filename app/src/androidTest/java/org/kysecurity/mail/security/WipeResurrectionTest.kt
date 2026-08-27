@@ -8,6 +8,7 @@ import org.kysecurity.mail.push.PushRuntime
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -31,6 +32,34 @@ class WipeResurrectionTest {
     private fun ledgerFile() =
         File(File(context.dataDir, "shared_prefs"), "org.kysecurity.mail.downloaded_attachments.xml")
 
+    /** isEnabled() alone proves nothing here: with the marker file gone, readState() takes the
+     *  `storedMac == null` branch and fails towards ENABLED as tampering, so the posture reads
+     *  restored while the restore step's write is in fact deleted. This asserts the write is on
+     *  disk and authentic, which is exactly the negation of that branch. */
+    private fun assertProtectionRestoredOnDisk() {
+        assertTrue(
+            "the restored marker file must survive the wipe's final sweep",
+            hostilePrefsFile().exists(),
+        )
+        val prefs = context.getSharedPreferences(
+            "org.kysecurity.mail.hostile_location_settings", android.content.Context.MODE_PRIVATE,
+        )
+        assertTrue("the restored posture must be stored as enabled", prefs.getBoolean("enabled", false))
+        val storedMac = prefs.getString("enabled_mac", null)
+        assertNotNull("a missing MAC is the fail-open tamper branch, not a persisted posture", storedMac)
+        assertEquals(
+            "the MAC must authenticate the stored value, not merely exist",
+            android.util.Base64.encodeToString(
+                KeystoreHlpKey.mix(byteArrayOf(1)), android.util.Base64.NO_WRAP,
+            ),
+            storedMac,
+        )
+        assertEquals(
+            "and the read must land on the honoured-value branch",
+            HostileLocationState.ENABLED,
+            HostileLocationSettings(context).state(),
+        )
+    }
 
     @Before
     fun clean() {
@@ -124,10 +153,27 @@ class WipeResurrectionTest {
         SecurityWipe.wipeAndResetApp(context)
 
         assertTrue("protection flag restored", HostileLocationSettings(context).isEnabled())
+        assertProtectionRestoredOnDisk()
         assertFalse(
             "no disk-backed kypost_mail.db may exist after a wipe under Hostile Location Protection",
             dbFile().exists(),
         )
+    }
+
+    /** `restoreHostileLocationProtection` was dead code: the LAST sweep, `androidxMasterKey`,
+     *  deleted the file the step had just written, and the posture only kept reading ENABLED
+     *  because a missing marker fails towards tampering — logging a permanent false tamper alarm
+     *  on every later read. This fails on that ordering: the file, the value and its MAC must all
+     *  be there afterwards. */
+    @Test
+    fun wipe_persistsTheRestoredHostileLocationFlag(): Unit = runBlocking {
+        HostileLocationSettings(context).setEnabled(true)
+        assertTrue("precondition: the marker was written", hostilePrefsFile().exists())
+
+        val result = SecurityWipe.wipeAndResetApp(context)
+
+        assertTrue("the wipe must still complete, got $result", result is WipeResult.Complete)
+        assertProtectionRestoredOnDisk()
     }
 
     /** The posture is recorded in wipe_state, since the resumed run cannot re-read the deleted file. */

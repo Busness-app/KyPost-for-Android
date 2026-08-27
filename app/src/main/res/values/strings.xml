@@ -234,7 +234,7 @@
     <string name="push_pairing_use_firebase">Use Firebase</string>
     <string name="pairing_confirm_title">Pair this device?</string>
     <string name="pairing_confirm_message">This link wants to pair this device with:\n\n%1$s\n\nOnly continue if you trust the source of this link.</string>
-    <string name="pairing_confirm_replace_message">This device is already paired. Continuing will replace your current server with:\n\n%1$s\n\nOnly continue if you trust the source of this link and mean to switch servers.</string>
+    <string name="pairing_confirm_replace_message">This device still holds another account\'s mail and contacts. Continuing will erase them and pair with:\n\n%1$s\n\nOnly continue if you trust the source of this link and mean to switch accounts.</string>
     <string name="pairing_confirm_positive">Pair</string>
     <string name="pairing_confirm_bad_url">That pairing code names a server address this app will not send credentials to.</string>
 

@@ -39,9 +39,14 @@ private const val MAX_PENDING_BYTES = org.kysecurity.mail.MemoryBudget.PENDING_A
 internal class PendingAttachment(
     val bytes: ByteArray,
     val mimeType: String,
-    val displayName: String,
+    displayName: String,
     val registeredAtMillis: Long = System.currentTimeMillis(),
 ) {
+    /** The sender's Content-Disposition filename, handed to the chooser and to whatever viewer
+     *  opens it as OpenableColumns.DISPLAY_NAME. Sanitised here, the way the Downloads sink
+     *  sanitises its own, so no register() call site has to remember to. */
+    val displayName: String = org.kysecurity.mail.safeFileName(displayName, mimeType)
+
     var readers: Int = 0
     var revoked: Boolean = false
 }
