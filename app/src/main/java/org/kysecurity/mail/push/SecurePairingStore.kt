@@ -288,7 +288,11 @@ class SecurePairingStore(context: Context) {
     /** Drops the pairing proof and the TOFU pin.
      *
      *  [retainResidentAccount] is the reconnect case ([PushRepository.resetPairingCredential]):
-     *  the mailbox stays, so the marker naming whose mailbox it is has to stay with it. */
+     *  the mailbox stays, so the marker naming whose mailbox it is has to stay with it. The marker
+     *  is WRITTEN here from the pairing being cleared, not merely spared: a pairing saved by any
+     *  build older than the marker has none on disk, and "reconnect" is exactly the state such an
+     *  install reaches — every relay call failing closed on a rotated leaf. Retaining a key that
+     *  was never written would leave the next QR pairing over the old mailbox unannounced. */
     suspend fun clearPairing(retainResidentAccount: Boolean = false) {
         withContext(Dispatchers.IO + NonCancellable) {
             val editor = prefs.edit()
@@ -304,7 +308,15 @@ class SecurePairingStore(context: Context) {
                 .remove(KEY_TLS_PINS)
                 .remove(KEY_TLS_PIN_HOST)
                 .remove(KEY_TLS_PINS_ARE_LEAVES)
-            if (!retainResidentAccount) {
+            if (retainResidentAccount) {
+                // Same editor as the removes below, so the marker cannot be lost to a crash between.
+                val subscriberId = prefs.getString(KEY_SUBSCRIBER_ID, null)?.takeIf { it.isNotBlank() }
+                val serverUrl = prefs.getString(KEY_SERVER_URL, null)?.takeIf { it.isNotBlank() }
+                if (subscriberId != null && serverUrl != null) {
+                    editor.putString(KEY_RESIDENT_SUBSCRIBER_ID, subscriberId)
+                        .putString(KEY_RESIDENT_SERVER_URL, serverUrl)
+                }
+            } else {
                 editor.remove(KEY_RESIDENT_SUBSCRIBER_ID).remove(KEY_RESIDENT_SERVER_URL)
             }
             editor.commit()

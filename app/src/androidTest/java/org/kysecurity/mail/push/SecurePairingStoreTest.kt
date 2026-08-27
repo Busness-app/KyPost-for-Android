@@ -92,6 +92,35 @@ class SecurePairingStoreTest {
         assertNull(openEncryptedPrefsForTest().getString("pair_tls_spki_pin", null))
     }
 
+    /** The reconnect path has to NAME the account it just unpaired, including for a pairing saved
+     *  before the marker existed — that install is the likeliest one to reconnect, since a rotated
+     *  leaf is exactly what fails every call closed. */
+    @Test
+    fun clearPairing_retainingResident_namesTheClearedAccount_evenWithoutAPriorMarker() = runBlocking {
+        SecurePairingStore(context).savePairing(pairing, gateEnabled = false)
+        // A pre-upgrade file shape: the pairing is there, the marker savePairing writes is not.
+        openEncryptedPrefsForTest().edit()
+            .remove("resident_sub")
+            .remove("resident_srv")
+            .commit()
+        assertNull(SecurePairingStore(context).residentAccount())
+
+        SecurePairingStore(context).clearPairing(retainResidentAccount = true)
+
+        val resident = SecurePairingStore(context).residentAccount()
+        assertEquals(ResidentAccount(pairing.subscriberId, pairing.serverUrl), resident)
+        assertNull("the pairing proof itself must still be gone", SecurePairingStore(context).pairing.value)
+    }
+
+    @Test
+    fun clearPairing_withoutRetaining_dropsTheResidentMarker() = runBlocking {
+        SecurePairingStore(context).savePairing(pairing, gateEnabled = false)
+
+        SecurePairingStore(context).clearPairing()
+
+        assertNull(SecurePairingStore(context).residentAccount())
+    }
+
     private fun openEncryptedPrefsForTest() =
         org.kysecurity.mail.security.openEncryptedPrefs(context, "push_pairing_secure") {}
 
