@@ -38,6 +38,15 @@
     <string name="settings_pairing_body">Push pairing and notification transport</string>
     <string name="settings_pgp_body">Show or scan PGP key QR codes</string>
     <string name="settings_about_body">Version and license</string>
+    <string name="settings_support">Support KyPost</string>
+    <string name="settings_support_body">Leave a tip to support development</string>
+    <string name="tip_title">Support KyPost</string>
+    <string name="tip_intro">If KyPost helps you, you can leave a one-time tip. Tipping is optional and does not unlock any features.</string>
+    <string name="tip_loading">Loading tip options…</string>
+    <string name="tip_button">Leave a tip — %1$s</string>
+    <string name="tip_unavailable">Tips are unavailable right now. Please try again later.</string>
+    <string name="tip_pending">Your tip is pending.</string>
+    <string name="tip_thanks">Thank you for supporting KyPost!</string>
     <string name="lock_disabled_open_security">Turn on Require Unlock to Open in Security settings first.</string>
 
     <string name="email_title">Email</string>

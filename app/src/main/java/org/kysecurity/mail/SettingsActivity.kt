@@ -2,6 +2,7 @@ package org.kysecurity.mail
 
 import android.content.Intent
 import android.graphics.Color
+import android.net.Uri
 import android.os.Bundle
 import android.widget.Button
 import android.widget.TextView
@@ -39,6 +40,14 @@ class SettingsActivity : LockedActivity() {
         findViewById<Button>(R.id.settingsAbout).setOnClickListener {
             showAboutDialog(this)
         }
+        findViewById<Button>(R.id.settingsSupport).setOnClickListener {
+            val supportUrl = supportUrlForFlavor(BuildConfig.FLAVOR)
+            if (supportUrl == null) {
+                startActivity(Intent().setClassName(this, "$packageName.TipActivity"))
+            } else {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(supportUrl)))
+            }
+        }
     }
 
     override fun onResume() {
@@ -60,6 +69,7 @@ class SettingsActivity : LockedActivity() {
             R.id.settingsPairing,
             R.id.settingsPgp,
             R.id.settingsAbout,
+            R.id.settingsSupport,
         ).forEach { applyGhostButtonTheme(this, findViewById<Button>(it)) }
         listOf(
             R.id.settingsSecurityBody,
@@ -68,6 +78,10 @@ class SettingsActivity : LockedActivity() {
             R.id.settingsPairingBody,
             R.id.settingsPgpBody,
             R.id.settingsAboutBody,
+            R.id.settingsSupportBody,
         ).forEach { findViewById<TextView>(it).setTextColor(Color.parseColor(palette.ink)) }
     }
 }
+
+internal fun supportUrlForFlavor(flavor: String): String? =
+    if (flavor == "play") null else "https://buymeacoffee.com/yoshiofthewire"

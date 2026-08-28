@@ -125,6 +125,14 @@ class AppLockManagerTest {
     }
 
     @Test
+    fun attemptPin_clearsAnExpiredBackgroundLockDeadline() = runBlocking {
+        manager.scheduleLock(clock)
+
+        assertEquals(UnlockAttemptResult.Success, manager.attemptPin("482913".toCharArray()))
+        assertFalse(manager.isLockedNow())
+    }
+
+    @Test
     fun attemptPin_withWrongPin_staysLockedAndNoDelayFirstTwoTimes() = runBlocking {
         val first = manager.attemptPin("000001".toCharArray())
         assertTrue(first is UnlockAttemptResult.Rejected)
@@ -360,6 +368,18 @@ class AppLockManagerTest {
 
         assertFalse(manager.locked.value)
         assertEquals(0, state.failedAttempts)
+    }
+
+    @Test
+    fun unlockWithBiometric_clearsAnExpiredBackgroundLockDeadline() {
+        manager.scheduleLock(clock)
+        val keys = CredentialCipher.deriveKeys("482913".toCharArray(), CredentialCipher.randomSalt(), TestPepper)
+
+        assertEquals(
+            UnlockAttemptResult.Success,
+            manager.unlockWithBiometric(BiometricProof.issue(keys)),
+        )
+        assertFalse(manager.isLockedNow())
     }
 
     @Test

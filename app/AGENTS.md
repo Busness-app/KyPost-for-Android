@@ -59,6 +59,8 @@ Owns the Android app module build, manifest, source sets, resources, and test ex
 - The app lock re-engages after `AppLockSettings.graceMillis()` in the background (default 30s,
   user-configurable in Security settings), not instantly — locking on every background transition
   destroyed the compose screen whenever the file picker, QR scanner or webmail handoff was used.
+  A successful PIN or biometric unlock clears any pending grace deadline before exposing the app;
+  otherwise an expired deadline can immediately re-lock the just-authenticated session.
   `ComposeDraftCache` is the in-memory backstop; it is deliberately never written to disk so
   Hostile Location Protection needs no special case.
 - MFA approval (`push/MfaApprovalActivity`) must show the sign-in's context (IP, location, user
@@ -77,6 +79,9 @@ Owns the Android app module build, manifest, source sets, resources, and test ex
   opening it before the resync can render the detail screen with the wrong mode.
 - Avoid hardcoded secrets in committed files.
 - For user-visible behavior changes, update this file or a closer child AGENTS.md.
+- Settings ends with a Support KyPost action. The `play` flavor opens `TipActivity`, which sells
+  and consumes the Play Console one-time product `tip`; `github` and `fdroid` open
+  `https://buymeacoffee.com/yoshiofthewire` and must not package Play Billing.
 - Contact autocomplete (ContactAutocomplete.md): `ComposeActivity`'s TO/CC/BCC fields are
   `RecipientInputView`s backed by `ContactDao.search` (name/email substring match, debounced
   150ms, top 5 shown). The address-book icon on the TO row opens `AddressBookSheet`
