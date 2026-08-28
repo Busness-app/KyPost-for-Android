@@ -2,12 +2,22 @@ package org.kysecurity.mail
 
 import android.content.Context
 import android.content.SharedPreferences
+import org.json.JSONArray
 
 class KeywordSettings(context: Context) {
     private val prefs: SharedPreferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val hostileLocationSettings = org.kysecurity.mail.security.HostileLocationSettings(context)
 
     fun getAllKeywords(): Set<String> = prefs.getStringSet(KEY_ALL_KEYWORDS, emptySet()) ?: emptySet()
+
+    fun getOrderedKeywords(): List<String> {
+        val all = getAllKeywords()
+        val saved = runCatching {
+            val array = JSONArray(prefs.getString(KEY_KEYWORD_ORDER, "[]"))
+            List(array.length()) { array.getString(it) }
+        }.getOrDefault(emptyList())
+        return (saved.filter { it in all } + all.sortedBy { it.lowercase() }).distinct()
+    }
 
     /** Bounded both ways: keywords are unvalidated relay input rendered as un-recycled Chips. */
     fun rememberKeywords(keywords: Set<String>) {
@@ -20,13 +30,22 @@ class KeywordSettings(context: Context) {
             .toSet()
         if (cleaned.isEmpty()) return
         // LinkedHashSet: insertion-ordered, so takeLast() drops the oldest entries.
-        val merged = LinkedHashSet(getAllKeywords()).apply { addAll(cleaned) }
+        val merged = LinkedHashSet(getOrderedKeywords()).apply { addAll(cleaned) }
         val capped = if (merged.size <= MAX_REMEMBERED_KEYWORDS) {
             merged
         } else {
             LinkedHashSet(merged.toList().takeLast(MAX_REMEMBERED_KEYWORDS))
         }
-        prefs.edit().putStringSet(KEY_ALL_KEYWORDS, capped).apply()
+        prefs.edit()
+            .putStringSet(KEY_ALL_KEYWORDS, capped)
+            .putString(KEY_KEYWORD_ORDER, JSONArray(capped.toList()).toString())
+            .apply()
+    }
+
+    fun setKeywordOrder(keywords: List<String>) {
+        val all = getAllKeywords()
+        val ordered = (keywords.filter { it in all } + getOrderedKeywords()).distinct()
+        prefs.edit().putString(KEY_KEYWORD_ORDER, JSONArray(ordered).toString()).apply()
     }
 
     fun isKeywordVisible(keyword: String): Boolean = prefs.getBoolean(keyForVisibility(keyword), true)
@@ -44,6 +63,7 @@ class KeywordSettings(context: Context) {
     companion object {
         const val PREFS_NAME = "org.kysecurity.mail.keyword_settings"
         private const val KEY_ALL_KEYWORDS = "all_keywords"
+        private const val KEY_KEYWORD_ORDER = "keyword_order"
 
         /** Long enough for any real mail label, short enough that the widest possible chip still
          *  measures cheaply. */

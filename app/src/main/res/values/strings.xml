@@ -62,7 +62,7 @@
     <string name="mail_action_failed">%1$s failed: %2$s</string>
 
     <string name="keyword_settings_title">Keyword Settings</string>
-    <string name="keyword_settings_intro">Hide or show keyword headings in inbox tabs.</string>
+    <string name="keyword_settings_intro">Hide or show keyword headings in inbox tabs. Touch and hold a row to change its order.</string>
     <string name="keyword_settings_empty">No IMAP keywords discovered yet. Open Inbox to sync first.</string>
 
     <string name="themes_title">Themes</string>
