@@ -59,6 +59,8 @@ Owns the Android app module build, manifest, source sets, resources, and test ex
 - The app lock re-engages after `AppLockSettings.graceMillis()` in the background (default 30s,
   user-configurable in Security settings), not instantly — locking on every background transition
   destroyed the compose screen whenever the file picker, QR scanner or webmail handoff was used.
+  A successful PIN or biometric unlock clears any pending grace deadline before exposing the app;
+  otherwise an expired deadline can immediately re-lock the just-authenticated session.
   `ComposeDraftCache` is the in-memory backstop; it is deliberately never written to disk so
   Hostile Location Protection needs no special case.
 - MFA approval (`push/MfaApprovalActivity`) must show the sign-in's context (IP, location, user

@@ -84,6 +84,7 @@ class AppLockManager(
         val remaining = remainingLockoutMillis()
         if (remaining > 0) return UnlockAttemptResult.Rejected(remaining)
 
+        cancelScheduledLock()
         _locked.value = false
         state.resetFailedAttempts()
         if (state.isCredentialPinGateEnabled()) credentialKeys = proof.keys
@@ -95,6 +96,7 @@ class AppLockManager(
         pinGate.withLock {
             verifyLocked(pin) {
                 // Unlock FIRST: a lost wrapping key must not lock out a correct PIN.
+                cancelScheduledLock()
                 _locked.value = false
                 deriveSealAndCache(pin)
             }
