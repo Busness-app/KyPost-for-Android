@@ -74,7 +74,9 @@ class KyPostApp : Application(), DefaultLifecycleObserver {
     private val lockHandler = Handler(Looper.getMainLooper())
     private val engageLock = Runnable {
         backgroundedAtElapsedMs = 0L
-        SecurityRuntime.graph(this).appLockManager.lockNow()
+        // Resolve the deadline instead of locking unconditionally: foregrounding or a successful
+        // unlock may have cancelled it while this already-queued callback was waiting.
+        SecurityRuntime.graph(this).appLockManager.isLockedNow()
     }
 
     /** Locking is deferred by [AppLockSettings.graceMillis] so a file-picker trip cannot lock. */
