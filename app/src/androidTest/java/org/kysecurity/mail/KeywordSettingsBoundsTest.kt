@@ -55,6 +55,18 @@ class KeywordSettingsBoundsTest {
         assertFalse("expected the oldest entry to be evicted", stored.contains("first-label"))
     }
 
+    @Test
+    fun keywordOrder_persistsAndAppendsNewKeywords() {
+        val settings = KeywordSettings(context)
+        settings.rememberKeywords(linkedSetOf("Alpha", "Beta", "Gamma"))
+        settings.setKeywordOrder(listOf("Gamma", "Alpha", "Beta"))
+
+        assertEquals(listOf("Gamma", "Alpha", "Beta"), settings.getOrderedKeywords())
+
+        settings.rememberKeywords(setOf("Delta"))
+        assertEquals(listOf("Gamma", "Alpha", "Beta", "Delta"), settings.getOrderedKeywords())
+    }
+
     /** Under Hostile Location Protection the labels describe the user's mail and must not reach this
      *  plaintext file at all. */
     @Test

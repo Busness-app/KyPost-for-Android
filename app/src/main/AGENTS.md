@@ -222,7 +222,8 @@ Owns production Android app code and resources.
   before anything reaches the WebView; "Show images" restores `<img src>` and nothing else. An
   `<iframe>` is dropped whole, because `srcdoc` carries an inline document no attribute strip
   reaches. `EmailDetailActivityTest` is the contract for that.
-- Keyword tuning is managed in `KeywordSettingsActivity` and persists hidden/visible keyword headings.
+- Keyword tuning is managed in `KeywordSettingsActivity` and persists both hidden/visible state and
+  the user-defined drag order used by Inbox tabs. Newly discovered keywords append to that order.
 - Theme selection is managed in `ThemesActivity` and uses the shared theme name list based on `theme.ts` palettes.
 - `SettingsActivity` is only a hub for existing settings surfaces: Security, Themes, Keywords,
   Pairing, PGP Key, and About. Keep settings logic in the destination screens rather than

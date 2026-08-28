@@ -410,7 +410,7 @@ class InboxActivity : LockedActivity() {
         // Show every remembered keyword, not just this batch's: a tab must not vanish when mail moves.
         val discoveredThisBatch = KeywordTabs.buildTabs(emails).drop(1).toSet()
         keywordSettings.rememberKeywords(discoveredThisBatch)
-        val allowedKeywords = keywordSettings.filterVisible(keywordSettings.getAllKeywords()).sortedBy { it.lowercase() }
+        val allowedKeywords = keywordSettings.getOrderedKeywords().filter(keywordSettings::isKeywordVisible)
         val tabs = listOf(KeywordTabs.ALL) + allowedKeywords
 
         val current = mutableListOf<String>()
