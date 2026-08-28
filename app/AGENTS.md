@@ -77,6 +77,9 @@ Owns the Android app module build, manifest, source sets, resources, and test ex
   opening it before the resync can render the detail screen with the wrong mode.
 - Avoid hardcoded secrets in committed files.
 - For user-visible behavior changes, update this file or a closer child AGENTS.md.
+- Settings ends with a Support KyPost action. The `play` flavor opens `TipActivity`, which sells
+  and consumes the Play Console one-time product `tip`; `github` and `fdroid` open
+  `https://buymeacoffee.com/yoshiofthewire` and must not package Play Billing.
 - Contact autocomplete (ContactAutocomplete.md): `ComposeActivity`'s TO/CC/BCC fields are
   `RecipientInputView`s backed by `ContactDao.search` (name/email substring match, debounced
   150ms, top 5 shown). The address-book icon on the TO row opens `AddressBookSheet`

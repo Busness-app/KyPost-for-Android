@@ -37,6 +37,7 @@ serializationJson = "1.9.0"
 firebaseBom = "34.2.0"
 kotlinxCoroutinesPlayServices = "1.10.2"
 playServicesCodeScanner = "16.1.0"
+playBilling = "9.1.0"
 googleServices = "4.4.4"
 securityCrypto = "1.1.0"
 # Newest stable, and abandoned at this branch. Audited 2026-08-21; staying on 1.1.0 deliberately.
@@ -107,6 +108,7 @@ kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
 firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging" }
 play-services-code-scanner = { group = "com.google.android.gms", name = "play-services-code-scanner", version.ref = "playServicesCodeScanner" }
+play-billing = { group = "com.android.billingclient", name = "billing", version.ref = "playBilling" }
 zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxingCore" }
 # Scanner UI for the fdroid flavor only; play and github use ML Kit. Apache-2, and its only
 # real transitive is zxing-core above, which this project already carries for QR generation.
@@ -133,4 +135,3 @@ kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 google-services = { id = "com.google.gms.google-services", version.ref = "googleServices" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
-

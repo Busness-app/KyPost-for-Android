@@ -81,8 +81,8 @@ android {
         applicationId = "org.kysecurity.mail"
         minSdk = 31
         targetSdk = 36
-        versionCode = 10
-        versionName = "0.3.3"
+        versionCode = 11
+        versionName = "0.4.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -538,6 +538,7 @@ dependencies {
         exclude(group = "com.google.crypto.tink", module = "tink")
     }
     gmsImplementation(libs.play.services.code.scanner)
+    "playImplementation"(libs.play.billing)
     // The fdroid flavor's scanner. Behind the same QrScanner seam as the ML Kit one above.
     // String notation: AGP creates the per-flavor configurations, and unlike
     // gmsImplementation above (a configurations.creating val) they have no generated
@@ -581,5 +582,3 @@ dependencies {
 ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
 }
-
-

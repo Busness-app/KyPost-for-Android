@@ -104,7 +104,20 @@
                 android:id="@+id/settingsAboutBody"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:layout_marginBottom="12dp"
                 android:text="@string/settings_about_body" />
+
+            <Button
+                android:id="@+id/settingsSupport"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_support" />
+
+            <TextView
+                android:id="@+id/settingsSupportBody"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_support_body" />
 
         </LinearLayout>
     </androidx.core.widget.NestedScrollView>
