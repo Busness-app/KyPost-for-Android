@@ -57,16 +57,19 @@ fun setupPrimaryNavigation(
             R.id.nav_inbox -> {
                 if (selectedItemId == R.id.nav_inbox) {
                     onInboxSelected?.invoke()
+                    true
                 } else {
                     startDestination(R.id.nav_inbox, Intent(activity, InboxActivity::class.java))
+                    false
                 }
-                true
             }
             R.id.nav_compose -> {
                 if (selectedItemId != R.id.nav_compose) {
                     startDestination(R.id.nav_compose, Intent(activity, ComposeActivity::class.java))
+                    false
+                } else {
+                    true
                 }
-                true
             }
             R.id.nav_lock -> {
                 lockOrOpenSecurity()
@@ -75,14 +78,18 @@ fun setupPrimaryNavigation(
             R.id.nav_contacts -> {
                 if (selectedItemId != R.id.nav_contacts) {
                     startDestination(R.id.nav_contacts, Intent(activity, ContactsListActivity::class.java))
+                    false
+                } else {
+                    true
                 }
-                true
             }
             R.id.nav_settings -> {
                 if (selectedItemId != R.id.nav_settings) {
                     startDestination(R.id.nav_settings, Intent(activity, SettingsActivity::class.java))
+                    false
+                } else {
+                    true
                 }
-                true
             }
             else -> false
         }

@@ -241,7 +241,9 @@ Owns production Android app code and resources.
   disabled, not a selected destination. Keep the destination behavior in `AppNavigation.kt`. Primary
   destination switches reuse existing destination activities with `FLAG_ACTIVITY_REORDER_TO_FRONT`
   and use the 120ms card-slide animations in `res/anim/nav_card_*`; settings subpages and security
-  handoff use normal platform transitions. Rail insets must clear both the status bar and top app
+  handoff use normal platform transitions. A screen being left keeps its own item checked so that
+  reordering it to the front later cannot reveal the destination it previously launched. Rail
+  insets must clear both the status bar and top app
   bar; content top insets must clear both too, because edge-to-edge content otherwise starts under
   the custom ActionBar. Inbox remains the selected primary destination for mail folders, but its
   displayed label must mirror the active folder so Junk/Trash/Archive do not leave Inbox highlighted
