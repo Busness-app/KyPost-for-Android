@@ -3,6 +3,7 @@ package org.kysecurity.mail.push
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.content.Intent
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -19,6 +20,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.google.android.material.chip.Chip
+import org.kysecurity.mail.BuildConfig
 import org.kysecurity.mail.R
 import org.kysecurity.mail.contacts.device.DeviceContactSyncEnabler
 import org.kysecurity.mail.contacts.device.DeviceContactSyncSettings
@@ -46,6 +48,7 @@ class PushPairingActivity : LockedActivity() {
     private lateinit var btnUnpairDevice: Button
     private lateinit var btnReconnectServer: Button
     private lateinit var btnScanQr: Button
+    private lateinit var btnPasswordPairing: Button
     private lateinit var chipUseUnifiedPush: Chip
     private lateinit var chipUseFirebase: Chip
 
@@ -114,6 +117,7 @@ class PushPairingActivity : LockedActivity() {
         btnUnpairDevice.setOnClickListener { confirmAndUnpairDevice() }
         btnReconnectServer.setOnClickListener { confirmAndReconnect() }
         btnScanQr.setOnClickListener { onScanQrClicked() }
+        btnPasswordPairing.setOnClickListener { startActivity(Intent(this, PasswordPairingActivity::class.java)) }
         chipUseUnifiedPush.setOnClickListener { viewModel.switchToUnifiedPush(this) }
         chipUseFirebase.setOnClickListener { viewModel.switchToFirebase() }
 
@@ -134,6 +138,7 @@ class PushPairingActivity : LockedActivity() {
         applyDangerButtonTheme(this, btnUnpairDevice)
         applyPrimaryButtonTheme(this, btnReconnectServer)
         applyPrimaryButtonTheme(this, btnScanQr)
+        applyPrimaryButtonTheme(this, btnPasswordPairing)
         applyPillChipTheme(this, chipUseUnifiedPush)
         applyPillChipTheme(this, chipUseFirebase)
         applyEmptyStateBackground(this, historyEmptyText)
@@ -154,6 +159,8 @@ class PushPairingActivity : LockedActivity() {
     private fun initViews() {
         historyList = findViewById(R.id.pushPairingHistoryList)
         btnScanQr = findViewById(R.id.btnScanQr)
+        btnPasswordPairing = findViewById(R.id.btnPasswordPairing)
+        btnPasswordPairing.visibility = if (BuildConfig.ENABLE_REVIEW_PAIRING) View.VISIBLE else View.GONE
         statusText = findViewById(R.id.pushPairingStatus)
         serverUrlText = findViewById(R.id.pushPairingServerUrl)
         subscriberText = findViewById(R.id.pushPairingSubscriber)
@@ -220,6 +227,7 @@ class PushPairingActivity : LockedActivity() {
         // Only meaningful once something is stored to reset.
         btnReconnectServer.isEnabled = !state.isWorking && paired
         btnScanQr.isEnabled = !state.isWorking
+        btnPasswordPairing.isEnabled = !state.isWorking
         chipUseUnifiedPush.isChecked = isUnifiedPush
         chipUseFirebase.isChecked = !isUnifiedPush
         chipUseUnifiedPush.isEnabled = !state.isWorking && paired && !isUnifiedPush
