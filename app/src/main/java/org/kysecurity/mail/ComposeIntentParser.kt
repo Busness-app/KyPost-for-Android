@@ -9,6 +9,9 @@ internal data class ComposePrefill(
     val bodyHtml: String,
 )
 
+internal fun Intent.isExternalComposeIntent(): Boolean =
+    action == Intent.ACTION_SENDTO || action == Intent.ACTION_SEND || action == Intent.ACTION_SEND_MULTIPLE
+
 /** Normalizes Android's public compose intents before any value reaches the editor. */
 internal fun parseComposeIntent(intent: Intent, plainTextToHtml: (String) -> String): ComposePrefill {
     if (intent.action == Intent.ACTION_SENDTO && intent.data?.scheme.equals("mailto", ignoreCase = true)) {
