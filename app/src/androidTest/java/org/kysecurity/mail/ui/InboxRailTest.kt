@@ -32,4 +32,17 @@ class InboxRailTest {
             }
         }
     }
+
+    @Test
+    fun leavingAScreenDoesNotChangeItsRememberedHighlight() {
+        ActivityScenario.launch(InboxActivity::class.java).use { scenario ->
+            scenario.onActivity { activity ->
+                val nav = activity.findViewById<NavigationBarView>(R.id.bottomNavigation)
+
+                nav.selectedItemId = R.id.nav_compose
+
+                assertEquals(R.id.nav_inbox, nav.selectedItemId)
+            }
+        }
+    }
 }
