@@ -116,8 +116,9 @@ Owns the Android app module build, manifest, source sets, resources, and test ex
 - Run unit tests for logic changes under `app/src/test/`.
 - Run unit tests for push parser/mapper changes under `app/src/test/`.
 - Run Android instrumentation tests when UI/manifest behavior changes under `app/src/androidTest/`.
-- CI measures the median of three cold launcher starts on the API 34 Play emulator through
-  `scripts/check-startup-time.sh`; keep it a coarse regression ceiling, not a device benchmark.
+- CI reinstalls the debug APK after instrumentation cleanup, then measures the median of three
+  cold launcher starts on the API 34 Play emulator through `scripts/check-startup-time.sh`; keep
+  it a coarse regression ceiling, not a device benchmark.
 
 # Child DOX Index
 

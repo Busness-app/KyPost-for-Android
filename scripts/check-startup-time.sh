@@ -6,6 +6,9 @@ limit_ms=${KYPOST_STARTUP_LIMIT_MS:-4000}
 times_file=$(mktemp)
 trap 'rm -f "$times_file"' EXIT
 
+# connectedAndroidTest removes its APKs during cleanup, so install the build being measured.
+adb install -r app/build/outputs/apk/play/debug/app-play-debug.apk >/dev/null
+
 # One warm-up absorbs emulator/package-manager startup; the next three runs are the measurement.
 i=0
 while [ "$i" -lt 4 ]; do
