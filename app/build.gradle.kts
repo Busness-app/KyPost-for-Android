@@ -85,6 +85,11 @@ android {
         versionName = "0.4.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField(
+            "boolean",
+            "ENABLE_REVIEW_PAIRING",
+            (providers.gradleProperty("enableReviewPairing").orNull == "true").toString(),
+        )
 
         // FLAG_SECURE is unconditional unless this is overridden, and only the debug type below
         // can override it. See security/SecureWindow.kt for why the escape hatch exists at all.

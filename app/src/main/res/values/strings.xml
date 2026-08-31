@@ -372,6 +372,13 @@
     <string name="contact_sync_intro_message">Kypost can keep your contacts in sync with this device\'s address book. This is off by default and only happens if you turn it on — you can change it anytime from the Contacts screen.</string>
     <string name="contact_sync_intro_positive">Enable</string>
     <string name="contact_sync_intro_negative">Not Now</string>
+    <string name="password_pairing_open">Pair with server login</string>
+    <string name="password_pairing_title">Pair with server</string>
+    <string name="password_pairing_intro">Enter the demo server address and account provided for review. Your password is used once and is not saved.</string>
+    <string name="password_pairing_server">Server URL (https://…)</string>
+    <string name="password_pairing_username">Username</string>
+    <string name="password_pairing_password">Password</string>
+    <string name="password_pairing_action">Pair this device</string>
     <string name="contacts_pick_title">Select Contact</string>
 
     <string name="pgp_key_signing_title">PGP Key Signing</string>

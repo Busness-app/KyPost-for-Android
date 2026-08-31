@@ -103,6 +103,11 @@
             android:exported="false"
             android:launchMode="singleTop" />
 
+        <activity
+            android:name=".push.PasswordPairingActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
         <!-- Thin, stateless forwarder for kypost://native-pair — see PushPairingLinkActivity
              for why the exported surface is split from PushPairingActivity itself. -->
         <activity
