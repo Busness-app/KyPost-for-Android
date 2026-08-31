@@ -491,6 +491,12 @@ jobs:
             # re-raises the failure at the end, so nothing is silenced.
             ./gradlew connected${{ matrix.flavor }}DebugAndroidTest || echo failed > /tmp/testfail.txt
 
+            # A coarse regression tripwire, not a benchmark leaderboard. API 34 Play is the one
+            # stable representative: running this on all four legs would buy noise, not coverage.
+            # `am start -W` measures the real launcher path, including lock/pairing routing; the
+            # script discards one warm-up and gates the median of three cold starts.
+            if [ "${{ matrix.api-level }}-${{ matrix.flavor }}" = "34-Play" ]; then sh scripts/check-startup-time.sh || echo failed > /tmp/testfail.txt; fi
+
             # READ THE KEYGUARD AGAIN. Everything above proves it was down when the suite STARTED
             # and never looks again, so a re-arm partway through arrives as a pile of app-looking
             # lifecycle failures -- "Activity never becomes requested state [RESUMED]", the same

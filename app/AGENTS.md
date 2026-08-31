@@ -80,8 +80,14 @@ Owns the Android app module build, manifest, source sets, resources, and test ex
 - Avoid hardcoded secrets in committed files.
 - For user-visible behavior changes, update this file or a closer child AGENTS.md.
 - Settings ends with a Support KyPost action. The `play` flavor opens `TipActivity`, which sells
-  and consumes the Play Console one-time product `tip`; `github` and `fdroid` open
+  and consumes the Play Console one-time product `1offtips` and subscription product
+  `monthlycoffee`; `github` and `fdroid` open
   `https://buymeacoffee.com/yoshiofthewire` and must not package Play Billing.
+  `TipActivity` and its manifest declaration therefore belong to the `play` source set only; the
+  Play manifest must also retain the GMS Firebase service that GitHub receives from `src/gms`.
+  One-time purchases are consumed so they can be repeated. Subscriptions are acknowledged,
+  displayed as active instead of being offered again, and link to Google Play for management or
+  cancellation. Never render purchase options until both INAPP and SUBS ownership queries succeed.
 - Contact autocomplete (ContactAutocomplete.md): `ComposeActivity`'s TO/CC/BCC fields are
   `RecipientInputView`s backed by `ContactDao.search` (name/email substring match, debounced
   150ms, top 5 shown). The address-book icon on the TO row opens `AddressBookSheet`
@@ -89,6 +95,13 @@ Owns the Android app module build, manifest, source sets, resources, and test ex
   Both surfaces share `RecipientCandidate`/`RecipientField`/matching logic in
   `contacts/RecipientMatching.kt` — extend that file, don't duplicate matching logic in either UI
   layer.
+- External compose entry (`mailto:`, `ACTION_SEND`, `ACTION_SEND_MULTIPLE`) is normalized by
+  `ComposeIntentParser.kt`; use Android's `MailTo` parser and keep public-Intent quirks out of
+  `ComposeActivity`. Shared attachments still enter through the Activity's existing bounded
+  attachment reader.
+- Inbox freshness is success-only and folder-scoped for the visible Activity lifetime. A failed
+  refresh leaves the last confirmed time intact; it must not replace it with a sticky error or let
+  a late result from a previously selected folder paint the current folder.
 
 # Work Guidance
 
@@ -102,6 +115,8 @@ Owns the Android app module build, manifest, source sets, resources, and test ex
 - Run unit tests for logic changes under `app/src/test/`.
 - Run unit tests for push parser/mapper changes under `app/src/test/`.
 - Run Android instrumentation tests when UI/manifest behavior changes under `app/src/androidTest/`.
+- CI measures the median of three cold launcher starts on the API 34 Play emulator through
+  `scripts/check-startup-time.sh`; keep it a coarse regression ceiling, not a device benchmark.
 
 # Child DOX Index
 

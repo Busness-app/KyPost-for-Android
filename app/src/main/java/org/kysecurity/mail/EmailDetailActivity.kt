@@ -405,7 +405,7 @@ class EmailDetailActivity : LockedActivity() {
                     // Say so rather than quietly forwarding a message with attachments missing.
                     Toast.makeText(
                         this,
-                        getString(R.string.forward_attachments_failed, failed),
+                        resources.getQuantityString(R.plurals.forward_attachments_failed, failed, failed),
                         Toast.LENGTH_LONG,
                     ).show()
                 }
@@ -414,7 +414,11 @@ class EmailDetailActivity : LockedActivity() {
                     // carry. Silence here would forward a message minus attachments it appears to have.
                     Toast.makeText(
                         this,
-                        getString(R.string.forward_attachments_too_large, droppedForBudget),
+                        resources.getQuantityString(
+                            R.plurals.forward_attachments_too_large,
+                            droppedForBudget,
+                            droppedForBudget,
+                        ),
                         Toast.LENGTH_LONG,
                     ).show()
                 }

@@ -39,14 +39,20 @@
     <string name="settings_pgp_body">Show or scan PGP key QR codes</string>
     <string name="settings_about_body">Version and license</string>
     <string name="settings_support">Support KyPost</string>
-    <string name="settings_support_body">Leave a tip to support development</string>
+    <string name="settings_support_body">Leave a tip or subscribe to support development</string>
     <string name="tip_title">Support KyPost</string>
-    <string name="tip_intro">If KyPost helps you, you can leave a one-time tip. Tipping is optional and does not unlock any features.</string>
+    <string name="tip_intro">If KyPost helps you, you can leave a one-time tip or subscribe. Tipping is optional and does not unlock any features.</string>
     <string name="tip_loading">Loading tip options…</string>
-    <string name="tip_button">Leave a tip — %1$s</string>
+    <string name="tip_button">Leave a tip %1$s</string>
+    <string name="tip_button_monthly">%1$s monthly</string>
+    <string name="tip_plan_take_five">Take 5</string>
+    <string name="tip_plan_none_the_richer">None the Richer</string>
+    <string name="tip_options_label">Choose a contribution</string>
     <string name="tip_unavailable">Tips are unavailable right now. Please try again later.</string>
     <string name="tip_pending">Your tip is pending.</string>
     <string name="tip_thanks">Thank you for supporting KyPost!</string>
+    <string name="tip_subscription_active">Monthly support is active. Thank you!</string>
+    <string name="tip_subscription_manage">Manage or cancel subscription</string>
     <string name="lock_disabled_open_security">Turn on Require Unlock to Open in Security settings first.</string>
 
     <string name="email_title">Email</string>
@@ -139,8 +145,14 @@
     <string name="attachment_open_with">Open attachment with</string>
     <string name="attachment_too_many_open">Too many attachments are still open. Close one and try again.</string>
     <string name="forward_fetching_attachments">Fetching attachments to forward…</string>
-    <string name="forward_attachments_failed">Couldn\'t fetch %1$d attachment(s) — they won\'t be forwarded</string>
-    <string name="forward_attachments_too_large">%1$d attachment(s) are too large to forward from this device — they won\'t be attached</string>
+    <plurals name="forward_attachments_failed">
+        <item quantity="one">Couldn\'t fetch %1$d attachment — it won\'t be forwarded</item>
+        <item quantity="other">Couldn\'t fetch %1$d attachments — they won\'t be forwarded</item>
+    </plurals>
+    <plurals name="forward_attachments_too_large">
+        <item quantity="one">%1$d attachment is too large to forward from this device — it won\'t be attached</item>
+        <item quantity="other">%1$d attachments are too large to forward from this device — they won\'t be attached</item>
+    </plurals>
     <string name="cancel">Cancel</string>
     <string name="compose_format_bold">Bold</string>
     <string name="compose_format_italic">Italic</string>
@@ -266,7 +278,10 @@
     <string name="contacts_sync_success">Contacts synced</string>
     <string name="contacts_sync_unauthorized">Device pairing expired or invalid — re-pair this device in Settings</string>
     <string name="contacts_dedupe">Find &amp; merge duplicates</string>
-    <string name="contacts_dedupe_result">Merged %d duplicate contact(s)</string>
+    <plurals name="contacts_dedupe_result">
+        <item quantity="one">Merged %d duplicate contact</item>
+        <item quantity="other">Merged %d duplicate contacts</item>
+    </plurals>
     <string name="contacts_dedupe_none">No duplicates found</string>
     <string name="contacts_edit_title">Contact</string>
     <string name="contacts_saved">Contact saved</string>
@@ -358,6 +373,7 @@
     <string name="contacts_detail_no_app_for_action">No app found to handle this</string>
 
     <string name="loading_emails">Syncing emails…</string>
+    <string name="inbox_updated">Updated %1$s</string>
     <string name="finding_email">Finding new email…</string>
     <string name="no_archive_folders">No archive folders found</string>
     <string name="email_not_found">Email no longer available</string>
@@ -510,8 +526,14 @@
     <string name="mfa_respond_denied">Sign-in denied</string>
     <string name="mfa_respond_failed">Couldn\'t reach your server: %1$s. The request is still open — try again.</string>
 
-    <string name="security_pin_too_short">PIN must be at least %1$d digits</string>
-    <string name="security_pin_too_long">PIN can be at most %1$d digits</string>
+    <plurals name="security_pin_too_short">
+        <item quantity="one">PIN must be at least %1$d digit</item>
+        <item quantity="other">PIN must be at least %1$d digits</item>
+    </plurals>
+    <plurals name="security_pin_too_long">
+        <item quantity="one">PIN can be at most %1$d digit</item>
+        <item quantity="other">PIN can be at most %1$d digits</item>
+    </plurals>
     <string name="security_pin_not_numeric">PIN must be digits only</string>
     <string name="security_pin_too_common">That PIN is too easy to guess — the app wipes after 10 wrong attempts, so pick something outside the obvious sequences</string>
 

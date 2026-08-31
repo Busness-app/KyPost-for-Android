@@ -81,7 +81,7 @@ android {
         applicationId = "org.kysecurity.mail"
         minSdk = 31
         targetSdk = 36
-        versionCode = 11
+        versionCode = 14
         versionName = "0.4.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -151,8 +151,9 @@ android {
         listOf("play", "github").forEach { flavor ->
             getByName(flavor).java.srcDir("src/gms/java")
             getByName(flavor).kotlin.srcDir("src/gms/java")
-            getByName(flavor).manifest.srcFile("src/gms/AndroidManifest.xml")
         }
+        getByName("play").manifest.srcFile("src/play/AndroidManifest.xml")
+        getByName("github").manifest.srcFile("src/gms/AndroidManifest.xml")
     }
 
     signingConfigs {
@@ -357,6 +358,8 @@ afterEvaluate {
 val allowedExportedComponents = setOf(
     // The launcher.
     "org.kysecurity.mail.MainActivity",
+    // The default email client surface.
+    "org.kysecurity.mail.ComposeActivity",
     // The kypost://native-pair forwarder; deliberately thin. See PushPairingLinkActivity.
     "org.kysecurity.mail.push.PushPairingLinkActivity",
     // Third-party, and reachable only by a caller holding the platform permission each declares.

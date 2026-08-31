@@ -243,7 +243,11 @@ class ContactsListActivity : LockedActivity() {
                             if (outcome.report.mergedCount == 0) {
                                 getString(R.string.contacts_dedupe_none)
                             } else {
-                                getString(R.string.contacts_dedupe_result, outcome.report.mergedCount)
+                                resources.getQuantityString(
+                                    R.plurals.contacts_dedupe_result,
+                                    outcome.report.mergedCount,
+                                    outcome.report.mergedCount,
+                                )
                             }
                         }
                         ContactDedupeOutcome.NotPaired -> getString(R.string.connection_mode_relay_not_paired)

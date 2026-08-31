@@ -43,6 +43,7 @@ class InboxActivity : LockedActivity() {
     private lateinit var swipeRefresh: androidx.swiperefreshlayout.widget.SwipeRefreshLayout
     private lateinit var loadingStatus: TextView
     private lateinit var cancelLoading: View
+    private lateinit var freshnessText: TextView
     private lateinit var inboxRoot: View
     private lateinit var inboxContent: View
     private lateinit var adapter: EmailAdapter
@@ -66,6 +67,7 @@ class InboxActivity : LockedActivity() {
     private var pendingSender: String? = null
     private var pendingSubject: String? = null
     private var pendingMessageDeadlineMs: Long = 0L
+    private val refreshedAtByFolder = mutableMapOf<String, Long>()
 
     private val refreshRunnable = object : Runnable {
         override fun run() {
@@ -212,6 +214,7 @@ class InboxActivity : LockedActivity() {
         swipeRefresh.setOnRefreshListener { refreshInbox(forceFullResync = true) }
         loadingStatus = findViewById<TextView>(R.id.loadingStatus)
         cancelLoading = findViewById(R.id.cancelLoading)
+        freshnessText = findViewById(R.id.inboxFreshness)
 
         cancelLoading.setOnClickListener {
             pendingMessageId = null
@@ -379,7 +382,15 @@ class InboxActivity : LockedActivity() {
         val emails = mailRepository.cachedEmails(folder)
         val errorMessage = outcome.userFacingMessage()
         keywordSettings.rememberKeywords(emails.flatMap { it.keywords }.toSet())
-        runOnUiThread { applyRefreshedEmails(folder, emails, isFinal = true, errorMessage = errorMessage) }
+        runOnUiThread {
+            applyRefreshedEmails(
+                folder,
+                emails,
+                isFinal = true,
+                errorMessage = errorMessage,
+                refreshedAt = System.currentTimeMillis().takeIf { outcome is MailOutcome.Success },
+            )
+        }
     }
 
     /** Paints only if [folder] is still the folder on screen. The IO executor is FIFO, but a
@@ -391,18 +402,34 @@ class InboxActivity : LockedActivity() {
         emails: List<Email>,
         isFinal: Boolean,
         errorMessage: String?,
+        refreshedAt: Long? = null,
     ) {
         if (folder != currentFolder) return
         allEmails = emails
         rebuildTabs(emails)
         renderFilteredEmails()
         checkPendingMessage(emails, isFinal = isFinal)
+        refreshedAt?.let { refreshedAtByFolder[folder] = it }
+        renderFreshness()
         // A cache-first pass leaves the overlay up while a deep link is still hunting its message.
         if (isFinal || pendingMessageId == null) {
             loadingOverlay.visibility = View.GONE
         }
         if (errorMessage != null) {
             Toast.makeText(this, errorMessage, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun renderFreshness() {
+        val refreshedAt = refreshedAtByFolder[currentFolder]
+        freshnessText.visibility = if (refreshedAt == null) View.GONE else View.VISIBLE
+        if (refreshedAt != null) {
+            val relative = android.text.format.DateUtils.getRelativeTimeSpanString(
+                refreshedAt,
+                System.currentTimeMillis(),
+                android.text.format.DateUtils.MINUTE_IN_MILLIS,
+            )
+            freshnessText.text = getString(R.string.inbox_updated, relative)
         }
     }
 
@@ -473,6 +500,7 @@ class InboxActivity : LockedActivity() {
         currentFolder = folder
         selectedTab = KeywordTabs.ALL
         applyFolderTitle()
+        renderFreshness()
         refreshInbox()
     }
 
