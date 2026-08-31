@@ -710,8 +710,16 @@ class SecuritySettingsActivity : LockedActivity() {
 
     private fun pinPolicyMessage(result: PinPolicy.Result): String? = when (result) {
         PinPolicy.Result.Valid -> null
-        PinPolicy.Result.TooShort -> getString(R.string.security_pin_too_short, PinPolicy.MIN_LENGTH)
-        PinPolicy.Result.TooLong -> getString(R.string.security_pin_too_long, PinPolicy.MAX_LENGTH)
+        PinPolicy.Result.TooShort -> resources.getQuantityString(
+            R.plurals.security_pin_too_short,
+            PinPolicy.MIN_LENGTH,
+            PinPolicy.MIN_LENGTH,
+        )
+        PinPolicy.Result.TooLong -> resources.getQuantityString(
+            R.plurals.security_pin_too_long,
+            PinPolicy.MAX_LENGTH,
+            PinPolicy.MAX_LENGTH,
+        )
         PinPolicy.Result.NotNumeric -> getString(R.string.security_pin_not_numeric)
         PinPolicy.Result.TooCommon -> getString(R.string.security_pin_too_common)
     }

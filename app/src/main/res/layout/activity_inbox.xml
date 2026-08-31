@@ -40,6 +40,16 @@
 
             </HorizontalScrollView>
 
+            <TextView
+                android:id="@+id/inboxFreshness"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:gravity="end"
+                android:textColor="?android:attr/textColorSecondary"
+                android:textSize="12sp"
+                android:visibility="gone" />
+
             <!-- Weight lives here; on the RecyclerView it would get a zero-height parent. -->
             <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
                 android:id="@+id/inboxSwipeRefresh"

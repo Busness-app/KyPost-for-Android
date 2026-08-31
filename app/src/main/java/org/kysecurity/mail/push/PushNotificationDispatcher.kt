@@ -75,8 +75,6 @@ object PushNotificationDispatcher : org.kysecurity.mail.ProcessScopedState {
     }
 
     fun ensureChannel(context: Context) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         pruneLegacyChannels(manager)
         if (manager.getNotificationChannel(CHANNEL_ID) != null) return
@@ -92,8 +90,6 @@ object PushNotificationDispatcher : org.kysecurity.mail.ProcessScopedState {
     }
 
     fun ensureMfaChannel(context: Context) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         pruneLegacyChannels(manager)
         if (manager.getNotificationChannel(MFA_CHANNEL_ID) != null) return

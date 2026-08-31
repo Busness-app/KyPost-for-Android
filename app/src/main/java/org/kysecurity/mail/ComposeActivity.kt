@@ -1,5 +1,6 @@
 package org.kysecurity.mail
 
+import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
@@ -220,9 +221,16 @@ class ComposeActivity : LockedActivity() {
         ccInput.onRecipientsChanged = onRecipientsChanged
         bccInput.onRecipientsChanged = onRecipientsChanged
 
-        // A draft the app lock destroyed on a previous entry wins over the intent's prefill: the
-        // user typed it, and it is strictly newer than whatever Reply/Forward put there.
-        val restored = ComposeDraftCache.take()
+        // A draft the app lock destroyed wins over an internal Reply/Forward prefill. A public
+        // mailto/share request is a new composition, though: restoring an unrelated prior draft
+        // silently replaces what the sending app asked the user to send.
+        val restored = if (intent.isExternalComposeIntent()) {
+            ComposeDraftCache.resetForNewSession()
+            ComposeDraftCache.take() // Unseal so this new composition can survive lock teardown.
+            null
+        } else {
+            ComposeDraftCache.take()
+        }
         restoredDraftForTest = restored
         if (restored != null) {
             subjectField.setText(restored.subject)
@@ -241,14 +249,11 @@ class ComposeActivity : LockedActivity() {
             ForwardAttachmentHandoff.clear()
             Toast.makeText(this, R.string.compose_draft_restored, Toast.LENGTH_SHORT).show()
         } else {
-            subjectField.setText(intent.getStringExtra(EXTRA_SUBJECT).orEmpty())
-            toInput.setInitialRecipients(intent.getStringExtra(EXTRA_TO).orEmpty())
-            // EXTRA_BODY_HTML carries a real HTML quote (Reply/Forward of an HTML message);
-            // EXTRA_BODY is plain text and still has to be escaped before it reaches the editor.
-            val prefillHtml = intent.getStringExtra(EXTRA_BODY_HTML).orEmpty()
-            bodyEditor.setHtml(
-                prefillHtml.ifBlank { plainTextToHtml(intent.getStringExtra(EXTRA_BODY).orEmpty()) },
-            )
+            val (to, subject, bodyHtml) = parseComposeIntent(intent, ::plainTextToHtml)
+            subjectField.setText(subject)
+            toInput.setInitialRecipients(to)
+            bodyEditor.setHtml(bodyHtml)
+
             // A forward's attachments, handed over out-of-band because they are far too large for
             // an Intent extra — see [ForwardAttachmentHandoff].
             val forwarded = ForwardAttachmentHandoff.take()
@@ -261,12 +266,32 @@ class ComposeActivity : LockedActivity() {
                 if (accepted.size < forwarded.size) {
                     Toast.makeText(
                         this,
-                        getString(R.string.forward_attachments_too_large, forwarded.size - accepted.size),
+                        resources.getQuantityString(
+                            R.plurals.forward_attachments_too_large,
+                            forwarded.size - accepted.size,
+                            forwarded.size - accepted.size,
+                        ),
                         Toast.LENGTH_LONG,
                     ).show()
                 }
                 attachments.addAll(accepted)
                 renderAttachmentChips()
+            }
+
+            // Handle attachments from sharing intents
+            val streamUris = when (intent.action) {
+                Intent.ACTION_SEND -> {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)?.let { listOf(it) }
+                }
+                Intent.ACTION_SEND_MULTIPLE -> {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
+                }
+                else -> null
+            }
+            if (streamUris != null) {
+                addAttachments(streamUris)
             }
         }
 
