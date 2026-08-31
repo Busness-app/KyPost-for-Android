@@ -1,7 +1,7 @@
 package org.kysecurity.mail
 
 import android.content.Intent
-import android.net.MailTo
+import android.net.Uri
 
 internal data class ComposePrefill(
     val to: String,
@@ -15,11 +15,23 @@ internal fun Intent.isExternalComposeIntent(): Boolean =
 /** Normalizes Android's public compose intents before any value reaches the editor. */
 internal fun parseComposeIntent(intent: Intent, plainTextToHtml: (String) -> String): ComposePrefill {
     if (intent.action == Intent.ACTION_SENDTO && intent.data?.scheme.equals("mailto", ignoreCase = true)) {
-        val mailTo = runCatching { MailTo.parse(intent.data.toString()) }.getOrNull()
+        val uri = intent.data!!
+        // MailTo.parse decodes the whole query before splitting on older Android releases,
+        // so an encoded '=' inside a value is mistaken for another separator.
+        val headers = uri.encodedQuery.orEmpty()
+            .split('&')
+            .mapNotNull { part ->
+                val separator = part.indexOf('=')
+                if (separator < 0) null else {
+                    Uri.decode(part.substring(0, separator)).lowercase() to
+                        Uri.decode(part.substring(separator + 1))
+                }
+            }
+            .toMap()
         return ComposePrefill(
-            to = mailTo?.to.orEmpty(),
-            subject = mailTo?.subject.orEmpty(),
-            bodyHtml = plainTextToHtml(mailTo?.body.orEmpty()),
+            to = Uri.decode(uri.encodedSchemeSpecificPart.substringBefore('?')),
+            subject = headers["subject"].orEmpty(),
+            bodyHtml = plainTextToHtml(headers["body"].orEmpty()),
         )
     }
 
