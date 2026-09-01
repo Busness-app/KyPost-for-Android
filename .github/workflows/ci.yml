@@ -433,6 +433,11 @@ jobs:
             adb shell input keyevent 224
             adb shell wm dismiss-keyguard
 
+            # Setting a PIN raises the API 36 keyguard asynchronously. Without this settle, the
+            # loop can observe a transient mKeyguardShowing=false, exit, and then fail the very
+            # next check when the keyguard finishes appearing (PR #107 run 33496503291).
+            sleep 1
+
             # THE SWIPE IS THE PART THAT WAS MISSING. On API 36 the five commands that preceded this
             # left `mKeyguardShowing=true` and `DismissalRequested=false` -- so MENU never raised
             # the bouncer and the PIN was typed into the lock screen wallpaper. A modern lock

@@ -144,6 +144,12 @@ fun applyThemedTitle(activity: Activity, title: CharSequence) {
     }
 }
 
+fun applyCheckBoxTheme(context: Context, checkBox: CheckBox) {
+    val palette = getStoredThemePalette(context)
+    checkBox.setTextColor(Color.parseColor(palette.inkStrong))
+    checkBox.buttonTintList = ColorStateList.valueOf(Color.parseColor(palette.accent))
+}
+
 fun applyKyPostTopBar(activity: Activity, subtitle: CharSequence) {
     applyThemedTitle(activity, activity.getString(R.string.app_name))
     if (activity is AppCompatActivity) {
@@ -163,6 +169,8 @@ fun applyKyPostTopBar(activity: Activity, subtitle: CharSequence) {
                 setPadding(0, 4 * density.toInt(), 0, 4 * density.toInt())
                 addView(ImageView(activity).apply {
                     setImageResource(R.mipmap.ic_launcher_foreground)
+                    setBackgroundResource(R.drawable.rounded_image_clip)
+                    clipToOutline = true
                     scaleType = ImageView.ScaleType.CENTER_INSIDE
                 }, LinearLayout.LayoutParams((56 * density).toInt(), (56 * density).toInt()))
                 addView(LinearLayout(activity).apply {
@@ -561,8 +569,7 @@ private fun applyThemeToViewTree(view: View, palette: ThemePalette) {
             applyButtonPadding(view)
         }
         is CheckBox -> {
-            view.setTextColor(inkStrong)
-            view.buttonTintList = ColorStateList.valueOf(accent)
+            applyCheckBoxTheme(view.context, view)
         }
         is TextView -> {
             // Hardcoded grayscale XML colors are template leftovers, safe to remap onto the palette.
