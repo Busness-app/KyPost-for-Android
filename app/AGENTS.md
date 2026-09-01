@@ -113,6 +113,8 @@ Owns the Android app module build, manifest, source sets, resources, and test ex
 
 # Verification
 
+- Release builds request full native debug-symbol extraction. Libraries supplied already stripped
+  by dependencies cannot produce an uploadable native-symbol archive.
 - Run unit tests for logic changes under `app/src/test/`.
 - Run unit tests for push parser/mapper changes under `app/src/test/`.
 - Run Android instrumentation tests when UI/manifest behavior changes under `app/src/androidTest/`.

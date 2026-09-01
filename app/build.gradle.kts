@@ -81,7 +81,7 @@ android {
         applicationId = "org.kysecurity.mail"
         minSdk = 31
         targetSdk = 36
-        versionCode = 14
+        versionCode = 16
         versionName = "0.4.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -221,6 +221,9 @@ android {
             buildConfigField("boolean", "ALLOW_SCREENSHOTS", allowScreenshots.toString())
         }
         release {
+            ndk {
+                debugSymbolLevel = "FULL"
+            }
             // Rules live in proguard-rules.pro, and ci.yml asserts that R8 actually renamed most of
             // the app — a keep rule that over-matches does not fail a build, it silently ships an
             // unobfuscated binary on a green run.

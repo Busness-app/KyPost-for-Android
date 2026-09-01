@@ -422,15 +422,16 @@ class InboxActivity : LockedActivity() {
 
     private fun renderFreshness() {
         val refreshedAt = refreshedAtByFolder[currentFolder]
-        freshnessText.visibility = if (refreshedAt == null) View.GONE else View.VISIBLE
-        if (refreshedAt != null) {
-            val relative = android.text.format.DateUtils.getRelativeTimeSpanString(
-                refreshedAt,
-                System.currentTimeMillis(),
-                android.text.format.DateUtils.MINUTE_IN_MILLIS,
-            )
-            freshnessText.text = getString(R.string.inbox_updated, relative)
+        if (refreshedAt == null) {
+            freshnessText.setText(R.string.inbox_not_updated)
+            return
         }
+        val relative = android.text.format.DateUtils.getRelativeTimeSpanString(
+            refreshedAt,
+            System.currentTimeMillis(),
+            android.text.format.DateUtils.MINUTE_IN_MILLIS,
+        )
+        freshnessText.text = getString(R.string.inbox_updated, relative)
     }
 
     private fun rebuildTabs(emails: List<Email>) {

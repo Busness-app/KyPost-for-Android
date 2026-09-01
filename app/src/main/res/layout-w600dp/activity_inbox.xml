@@ -62,10 +62,10 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="4dp"
-                    android:gravity="end"
+                    android:gravity="center"
+                    android:text="@string/inbox_not_updated"
                     android:textColor="?android:attr/textColorSecondary"
-                    android:textSize="12sp"
-                    android:visibility="gone" />
+                    android:textSize="12sp" />
 
                 <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
                     android:id="@+id/inboxSwipeRefresh"

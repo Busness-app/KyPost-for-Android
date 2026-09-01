@@ -98,6 +98,7 @@ class KeywordSettingsActivity : LockedActivity() {
             holder.checkbox.setOnCheckedChangeListener(null)
             holder.checkbox.text = keyword
             holder.checkbox.isChecked = keywordSettings.isKeywordVisible(keyword)
+            applyCheckBoxTheme(this@KeywordSettingsActivity, holder.checkbox)
             holder.checkbox.setOnCheckedChangeListener { _, isChecked ->
                 keywordSettings.setKeywordVisible(keyword, isChecked)
             }

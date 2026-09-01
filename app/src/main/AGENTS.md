@@ -231,6 +231,11 @@ Owns production Android app code and resources.
   reaches. `EmailDetailActivityTest` is the contract for that.
 - Keyword tuning is managed in `KeywordSettingsActivity` and persists both hidden/visible state and
   the user-defined drag order used by Inbox tabs. Newly discovered keywords append to that order.
+  Its RecyclerView owns theming its checkbox rows because the global theme walker deliberately
+  skips RecyclerView children.
+  The Inbox freshness label stays centered immediately below those tabs. Before the first
+  successful refresh it reads "Not updated yet", so its row never appears empty and the first
+  success does not shift the message list.
 - Theme selection is managed in `ThemesActivity` and uses the shared theme name list based on `theme.ts` palettes.
 - `SettingsActivity` is only a hub for existing settings surfaces: Security, Themes, Keywords,
   Pairing, PGP Key, and About. Keep settings logic in the destination screens rather than
@@ -245,7 +250,9 @@ Owns production Android app code and resources.
   reordering it to the front later cannot reveal the destination it previously launched. Rail
   insets must clear both the status bar and top app
   bar; content top insets must clear both too, because edge-to-edge content otherwise starts under
-  the custom ActionBar. Inbox remains the selected primary destination for mail folders, but its
+  the custom ActionBar. Launcher artwork shown inside the app is clipped to the shared 14dp panel
+  radius so its dark source-image corners do not clash with lighter themes. Inbox remains the
+  selected primary destination for mail folders, but its
   displayed label must mirror the active folder so Junk/Trash/Archive do not leave Inbox highlighted
   by name.
 - Keyword refresh is best-effort every 90 seconds while inbox UI is foregrounded (both connection modes).
